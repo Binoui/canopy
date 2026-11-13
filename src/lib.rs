@@ -9,3 +9,8 @@ pub mod chrome;
 pub mod engine;
 #[cfg(feature = "desktop")]
 pub mod ui;
+
+pub mod cookies;
+mod key_store;
+pub mod logins;
+pub mod secret;

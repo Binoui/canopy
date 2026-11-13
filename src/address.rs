@@ -102,3 +102,17 @@ mod tests {
         }
     }
 }
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct WebOrigin(String);
+
+impl WebOrigin {
+    pub fn of(url: &Url) -> Option<Self> {
+        (matches!(url.scheme(), "http" | "https") && url.host_str().is_some())
+            .then(|| Self(url.origin().ascii_serialization()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
