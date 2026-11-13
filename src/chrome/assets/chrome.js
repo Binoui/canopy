@@ -14,6 +14,7 @@ const ICONS = {
   chevron: '<path d="M7 10l5 5 5-5" stroke-width="2"/>',
   globe: '<circle cx="12" cy="12" r="8.5" stroke-width="1.7"/><path d="M3.5 12h17M12 3.5c2.6 2.6 2.6 14.4 0 17M12 3.5c-2.6 2.6-2.6 14.4 0 17" stroke-width="1.7"/>',
   close: '<path d="M6 6l12 12M18 6L6 18" stroke-width="1.9"/>',
+  settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" stroke-width="1.6"/><circle cx="12" cy="12" r="3" stroke-width="1.6"/>',
 };
 
 const $ = (id) => document.getElementById(id);
@@ -163,7 +164,7 @@ function syncLayer() {
 // ---------- theme ----------
 
 function applyTheme() {
-  const mode = S.frame?.theme ?? 'system';
+  const mode = S.frame?.theme ?? 'dark';
   const system = S.systemDark ?? matchMedia('(prefers-color-scheme: dark)').matches;
   document.documentElement.classList.toggle('dark', mode === 'dark' || (mode === 'system' && system));
 }
@@ -572,25 +573,23 @@ function renderPopover() {
       intent('select-tree', { id: row.dataset.id });
     }));
   } else if (kind === 'memory') {
-    const on = !!S.frame?.captureEnabled;
-    const theme = S.frame?.theme ?? 'system';
     popover.innerHTML = '<div class="menu-heading">Memory</div>'
-      + `<button class="menu-row" id="automatic-capture" title="Keep the text of opened pages on this computer. Form fields are never kept."><span class="grow">Remember pages</span><span class="switch${on ? ' on' : ''}"></span></button>`
+      + captureRow()
       + '<button class="menu-row" id="remember-selection"><span class="grow">Remember selection</span><kbd>Ctrl+S</kbd></button>'
       + `<button class="menu-row" id="read-captures"${current() ? '' : ' disabled'}><span class="grow">Read saved text</span></button>`
-      + '<div class="menu-heading">Theme</div><div class="segmented" id="theme-mode">'
-      + ['system', 'light', 'dark'].map((mode) => `<button data-mode="${mode}" class="${mode === theme ? 'on' : ''}">${mode[0].toUpperCase()}${mode.slice(1)}</button>`).join('')
-      + '</div>'
       + (S.errors.length ? '<div class="menu-separator"></div><div class="menu-heading">Recent errors</div>'
         + S.errors.map((e) => `<div class="menu-error">${esc(e)}</div>`).join('') : '');
-    $('automatic-capture').addEventListener('click', () => {
-      S.frame.captureEnabled = !on;
-      intent('capture', { on: !on });
-      renderPopover();
-      buildStrip(strip.target ?? targetLayout());
-    });
+    wireCaptureRow();
     $('remember-selection').addEventListener('click', () => { closePopover(); intent('remember'); });
     $('read-captures').addEventListener('click', () => { closePopover(); intent('read-captures', { id: current() }); });
+  } else if (kind === 'settings') {
+    const theme = S.frame?.theme ?? 'dark';
+    popover.innerHTML = '<div class="menu-heading">Settings</div>'
+      + '<div class="menu-heading">Theme</div><div class="segmented" id="theme-mode">'
+      + ['dark', 'light', 'system'].map((mode) => `<button data-mode="${mode}" class="${mode === theme ? 'on' : ''}">${mode[0].toUpperCase()}${mode.slice(1)}</button>`).join('')
+      + '</div><div class="menu-separator"></div>'
+      + captureRow();
+    wireCaptureRow();
     popover.querySelectorAll('[data-mode]').forEach((button) => button.addEventListener('click', () => {
       S.frame.theme = button.dataset.mode;
       applyTheme();
@@ -598,6 +597,21 @@ function renderPopover() {
       renderPopover();
     }));
   }
+}
+
+function captureRow() {
+  const on = !!S.frame?.captureEnabled;
+  return `<button class="menu-row" id="automatic-capture" title="Keep the text of opened pages on this computer. Form fields are never kept."><span class="grow">Remember pages</span><span class="switch${on ? ' on' : ''}"></span></button>`;
+}
+
+function wireCaptureRow() {
+  $('automatic-capture').addEventListener('click', () => {
+    const on = !!S.frame?.captureEnabled;
+    S.frame.captureEnabled = !on;
+    intent('capture', { on: !on });
+    renderPopover();
+    buildStrip(strip.target ?? targetLayout());
+  });
 }
 
 // ---------- palette ----------
@@ -907,7 +921,7 @@ window.canopy = {
       if (!visit(S.card)) hideCard();
       else showCard(S.card);
     }
-    if (S.popover?.kind === 'memory') renderPopover();
+    if (S.popover) renderPopover();
     syncLayer();
   },
   strip(layouts) {
@@ -1029,6 +1043,7 @@ window.canopy = {
 $('new-tree').innerHTML = icon('plus');
 $('agent').innerHTML = icon('spark');
 $('forest-button').innerHTML = icon('forest');
+$('settings-button').innerHTML = icon('settings');
 $('tab-overflow').innerHTML = icon('chevron');
 $('search-pill').insertAdjacentHTML('afterbegin', icon('search'));
 
@@ -1046,6 +1061,11 @@ $('tab-overflow').addEventListener('click', (event) => {
 $('new-tree').addEventListener('click', () => window.canopy.newTree());
 $('forest-button').addEventListener('click', () => window.canopy.toggleForest());
 $('search-pill').addEventListener('click', () => openPalette({ scope: S.surface === 'start' ? null : current(), text: '' }));
+$('settings-button').addEventListener('click', (event) => {
+  event.stopPropagation();
+  if (S.popover?.kind === 'settings') closePopover();
+  else openPopover('settings', $('settings-button'));
+});
 $('memory-dot').addEventListener('click', (event) => {
   event.stopPropagation();
   if (S.popover?.kind === 'memory') closePopover();

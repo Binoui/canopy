@@ -87,7 +87,7 @@ Recovering the comment or permalink depends on the site's DOM. When that context
 
 For a post that appears later in a dynamic feed, select the passage and press **Ctrl+S**. Automatic capture does not keep saving everything that appears while you scroll.
 
-Without `--data-dir`, Canopy keeps its database and WebKit profile in `$XDG_DATA_HOME/canopy`, or in `~/.local/share/canopy`. Choose **System**, **Light** or **Dark** under **Theme** in the Memory menu. The choice persists in the `theme_mode` session setting and applies immediately. With **System**, it follows the desktop's dark preference.
+Without `--data-dir`, Canopy keeps its database and WebKit profile in `$XDG_DATA_HOME/canopy`, or in `~/.local/share/canopy`. Canopy starts dark. The gear at the end of the tab row opens **Settings**, where **Theme** offers **Dark**, **Light** or **System**, and **Remember pages** turns automatic capture on or off. The theme persists in the `theme_mode` session setting and applies immediately. With **System**, it follows the desktop's dark preference.
 
 ## Check the project
 
