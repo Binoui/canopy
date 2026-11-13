@@ -278,6 +278,16 @@ pub fn open_memory_menu(ui: &Ui) -> Result<()> {
     Ok(())
 }
 
+/// Opens Settings from the gear at the end of the tab row.
+pub fn open_settings(ui: &Ui) -> Result<()> {
+    if !visible(ui, "#popover #theme-mode") {
+        click_chrome(ui, "#settings-button")?;
+        wait("Settings", || visible(ui, "#popover #theme-mode"))?;
+        pump(100);
+    }
+    Ok(())
+}
+
 /// Whether the page's favicon has loaded on `selector`, in the given color channel order.
 pub fn icon_is_blue(ui: &Ui, selector: &str) -> bool {
     chrome(

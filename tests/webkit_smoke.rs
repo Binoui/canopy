@@ -35,6 +35,12 @@ fn main() -> Result<()> {
     assert!(visible(&ui, "#start"));
     assert!(ui.snapshot()?.visits.is_empty());
     assert!(text(&ui, "#start").contains("as your forest grows"));
+    assert_eq!(
+        chrome(&ui, "canopy.state().dark")?,
+        true,
+        "a new forest starts dark"
+    );
+    println!("PASS a new forest starts in the dark theme.");
 
     key("ctrl+k")?;
     wait("palette focus", || chrome_focused(&ui, "#palette-input"))?;
@@ -433,7 +439,7 @@ fn main() -> Result<()> {
 
     let shots = std::env::var("CANOPY_PHASE3_SHOTS").ok();
     for theme in ["light", "dark"] {
-        open_memory_menu(&ui)?;
+        open_settings(&ui)?;
         click_chrome(&ui, &format!("#theme-mode [data-mode={theme}]"))?;
         wait("theme applied", || {
             chrome(&ui, "canopy.state().dark").is_ok_and(|dark| dark == (theme == "dark"))
@@ -455,7 +461,7 @@ fn main() -> Result<()> {
             save_window(&ui, &format!("{dir}/theme-menu-{theme}.png"))?;
         }
         key("Escape")?;
-        wait("Memory menu closed", || !visible(&ui, "#popover"))?;
+        wait("Settings closed", || !visible(&ui, "#popover"))?;
         key("ctrl+e")?;
         pump(250);
         if let Some(dir) = &shots {
@@ -474,7 +480,9 @@ fn main() -> Result<()> {
         }
         key("Escape")?;
     }
-    println!("PASS real theme-menu input switches the chrome background between light and dark.");
+    println!(
+        "PASS the theme buttons in Settings switch the chrome background between light and dark."
+    );
 
     let expected: Snapshot = ui.snapshot()?;
     ui.window.close();

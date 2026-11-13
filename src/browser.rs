@@ -250,7 +250,7 @@ impl Browser {
              INSERT OR IGNORE INTO session(singleton, current_id) VALUES(1, NULL);",
         )?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version > 2 {
+        if version > 3 {
             bail!("This database comes from a newer version of Canopy.");
         }
         if version == 0 {
@@ -341,6 +341,16 @@ impl Browser {
                      END;"
                 ))?;
             }
+            transaction.commit()?;
+        }
+        if version < 3 {
+            // Dark became the default theme. A forest still on the old `system` default starts
+            // dark too; System stays one click away in Settings.
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(
+                "UPDATE session SET theme_mode = 'dark' WHERE theme_mode = 'system';
+                 PRAGMA user_version = 3;",
+            )?;
             transaction.commit()?;
         }
         Ok(Self {
@@ -1690,10 +1700,10 @@ mod tests {
             let browser = Browser::open(&path).unwrap();
             assert_eq!(browser.tree_target(TreeId(a)).unwrap(), child);
             assert_eq!(browser.tree_target(TreeId(b)).unwrap(), b);
-            assert_eq!(browser.theme_mode().unwrap(), ThemeMode::System);
+            assert_eq!(browser.theme_mode().unwrap(), ThemeMode::Dark);
             browser
                 .connection
-                .execute("UPDATE session SET theme_mode='dark'", [])
+                .execute("UPDATE session SET theme_mode='system'", [])
                 .unwrap();
             assert!(browser
                 .connection
@@ -1714,7 +1724,11 @@ mod tests {
         };
         let browser = Browser::open(&path).unwrap();
         assert_eq!(browser.tree_states().unwrap(), expected);
-        assert_eq!(browser.theme_mode().unwrap(), ThemeMode::Dark);
+        assert_eq!(
+            browser.theme_mode().unwrap(),
+            ThemeMode::System,
+            "the dark migration runs once; a later System choice survives reopening"
+        );
     }
     #[test]
     fn explicit_parent_is_validated_and_survives_cursor_changes_before_start() {
