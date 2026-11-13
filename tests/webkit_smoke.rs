@@ -1,60 +1,55 @@
 use std::{
-    cell::RefCell,
     io::{Read, Write},
     net::TcpListener,
-    rc::Rc,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use canopy::{
     address::web_url,
     browser::{NavigationTarget, Snapshot, VisitState},
     ui::Ui,
 };
-use gdk::prelude::*;
 use gtk::prelude::*;
-use javascriptcore::ValueExt;
-use serde_json::Value;
 use webkit2gtk::WebViewExt;
 
+mod common;
+
+use common::*;
+
 fn main() -> Result<()> {
-    gtk::init().context("Ce test nécessite un affichage. Utilise xvfb-run -a.")?;
-    let fixture = Fixture::start()?;
     let directory = tempfile::tempdir()?;
+    start(directory.path())?;
+    let fixture = Fixture::start()?;
     let ui = Ui::new(directory.path())?;
     ui.window.show_all();
-    ui.hide_address();
-    pump(Duration::from_millis(350));
+    pump(500);
 
-    let address = find_named(ui.window.upcast_ref(), "address")
-        .context("champ adresse absent")?
+    key("ctrl+k")?;
+    let entry = named(&ui.window, "palette-entry")
         .downcast::<gtk::Entry>()
         .unwrap();
-    ui.open_address(NavigationTarget::Root);
-    address.set_text(&fixture.url("/a"));
-    address.emit_activate();
+    wait("palette focus", || entry.has_focus())?;
+    type_text(&fixture.url("/a"))?;
+    key("Return")?;
     loaded(&ui, "/a", 1)?;
     let a = ui.snapshot()?.current.unwrap();
-    click(&ui, "b")?;
+    assert!(!named(&ui.window, "palette").is_visible());
+    assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
+    link(&ui, "b")?;
     loaded(&ui, "/b", 2)?;
     let b = ui.snapshot()?.current.unwrap();
+    println!("PASS the palette plants a tree from a typed address; a real link adds B under A.");
 
-    let outline = find_named(ui.window.upcast_ref(), "outline")
-        .unwrap()
-        .downcast::<gtk::TreeView>()
-        .unwrap();
-    outline.row_activated(
-        &gtk::TreePath::from_string("0"),
-        &outline.column(0).unwrap(),
-    );
+    open_strip(&ui)?;
+    click(&ui, &node(&ui, a))?;
     loaded(&ui, "/a", 2)?;
-    click(&ui, "c")?;
+    link(&ui, "c")?;
     loaded(&ui, "/c", 3)?;
     let c = ui.snapshot()?.current.unwrap();
     let snapshot = ui.snapshot()?;
@@ -67,75 +62,141 @@ fn main() -> Result<()> {
             .collect::<Vec<_>>(),
         vec![b, c]
     );
-    println!("PASS vrais liens A → B, sélection A dans l'arbre, lien C ; B et C sont sœurs.");
+    println!(
+        "PASS hovering opens the strip, clicking node A restores it, and C becomes B's sibling."
+    );
+
+    leave_strip(&ui)?;
+    key("F6")?;
+    wait("current node focus", || node(&ui, c).has_focus())?;
+    key("Left")?;
+    wait("parent node focus", || node(&ui, a).has_focus())?;
+    key("Return")?;
+    loaded(&ui, "/a", 3)?;
+    link(&ui, "c")?;
+    loaded(&ui, "/c", 4)?;
+    let c = ui.snapshot()?.current.unwrap();
+    println!(
+        "PASS F6 focuses the current node, Left walks the trunk and Enter restores the parent."
+    );
 
     ui.engine.native.grab_focus();
-    pump(Duration::from_millis(100));
-    let output = std::process::Command::new("xdotool")
-        .args(["search", "--name", "Canopy"])
-        .output()?;
-    let ids = String::from_utf8(output.stdout)?;
-    let window_id = ids.lines().last().context("fenêtre X11 introuvable")?;
-    let status = std::process::Command::new("xdotool")
-        .args(["windowfocus", window_id, "key", "ctrl+l"])
-        .status()?;
-    assert!(status.success());
-    wait("Ctrl+L depuis la page web", || address.has_focus())?;
-    assert_eq!(address.text().as_str(), fixture.url("/c"));
-    ui.hide_address();
-    println!("PASS Ctrl+L ouvre le champ depuis la webview focalisée.");
+    pump(100);
+    key("ctrl+l")?;
+    wait("Ctrl+L from the focused web view", || entry.has_focus())?;
+    assert_eq!(entry.text().as_str(), fixture.url("/c"));
+    assert_eq!(
+        entry.selection_bounds(),
+        Some((0, fixture.url("/c").chars().count() as i32))
+    );
+    key("Escape")?;
+    wait("palette closed", || {
+        !named(&ui.window, "palette").is_visible()
+    })?;
+    assert!(ui.engine.native.has_focus());
+    println!("PASS Ctrl+L opens the palette on the current address from the focused web view; Escape returns to the page.");
 
-    pump(Duration::from_millis(200));
-    if let Some(window) = ui.window.window() {
-        let allocation = ui.window.allocation();
-        let pixbuf = window
-            .pixbuf(0, 0, allocation.width(), allocation.height())
-            .context("capture de fenêtre impossible")?;
-        pixbuf.savev("/tmp/canopy-mvp1.png", "png", &[])?;
-        println!("Capture réelle de la fenêtre /tmp/canopy-mvp1.png");
-    }
+    let (x, y) = element_point(&ui, "q")?;
+    click_at(x, y)?;
+    type_text("alpha")?;
+    key("ctrl+k")?;
+    wait("palette over a focused input", || entry.has_focus())?;
+    type_text("zzz")?;
+    key("Escape")?;
+    type_text("omega")?;
+    assert_eq!(
+        eval(&ui, "JSON.stringify(document.getElementById('q').value)")?,
+        "alphaomega"
+    );
+    println!("PASS Ctrl+K then Escape gives keyboard focus back to the page input that had it.");
+
+    eval(
+        &ui,
+        "window.clicks = 0; addEventListener('click', () => clicks++); JSON.stringify(true)",
+    )?;
+    let clicks = |ui: &Ui| {
+        eval(ui, "JSON.stringify(window.clicks)")
+            .unwrap()
+            .as_i64()
+            .unwrap()
+    };
+    open_strip(&ui)?;
+    let (x, y) = page_point(&ui, 900, 42 + 120 + 40)?;
+    click_at(x, y)?;
+    assert_eq!(
+        clicks(&ui),
+        1,
+        "a click below the open strip reaches the page"
+    );
+    open_strip(&ui)?;
+    let (away_x, away_y) = page_point(&ui, 900, 600)?;
+    move_to(away_x, away_y)?;
+    pump(430);
+    assert_eq!(
+        strip_height(&ui),
+        120,
+        "the closing strip keeps its open allocation"
+    );
+    let (x, y) = page_point(&ui, 900, 140)?;
+    click_at(x, y)?;
+    assert_eq!(
+        clicks(&ui),
+        1,
+        "the closing band swallows a click during the close"
+    );
+    move_to(away_x, away_y)?;
+    pump(900);
+    assert_eq!(strip_height(&ui), 52);
+    click_at(x, y)?;
+    assert_eq!(
+        clicks(&ui),
+        2,
+        "the same point reaches the page once the strip is closed"
+    );
+    println!("PASS page clicks pass below the open strip; the 220 ms closing band is swallowed, then the page is reachable again.");
+
+    save_window(&ui, "/tmp/canopy-chrome-webkit.png")?;
 
     ui.engine.reload()?;
-    wait("début du rechargement", || ui.engine.native.is_loading())?;
-    loaded(&ui, "/c", 3)?;
+    wait("reload start", || ui.engine.native.is_loading())?;
+    loaded(&ui, "/c", 4)?;
     assert_eq!(ui.snapshot()?.current, Some(c));
-    println!("PASS rechargement sans nouveau nœud.");
+    println!("PASS reloading adds no node.");
 
     ui.engine.navigate(
         web_url(&fixture.url("/redirect"))?,
         NavigationTarget::ChildOf(ui.snapshot()?.current.unwrap()),
     )?;
-    loaded(&ui, "/final", 4)?;
+    loaded(&ui, "/final", 5)?;
     assert_eq!(ui.snapshot()?.current_visit().unwrap().url.path(), "/final");
-    println!("PASS redirection HTTP 302 enregistrée une seule fois avec URL finale.");
+    println!("PASS an HTTP 302 is recorded once, under its final URL.");
 
     let before_failure = ui.snapshot()?;
     let unused_port = TcpListener::bind("127.0.0.1:0")?;
     let port = unused_port.local_addr()?.port();
     drop(unused_port);
     let failed_url = format!("http://127.0.0.1:{port}/unreachable");
-    let notice = find_named(ui.window.upcast_ref(), "notice")
-        .unwrap()
-        .downcast::<gtk::Label>()
-        .unwrap();
     ui.engine.navigate(
         web_url(&failed_url)?,
         NavigationTarget::ChildOf(ui.snapshot()?.current.unwrap()),
     )?;
-    wait("échec de connexion", || {
-        notice.is_visible()
-            && notice.text().contains("Could not load")
+    wait("connection failure", || {
+        toast_text(&ui).is_some_and(|text| text.contains("Could not load"))
             && !ui.engine.native.is_loading()
     })?;
-    pump(Duration::from_millis(150));
+    pump(150);
     assert_eq!(ui.snapshot()?, before_failure);
-    println!("PASS échec réseau sans faux nœud ni changement de curseur.");
+    let memory = popover_of(&ui, "memory-menu");
+    assert!(label_texts(&named(&memory, "memory-errors"))
+        .iter()
+        .any(|text| text.contains("Could not load")));
+    println!("PASS a network failure shows a toast, stays listed in the Memory menu, and changes nothing.");
 
     ui.engine.restore(a)?;
-    loaded(&ui, "/a", 4)?;
+    loaded(&ui, "/a", 5)?;
     trusted_click(&ui, "blank")?;
-    wait("lien target=_blank en attente", || {
-        ui.snapshot().unwrap().visits.len() == 5
+    wait("target=_blank queued", || {
+        ui.snapshot().unwrap().visits.len() == 6
     })?;
     let pending = ui
         .snapshot()?
@@ -146,9 +207,9 @@ fn main() -> Result<()> {
     assert_eq!(pending.parent, Some(a));
     assert_eq!(ui.snapshot()?.current, Some(a));
     ui.engine.restore(pending.id)?;
-    loaded(&ui, "/d", 5)?;
+    loaded(&ui, "/d", 6)?;
     assert_eq!(ui.snapshot()?.current, Some(pending.id));
-    println!("PASS lien target=_blank gardé en attente puis activé sans doublon.");
+    println!("PASS a target=_blank link waits in the tree, then opens without a duplicate.");
 
     ui.engine.navigate(
         web_url(&fixture.url("/b"))?,
@@ -156,28 +217,82 @@ fn main() -> Result<()> {
     )?;
     ui.engine
         .navigate(web_url(&fixture.url("/c"))?, NavigationTarget::Root)?;
-    loaded(&ui, "/c", 6)?;
+    loaded(&ui, "/c", 7)?;
     assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
-    println!("PASS requêtes rapprochées coalescées ; le dernier nouvel arbre reste racine.");
+    println!("PASS close requests coalesce; the last new tree stays a root.");
+
+    pump(300);
+    click(&ui, &named(&ui.window, &format!("tab-{a}")))?;
+    loaded(&ui, "/d", 7)?;
+    assert_eq!(ui.snapshot()?.current, Some(pending.id));
+    println!("PASS a tree tab restores its tree's last page.");
+
+    for n in 1..=8 {
+        ui.engine.navigate(
+            web_url(&fixture.url(&format!("/topic-{n}")))?,
+            NavigationTarget::Root,
+        )?;
+        loaded(&ui, &format!("/topic-{n}"), 7 + n)?;
+    }
+    pump(400);
+    let roots: Vec<_> = ui
+        .snapshot()?
+        .visits
+        .into_iter()
+        .filter(|v| v.parent.is_none())
+        .collect();
+    let hidden: Vec<String> = roots
+        .iter()
+        .filter(|root| !named(&ui.window, &format!("tab-{}", root.id)).is_visible())
+        .map(|root| root.label().to_owned())
+        .collect();
+    assert!(!hidden.is_empty(), "ten trees overflow a 1240 px tab row");
+    assert!(named(&ui.window, &format!("tab-{}", roots.last().unwrap().id)).is_visible());
+    click(&ui, &named(&ui.window, "tab-overflow"))?;
+    let list = popover_of(&ui, "tab-overflow");
+    wait("overflow list", || list.is_visible())?;
+    let mut rows = Vec::new();
+    find_all(list.upcast_ref(), "overflow-tree", &mut rows);
+    let listed: Vec<String> = rows.iter().map(|row| label_texts(row)[0].clone()).collect();
+    assert_eq!(listed, hidden);
+    let first_hidden = rows[0].clone();
+    click(&ui, &first_hidden)?;
+    let hidden_root = roots
+        .iter()
+        .find(|root| root.label() == hidden[0])
+        .unwrap()
+        .id;
+    wait("hidden tree selected", || {
+        ui.snapshot().unwrap().current == Some(hidden_root) && !ui.engine.native.is_loading()
+    })?;
+    println!(
+        "PASS the overflow arrow lists exactly the hidden trees, in creation order, and opens one."
+    );
 
     let expected: Snapshot = ui.snapshot()?;
     ui.window.close();
     drop(ui);
-    pump(Duration::from_millis(100));
+    pump(100);
     let reopened = Ui::new(directory.path())?;
     reopened.window.show_all();
-    reopened.hide_address();
     assert_eq!(reopened.snapshot()?, expected);
     reopened.resume()?;
-    loaded(&reopened, "/c", 6)?;
+    wait("restart reload", || {
+        !reopened.engine.native.is_loading()
+            && reopened
+                .engine
+                .native
+                .uri()
+                .is_some_and(|uri| uri.starts_with("http"))
+    })?;
     assert_eq!(reopened.snapshot()?, expected);
     reopened.window.close();
-    println!("PASS réouverture SQLite, URL rechargée, titres et branches inchangés.");
+    println!("PASS reopening SQLite reloads the URL with titles and branches unchanged.");
     Ok(())
 }
 
 fn loaded(ui: &Ui, path: &str, count: usize) -> Result<()> {
-    wait(&format!("chargement {path} avec {count} visites"), || {
+    wait(&format!("{path} loaded with {count} visits"), || {
         let snapshot = ui.snapshot().unwrap();
         snapshot.visits.len() == count
             && snapshot
@@ -187,112 +302,25 @@ fn loaded(ui: &Ui, path: &str, count: usize) -> Result<()> {
     })
     .with_context(|| {
         format!(
-            "état observé {:?}, URI native {:?}",
+            "observed {:?}, native URI {:?}",
             ui.snapshot(),
             ui.engine.native.uri()
         )
     })
 }
 
-fn click(ui: &Ui, id: &str) -> Result<()> {
-    let result = Rc::new(RefCell::new(None));
-    let completed = result.clone();
-    ui.engine.native.evaluate_javascript(
-        &format!("document.getElementById('{id}').click()"),
-        None,
-        None,
-        None::<&gio::Cancellable>,
-        move |value| {
-            *completed.borrow_mut() = Some(value.map(|_| ()));
-        },
-    );
-    wait("exécution du clic sur lien", || result.borrow().is_some())?;
-    let value = result.borrow_mut().take().unwrap();
-    value?;
+fn link(ui: &Ui, id: &str) -> Result<()> {
+    eval(
+        ui,
+        &format!("document.getElementById('{id}').click(); JSON.stringify(true)"),
+    )?;
     Ok(())
 }
 
 fn trusted_click(ui: &Ui, id: &str) -> Result<()> {
-    let result = Rc::new(RefCell::new(None));
-    let completed = result.clone();
-    let script = format!("(() => {{const r=document.getElementById({}).getBoundingClientRect();return JSON.stringify({{x:r.x+r.width/2,y:r.y+r.height/2}})}})()", serde_json::to_string(id)?);
-    ui.engine.native.evaluate_javascript(
-        &script,
-        None,
-        None,
-        None::<&gio::Cancellable>,
-        move |value| {
-            *completed.borrow_mut() = Some(value.map(|value| value.to_str().to_string()));
-        },
-    );
-    wait("coordonnées du lien", || result.borrow().is_some())?;
-    let value: Value = serde_json::from_str(&result.borrow_mut().take().unwrap()?)?;
-    let (x, y) = ui
-        .engine
-        .native
-        .translate_coordinates(
-            &ui.window,
-            value["x"].as_f64().unwrap() as i32,
-            value["y"].as_f64().unwrap() as i32,
-        )
-        .context("position de la webview")?;
-    let (_, wx, wy) = ui.window.window().unwrap().origin();
-    let output = std::process::Command::new("xdotool")
-        .args(["search", "--onlyvisible", "--name", "Canopy"])
-        .output()?;
-    let ids = String::from_utf8(output.stdout)?;
-    let window = ids.lines().last().context("fenêtre X11")?;
-    let status = std::process::Command::new("xdotool")
-        .args([
-            "windowfocus",
-            window,
-            "mousemove",
-            "--sync",
-            &(x + wx).to_string(),
-            &(y + wy).to_string(),
-            "click",
-            "1",
-        ])
-        .status()?;
-    assert!(status.success());
-    Ok(())
-}
-
-fn wait(label: &str, condition: impl Fn() -> bool) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        while gtk::events_pending() {
-            gtk::main_iteration_do(false);
-        }
-        if condition() {
-            return Ok(());
-        }
-        if Instant::now() > deadline {
-            bail!("Délai dépassé pour {label}");
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn pump(duration: Duration) {
-    let deadline = Instant::now() + duration;
-    while Instant::now() < deadline {
-        while gtk::events_pending() {
-            gtk::main_iteration_do(false);
-        }
-        thread::sleep(Duration::from_millis(5));
-    }
-}
-
-fn find_named(widget: &gtk::Widget, name: &str) -> Option<gtk::Widget> {
-    if widget.widget_name() == name {
-        return Some(widget.clone());
-    }
-    widget
-        .downcast_ref::<gtk::Container>()?
-        .children()
-        .iter()
-        .find_map(|child| find_named(child, name))
+    let (x, y) = element_point(ui, id)?;
+    focus_window()?;
+    click_at(x, y)
 }
 
 struct Fixture {
@@ -322,15 +350,20 @@ impl Fixture {
                 let response = if path == "/redirect" {
                     "HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned()
                 } else {
+                    let topic;
                     let title = match path {
-                        "/a" => "Départ de recherche",
-                        "/b" => "Piste B",
-                        "/c" => "Piste C",
-                        "/d" => "Lien dans une autre fenêtre",
-                        "/final" => "Destination après redirection",
+                        "/a" => "Research starting point",
+                        "/b" => "Trail B",
+                        "/c" => "Trail C",
+                        "/d" => "Link opened in another window",
+                        "/final" => "Destination after a redirect",
+                        _ if path.starts_with("/topic-") => {
+                            topic = format!("A tree about topic {}", &path[7..]);
+                            &topic
+                        }
                         _ => "Fixture",
                     };
-                    let body = format!("<!doctype html><html lang='fr'><meta charset='utf-8'><title>{title}</title><style>body{{font:18px system-ui;max-width:720px;margin:64px auto;color:#294331}}a{{display:inline-block;margin:8px 12px 8px 0;color:#356a48}}h1{{font-weight:550}}p{{line-height:1.7;color:#667568}}</style><h1>{title}</h1><p>Une page de recherche pour explorer plusieurs pistes et retrouver le chemin parcouru.</p><a id='b' href='/b'>Explorer la piste B</a><a id='c' href='/c'>Explorer la piste C</a><a id='blank' href='/d' target='_blank'>Ouvrir une autre piste</a><a id='same' href='/a'>Revisiter cette URL</a></html>");
+                    let body = format!("<!doctype html><html lang='en'><meta charset='utf-8'><title>{title}</title><style>body{{font:18px system-ui;max-width:720px;margin:64px auto;color:#294331}}a{{display:inline-block;margin:8px 12px 8px 0;color:#356a48}}h1{{font-weight:550}}p{{line-height:1.7;color:#667568}}</style><h1>{title}</h1><p>A research page to explore several trails and find the way back.</p><input id='q' aria-label='Notes'><a id='b' href='/b'>Explore trail B</a><a id='c' href='/c'>Explore trail C</a><a id='blank' href='/d' target='_blank'>Open another trail</a><a id='same' href='/a'>Revisit this URL</a></html>");
                     format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
                 };
                 let _ = stream.write_all(response.as_bytes());

@@ -7,12 +7,15 @@ const HELP: &str = "Canopy
 
 Usage: canopy [--data-dir PATH]
 
-Ctrl+L  Address or search
-Ctrl+T  New tree
-Alt+←   Back to the parent page
-Ctrl+R  Reload the page
-Ctrl+S  Remember the selection
-Ctrl+Q  Quit
+Ctrl+K    Search your forest or go to an address
+Ctrl+L    Same, starting from the current address
+Ctrl+T    New tree
+Ctrl+1…9  Switch to a tree
+F6        Move between the page and the tree strip
+Alt+←     Back to the parent page
+Ctrl+R    Reload the page
+Ctrl+S    Remember the selection
+Ctrl+Q    Quit
 
 Your profile and browsing are kept in XDG_DATA_HOME/canopy.";
 
@@ -56,6 +59,7 @@ fn run() -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o700))?;
     }
+    canopy::ui::register_font(&data_dir)?;
     gtk::init()
         .context("Could not open a window. Start Canopy from your Linux desktop session.")?;
     let ui = canopy::ui::Ui::new(&data_dir)?;
@@ -64,7 +68,6 @@ fn run() -> Result<()> {
         glib::Propagation::Proceed
     });
     ui.window.show_all();
-    ui.hide_address();
     ui.resume()?;
     gtk::main();
     Ok(())

@@ -94,7 +94,7 @@ pub(super) fn show_capture(ui: &Rc<Ui>, id: i64) -> Result<()> {
                             reader.close();
                         }
                     }
-                    Err(error) => ui.show_error(&error.to_string()),
+                    Err(error) => ui.report_error(&error.to_string()),
                 }
             }
         });
@@ -109,12 +109,11 @@ pub(super) fn show_capture(ui: &Rc<Ui>, id: i64) -> Result<()> {
                 if let Some(parent) = parent {
                     match ui.engine.restore(parent) {
                         Ok(()) => {
-                            ui.search.set_text("");
                             if let Some(reader) = reader.upgrade() {
                                 reader.close();
                             }
                         }
-                        Err(error) => ui.show_error(&error.to_string()),
+                        Err(error) => ui.report_error(&error.to_string()),
                     }
                 }
             }
@@ -128,12 +127,11 @@ pub(super) fn show_capture(ui: &Rc<Ui>, id: i64) -> Result<()> {
             if let Some(ui) = weak.upgrade() {
                 match ui.engine.open_citation(child) {
                     Ok(()) => {
-                        ui.search.set_text("");
                         if let Some(reader) = reader.upgrade() {
                             reader.close();
                         }
                     }
-                    Err(error) => ui.show_error(&error.to_string()),
+                    Err(error) => ui.report_error(&error.to_string()),
                 }
             }
         });
@@ -146,7 +144,7 @@ pub(super) fn show_capture(ui: &Rc<Ui>, id: i64) -> Result<()> {
 pub(super) fn show_captures(ui: &Rc<Ui>, visit: VisitId) -> Result<()> {
     let captures = ui.browser.borrow().captures(visit)?;
     if captures.is_empty() {
-        ui.show_error("No saved text for this page yet. Select some text and remember it, or turn on Remember pages.");
+        ui.report_error("No saved text for this page yet. Select some text and remember it, or turn on Remember pages.");
         return Ok(());
     }
     if captures.len() == 1 {
