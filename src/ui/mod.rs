@@ -54,7 +54,7 @@ impl Ui {
         let engine = Engine::new(&content, browser.clone(), &data_dir.join("profile"))?;
         let ui = Rc::new_cyclic(|me: &Weak<Ui>| {
             let host: Weak<dyn ChromeHost> = me.clone();
-            let chrome = NativeChrome::mount(&overlay, engine.native.upcast_ref(), host);
+            let chrome = NativeChrome::mount(&overlay, &engine.native, host);
             Ui {
                 window,
                 engine,

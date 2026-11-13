@@ -92,6 +92,7 @@ struct Node {
 #[derive(Clone, PartialEq)]
 struct Look {
     kind: NodeKind,
+    icons: u64,
     icon: i32,
     pending: bool,
     small: bool,
@@ -286,6 +287,13 @@ impl Strip {
             rect.w.round() as i32,
             rect.s.round() as i32,
         ))
+    }
+
+    pub fn refresh_icons(&self) {
+        let forest = self.state.borrow().forest.clone();
+        if let Some(forest) = forest {
+            self.restyle(&forest);
+        }
     }
 
     pub fn focus_current(&self) -> bool {
@@ -537,6 +545,7 @@ impl Strip {
             let pending = visit.state == VisitState::Queued;
             let look = Look {
                 kind,
+                icons: self.favicons.revision(),
                 icon: icon_size(kind, size),
                 pending,
                 small: kind == NodeKind::Tile && size < 24.,
@@ -563,7 +572,7 @@ impl Strip {
             }
             node.image.set_visible(kind != NodeKind::Bud);
             node.image
-                .set_from_surface(Some(&self.favicons.surface(&visit.url, look.icon, scale)));
+                .set_from_surface(Some(&self.favicons.surface(visit, look.icon, scale)));
             node.image.set_opacity(if pending { 0.5 } else { 1. });
             if kind == NodeKind::Pill {
                 let (title, site) = node.labels.get_or_insert_with(|| {

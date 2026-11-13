@@ -337,9 +337,7 @@ impl Palette {
                 let visit = forest.visit(id).unwrap();
                 self.context
                     .pack_start(&gtk::Label::new(Some("From")), false, false, 0);
-                let surface = self
-                    .favicons
-                    .surface(&visit.url, 12, self.root.scale_factor());
+                let surface = self.favicons.surface(visit, 12, self.root.scale_factor());
                 self.context
                     .pack_start(&gtk::Image::from_surface(Some(&surface)), false, false, 0);
                 let title = gtk::Label::new(Some(visit.label()));
@@ -437,7 +435,7 @@ impl Palette {
         let (title, detail) = match item {
             PaletteItem::Page(id) => {
                 let visit = forest.visit(*id).unwrap();
-                let surface = self.favicons.surface(&visit.url, 16, scale);
+                let surface = self.favicons.surface(visit, 16, scale);
                 content.pack_start(&gtk::Image::from_surface(Some(&surface)), false, false, 0);
                 let tree = forest
                     .tree_of(*id)

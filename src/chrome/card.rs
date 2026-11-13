@@ -160,9 +160,7 @@ impl Card {
             return;
         };
         self.visit.set(Some(id));
-        let surface = self
-            .favicons
-            .surface(&visit.url, 16, self.root.scale_factor());
+        let surface = self.favicons.surface(visit, 16, self.root.scale_factor());
         self.icon.set_from_surface(Some(&surface));
         self.title.set_text(&preview.title);
         let after = forest.descendant_count(id).unwrap_or(0);

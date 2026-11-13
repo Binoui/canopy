@@ -105,6 +105,7 @@ struct Inner {
     toast: gtk::Revealer,
     toast_label: gtk::Label,
     toast_generation: Cell<u64>,
+    icons_stale: Cell<bool>,
     presentation: RefCell<Presentation>,
     forest: RefCell<Option<Rc<ForestProjection>>>,
     host: Weak<dyn ChromeHost>,
@@ -112,7 +113,11 @@ struct Inner {
 
 impl NativeChrome {
     /// Adds the chrome above `overlay`'s main child, whose first 94 px it covers.
-    pub fn mount(overlay: &gtk::Overlay, page: &gtk::Widget, host: Weak<dyn ChromeHost>) -> Self {
+    pub fn mount(
+        overlay: &gtk::Overlay,
+        page: &webkit2gtk::WebView,
+        host: Weak<dyn ChromeHost>,
+    ) -> Self {
         let css = gtk::CssProvider::new();
         if let Some(screen) = gdk::Screen::default() {
             gtk::StyleContext::add_provider_for_screen(
@@ -121,7 +126,7 @@ impl NativeChrome {
                 gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
             );
         }
-        let favicons = Rc::new(Favicons);
+        let favicons = Favicons::new(page);
         let inner = Rc::new_cyclic(|weak: &Weak<Inner>| {
             let w = weak.clone();
             let tabs = Tabs::new(favicons.clone(), move |event| {
@@ -151,7 +156,7 @@ impl NativeChrome {
             let w = weak.clone();
             let palette = Palette::new(
                 favicons.clone(),
-                page.clone(),
+                page.clone().upcast(),
                 move |query| {
                     search_host
                         .upgrade()
@@ -179,7 +184,7 @@ impl NativeChrome {
             toast.set_no_show_all(true);
             toast_box.show_all();
             Inner {
-                page: page.clone(),
+                page: page.clone().upcast(),
                 css,
                 theme: Cell::new(ThemeMode::System),
                 shade: Cell::new(None),
@@ -192,6 +197,7 @@ impl NativeChrome {
                 toast,
                 toast_label,
                 toast_generation: Cell::new(0),
+                icons_stale: Cell::new(false),
                 presentation: RefCell::new(Presentation::default()),
                 forest: RefCell::new(None),
                 host,
@@ -243,6 +249,12 @@ impl NativeChrome {
             }
         }
         inner.apply_theme();
+        let weak = Rc::downgrade(&inner);
+        favicons.connect_changed(move || {
+            if let Some(inner) = weak.upgrade() {
+                inner.schedule_icon_refresh();
+            }
+        });
         Self { inner }
     }
 
@@ -342,6 +354,26 @@ impl Inner {
                 Output::HideCard => self.card.hide(),
             }
         }
+    }
+
+    /// Icons arrive in bursts while a page loads; redraw them once per idle.
+    fn schedule_icon_refresh(self: &Rc<Self>) {
+        if self.icons_stale.replace(true) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::idle_add_local_once(move || {
+            let Some(inner) = weak.upgrade() else { return };
+            inner.icons_stale.set(false);
+            let forest = inner.forest.borrow().clone();
+            if let Some(forest) = forest {
+                inner.tabs.present(&forest);
+                inner.strip.refresh_icons();
+                if let Some(id) = inner.card.visit() {
+                    inner.show_card(id);
+                }
+            }
+        });
     }
 
     fn show_card(&self, id: VisitId) {
@@ -481,11 +513,11 @@ impl Inner {
 }
 
 /// A clickable row with a page's icon, title and state, as used in the "+N" lists.
-fn visit_row(favicons: &Favicons, visit: &Visit, scale: i32) -> gtk::Button {
+fn visit_row(favicons: &Rc<Favicons>, visit: &Visit, scale: i32) -> gtk::Button {
     let row = gtk::Button::new();
     row.style_context().add_class("menu-row");
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 9);
-    let surface = favicons.surface(&visit.url, 16, scale);
+    let surface = favicons.surface(visit, 16, scale);
     content.pack_start(&gtk::Image::from_surface(Some(&surface)), false, false, 0);
     let title = gtk::Label::new(Some(visit.label()));
     title.set_xalign(0.);

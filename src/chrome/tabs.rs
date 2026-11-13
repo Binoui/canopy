@@ -152,7 +152,7 @@ impl Tabs {
             let mut tab = reuse.remove(&tree.id).unwrap_or_else(|| self.tab(tree.id));
             let root = forest.visit(tree.id.root()).unwrap();
             tab.image
-                .set_from_surface(Some(&self.favicons.surface(&root.url, 14, scale)));
+                .set_from_surface(Some(&self.favicons.surface(root, 14, scale)));
             tab.title.set_text(&tree.title);
             tab.count.set_text(&tree.pending_count.to_string());
             tab.count.set_visible(tree.pending_count > 0);

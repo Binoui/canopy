@@ -25,7 +25,10 @@ use common::*;
 fn main() -> Result<()> {
     let directory = tempfile::tempdir()?;
     start(directory.path())?;
-    let fixture = Fixture::start()?;
+    let icon = gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, true, 8, 16, 16)
+        .context("favicon pixels")?;
+    icon.fill(0x2050ffff);
+    let fixture = Fixture::start(icon.save_to_bufferv("png", &[])?)?;
     let ui = Ui::new(directory.path())?;
     ui.window.show_all();
     pump(500);
@@ -45,6 +48,8 @@ fn main() -> Result<()> {
     loaded(&ui, "/b", 2)?;
     let b = ui.snapshot()?.current.unwrap();
     println!("PASS the palette plants a tree from a typed address; a real link adds B under A.");
+    wait("the page's favicon on its node", || is_blue(&node(&ui, a)))?;
+    println!("PASS WebKit's favicon database feeds the strip node of an opened page.");
 
     open_strip(&ui)?;
     click(&ui, &node(&ui, a))?;
@@ -336,6 +341,38 @@ fn loaded(ui: &Ui, path: &str, count: usize) -> Result<()> {
     })
 }
 
+fn is_blue(node: &gtk::Widget) -> bool {
+    let Some(surface) = gtk_image(node).and_then(|image| image.surface()) else {
+        return false;
+    };
+    let Ok(source) = gtk::cairo::ImageSurface::try_from(surface) else {
+        return false;
+    };
+    let mut pixel = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 1, 1).unwrap();
+    {
+        let cr = gtk::cairo::Context::new(&pixel).unwrap();
+        let (x, y) = (
+            f64::from(source.width() / 2),
+            f64::from(source.height() / 2),
+        );
+        cr.set_source_surface(&source, -x, -y).unwrap();
+        cr.paint().unwrap();
+    }
+    let data = pixel.data().unwrap();
+    data[0] > 200 && data[2] < 80
+}
+
+fn gtk_image(widget: &gtk::Widget) -> Option<gtk::Image> {
+    if let Some(image) = widget.downcast_ref::<gtk::Image>() {
+        return Some(image.clone());
+    }
+    widget
+        .downcast_ref::<gtk::Container>()?
+        .children()
+        .iter()
+        .find_map(gtk_image)
+}
+
 fn link(ui: &Ui, id: &str) -> Result<()> {
     eval(
         ui,
@@ -357,7 +394,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn start() -> Result<Self> {
+    fn start(favicon: Vec<u8>) -> Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let address = listener.local_addr()?;
         listener.set_nonblocking(true)?;
@@ -374,6 +411,12 @@ impl Fixture {
                 let size = stream.read(&mut buffer).unwrap_or(0);
                 let request = String::from_utf8_lossy(&buffer[..size]);
                 let path = request.split_whitespace().nth(1).unwrap_or("/");
+                if path == "/favicon.ico" {
+                    let head = format!("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", favicon.len());
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all(&favicon);
+                    continue;
+                }
                 let response = if path == "/redirect" {
                     "HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned()
                 } else {
@@ -390,7 +433,7 @@ impl Fixture {
                         }
                         _ => "Fixture",
                     };
-                    let body = format!("<!doctype html><html lang='en'><meta charset='utf-8'><title>{title}</title><style>body{{font:18px system-ui;max-width:720px;margin:64px auto;color:#294331}}a{{display:inline-block;margin:8px 12px 8px 0;color:#356a48}}h1{{font-weight:550}}p{{line-height:1.7;color:#667568}}</style><h1>{title}</h1><p>A research page to explore several trails and find the way back.</p><input id='q' aria-label='Notes'><a id='b' href='/b'>Explore trail B</a><a id='c' href='/c'>Explore trail C</a><a id='blank' href='/d' target='_blank'>Open another trail</a><a id='same' href='/a'>Revisit this URL</a></html>");
+                    let body = format!("<!doctype html><html lang='en'><meta charset='utf-8'><link rel='icon' href='/favicon.ico'><title>{title}</title><style>body{{font:18px system-ui;max-width:720px;margin:64px auto;color:#294331}}a{{display:inline-block;margin:8px 12px 8px 0;color:#356a48}}h1{{font-weight:550}}p{{line-height:1.7;color:#667568}}</style><h1>{title}</h1><p>A research page to explore several trails and find the way back.</p><input id='q' aria-label='Notes'><a id='b' href='/b'>Explore trail B</a><a id='c' href='/c'>Explore trail C</a><a id='blank' href='/d' target='_blank'>Open another trail</a><a id='same' href='/a'>Revisit this URL</a></html>");
                     format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
                 };
                 let _ = stream.write_all(response.as_bytes());

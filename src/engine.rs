@@ -73,6 +73,13 @@ impl Engine {
             .with_html(HOME)
             .build_gtk(container)?;
         let native = view.webview();
+        if let Some(web_context) = native.context() {
+            // WebKitGTK 2.54 loads icons for this view only through the context's database;
+            // enabling favicons on the data manager alone leaves them unrequested.
+            #[allow(deprecated)]
+            web_context
+                .set_favicon_database_directory(Some(&profile.join("favicons").to_string_lossy()));
+        }
         let manager = native
             .user_content_manager()
             .context("The JavaScript context is unavailable.")?;
