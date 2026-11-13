@@ -28,7 +28,7 @@ impl std::str::FromStr for VisitId {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct TreeId(VisitId);
+pub struct TreeId(pub(crate) VisitId);
 
 impl TreeId {
     pub fn root(self) -> VisitId {
@@ -40,6 +40,12 @@ impl TreeId {
 pub enum NavigationTarget {
     Root,
     ChildOf(VisitId),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VisitPreview {
+    pub title: String,
+    pub snippet: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -346,6 +352,25 @@ impl Browser {
         }
         let current = self.current_id()?;
         Ok(Snapshot { visits, current })
+    }
+
+    pub fn preview(&self, id: VisitId) -> Result<VisitPreview> {
+        self.connection
+            .query_row(
+                "SELECT CASE WHEN trim(v.title)='' THEN v.url ELSE v.title END,
+                COALESCE(NULLIF(substr(o.source_excerpt, 1, 320), ''),
+                    (SELECT substr(c.body, 1, 320) FROM captures c
+                     WHERE c.visit_id=v.id ORDER BY c.id DESC LIMIT 1), '')
+             FROM visits v LEFT JOIN origins o ON o.visit_id=v.id WHERE v.id=?1",
+                [id.to_string()],
+                |row| {
+                    Ok(VisitPreview {
+                        title: row.get(0)?,
+                        snippet: row.get(1)?,
+                    })
+                },
+            )
+            .context("This visit no longer exists.")
     }
 
     pub fn tree_states(&self) -> Result<Vec<TreeState>> {
@@ -1552,5 +1577,81 @@ mod tests {
             browser.snapshot().unwrap().current_visit().unwrap().parent,
             Some(a)
         );
+    }
+    #[test]
+    fn preview_is_bounded_prefers_source_and_uses_latest_capture() {
+        let mut browser = memory();
+        let root = follow(&mut browser, "thread", NavigationTarget::Root);
+        assert_eq!(browser.preview(root).unwrap().snippet, "");
+        browser
+            .save_capture(
+                root,
+                &url("thread"),
+                payload("thread", "old capture", CaptureKind::Page),
+            )
+            .unwrap();
+        let body = "界".repeat(200_000);
+        browser
+            .save_capture(
+                root,
+                &url("thread"),
+                payload("thread", &body, CaptureKind::Page),
+            )
+            .unwrap();
+        assert_eq!(browser.preview(root).unwrap().snippet, "界".repeat(320));
+        let queued = browser
+            .queue_link(root, url("article"), source("context"))
+            .unwrap();
+        let excerpt = browser.visit(queued).unwrap().source.unwrap().excerpt;
+        assert_eq!(browser.preview(queued).unwrap().snippet, excerpt);
+        let request = browser.restore(queued).unwrap();
+        browser.started(request.clone()).unwrap();
+        browser.committed(request).unwrap();
+        browser
+            .save_capture(
+                queued,
+                &url("article"),
+                payload(
+                    "article",
+                    "capture must not replace source",
+                    CaptureKind::Page,
+                ),
+            )
+            .unwrap();
+        assert_eq!(browser.preview(queued).unwrap().snippet, excerpt);
+        assert!(browser.preview(VisitId(Ulid::new())).is_err());
+    }
+
+    #[test]
+    fn cursor_insert_and_tree_target_roll_back_together() {
+        let mut browser = memory();
+        let a = follow(&mut browser, "thread", NavigationTarget::Root);
+        let queued = browser
+            .queue_link(a, url("queued"), source("context"))
+            .unwrap();
+        let before = browser.snapshot().unwrap();
+        let states = browser.tree_states().unwrap();
+        assert!(browser
+            .connection
+            .execute(
+                "UPDATE tree_state SET last_visit_id=?1 WHERE root_id=?2",
+                params![queued.to_string(), a.to_string()]
+            )
+            .is_err());
+        browser
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER reject_target BEFORE UPDATE ON tree_state
+            BEGIN SELECT RAISE(ABORT, 'test failure'); END;",
+            )
+            .unwrap();
+        let request = browser
+            .navigate(url("child"), NavigationTarget::ChildOf(a))
+            .unwrap();
+        browser.started(request.clone()).unwrap();
+        assert!(browser.committed(request).is_err());
+        let after = browser.snapshot().unwrap();
+        assert_eq!(after, before);
+        assert_eq!(browser.tree_states().unwrap(), states);
     }
 }
