@@ -31,33 +31,30 @@ fn main() -> Result<()> {
     let fixture = Fixture::start(icon.save_to_bufferv("png", &[])?)?;
     let ui = Ui::new(directory.path())?;
     ui.window.show_all();
-    pump(500);
-    assert!(named(&ui.window, "start-page").is_visible());
+    ready(&ui)?;
+    assert!(visible(&ui, "#start"));
     assert!(ui.snapshot()?.visits.is_empty());
-    assert!(label_texts(&named(&ui.window, "start-page"))
-        .iter()
-        .any(|text| text.contains("as your forest grows")));
+    assert!(text(&ui, "#start").contains("as your forest grows"));
 
     key("ctrl+k")?;
-    let entry = named(&ui.window, "palette-entry")
-        .downcast::<gtk::Entry>()
-        .unwrap();
-    wait("palette focus", || entry.has_focus())?;
+    wait("palette focus", || chrome_focused(&ui, "#palette-input"))?;
     type_text(&fixture.url("/a"))?;
     key("Return")?;
     loaded(&ui, "/a", 1)?;
     let a = ui.snapshot()?.current.unwrap();
-    assert!(!named(&ui.window, "palette").is_visible());
+    assert!(!visible(&ui, "#palette"));
     assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
     link(&ui, "b")?;
     loaded(&ui, "/b", 2)?;
     let b = ui.snapshot()?.current.unwrap();
     println!("PASS the palette plants a tree from a typed address; a real link adds B under A.");
-    wait("the page's favicon on its node", || is_blue(&node(&ui, a)))?;
+    wait("the page's favicon on its node", || {
+        icon_is_blue(&ui, &node(a))
+    })?;
     println!("PASS WebKit's favicon database feeds the strip node of an opened page.");
 
     open_strip(&ui)?;
-    click(&ui, &node(&ui, a))?;
+    click_chrome(&ui, &node(a))?;
     loaded(&ui, "/a", 2)?;
     link(&ui, "c")?;
     loaded(&ui, "/c", 3)?;
@@ -72,15 +69,18 @@ fn main() -> Result<()> {
             .collect::<Vec<_>>(),
         vec![b, c]
     );
+    wait("page focus after a strip click", || {
+        ui.engine.native.has_focus()
+    })?;
     println!(
-        "PASS hovering opens the strip, clicking node A restores it, and C becomes B's sibling."
+        "PASS hovering opens the strip, clicking node A restores it and gives the page the keyboard, and C becomes B's sibling."
     );
 
     leave_strip(&ui)?;
     key("F6")?;
-    wait("current node focus", || node(&ui, c).has_focus())?;
+    wait("current node focus", || chrome_focused(&ui, &node(c)))?;
     key("Left")?;
-    wait("parent node focus", || node(&ui, a).has_focus())?;
+    wait("parent node focus", || chrome_focused(&ui, &node(a)))?;
     key("Return")?;
     loaded(&ui, "/a", 3)?;
     link(&ui, "c")?;
@@ -93,26 +93,31 @@ fn main() -> Result<()> {
     ui.engine.native.grab_focus();
     pump(100);
     key("ctrl+l")?;
-    wait("Ctrl+L from the focused web view", || entry.has_focus())?;
-    assert_eq!(entry.text().as_str(), fixture.url("/c"));
-    assert_eq!(
-        entry.selection_bounds(),
-        Some((0, fixture.url("/c").chars().count() as i32))
-    );
-    key("Escape")?;
-    wait("palette closed", || {
-        !named(&ui.window, "palette").is_visible()
+    wait("Ctrl+L from the focused web view", || {
+        chrome_focused(&ui, "#palette-input")
     })?;
-    assert!(ui.engine.native.has_focus());
+    let field = chrome(
+        &ui,
+        "(() => { const i = document.getElementById('palette-input'); return [i.value, i.selectionStart, i.selectionEnd]; })()",
+    )?;
+    assert_eq!(field[0], fixture.url("/c"));
+    assert_eq!(field[1], 0);
+    assert_eq!(field[2], fixture.url("/c").chars().count());
+    key("Escape")?;
+    wait("palette closed", || !visible(&ui, "#palette"))?;
+    wait("page focus", || ui.engine.native.has_focus())?;
     println!("PASS Ctrl+L opens the palette on the current address from the focused web view; Escape returns to the page.");
 
     let (x, y) = element_point(&ui, "q")?;
     click_at(x, y)?;
     type_text("alpha")?;
     key("ctrl+k")?;
-    wait("palette over a focused input", || entry.has_focus())?;
+    wait("palette over a focused input", || {
+        chrome_focused(&ui, "#palette-input")
+    })?;
     type_text("zzz")?;
     key("Escape")?;
+    wait("page focus", || ui.engine.native.has_focus())?;
     type_text("omega")?;
     assert_eq!(
         eval(&ui, "JSON.stringify(document.getElementById('q').value)")?,
@@ -139,34 +144,53 @@ fn main() -> Result<()> {
         "a click below the open strip reaches the page"
     );
     open_strip(&ui)?;
-    move_to_widget(&ui, &node(&ui, c))?;
-    let card = named(&ui.window, "card");
-    wait("hover card", || card.is_visible())?;
+    hover_chrome(&ui, &node(c))?;
+    wait("hover card", || visible(&ui, "#card"))?;
     pump(150);
-    move_to_widget(&ui, &card)?;
+    hover_chrome(&ui, "#card")?;
     pump(500);
     assert!(
-        card.is_visible() && strip_height(&ui) == 120,
+        visible(&ui, "#card") && strip_height(&ui) == 120,
         "the card holds the strip open"
     );
-    let bounds = card.allocation();
-    let (x, y) = screen_point(&ui, &card, bounds.width() + 180, bounds.height() / 2)?;
+    let (card_x, card_y, card_w, card_h) = rect(&ui, "#card")?;
+    let beside = screen_point(
+        &ui,
+        &ui.chrome.native(),
+        (card_x + card_w + 180.) as i32,
+        (card_y + card_h / 2.) as i32,
+    )?;
+    move_to(beside.0, beside.1)?;
+    wait("card and strip closed", || {
+        !visible(&ui, "#card") && strip_height(&ui) == 52 && cover(&ui) == Some(94)
+    })?;
+    click_at(beside.0, beside.1)?;
+    assert_eq!(
+        clicks(&ui),
+        2,
+        "beside the card, the page gets clicks once the card has closed"
+    );
+    let (x, y) = page_point(&ui, 900, 42 + 120 + 300)?;
     click_at(x, y)?;
-    assert_eq!(clicks(&ui), 2, "a click beside the card reaches the page");
+    assert_eq!(
+        clicks(&ui),
+        3,
+        "a click under the card's band reaches the page"
+    );
     open_strip(&ui)?;
     let (away_x, away_y) = page_point(&ui, 900, 600)?;
     move_to(away_x, away_y)?;
     pump(430);
     assert_eq!(
-        strip_height(&ui),
-        120,
-        "the closing strip keeps its open allocation"
+        cover(&ui),
+        Some(42 + 120 + 24),
+        "the closing strip keeps its open band"
     );
     let (x, y) = page_point(&ui, 900, 140)?;
     click_at(x, y)?;
     assert_eq!(
         clicks(&ui),
-        2,
+        3,
         "the closing band swallows a click during the close"
     );
     move_to(away_x, away_y)?;
@@ -175,10 +199,10 @@ fn main() -> Result<()> {
     click_at(x, y)?;
     assert_eq!(
         clicks(&ui),
-        3,
+        4,
         "the same point reaches the page once the strip is closed"
     );
-    println!("PASS page clicks pass below the open strip and beside the card; a click in the band while the strip closes is swallowed, then the page is reachable again.");
+    println!("PASS page clicks pass below the open strip and under the card; beside the card and in the closing band they wait for the chrome to close, then reach the page.");
 
     save_window(&ui, "/tmp/canopy-chrome-webkit.png")?;
 
@@ -211,10 +235,10 @@ fn main() -> Result<()> {
     })?;
     pump(150);
     assert_eq!(ui.snapshot()?, before_failure);
-    let memory = popover_of(&ui, "memory-menu");
-    assert!(label_texts(&named(&memory, "memory-errors"))
-        .iter()
-        .any(|text| text.contains("Could not load")));
+    open_memory_menu(&ui)?;
+    assert!(text(&ui, "#popover").contains("Could not load"));
+    key("Escape")?;
+    wait("Memory menu closed", || !visible(&ui, "#popover"))?;
     println!("PASS a network failure shows a toast, stays listed in the Memory menu, and changes nothing.");
 
     ui.engine.restore(a)?;
@@ -232,19 +256,18 @@ fn main() -> Result<()> {
     assert_eq!(pending.parent, Some(a));
     assert_eq!(ui.snapshot()?.current, Some(a));
     open_strip(&ui)?;
-    move_to_widget(&ui, &node(&ui, pending.id))?;
-    let card = named(&ui.window, "card");
-    wait("card of the queued page", || card.is_visible())?;
+    hover_chrome(&ui, &node(pending.id))?;
+    wait("card of the queued page", || {
+        visible(&ui, "#card [data-act=branch]")
+    })?;
     pump(150);
-    click(&ui, &named(&ui.window, "card-branch"))?;
+    click_chrome(&ui, "#card [data-act=branch]")?;
     loaded(&ui, "/d", 6)?;
     assert_eq!(ui.snapshot()?.current, Some(pending.id));
     wait("palette anchored after the commit", || {
-        named(&ui.window, "palette").is_visible() && entry.has_focus()
+        visible(&ui, "#palette") && chrome_focused(&ui, "#palette-input")
     })?;
-    assert!(label_texts(&named(&ui.window, "palette"))
-        .iter()
-        .any(|text| text == "Link opened in another window"));
+    assert!(text(&ui, "#palette-context").contains("Link opened in another window"));
     key("Escape")?;
     println!("PASS a target=_blank link waits in the tree; New branch here activates it without a duplicate, then anchors the palette on it.");
 
@@ -259,7 +282,7 @@ fn main() -> Result<()> {
     println!("PASS close requests coalesce; the last new tree stays a root.");
 
     pump(300);
-    click(&ui, &named(&ui.window, &format!("tab-{a}")))?;
+    click_chrome(&ui, &format!("#tab-row [data-id='{a}']"))?;
     loaded(&ui, "/d", 7)?;
     assert_eq!(ui.snapshot()?.current, Some(pending.id));
     println!("PASS a tree tab restores its tree's last page.");
@@ -280,20 +303,27 @@ fn main() -> Result<()> {
         .collect();
     let hidden: Vec<String> = roots
         .iter()
-        .filter(|root| !named(&ui.window, &format!("tab-{}", root.id)).is_visible())
+        .filter(|root| !visible(&ui, &format!("#tab-row [data-id='{}']", root.id)))
         .map(|root| root.label().to_owned())
         .collect();
     assert!(!hidden.is_empty(), "ten trees overflow a 1240 px tab row");
-    assert!(named(&ui.window, &format!("tab-{}", roots.last().unwrap().id)).is_visible());
-    click(&ui, &named(&ui.window, "tab-overflow"))?;
-    let list = popover_of(&ui, "tab-overflow");
-    wait("overflow list", || list.is_visible())?;
-    let mut rows = Vec::new();
-    find_all(list.upcast_ref(), "overflow-tree", &mut rows);
-    let listed: Vec<String> = rows.iter().map(|row| label_texts(row)[0].clone()).collect();
+    assert!(visible(
+        &ui,
+        &format!("#tab-row [data-id='{}']", roots.last().unwrap().id)
+    ));
+    click_chrome(&ui, "#tab-overflow")?;
+    wait("overflow list", || visible(&ui, "#popover [data-id]"))?;
+    let listed: Vec<String> = chrome(
+        &ui,
+        "[...document.querySelectorAll('#popover [data-id] .grow')].map((e) => e.textContent)",
+    )?
+    .as_array()
+    .unwrap()
+    .iter()
+    .map(|v| v.as_str().unwrap().to_owned())
+    .collect();
     assert_eq!(listed, hidden);
-    let first_hidden = rows[0].clone();
-    click(&ui, &first_hidden)?;
+    click_chrome(&ui, "#popover [data-id]")?;
     let hidden_root = roots
         .iter()
         .find(|root| root.label() == hidden[0])
@@ -307,28 +337,27 @@ fn main() -> Result<()> {
     );
 
     key("ctrl+e")?;
-    wait("forest open", || {
-        named(&ui.window, "forest-view").is_visible()
-    })?;
+    wait("forest open", || visible(&ui, "#forest"))?;
     pump(200);
+    let forest_node = |id| format!("#forest-nodes [data-id='{id}']");
+    let root_node = forest_node(hidden_root);
     assert!(
-        named(&ui.window, &format!("forest-node-{hidden_root}")).allocated_width() > 140,
+        rect(&ui, &root_node)?.2 > 140.,
         "the first forest view fits after allocation"
     );
-    let root_name = format!("forest-node-{hidden_root}");
-    let before_zoom = named(&ui.window, &root_name).allocated_width();
+    let before_zoom = rect(&ui, &root_node)?.2;
     let (x, y) = page_point(&ui, 950, 500)?;
     move_to(x, y)?;
     xdo(&["keydown", "ctrl", "click", "5", "keyup", "ctrl"])?;
     pump(80);
-    assert!(named(&ui.window, &root_name).allocated_width() < before_zoom);
-    click(&ui, &named(&ui.window, "forest-fit"))?;
+    assert!(rect(&ui, &root_node)?.2 < before_zoom);
+    click_chrome(&ui, "#forest-fit")?;
     pump(300);
-    let before_pan = named(&ui.window, &root_name).allocation();
+    let before_pan = rect(&ui, &root_node)?;
     move_to(x, y)?;
     xdo(&["click", "5"])?;
     pump(80);
-    assert!(named(&ui.window, &root_name).allocation().y() < before_pan.y());
+    assert!(rect(&ui, &root_node)?.1 < before_pan.1);
     xdo(&[
         "mousedown",
         "1",
@@ -340,8 +369,8 @@ fn main() -> Result<()> {
         "1",
     ])?;
     pump(80);
-    assert!(named(&ui.window, &root_name).allocation().x() > before_pan.x());
-    click(&ui, &named(&ui.window, "forest-fit"))?;
+    assert!(rect(&ui, &root_node)?.0 > before_pan.0);
+    click_chrome(&ui, "#forest-fit")?;
     pump(300);
     let other = ui
         .snapshot()?
@@ -349,41 +378,44 @@ fn main() -> Result<()> {
         .into_iter()
         .find(|v| v.parent.is_none() && v.id != hidden_root)
         .unwrap();
-    let forest_node = format!("forest-node-{}", other.id);
-    click(&ui, &named(&ui.window, &forest_node))?;
+    click_chrome(&ui, &forest_node(other.id))?;
     wait(
         "forest node restores another tree and closes overlay",
         || {
-            !named(&ui.window, "forest-view").is_visible()
+            !visible(&ui, "#forest")
                 && ui.snapshot().unwrap().current == Some(other.id)
                 && !ui.engine.native.is_loading()
         },
     )?;
     let first = other.id;
     key("ctrl+e")?;
+    wait("forest open", || visible(&ui, "#forest"))?;
     key("Escape")?;
-    assert!(!named(&ui.window, "forest-view").is_visible());
+    wait("forest closed", || !visible(&ui, "#forest"))?;
     key("ctrl+t")?;
-    assert!(named(&ui.window, "start-page").is_visible());
-    assert!(!named(&ui.window, "palette").is_visible());
+    wait("new-tree page", || visible(&ui, "#start"))?;
+    assert!(!visible(&ui, "#palette"));
     key("Escape")?;
-    assert!(!named(&ui.window, "start-page").is_visible());
+    wait("new-tree page closed", || !visible(&ui, "#start"))?;
     assert_eq!(ui.snapshot()?.current, Some(first));
     println!("PASS Ctrl+E opens the forest, node selection and Escape close it, and Ctrl+T opens a reversible new-tree page.");
 
     let count = ui.snapshot()?.visits.len();
     key("ctrl+t")?;
     key("ctrl+k")?;
-    assert!(named(&ui.window, "palette-shortcut").is_visible());
-    assert!(named(&ui.window, "palette-path").is_visible());
+    wait("palette suggestions", || {
+        visible(&ui, "#palette [data-kind=shortcut]") && visible(&ui, "#palette [data-kind=path]")
+    })?;
     key("Escape")?;
-    click(&ui, &named(&ui.window, "start-shortcut-0"))?;
+    wait("palette closed", || !visible(&ui, "#palette"))?;
+    click_chrome(&ui, "[data-shortcut='0']")?;
     wait("shortcut plants a root", || {
         ui.snapshot().unwrap().visits.len() == count + 1 && !ui.engine.native.is_loading()
     })?;
     assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
     key("ctrl+t")?;
-    click(&ui, &named(&ui.window, "start-path-0"))?;
+    wait("new-tree page", || visible(&ui, "[data-path='0']"))?;
+    click_chrome(&ui, "[data-path='0']")?;
     wait("usual path loads two pages", || {
         ui.snapshot().unwrap().visits.len() == count + 3 && !ui.engine.native.is_loading()
     })?;
@@ -400,18 +432,13 @@ fn main() -> Result<()> {
     println!("PASS a shortcut plants a root and a usual path really loads a root and its child.");
 
     let shots = std::env::var("CANOPY_PHASE3_SHOTS").ok();
-    for (theme, key_name) in [("light", "Home"), ("dark", "End")] {
-        open_strip(&ui)?;
-        click(&ui, &named(&ui.window, "memory-menu"))?;
-        let memory = popover_of(&ui, "memory-menu");
-        let combo = named(&memory, "theme-mode");
-        click(&ui, &combo)?;
-        key(key_name)?;
-        if theme == "light" {
-            key("Down")?;
-        }
-        key("Return")?;
-        pump(200);
+    for theme in ["light", "dark"] {
+        open_memory_menu(&ui)?;
+        click_chrome(&ui, &format!("#theme-mode [data-mode={theme}]"))?;
+        wait("theme applied", || {
+            chrome(&ui, "canopy.state().dark").is_ok_and(|dark| dark == (theme == "dark"))
+        })?;
+        pump(300);
         let pixels = ui
             .window
             .window()
@@ -420,26 +447,26 @@ fn main() -> Result<()> {
             .context("chrome background pixel")?;
         let bytes = pixels.read_pixel_bytes();
         if theme == "dark" {
-            assert!(bytes[0] < 50);
+            assert!(bytes[0] < 50, "dark chrome pixel {:?}", &bytes[..3]);
         } else {
-            assert!(bytes[0] > 230);
+            assert!(bytes[0] > 230, "light chrome pixel {:?}", &bytes[..3]);
         }
         if let Some(dir) = &shots {
             save_window(&ui, &format!("{dir}/theme-menu-{theme}.png"))?;
         }
-        memory.popdown();
-        leave_strip(&ui)?;
+        key("Escape")?;
+        wait("Memory menu closed", || !visible(&ui, "#popover"))?;
         key("ctrl+e")?;
         pump(250);
         if let Some(dir) = &shots {
             save_window(&ui, &format!("{dir}/forest-titles-{theme}.png"))?;
         }
-        click(&ui, &named(&ui.window, "forest-titles"))?;
+        click_chrome(&ui, "#forest-titles")?;
         pump(150);
         if let Some(dir) = &shots {
             save_window(&ui, &format!("{dir}/forest-icons-{theme}.png"))?;
         }
-        click(&ui, &named(&ui.window, "forest-titles"))?;
+        click_chrome(&ui, "#forest-titles")?;
         key("Escape")?;
         key("ctrl+t")?;
         if let Some(dir) = &shots {
@@ -487,38 +514,6 @@ fn loaded(ui: &Ui, path: &str, count: usize) -> Result<()> {
             ui.engine.native.uri()
         )
     })
-}
-
-fn is_blue(node: &gtk::Widget) -> bool {
-    let Some(surface) = gtk_image(node).and_then(|image| image.surface()) else {
-        return false;
-    };
-    let Ok(source) = gtk::cairo::ImageSurface::try_from(surface) else {
-        return false;
-    };
-    let mut pixel = gtk::cairo::ImageSurface::create(gtk::cairo::Format::ARgb32, 1, 1).unwrap();
-    {
-        let cr = gtk::cairo::Context::new(&pixel).unwrap();
-        let (x, y) = (
-            f64::from(source.width() / 2),
-            f64::from(source.height() / 2),
-        );
-        cr.set_source_surface(&source, -x, -y).unwrap();
-        cr.paint().unwrap();
-    }
-    let data = pixel.data().unwrap();
-    data[0] > 200 && data[2] < 80
-}
-
-fn gtk_image(widget: &gtk::Widget) -> Option<gtk::Image> {
-    if let Some(image) = widget.downcast_ref::<gtk::Image>() {
-        return Some(image.clone());
-    }
-    widget
-        .downcast_ref::<gtk::Container>()?
-        .children()
-        .iter()
-        .find_map(gtk_image)
 }
 
 fn link(ui: &Ui, id: &str) -> Result<()> {

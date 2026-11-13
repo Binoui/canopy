@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use canopy::{
     address::web_url,
     browser::{NavigationTarget, VisitState},
@@ -29,7 +29,7 @@ fn main() -> Result<()> {
     let fixture = Fixture::start()?;
     let ui = Ui::new(directory.path())?;
     ui.window.show_all();
-    pump(300);
+    ready(&ui)?;
     ui.engine.navigate(
         web_url(&fixture.url("/discussion"))?,
         NavigationTarget::Root,
@@ -120,16 +120,13 @@ fn main() -> Result<()> {
     })?;
     println!("PASS a bounded follow-up captures article text arriving after Finished.");
     open_strip(&ui)?;
-    move_to_widget(&ui, &node(&ui, article))?;
-    let back = named(&ui.window, "card-source");
+    hover_chrome(&ui, &node(article))?;
     wait("source context on the current page's card", || {
-        back.is_visible()
+        visible(&ui, "#card [data-act=source]")
     })?;
-    assert!(label_texts(&named(&ui.window, "card"))
-        .iter()
-        .any(|text| text.contains("commentaire source")));
+    assert!(text(&ui, "#card").contains("commentaire source"));
     pump(150);
-    click(&ui, &back)?;
+    click_chrome(&ui, "#card [data-act=source]")?;
     wait("Back to source from the card", || {
         ui.snapshot().unwrap().current == Some(source_id) && !ui.engine.native.is_loading()
     })?;
@@ -140,17 +137,13 @@ fn main() -> Result<()> {
     save_window(&ui, "/tmp/canopy-chrome-reading.png")?;
 
     search_saved_text(&ui, "amber otter cache")?;
-    wait("reader open", || reader().is_some())?;
-    let opened_reader = reader().unwrap();
-    named(&opened_reader, "capture-restore-source")
-        .downcast::<gtk::Button>()
-        .unwrap()
-        .emit_clicked();
+    wait("reader open", || visible(&ui, "#reader"))?;
+    click_chrome(&ui, "#capture-restore-source")?;
     wait("source restored", || {
-        ui.snapshot().unwrap().current == Some(source_id) && reader().is_none()
+        ui.snapshot().unwrap().current == Some(source_id) && !visible(&ui, "#reader")
     })?;
     loaded(&ui, "/discussion")?;
-    assert!(!named(&ui.window, "palette").is_visible());
+    assert!(!visible(&ui, "#palette"));
     assert_eq!(queued(&ui), 2);
     for sibling in ui
         .snapshot()?
@@ -159,7 +152,7 @@ fn main() -> Result<()> {
         .filter(|v| v.state == VisitState::Queued)
     {
         wait("queued sibling in the strip", || {
-            node(&ui, sibling.id).is_visible()
+            visible(&ui, &node(sibling.id))
         })?;
     }
     assert_eq!(ui.snapshot()?.current, Some(source_id));
@@ -272,52 +265,32 @@ fn main() -> Result<()> {
     drop(fixture);
     let reopened = Ui::new(directory.path())?;
     reopened.window.show_all();
-    pump(300);
+    ready(&reopened)?;
     assert_eq!(reopened.snapshot()?, expected);
     assert!(!reopened.engine.capture_enabled()?);
     let hits = reopened.search_hits("amber otter cache")?;
     assert!(hits.iter().any(|hit| hit.capture_id == saved.capture_id));
     search_saved_text(&reopened, "amber otter cache")?;
-    wait("offline reader", || reader().is_some())?;
-    let reader = reader().unwrap();
-    let text = named(&reader, "capture-text")
-        .downcast::<gtk::TextView>()
-        .unwrap();
-    let buffer = text.buffer().unwrap();
-    assert!(buffer
-        .text(&buffer.start_iter(), &buffer.end_iter(), false)
-        .unwrap()
-        .contains("amber otter cache"));
-    assert!(!text.is_editable());
-    assert!(named(&reader, "capture-source")
-        .downcast::<gtk::Label>()
-        .unwrap()
-        .text()
-        .contains("commentaire source"));
+    wait("offline reader", || visible(&reopened, "#reader"))?;
+    assert!(text(&reopened, "#capture-text").contains("amber otter cache"));
+    assert_eq!(
+        chrome(
+            &reopened,
+            "document.getElementById('capture-text').isContentEditable"
+        )?,
+        false
+    );
+    assert!(text(&reopened, "#capture-source").contains("commentaire source"));
     assert_eq!(queued(&reopened), 2);
     assert_eq!(reopened.snapshot()?, expected);
-    pump(200);
-    if let Some(window) = reader.window() {
-        let allocation = reader.allocation();
-        let image = window
-            .pixbuf(0, 0, allocation.width(), allocation.height())
-            .context("reader capture")?;
-        image.savev("/tmp/canopy-chrome-reader.png", "png", &[])?;
-    }
-    reader.close();
-    pump(200);
+    save_window(&reopened, "/tmp/canopy-chrome-reader.png")?;
+    key("Escape")?;
+    wait("reader closed", || !visible(&reopened, "#reader"))?;
     let selected = reopened.search_hits("luminous notebook memory")?;
     assert!(selected.iter().any(|hit| hit.capture_id == Some(selection)));
     reopened.window.close();
     println!("PASS restart offline: body-phrase search opens saved plaintext with source/date and two queued siblings; no page load is needed.");
     Ok(())
-}
-
-fn reader() -> Option<gtk::Window> {
-    gtk::Window::list_toplevels()
-        .into_iter()
-        .filter_map(|widget| widget.downcast::<gtk::Window>().ok())
-        .find(|window| window.widget_name() == "capture-reader")
 }
 
 fn queued(ui: &Ui) -> usize {
@@ -342,47 +315,35 @@ fn loaded(ui: &Ui, path: &str) -> Result<()> {
 /// Types `query` into the palette and clicks its first saved-text result.
 fn search_saved_text(ui: &Ui, query: &str) -> Result<()> {
     key("ctrl+k")?;
-    let entry = named(&ui.window, "palette-entry")
-        .downcast::<gtk::Entry>()
-        .unwrap();
-    wait("palette focus", || entry.has_focus())?;
+    wait("palette focus", || chrome_focused(ui, "#palette-input"))?;
     type_text(query)?;
     wait("saved text result", || {
-        find_named(ui.window.upcast_ref(), "palette-saved").is_some()
+        visible(ui, "#palette [data-kind=saved]")
     })?;
     pump(150);
-    click(ui, &named(&ui.window, "palette-saved"))
-}
-
-fn open_memory_menu(ui: &Ui) -> Result<gtk::Popover> {
-    let popover = popover_of(ui, "memory-menu");
-    if !popover.is_visible() {
-        click(ui, &named(&ui.window, "memory-menu"))?;
-        wait("Memory menu", || popover.is_visible())?;
-        pump(150);
-    }
-    Ok(popover)
+    click_chrome(ui, "#palette [data-kind=saved]")
 }
 
 fn set_remember_pages(ui: &Ui, on: bool) -> Result<()> {
-    let popover = open_memory_menu(ui)?;
-    let switch = named(&popover, "automatic-capture")
-        .downcast::<gtk::Switch>()
-        .unwrap();
-    if switch.is_active() != on {
-        click(ui, &switch)?;
+    open_memory_menu(ui)?;
+    let shown = chrome(
+        ui,
+        "document.querySelector('#automatic-capture .switch').classList.contains('on')",
+    )?;
+    if shown != on {
+        click_chrome(ui, "#automatic-capture")?;
         wait("Remember pages toggled", || {
             ui.engine.capture_enabled().unwrap() == on
         })?;
     }
     key("Escape")?;
-    wait("Memory menu closed", || !popover.is_visible())
+    wait("Memory menu closed", || !visible(ui, "#popover"))
 }
 
 fn remember_selection(ui: &Ui) -> Result<()> {
-    let popover = open_memory_menu(ui)?;
-    click(ui, &named(&popover, "remember-selection"))?;
-    wait("Memory menu closed", || !popover.is_visible())
+    open_memory_menu(ui)?;
+    click_chrome(ui, "#remember-selection")?;
+    wait("Memory menu closed", || !visible(ui, "#popover"))
 }
 
 fn page_click(ui: &Ui, id: &str, button: u8, control: bool) -> Result<()> {

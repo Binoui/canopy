@@ -26,17 +26,6 @@ pub(crate) struct Rect {
     pub w: f64,
 }
 
-impl Rect {
-    pub fn lerp(self, to: Rect, t: f64) -> Rect {
-        Rect {
-            x: self.x + (to.x - self.x) * t,
-            y: self.y + (to.y - self.y) * t,
-            s: self.s + (to.s - self.s) * t,
-            w: self.w + (to.w - self.w) * t,
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PlacedNode {
     pub id: VisitId,
@@ -428,10 +417,6 @@ pub(crate) fn pan(layout: &StripLayout, strip_width: f64) -> f64 {
     (strip_width * 0.66 - layout.focus)
         .min(0.)
         .max(strip_width - layout.width)
-}
-
-pub(crate) fn ease_out_cubic(t: f64) -> f64 {
-    1. - (1. - t.clamp(0., 1.)).powi(3)
 }
 
 #[cfg(test)]
