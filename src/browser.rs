@@ -1045,6 +1045,34 @@ mod tests {
     }
 
     #[test]
+    fn suggestions_are_bounded_and_do_not_count_unopened_links() {
+        let mut b = memory();
+        let root = follow(&mut b, "root", NavigationTarget::Root);
+        b.queue_link(root, url("never-opened"), source("queued"))
+            .unwrap();
+        for i in 0..10 {
+            follow(
+                &mut b,
+                &format!("page-{i}"),
+                NavigationTarget::ChildOf(root),
+            );
+        }
+        let suggestions = b.start_suggestions().unwrap();
+        assert_eq!(suggestions.shortcuts.len(), 6);
+        assert!(!suggestions
+            .shortcuts
+            .iter()
+            .any(|s| s.url.path() == "/never-opened"));
+        assert_eq!(
+            suggestions.paths.len(),
+            1,
+            "URL variants share one host pair"
+        );
+        assert_eq!(suggestions.paths[0].visits, 10);
+        assert_eq!(suggestions.paths[0].first, url("root"));
+    }
+
+    #[test]
     fn suggestions_count_opened_urls_and_parent_child_hosts() {
         let mut b = memory();
         assert_eq!(b.start_suggestions().unwrap(), StartSuggestions::default());

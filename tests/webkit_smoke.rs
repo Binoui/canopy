@@ -32,6 +32,11 @@ fn main() -> Result<()> {
     let ui = Ui::new(directory.path())?;
     ui.window.show_all();
     pump(500);
+    assert!(named(&ui.window, "start-page").is_visible());
+    assert!(ui.snapshot()?.visits.is_empty());
+    assert!(label_texts(&named(&ui.window, "start-page"))
+        .iter()
+        .any(|text| text.contains("as your forest grows")));
 
     key("ctrl+k")?;
     let entry = named(&ui.window, "palette-entry")
@@ -300,6 +305,149 @@ fn main() -> Result<()> {
     println!(
         "PASS the overflow arrow lists exactly the hidden trees, in creation order, and opens one."
     );
+
+    key("ctrl+e")?;
+    wait("forest open", || {
+        named(&ui.window, "forest-view").is_visible()
+    })?;
+    pump(200);
+    assert!(
+        named(&ui.window, &format!("forest-node-{hidden_root}")).allocated_width() > 140,
+        "the first forest view fits after allocation"
+    );
+    let root_name = format!("forest-node-{hidden_root}");
+    let before_zoom = named(&ui.window, &root_name).allocated_width();
+    let (x, y) = page_point(&ui, 950, 500)?;
+    move_to(x, y)?;
+    xdo(&["keydown", "ctrl", "click", "5", "keyup", "ctrl"])?;
+    pump(80);
+    assert!(named(&ui.window, &root_name).allocated_width() < before_zoom);
+    click(&ui, &named(&ui.window, "forest-fit"))?;
+    pump(300);
+    let before_pan = named(&ui.window, &root_name).allocation();
+    move_to(x, y)?;
+    xdo(&["click", "5"])?;
+    pump(80);
+    assert!(named(&ui.window, &root_name).allocation().y() < before_pan.y());
+    xdo(&[
+        "mousedown",
+        "1",
+        "mousemove_relative",
+        "--sync",
+        "40",
+        "20",
+        "mouseup",
+        "1",
+    ])?;
+    pump(80);
+    assert!(named(&ui.window, &root_name).allocation().x() > before_pan.x());
+    click(&ui, &named(&ui.window, "forest-fit"))?;
+    pump(300);
+    let other = ui
+        .snapshot()?
+        .visits
+        .into_iter()
+        .find(|v| v.parent.is_none() && v.id != hidden_root)
+        .unwrap();
+    let forest_node = format!("forest-node-{}", other.id);
+    click(&ui, &named(&ui.window, &forest_node))?;
+    wait(
+        "forest node restores another tree and closes overlay",
+        || {
+            !named(&ui.window, "forest-view").is_visible()
+                && ui.snapshot().unwrap().current == Some(other.id)
+                && !ui.engine.native.is_loading()
+        },
+    )?;
+    let first = other.id;
+    key("ctrl+e")?;
+    key("Escape")?;
+    assert!(!named(&ui.window, "forest-view").is_visible());
+    key("ctrl+t")?;
+    assert!(named(&ui.window, "start-page").is_visible());
+    assert!(!named(&ui.window, "palette").is_visible());
+    key("Escape")?;
+    assert!(!named(&ui.window, "start-page").is_visible());
+    assert_eq!(ui.snapshot()?.current, Some(first));
+    println!("PASS Ctrl+E opens the forest, node selection and Escape close it, and Ctrl+T opens a reversible new-tree page.");
+
+    let count = ui.snapshot()?.visits.len();
+    key("ctrl+t")?;
+    key("ctrl+k")?;
+    assert!(named(&ui.window, "palette-shortcut").is_visible());
+    assert!(named(&ui.window, "palette-path").is_visible());
+    key("Escape")?;
+    click(&ui, &named(&ui.window, "start-shortcut-0"))?;
+    wait("shortcut plants a root", || {
+        ui.snapshot().unwrap().visits.len() == count + 1 && !ui.engine.native.is_loading()
+    })?;
+    assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
+    key("ctrl+t")?;
+    click(&ui, &named(&ui.window, "start-path-0"))?;
+    wait("usual path loads two pages", || {
+        ui.snapshot().unwrap().visits.len() == count + 3 && !ui.engine.native.is_loading()
+    })?;
+    let snapshot = ui.snapshot()?;
+    let second = snapshot.current_visit().unwrap();
+    let root = snapshot
+        .visits
+        .iter()
+        .find(|v| Some(v.id) == second.parent)
+        .context("usual-path root")?;
+    assert!(root.parent.is_none());
+    assert!(root.opened_at.is_some());
+    assert!(second.opened_at.is_some());
+    println!("PASS a shortcut plants a root and a usual path really loads a root and its child.");
+
+    let shots = std::env::var("CANOPY_PHASE3_SHOTS").ok();
+    for (theme, key_name) in [("light", "Home"), ("dark", "End")] {
+        open_strip(&ui)?;
+        click(&ui, &named(&ui.window, "memory-menu"))?;
+        let memory = popover_of(&ui, "memory-menu");
+        let combo = named(&memory, "theme-mode");
+        click(&ui, &combo)?;
+        key(key_name)?;
+        if theme == "light" {
+            key("Down")?;
+        }
+        key("Return")?;
+        pump(200);
+        let pixels = ui
+            .window
+            .window()
+            .unwrap()
+            .pixbuf(4, 4, 1, 1)
+            .context("chrome background pixel")?;
+        let bytes = pixels.read_pixel_bytes();
+        if theme == "dark" {
+            assert!(bytes[0] < 50);
+        } else {
+            assert!(bytes[0] > 230);
+        }
+        if let Some(dir) = &shots {
+            save_window(&ui, &format!("{dir}/theme-menu-{theme}.png"))?;
+        }
+        memory.popdown();
+        leave_strip(&ui)?;
+        key("ctrl+e")?;
+        pump(250);
+        if let Some(dir) = &shots {
+            save_window(&ui, &format!("{dir}/forest-titles-{theme}.png"))?;
+        }
+        click(&ui, &named(&ui.window, "forest-titles"))?;
+        pump(150);
+        if let Some(dir) = &shots {
+            save_window(&ui, &format!("{dir}/forest-icons-{theme}.png"))?;
+        }
+        click(&ui, &named(&ui.window, "forest-titles"))?;
+        key("Escape")?;
+        key("ctrl+t")?;
+        if let Some(dir) = &shots {
+            save_window(&ui, &format!("{dir}/start-{theme}.png"))?;
+        }
+        key("Escape")?;
+    }
+    println!("PASS real theme-menu input switches the chrome background between light and dark.");
 
     let expected: Snapshot = ui.snapshot()?;
     ui.window.close();

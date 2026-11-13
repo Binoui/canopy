@@ -23,7 +23,14 @@ impl StartPage {
         content.set_halign(gtk::Align::Center);
         content.set_valign(gtk::Align::Center);
         content.set_size_request(540, -1);
-        root.add(&content);
+        let overlay = gtk::Overlay::new();
+        let background = gtk::DrawingArea::new();
+        background.set_hexpand(true);
+        background.set_vexpand(true);
+        overlay.add(&background);
+        overlay.add_overlay(&content);
+        root.add(&overlay);
+        overlay.show_all();
         let page = Rc::new(Self {
             root,
             content,
@@ -32,7 +39,7 @@ impl StartPage {
             on_event: Rc::new(on_event),
         });
         let w = Rc::downgrade(&page);
-        page.root.connect_draw(move |area, cr| {
+        background.connect_draw(move |area, cr| {
             if let Some(p) = w.upgrade() {
                 dapple(
                     cr,
@@ -59,6 +66,15 @@ impl StartPage {
         let search =
             gtk::Button::with_label("An address, a search, or a page in your forest     Ctrl+K");
         search.set_widget_name("start-search");
+        search.set_size_request(540, 46);
+        search.set_halign(gtk::Align::Center);
+        if let Some(label) = search
+            .child()
+            .and_then(|child| child.downcast::<gtk::Label>().ok())
+        {
+            label.set_max_width_chars(58);
+            label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        }
         search.style_context().add_class("start-search");
         let on_event = self.on_event.clone();
         search.connect_clicked(move |_| on_event(None));
@@ -85,7 +101,7 @@ impl StartPage {
             } else {
                 &shortcut.title
             }));
-            label.set_max_width_chars(12);
+            label.set_max_width_chars(10);
             label.set_ellipsize(gtk::pango::EllipsizeMode::End);
             column.pack_start(&label, false, false, 0);
             button.add(&column);

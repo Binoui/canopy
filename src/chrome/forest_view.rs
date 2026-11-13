@@ -106,6 +106,7 @@ pub(super) struct ForestView {
     shade: Cell<Shade>,
     tween: Cell<u64>,
     viewport: Cell<(i32, i32)>,
+    needs_fit: Cell<bool>,
     on_select: Rc<dyn Fn(VisitId)>,
 }
 
@@ -180,6 +181,7 @@ impl ForestView {
             shade: Cell::new(Shade::Light),
             tween: Cell::new(0),
             viewport: Cell::new((0, 0)),
+            needs_fit: Cell::new(false),
             on_select: Rc::new(on_select),
         });
         exit.connect_clicked(move |_| close());
@@ -207,7 +209,10 @@ impl ForestView {
         view.canvas.connect_size_allocate(move |_, allocation| {
             if let Some(v) = w.upgrade() {
                 let size = (allocation.width(), allocation.height());
-                if v.viewport.replace(size) != size {
+                let changed = v.viewport.replace(size) != size;
+                if size.0 > 1 && v.needs_fit.replace(false) {
+                    v.fit();
+                } else if changed {
                     v.rebuild();
                 }
             }
@@ -289,11 +294,14 @@ impl ForestView {
         self.canvas.queue_draw();
     }
     pub fn open(self: &Rc<Self>) {
+        self.needs_fit.set(true);
         self.root.show();
         let weak = Rc::downgrade(self);
         glib::idle_add_local_once(move || {
             if let Some(view) = weak.upgrade() {
-                view.fit();
+                if view.canvas.allocated_width() > 1 && view.needs_fit.replace(false) {
+                    view.fit();
+                }
             }
         });
     }
@@ -398,6 +406,11 @@ impl ForestView {
                 let label = gtk::Label::new(Some(visit.label()));
                 label.set_ellipsize(pango::EllipsizeMode::End);
                 label.style_context().add_class("pill-title");
+                let attributes = pango::AttrList::new();
+                attributes.insert(pango::AttrSize::new_size_absolute(
+                    (12.5 * c.zoom * pango::SCALE as f64) as i32,
+                ));
+                label.set_attributes(Some(&attributes));
                 label.set_width_chars(1);
                 content.pack_start(&label, true, true, 0);
             }
@@ -465,6 +478,11 @@ impl ForestView {
             cr.move_to(34., y + 16.);
             let _ = cr.show_text(&tree.title);
             shade.source(cr, Token::Muted);
+            cr.select_font_face(
+                super::theme::FONT,
+                cairo::FontSlant::Normal,
+                cairo::FontWeight::Normal,
+            );
             cr.set_font_size(11.5);
             cr.move_to(34., y + 36.);
             let current = f.current().and_then(|id| f.tree_of(id)) == Some(tree.id);
@@ -557,7 +575,8 @@ mod tests {
             assert_eq!(l.nodes.len(), 3000);
             assert_eq!(l.heads[0].0, 999);
             assert!(l.heads.windows(2).all(|w| w[0].1 < w[1].1));
-            assert!(l.current_width > 0.);
+            assert_eq!(l.nodes[0].1.w, if labels { 93. } else { 30. });
+            assert_eq!(l.current_width, if labels { 597. } else { 214. });
         }
     }
 }
