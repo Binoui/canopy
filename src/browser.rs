@@ -676,6 +676,23 @@ impl Browser {
         Ok(url)
     }
 
+    /// Plants `url` as a new tree before its page loads. Restoring the root loads it.
+    pub fn add_root(&mut self, url: Url) -> Result<VisitId> {
+        web_url(url.as_str())?;
+        let id = VisitId(Ulid::new());
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "INSERT INTO visits(id, parent_id, url, title, created_at, opened_at) VALUES (?1, NULL, ?2, '', ?3, ?3)",
+            params![id.to_string(), url.as_str(), now_ms()?],
+        )?;
+        transaction.execute(
+            "INSERT INTO tree_state(root_id, last_visit_id) VALUES (?1, ?1)",
+            [id.to_string()],
+        )?;
+        transaction.commit()?;
+        Ok(id)
+    }
+
     pub fn restore(&mut self, id: VisitId) -> Result<Url> {
         let visit = self.visit(id)?;
         self.navigation = Navigation::Requested {
@@ -1199,6 +1216,41 @@ mod tests {
     fn follow_child(browser: &mut Browser, path: &str) -> VisitId {
         let parent = browser.current_id().unwrap().unwrap();
         follow(browser, path, NavigationTarget::ChildOf(parent))
+    }
+
+    #[test]
+    fn added_roots_are_trees_in_order_and_load_when_restored() {
+        let mut b = memory();
+        let earlier = follow(&mut b, "earlier", NavigationTarget::Root);
+        let first = b.add_root(url("first")).unwrap();
+        let last = b.add_root(url("last")).unwrap();
+        let roots: Vec<_> = b
+            .tree_states()
+            .unwrap()
+            .iter()
+            .map(|t| t.root.root())
+            .collect();
+        assert_eq!(roots, [earlier, first, last]);
+        let forest = crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(forest.trees().len(), 3);
+        assert_eq!(forest.current(), Some(earlier));
+        let loading = b.restore(last).unwrap();
+        b.started(loading.clone()).unwrap();
+        assert!(b.committed(url("last-redirected")).unwrap());
+        let snapshot = b.snapshot().unwrap();
+        assert_eq!(snapshot.current, Some(last));
+        assert_eq!(
+            snapshot.current_visit().unwrap().url,
+            url("last-redirected")
+        );
+        assert_eq!(b.tree_states().unwrap().len(), 3);
+        assert!(b
+            .add_root(Url::parse("file:///etc/passwd").unwrap())
+            .is_err());
     }
 
     #[test]
