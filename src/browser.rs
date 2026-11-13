@@ -27,6 +27,21 @@ impl std::str::FromStr for VisitId {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct TreeId(VisitId);
+
+impl TreeId {
+    pub fn root(self) -> VisitId {
+        self.0
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreeState {
+    pub root: TreeId,
+    pub last_visit: VisitId,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VisitState {
     Queued,
@@ -196,7 +211,7 @@ impl Browser {
              INSERT OR IGNORE INTO session(singleton, current_id) VALUES(1, NULL);",
         )?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version > 1 {
+        if version > 2 {
             bail!("Cette base provient d'une version plus récente de Canopy.");
         }
         if version == 0 {
@@ -248,6 +263,47 @@ impl Browser {
             )?;
             transaction.commit()?;
         }
+        if version < 2 {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(
+                "CREATE TABLE tree_state (
+                    root_id TEXT PRIMARY KEY NOT NULL REFERENCES visits(id),
+                    last_visit_id TEXT NOT NULL REFERENCES visits(id)
+                 );
+                 ALTER TABLE session ADD COLUMN theme_mode TEXT NOT NULL DEFAULT 'system'
+                    CHECK(theme_mode IN ('system', 'light', 'dark'));
+                 INSERT INTO tree_state(root_id, last_visit_id)
+                    SELECT id, id FROM visits WHERE parent_id IS NULL;
+                 WITH RECURSIVE ancestry(id, parent_id) AS (
+                    SELECT id, parent_id FROM visits
+                    WHERE id = (SELECT current_id FROM session WHERE singleton = 1)
+                    UNION
+                    SELECT v.id, v.parent_id FROM visits v JOIN ancestry a ON v.id=a.parent_id
+                 )
+                 UPDATE tree_state SET last_visit_id =
+                    (SELECT current_id FROM session WHERE singleton = 1)
+                    WHERE root_id IN (SELECT id FROM ancestry WHERE parent_id IS NULL);
+                 PRAGMA user_version = 2;",
+            )?;
+            for action in ["INSERT", "UPDATE"] {
+                transaction.execute_batch(&format!(
+                    "CREATE TRIGGER tree_state_validate_{action} BEFORE {action} ON tree_state
+                     BEGIN
+                        SELECT RAISE(ABORT, 'Invalid tree target') WHERE NOT EXISTS (
+                            WITH RECURSIVE ancestry(id, parent_id, opened_at) AS (
+                                SELECT id, parent_id, opened_at FROM visits WHERE id=NEW.last_visit_id
+                                UNION
+                                SELECT v.id, v.parent_id, v.opened_at FROM visits v
+                                    JOIN ancestry a ON v.id=a.parent_id
+                            )
+                            SELECT 1 FROM ancestry WHERE id=NEW.root_id AND parent_id IS NULL
+                                AND (SELECT opened_at FROM visits WHERE id=NEW.last_visit_id) IS NOT NULL
+                        );
+                     END;"
+                ))?;
+            }
+            transaction.commit()?;
+        }
         Ok(Self {
             connection,
             navigation: Navigation::Idle,
@@ -284,6 +340,34 @@ impl Browser {
         }
         let current = self.current_id()?;
         Ok(Snapshot { visits, current })
+    }
+
+    pub fn tree_states(&self) -> Result<Vec<TreeState>> {
+        let mut statement = self.connection.prepare(
+            "SELECT t.root_id, t.last_visit_id FROM tree_state t
+             JOIN visits v ON v.id=t.root_id ORDER BY v.created_at, v.rowid",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut states = Vec::new();
+        while let Some(row) = rows.next()? {
+            states.push(TreeState {
+                root: TreeId(row.get::<_, String>(0)?.parse()?),
+                last_visit: row.get::<_, String>(1)?.parse()?,
+            });
+        }
+        Ok(states)
+    }
+
+    pub fn tree_target(&self, tree: TreeId) -> Result<VisitId> {
+        let id: String = self
+            .connection
+            .query_row(
+                "SELECT last_visit_id FROM tree_state WHERE root_id=?1",
+                [tree.0.to_string()],
+                |row| row.get(0),
+            )
+            .context("This tree no longer exists.")?;
+        Ok(id.parse()?)
     }
 
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
@@ -467,6 +551,17 @@ impl Browser {
         };
         transaction.execute(
             "UPDATE session SET current_id = ?1 WHERE singleton = 1",
+            [id.to_string()],
+        )?;
+        transaction.execute(
+            "WITH RECURSIVE ancestry(id, parent_id) AS (
+                SELECT id, parent_id FROM visits WHERE id=?1
+                UNION
+                SELECT v.id, v.parent_id FROM visits v JOIN ancestry a ON v.id=a.parent_id
+             )
+             INSERT INTO tree_state(root_id, last_visit_id)
+                SELECT id, ?1 FROM ancestry WHERE parent_id IS NULL
+             ON CONFLICT(root_id) DO UPDATE SET last_visit_id=excluded.last_visit_id",
             [id.to_string()],
         )?;
         transaction.commit()?;
@@ -1246,6 +1341,7 @@ mod tests {
                 .visits
                 .iter()
                 .all(|visit| visit.state == VisitState::Opened));
+            assert_eq!(browser.tree_target(TreeId(first)).unwrap(), second);
             assert_eq!(browser.visit(first).unwrap().opened_at, Some(1234));
             assert_eq!(browser.visit(second).unwrap().parent, Some(first));
             assert!(browser.capture_enabled().unwrap());
@@ -1299,5 +1395,101 @@ mod tests {
             assert_eq!(visit.state, VisitState::Queued);
             assert_eq!(visit.source, Some(source("comment-one")));
         }
+    }
+    #[test]
+    fn tree_targets_survive_queue_failure_selection_and_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("forest.db");
+        let (a, child) = {
+            let mut browser = Browser::open(&path).unwrap();
+            let a = follow(&mut browser, "thread", true);
+            let child = follow(&mut browser, "child", false);
+            let b = follow(&mut browser, "b", true);
+            let queued = browser
+                .queue_link(a, url("queued"), source("context"))
+                .unwrap();
+            assert_eq!(browser.tree_target(TreeId(a)).unwrap(), child);
+            let request = browser.restore(queued).unwrap();
+            browser.started(request.clone()).unwrap();
+            browser.failed(&request, false);
+            assert_eq!(browser.tree_target(TreeId(a)).unwrap(), child);
+            assert_eq!(browser.snapshot().unwrap().current, Some(b));
+            let request = browser
+                .restore(browser.tree_target(TreeId(a)).unwrap())
+                .unwrap();
+            browser.started(request.clone()).unwrap();
+            browser.committed(request).unwrap();
+            assert_eq!(browser.snapshot().unwrap().current, Some(child));
+            (a, child)
+        };
+        let browser = Browser::open(&path).unwrap();
+        assert_eq!(browser.tree_target(TreeId(a)).unwrap(), child);
+        assert_eq!(browser.snapshot().unwrap().current, Some(child));
+    }
+
+    #[test]
+    fn migration_from_v1_initializes_targets_and_preserves_theme_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v1.db");
+        let a = VisitId(Ulid::new());
+        let child = VisitId(Ulid::new());
+        let b = VisitId(Ulid::new());
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection.execute_batch("CREATE TABLE visits(id TEXT PRIMARY KEY NOT NULL,
+                parent_id TEXT REFERENCES visits(id), url TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL, opened_at INTEGER);
+                CREATE TABLE session(singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                current_id TEXT REFERENCES visits(id), capture_enabled INTEGER NOT NULL DEFAULT 1);
+                PRAGMA user_version=1;").unwrap();
+            for (id, parent) in [(a, None), (child, Some(a)), (b, None)] {
+                connection
+                    .execute(
+                        "INSERT INTO visits VALUES(?1,?2,'https://example.org','',1,1)",
+                        params![id.to_string(), parent.map(|id| id.to_string())],
+                    )
+                    .unwrap();
+            }
+            connection
+                .execute("INSERT INTO session VALUES(1,?1,1)", [child.to_string()])
+                .unwrap();
+        }
+        let expected = {
+            let browser = Browser::open(&path).unwrap();
+            assert_eq!(browser.tree_target(TreeId(a)).unwrap(), child);
+            assert_eq!(browser.tree_target(TreeId(b)).unwrap(), b);
+            let theme: String = browser
+                .connection
+                .query_row("SELECT theme_mode FROM session", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(theme, "system");
+            browser
+                .connection
+                .execute("UPDATE session SET theme_mode='dark'", [])
+                .unwrap();
+            assert!(browser
+                .connection
+                .execute("UPDATE session SET theme_mode='unknown'", [])
+                .is_err());
+            assert!(browser
+                .connection
+                .execute(
+                    "UPDATE tree_state SET last_visit_id=?1 WHERE root_id=?2",
+                    params![b.to_string(), a.to_string()]
+                )
+                .is_err());
+            assert!(browser
+                .connection
+                .execute("INSERT INTO tree_state VALUES(?1,?1)", [child.to_string()])
+                .is_err());
+            browser.tree_states().unwrap()
+        };
+        let browser = Browser::open(&path).unwrap();
+        assert_eq!(browser.tree_states().unwrap(), expected);
+        let theme: String = browser
+            .connection
+            .query_row("SELECT theme_mode FROM session", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(theme, "dark");
     }
 }
