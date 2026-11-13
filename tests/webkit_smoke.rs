@@ -124,7 +124,7 @@ fn main() -> Result<()> {
     )?;
     wait("échec de connexion", || {
         notice.is_visible()
-            && notice.text().contains("Impossible de charger")
+            && notice.text().contains("Could not load")
             && !ui.engine.native.is_loading()
     })?;
     pump(Duration::from_millis(150));

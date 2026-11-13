@@ -3,9 +3,22 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use gtk::prelude::*;
 
+const HELP: &str = "Canopy
+
+Usage: canopy [--data-dir PATH]
+
+Ctrl+L  Address or search
+Ctrl+T  New tree
+Alt+←   Back to the parent page
+Ctrl+R  Reload the page
+Ctrl+S  Remember the selection
+Ctrl+Q  Quit
+
+Your profile and browsing are kept in XDG_DATA_HOME/canopy.";
+
 fn main() {
     if let Err(error) = run() {
-        eprintln!("Canopy : {error:#}");
+        eprintln!("Canopy: {error:#}");
         std::process::exit(1);
     }
 }
@@ -17,17 +30,14 @@ fn run() -> Result<()> {
         match arg.to_str() {
             Some("--data-dir") => {
                 data_dir = Some(PathBuf::from(
-                    args.next().context("--data-dir attend un chemin.")?,
+                    args.next().context("--data-dir expects a path.")?,
                 ))
             }
             Some("--help" | "-h") => {
-                println!("Canopy\n\nUsage : canopy [--data-dir CHEMIN]\n\nCtrl+L  Adresse ou recherche\nCtrl+T  Nouvel arbre\nAlt+←   Revenir au parent\nCtrl+R  Recharger la visite\nCtrl+S  Mémoriser la sélection\nCtrl+Q  Quitter\n\nLe profil et la navigation sont conservés dans XDG_DATA_HOME/canopy.");
+                println!("{HELP}");
                 return Ok(());
             }
-            _ => bail!(
-                "Option inconnue : {}. Utilise --help.",
-                arg.to_string_lossy()
-            ),
+            _ => bail!("Unknown option: {}. Use --help.", arg.to_string_lossy()),
         }
     }
     let data_dir = match data_dir {
@@ -37,7 +47,7 @@ fn run() -> Result<()> {
             .or_else(|| {
                 std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share"))
             })
-            .context("Définis XDG_DATA_HOME ou utilise --data-dir.")?
+            .context("Set XDG_DATA_HOME or use --data-dir.")?
             .join("canopy"),
     };
     let new_directory = !data_dir.exists();
@@ -46,9 +56,8 @@ fn run() -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o700))?;
     }
-    gtk::init().context(
-        "Impossible d'ouvrir une fenêtre. Lance Canopy depuis ta session graphique Linux.",
-    )?;
+    gtk::init()
+        .context("Could not open a window. Start Canopy from your Linux desktop session.")?;
     let ui = canopy::ui::Ui::new(&data_dir)?;
     ui.window.connect_delete_event(|_, _| {
         gtk::main_quit();

@@ -4,7 +4,7 @@ use url::Url;
 pub fn destination(input: &str) -> Result<Url> {
     let input = input.trim();
     if input.is_empty() {
-        bail!("Saisis une adresse ou quelques mots à rechercher.");
+        bail!("Type an address or a few words to search for.");
     }
     if input.contains("://") {
         return web_url(input);
@@ -19,7 +19,7 @@ pub fn destination(input: &str) -> Result<Url> {
             })
             && !rest.starts_with(' ')
         {
-            bail!("Seules les adresses HTTP et HTTPS sont prises en charge.");
+            bail!("Only HTTP and HTTPS addresses are supported.");
         }
     }
     let host_like = !input.chars().any(char::is_whitespace)
@@ -48,7 +48,7 @@ pub fn destination(input: &str) -> Result<Url> {
 pub fn web_url(input: &str) -> Result<Url> {
     let url = Url::parse(input)?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-        bail!("Seules les adresses HTTP et HTTPS sont prises en charge.");
+        bail!("Only HTTP and HTTPS addresses are supported.");
     }
     Ok(url)
 }

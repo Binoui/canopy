@@ -224,7 +224,7 @@ impl Browser {
         )?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version > 2 {
-            bail!("Cette base provient d'une version plus récente de Canopy.");
+            bail!("This database comes from a newer version of Canopy.");
         }
         if version == 0 {
             let transaction = connection.transaction()?;
@@ -486,7 +486,7 @@ impl Browser {
             .visits
             .into_iter()
             .find(|visit| visit.id == id)
-            .context("Cette visite n'existe plus.")
+            .context("This visit no longer exists.")
     }
 
     pub fn navigate(&mut self, url: Url, target: NavigationTarget) -> Result<Url> {
@@ -591,7 +591,7 @@ impl Browser {
                     params![url.as_str(), visit.to_string(), now_ms()?],
                 )?;
                 if changed != 1 {
-                    bail!("Cette visite n'existe plus.")
+                    bail!("This visit no longer exists.")
                 }
                 visit
             }
@@ -719,11 +719,11 @@ impl Browser {
     fn checked_source(&self, parent: VisitId, mut source: SourceContext) -> Result<SourceContext> {
         let visit = self.visit(parent)?;
         if visit.state != VisitState::Opened {
-            bail!("La source de ce lien n'a pas encore été ouverte.");
+            bail!("The source of this link has not been opened yet.");
         }
         web_url(source.page_url.as_str())?;
         if visit.url.origin() != source.page_url.origin() {
-            bail!("La source ne correspond pas à la page affichée.");
+            bail!("The source does not match the page on screen.");
         }
         check_citation(&source.page_url, source.citation_url.as_ref())?;
         source.link_text = bounded(&source.link_text, 300);
@@ -800,7 +800,7 @@ impl Browser {
                 source_page_url,source_citation_url,source_link_text,source_excerpt FROM captures WHERE id=?1",
         )?;
         let mut rows = statement.query([id])?;
-        capture_from_row(rows.next()?.context("Cette capture n'existe plus.")?)
+        capture_from_row(rows.next()?.context("This saved text no longer exists.")?)
     }
 
     pub fn captures(&self, visit: VisitId) -> Result<Vec<Capture>> {
@@ -846,7 +846,7 @@ fn check_citation(document: &Url, citation: Option<&Url>) -> Result<()> {
     if let Some(citation) = citation {
         web_url(citation.as_str())?;
         if document.origin() != citation.origin() {
-            bail!("Le lien de citation doit appartenir au site source.");
+            bail!("The citation link must belong to the source site.");
         }
     }
     Ok(())
@@ -883,7 +883,7 @@ fn capture_from_row(row: &Row<'_>) -> Result<Capture> {
     let kind = match kind.as_str() {
         "page" => CaptureKind::Page,
         "selection" => CaptureKind::Selection,
-        _ => bail!("Type de capture inconnu."),
+        _ => bail!("Unknown saved text kind."),
     };
     Ok(Capture {
         id: row.get(0)?,
