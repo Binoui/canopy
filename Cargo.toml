@@ -53,5 +53,11 @@ path = "tests/reading_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
 
+[[test]]
+name = "sandbox_smoke"
+path = "tests/sandbox_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]
+
 [profile.dev]
 debug = 1

@@ -4,18 +4,20 @@ Canopy is a prototype Linux browser written in Rust. Your visits form trees. Goi
 
 ## Run the browser
 
+Canopy enables WebKit's Linux sandbox for both page and chrome processes at startup. If sandbox startup fails, WebKit prints a fatal error and provides `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1` to run without sandbox protection.
+
 Install stable Rust, GTK 3, WebKitGTK 4.1 and the SQLite development files.
 
 On Debian or Ubuntu, install the native dependencies with this command:
 
 ```sh
-sudo apt install build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libsqlite3-dev
+sudo apt install build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libsqlite3-dev bubblewrap xdg-dbus-proxy
 ```
 
 On Arch Linux, use this command:
 
 ```sh
-sudo pacman -S --needed base-devel pkgconf gtk3 webkit2gtk sqlite
+sudo pacman -S --needed base-devel pkgconf gtk3 webkit2gtk sqlite bubblewrap xdg-dbus-proxy
 ```
 
 From the project folder, run this command:
