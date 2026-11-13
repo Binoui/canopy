@@ -173,7 +173,7 @@ fn main() -> Result<()> {
         3,
         "the same point reaches the page once the strip is closed"
     );
-    println!("PASS page clicks pass below the open strip and beside the card; the 220 ms closing band is swallowed, then the page is reachable again.");
+    println!("PASS page clicks pass below the open strip and beside the card; a click in the band while the strip closes is swallowed, then the page is reachable again.");
 
     save_window(&ui, "/tmp/canopy-chrome-webkit.png")?;
 

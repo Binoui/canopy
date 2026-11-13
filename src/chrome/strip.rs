@@ -266,10 +266,10 @@ impl Strip {
         self.relayout(true);
     }
 
-    /// The strip keeps its open allocation until the closing animation ends, so the page
-    /// stays covered where the strip is still drawn. A click in that band during the
-    /// 220 ms close is swallowed; the design accepts this to avoid clicking through
-    /// a strip that is still visible.
+    /// The strip keeps its open allocation until the closing animation ends: 220 ms for
+    /// the height, 300 ms for the nodes still moving inside it. A click in that band
+    /// during the close is swallowed; the design accepts this rather than letting clicks
+    /// fall through a strip that is still drawn.
     pub fn allocation_height(&self) -> i32 {
         self.state.borrow().allocation_height()
     }
