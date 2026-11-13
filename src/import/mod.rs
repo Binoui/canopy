@@ -40,8 +40,6 @@ fn read_pages(profile: &Path) -> Result<Vec<ImportedPage>> {
     Ok(pages)
 }
 
-/// Reads Chrome's `urls` table in place, read-only. Chrome can stay open; while it writes,
-/// the read waits for its lock.
 fn read_history(path: &Path, pages: &mut HashMap<String, ImportedPage>) -> Result<()> {
     let (_snapshot, connection) = open_chrome_db(path)?;
     let mut statement = connection.prepare(
