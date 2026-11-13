@@ -8,10 +8,10 @@ const HELP: &str = "Canopy
 Usage: canopy [--data-dir PATH]
        canopy [--data-dir PATH] --import-chrome [PROFILE]
 
---import-chrome reads a Chrome profile's history and bookmarks into Canopy's search,
+--import-chrome reads a Chrome profile's history, bookmarks, cookies and passwords,
 then exits. PROFILE defaults to ~/.config/google-chrome/Default. Running it again
-replaces the earlier import from that profile. Pages are not loaded; cookies and
-passwords are not read.
+refreshes pages and adds cookies and encrypted passwords. Pages are not loaded.
+The system keyring protects the password vault. Page filling is not available yet.
 
 Ctrl+K    Search your forest or go to an address
 Ctrl+L    Same, starting from the current address
@@ -94,19 +94,43 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-/// Reads a Chrome profile into the forest's imported pages and reports what it found.
 fn import_chrome(data_dir: &std::path::Path, profile: &std::path::Path) -> Result<()> {
-    let pages = canopy::import::chrome_profile(profile)?.pages;
-    let bookmarks = pages.iter().filter(|page| page.folder.is_some()).count();
-    let name = profile.file_name().map_or_else(
-        || profile.display().to_string(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-    let mut browser = canopy::browser::Browser::open(&data_dir.join("forest.sqlite3"))?;
-    browser.replace_imported(&format!("chrome:{name}"), &pages)?;
+    let chrome = canopy::import::chrome_profile(profile)?;
+    let bookmarks = chrome.pages.iter().filter(|p| p.folder.is_some()).count();
+    canopy::browser::Browser::open(&data_dir.join("forest.sqlite3"))?
+        .replace_imported(&chrome.source, &chrome.pages)?;
     println!(
-        "Imported {} pages from Chrome profile {name}, {bookmarks} of them bookmarked. Search them with Ctrl+K.",
-        pages.len()
+        "Imported {} pages from Chrome profile {}, {bookmarks} bookmarked.",
+        chrome.pages.len(),
+        chrome.name
     );
+    let mut failed = false;
+    match chrome.logins {
+        Ok(read) => {
+            let result = canopy::logins::Logins::open(data_dir)
+                .and_then(|mut vault| vault.upsert_imported(&chrome.source, &read.items));
+            match result {
+                Ok(count) => println!("Imported {count} passwords. Skipped {:?}.", read.skipped),
+                Err(error) => {
+                    failed = true;
+                    println!("Passwords not imported. {error}");
+                }
+            }
+        }
+        Err(error) => {
+            failed = true;
+            println!("Passwords not imported. {error}");
+        }
+    }
+    match chrome.cookies {
+        Ok(read) => match canopy::cookies::Inbox::new(data_dir).post(&read.items) {
+            Ok(count) => println!("Posted {count} cookies. Skipped {:?}. Canopy adds them while running or at its next start.", read.skipped),
+            Err(_) => { failed = true; println!("Cookies not imported. Could not post imported cookies."); }
+        },
+        Err(error) => { failed = true; println!("Cookies not imported. {error}"); }
+    }
+    if failed {
+        bail!("Part of the profile was not imported. Resolve the section errors and run the command again.");
+    }
     Ok(())
 }

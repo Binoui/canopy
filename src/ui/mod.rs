@@ -30,6 +30,11 @@ pub struct Ui {
     branch_after_commit: Cell<Option<VisitId>>,
     path_after_commit: RefCell<Option<PathContinuation>>,
     me: Weak<Ui>,
+    inbox: crate::cookies::Inbox,
+    cookie_monitor: gio::FileMonitor,
+    draining_cookies: Cell<bool>,
+    cookies_pending: Cell<bool>,
+    reload_after_cookies: Cell<bool>,
 }
 
 struct PathContinuation {
@@ -57,6 +62,11 @@ impl Ui {
         window.add(&scroller);
         let engine = Engine::new(&fixed, browser.clone(), &data_dir.join("profile"))?;
         let chrome = HtmlChrome::mount(&fixed, Favicons::new(&engine.native))?;
+        use gio::prelude::FileExt;
+        let inbox = crate::cookies::Inbox::new(data_dir);
+        inbox.prepare()?;
+        let cookie_monitor = gio::File::for_path(inbox.directory())
+            .monitor_directory(gio::FileMonitorFlags::NONE, None::<&gio::Cancellable>)?;
         let ui = Rc::new_cyclic(|me: &Weak<Ui>| {
             let host: Weak<dyn ChromeHost> = me.clone();
             chrome.attach(host);
@@ -69,6 +79,11 @@ impl Ui {
                 branch_after_commit: Cell::new(None),
                 path_after_commit: RefCell::new(None),
                 me: me.clone(),
+                inbox,
+                cookie_monitor,
+                draining_cookies: Cell::new(false),
+                cookies_pending: Cell::new(false),
+                reload_after_cookies: Cell::new(false),
             }
         });
         let weak = Rc::downgrade(&ui);
@@ -122,6 +137,12 @@ impl Ui {
                 });
             }
         }
+        let weak = Rc::downgrade(&ui);
+        ui.cookie_monitor.connect_changed(move |_, _, _, _| {
+            if let Some(ui) = weak.upgrade() {
+                ui.drain_cookies();
+            }
+        });
         ui.chrome.set_system_dark(prefers_dark());
         ui.refresh();
         Ok(ui)
@@ -136,7 +157,46 @@ impl Ui {
     }
 
     pub fn resume(&self) -> Result<()> {
-        self.engine.reload()
+        self.reload_after_cookies.set(true);
+        self.drain_cookies();
+        Ok(())
+    }
+
+    fn drain_cookies(&self) {
+        if self.draining_cookies.replace(true) {
+            self.cookies_pending.set(true);
+            return;
+        }
+        let batches = match self.inbox.collect() {
+            Ok(batches) => batches,
+            Err(_) => {
+                self.draining_cookies.set(false);
+                self.report_error("Could not read imported cookies.");
+                if self.reload_after_cookies.replace(false) {
+                    self.report(self.engine.reload());
+                }
+                return;
+            }
+        };
+        let weak = self.me.clone();
+        self.engine.apply_cookie_batches(batches, move |result| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            ui.draining_cookies.set(false);
+            match result {
+                Ok(0) => {}
+                Ok(count) => ui
+                    .chrome
+                    .toast(Toast::Info(format!("Added {count} cookies from Chrome."))),
+                Err(_) => ui.report_error("Could not add imported cookies."),
+            }
+            if ui.cookies_pending.replace(false) {
+                ui.drain_cookies();
+            } else if ui.reload_after_cookies.replace(false) {
+                ui.report(ui.engine.reload());
+            }
+        });
     }
 
     fn read_frame(&self) -> Result<ChromeFrame> {
