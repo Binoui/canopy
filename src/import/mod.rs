@@ -243,18 +243,28 @@ pub fn chrome_profile(profile: &Path) -> Result<ChromeProfile> {
     })
 }
 
+/// The first eight bytes of a SQLite rollback journal that holds an unfinished write.
+const JOURNAL_MAGIC: [u8; 8] = [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7];
+
 fn open_chrome_db(
     path: &Path,
 ) -> std::result::Result<(tempfile::TempDir, Connection), ImportError> {
     if !path.is_file() {
         return Err(ImportError::Storage);
     }
+    let sidecar = |suffix: &str| {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(suffix);
+        std::path::PathBuf::from(name)
+    };
+    // SQLite's own hot-journal rule: a rollback journal holds an unfinished write only while
+    // its header starts with the journal magic. Chrome keeps committed journals around with
+    // a zeroed header (persistent journal mode), and those are safe to copy past.
     let busy = || {
-        ["-journal", "-wal"].iter().any(|suffix| {
-            let mut name = path.as_os_str().to_os_string();
-            name.push(suffix);
-            std::fs::metadata(name).is_ok_and(|m| m.len() > 0)
-        })
+        let hot_journal = std::fs::read(sidecar("-journal"))
+            .is_ok_and(|journal| journal.starts_with(&JOURNAL_MAGIC));
+        let wal = std::fs::metadata(sidecar("-wal")).is_ok_and(|m| m.len() > 0);
+        hot_journal || wal
     };
     for attempt in 0..10 {
         let snapshot = tempfile::tempdir().map_err(|_| ImportError::Storage)?;
@@ -639,22 +649,34 @@ mod encrypted_tests {
     }
 
     #[test]
-    fn snapshot_refuses_nonempty_journal_and_wal() {
+    fn snapshot_waits_for_a_hot_journal_or_wal_but_not_a_committed_journal() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("History");
         Connection::open(&path)
             .unwrap()
             .execute_batch("CREATE TABLE test(id)")
             .unwrap();
-        for suffix in ["-journal", "-wal"] {
-            let sidecar = dir.path().join(format!("History{suffix}"));
-            std::fs::write(&sidecar, b"busy").unwrap();
-            assert!(matches!(
-                open_chrome_db(&path),
-                Err(ImportError::SourceBusy)
-            ));
-            std::fs::remove_file(sidecar).unwrap();
-        }
+        let journal = dir.path().join("History-journal");
+        let mut hot = JOURNAL_MAGIC.to_vec();
+        hot.extend([0; 504]);
+        std::fs::write(&journal, &hot).unwrap();
+        assert!(matches!(
+            open_chrome_db(&path),
+            Err(ImportError::SourceBusy)
+        ));
+        std::fs::write(&journal, [0; 512]).unwrap();
+        assert!(
+            open_chrome_db(&path).is_ok(),
+            "Chrome's persistent journal with a zeroed header is committed"
+        );
+        std::fs::remove_file(&journal).unwrap();
+        let wal = dir.path().join("History-wal");
+        std::fs::write(&wal, b"frames").unwrap();
+        assert!(matches!(
+            open_chrome_db(&path),
+            Err(ImportError::SourceBusy)
+        ));
+        std::fs::remove_file(wal).unwrap();
         assert!(open_chrome_db(&path).is_ok());
     }
 }
