@@ -9,6 +9,7 @@ Usage: canopy [--data-dir PATH]
 
 Ctrl+K    Search your forest or go to an address
 Ctrl+L    Same, starting from the current address
+Ctrl+E    Forest view
 Ctrl+T    New tree
 Ctrl+1…9  Switch to a tree
 F6        Move between the page and the tree strip

@@ -7,7 +7,7 @@ use super::{
     theme::{Shade, Token},
     ChromeIntent,
 };
-use crate::browser::VisitId;
+use crate::browser::{ThemeMode, VisitId};
 
 const ERROR_LIMIT: usize = 5;
 
@@ -23,6 +23,7 @@ pub(super) struct Memory {
     popover: gtk::Popover,
     toggle: gtk::Switch,
     read: gtk::Button,
+    theme: gtk::ComboBoxText,
     errors: gtk::Box,
     state: RefCell<State>,
     on_event: Box<dyn Fn(MemoryEvent)>,
@@ -73,6 +74,16 @@ impl Memory {
         column.pack_start(&remember, false, false, 0);
         let read = menu_row("read-captures", "Read saved text", None);
         column.pack_start(&read, false, false, 0);
+        let theme = gtk::ComboBoxText::new();
+        theme.set_widget_name("theme-mode");
+        for (id, text) in [
+            ("system", "Theme: System"),
+            ("light", "Theme: Light"),
+            ("dark", "Theme: Dark"),
+        ] {
+            theme.append(Some(id), text);
+        }
+        column.pack_start(&theme, false, false, 6);
         let errors = gtk::Box::new(gtk::Orientation::Vertical, 0);
         errors.set_widget_name("memory-errors");
         errors.set_no_show_all(true);
@@ -86,9 +97,21 @@ impl Memory {
             popover,
             toggle,
             read,
+            theme,
             errors,
             state: RefCell::new(State::default()),
             on_event: Box::new(on_event),
+        });
+        let weak = Rc::downgrade(&memory);
+        memory.theme.connect_changed(move |combo| {
+            if let Some(memory) = weak.upgrade() {
+                let mode = match combo.active_id().as_deref() {
+                    Some("light") => ThemeMode::Light,
+                    Some("dark") => ThemeMode::Dark,
+                    _ => ThemeMode::System,
+                };
+                (memory.on_event)(MemoryEvent::Run(ChromeIntent::SetTheme(mode)));
+            }
         });
         let weak = Rc::downgrade(&memory);
         memory.toggle.connect_active_notify(move |toggle| {
@@ -152,12 +175,23 @@ impl Memory {
         memory
     }
 
-    pub fn present(&self, capture_enabled: bool, current: Option<VisitId>, shade: Shade) {
+    pub fn present(
+        &self,
+        capture_enabled: bool,
+        current: Option<VisitId>,
+        shade: Shade,
+        theme: ThemeMode,
+    ) {
         let mut state = self.state.borrow_mut();
         state.capture_enabled = capture_enabled;
         state.current = current;
         state.shade = Some(shade);
         drop(state);
+        self.theme.set_active_id(Some(match theme {
+            ThemeMode::System => "system",
+            ThemeMode::Light => "light",
+            ThemeMode::Dark => "dark",
+        }));
         self.toggle.set_active(capture_enabled);
         self.read.set_sensitive(current.is_some());
         self.button.set_tooltip_text(Some(if capture_enabled {

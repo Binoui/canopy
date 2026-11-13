@@ -21,6 +21,7 @@ pub(super) enum TabEvent {
     Select(TreeId),
     NewTree,
     Search,
+    Forest,
 }
 
 pub(super) struct Tabs {
@@ -94,8 +95,8 @@ impl Tabs {
         let agent = icon_button(Icon::Spark, "agent", "Agent · Coming soon");
         agent.set_sensitive(false);
         right.pack_start(&agent, false, false, 0);
-        let forest = icon_button(Icon::Forest, "forest", "Forest view · Coming soon");
-        forest.set_sensitive(false);
+        let forest = icon_button(Icon::Forest, "forest", "Forest view · Ctrl+E");
+
         right.pack_start(&forest, false, false, 0);
         root.pack_end(&right, false, false, 0);
 
@@ -115,6 +116,12 @@ impl Tabs {
         tabs.new_tree.connect_clicked(move |_| {
             if let Some(tabs) = weak.upgrade() {
                 (tabs.on_event)(TabEvent::NewTree);
+            }
+        });
+        let weak = Rc::downgrade(&tabs);
+        forest.connect_clicked(move |_| {
+            if let Some(tabs) = weak.upgrade() {
+                (tabs.on_event)(TabEvent::Forest);
             }
         });
         let weak = Rc::downgrade(&tabs);

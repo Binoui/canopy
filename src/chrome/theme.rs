@@ -128,6 +128,19 @@ impl Shade {
 
 const RULES: &str = r#"
 * { font-family: "FONT", sans-serif; text-shadow: none; -gtk-icon-shadow: none; }
+#forest-view, #start-page { background: @bg; color: @text; }
+.forest-toolbar { padding: 10px 14px; border-bottom: 1px solid @border; }
+.forest-path { border-color: @green; background: @green_soft; }
+.start-title { font-size: 26px; font-weight: 600; color: @text; }
+.start-search { min-height: 46px; border: 1px solid @border; border-radius: 12px; background: @bg; color: @muted; box-shadow: 0 1px 2px alpha(@shadow, 0.3); }
+.shortcut-tile { padding: 12px 4px 10px; min-width: 70px; border: none; border-radius: 12px; background: transparent; color: @muted; box-shadow: none; font-size: 12px; }
+.shortcut-tile:hover { background: @hover; }
+.shortcut-icon { min-width: 44px; min-height: 44px; border-radius: 12px; background: @green_soft; color: @green_ink; font-size: 20px; }
+tooltip { background: @text; border: none; border-radius: 6px; }
+tooltip label { color: @bg; font-size: 11.5px; }
+combobox button, menu { background: @bg; color: @text; border-color: @border; box-shadow: none; }
+menuitem { color: @text; }
+menuitem:hover { background: @hover; }
 #canopy { background: @bg; color: @text; }
 button { background-image: none; outline-color: @green; }
 

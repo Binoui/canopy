@@ -40,7 +40,8 @@ The top row has one tab per tree, in the order you started them. Trees that do n
 
 - **Ctrl+K** or the **Search or go…** pill opens the palette. Type to search your forest and your saved text, or to go to an address. **Enter** opens the selected result. **Alt+Enter** opens it in a new tree. **Escape** closes the palette and gives the focus back to the page.
 - **Ctrl+L** opens the same palette with the current address selected.
-- **Ctrl+T** or **+** starts a new tree from the palette.
+- **Ctrl+E** or the forest button opens every tree. Drag or scroll to pan, Ctrl+scroll to zoom, and use **Titles** to switch between pills and icons. Click a page to restore it.
+- **Ctrl+T** or **+** opens the new-tree page with frequent pages and usual paths from your history. A usual path loads its first page as a root, then its second page as a child. **Escape** returns to your page.
 - **Ctrl+1** to **Ctrl+9** switch to a tree.
 - **F6** moves the keyboard focus between the page and the current page in the strip. **Left** and **Right** walk the path, and **Enter** opens the focused page.
 - **Alt+Left** goes back to the parent page and **Ctrl+R** reloads the current page.
@@ -75,7 +76,7 @@ Recovering the comment or permalink depends on the site's DOM. When that context
 
 For a post that appears later in a dynamic feed, select the passage and press **Ctrl+S**. Automatic capture does not keep saving everything that appears while you scroll.
 
-Without `--data-dir`, Canopy keeps its database and WebKit profile in `$XDG_DATA_HOME/canopy`, or in `~/.local/share/canopy`. The interface follows the `theme_mode` session setting (`system`, `light` or `dark`). With `system`, it follows GTK's dark preference.
+Without `--data-dir`, Canopy keeps its database and WebKit profile in `$XDG_DATA_HOME/canopy`, or in `~/.local/share/canopy`. Choose **Theme: System**, **Theme: Light** or **Theme: Dark** in the Memory menu. The choice persists in the `theme_mode` session setting and applies immediately. With `system`, it follows GTK's dark preference.
 
 ## Check the project
 

@@ -739,9 +739,9 @@ impl Strip {
             return;
         }
         let alpha = if self.shade.get() == Shade::Dark {
-            0.5
+            0.3
         } else {
-            0.12
+            0.075
         } * openness;
         let top = state.height;
         let gradient = cairo::LinearGradient::new(0., top, 0., top + 22.);

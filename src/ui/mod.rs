@@ -12,7 +12,7 @@ use webkit2gtk::WebViewExt;
 
 pub use crate::chrome::register_font;
 use crate::{
-    browser::{Browser, SearchHit, Snapshot, VisitId, VisitPreview},
+    browser::{Browser, NavigationTarget, SearchHit, Snapshot, VisitId, VisitPreview},
     chrome::{
         ChromeFrame, ChromeHost, ChromeIntent, NativeChrome, PaletteScope, PaletteSeed, Toast,
     },
@@ -30,7 +30,13 @@ pub struct Ui {
     refresh_scheduled: Cell<bool>,
     /// A queued page activated by "New branch here", whose palette opens once it commits.
     branch_after_commit: Cell<Option<VisitId>>,
+    path_after_commit: RefCell<Option<PathContinuation>>,
     me: Weak<Ui>,
+}
+
+struct PathContinuation {
+    previous: Option<VisitId>,
+    second: url::Url,
 }
 
 impl Ui {
@@ -62,6 +68,7 @@ impl Ui {
                 chrome,
                 refresh_scheduled: Cell::new(false),
                 branch_after_commit: Cell::new(None),
+                path_after_commit: RefCell::new(None),
                 me: me.clone(),
             }
         });
@@ -80,6 +87,7 @@ impl Ui {
                 EngineEvent::Loading(true) => {}
                 EngineEvent::Error(message) => {
                     ui.branch_after_commit.set(None);
+                    ui.path_after_commit.borrow_mut().take();
                     ui.chrome.toast(Toast::Error(message));
                 }
                 EngineEvent::Remembered(_) => ui
@@ -114,6 +122,7 @@ impl Ui {
             forest: ForestProjection::from_snapshot(browser.snapshot()?, browser.tree_states()?)?,
             capture_enabled: browser.capture_enabled()?,
             theme: browser.theme_mode()?,
+            suggestions: browser.start_suggestions()?,
         })
     }
 
@@ -145,6 +154,17 @@ impl Ui {
                 self.window.set_title(&title);
                 let current = frame.forest.current();
                 self.chrome.present(frame);
+                if !self.engine.native.is_loading() {
+                    let path = self.path_after_commit.borrow_mut().take();
+                    if let Some(path) = path {
+                        if let Some(root) = current.filter(|id| Some(*id) != path.previous) {
+                            self.report(
+                                self.engine
+                                    .navigate(path.second, NavigationTarget::ChildOf(root)),
+                            );
+                        }
+                    }
+                }
                 if current.is_some()
                     && self.branch_after_commit.get() == current
                     && !self.engine.native.is_loading()
@@ -185,11 +205,11 @@ impl Ui {
         let Some(shortcut) = Shortcut::of(event) else {
             return glib::Propagation::Proceed;
         };
+        self.path_after_commit.borrow_mut().take();
         match shortcut {
             Shortcut::Palette(seed) => self.open_palette(seed),
-            Shortcut::NewTree => self
-                .chrome
-                .open_palette(PaletteScope::NewTree, PaletteSeed::Empty),
+            Shortcut::NewTree => self.chrome.new_tree(),
+            Shortcut::Forest => self.chrome.toggle_forest(),
             Shortcut::Reload => self.report(self.engine.reload()),
             Shortcut::RememberSelection => self.report(self.engine.remember_selection()),
             Shortcut::Quit => self.window.close(),
@@ -217,6 +237,7 @@ impl Ui {
 enum Shortcut {
     Palette(PaletteSeed),
     NewTree,
+    Forest,
     Reload,
     RememberSelection,
     Quit,
@@ -237,6 +258,7 @@ impl Shortcut {
             (true, _) if keyval == key::k => Shortcut::Palette(PaletteSeed::Empty),
             (true, _) if keyval == key::l => Shortcut::Palette(PaletteSeed::CurrentAddress),
             (true, _) if keyval == key::t => Shortcut::NewTree,
+            (true, _) if keyval == key::e => Shortcut::Forest,
             (true, _) if keyval == key::r => Shortcut::Reload,
             (true, _) if keyval == key::s => Shortcut::RememberSelection,
             (true, _) if keyval == key::q => Shortcut::Quit,
@@ -253,7 +275,25 @@ impl ChromeHost for Ui {
     fn dispatch(&self, intent: ChromeIntent) {
         let Some(ui) = self.me.upgrade() else { return };
         self.branch_after_commit.set(None);
+        self.path_after_commit.borrow_mut().take();
         let result = match intent {
+            ChromeIntent::CancelContinuation => Ok(()),
+            ChromeIntent::OpenPath(path) => {
+                let previous = self.snapshot().ok().and_then(|s| s.current);
+                let result = self.engine.navigate(path.first, NavigationTarget::Root);
+                if result.is_ok() {
+                    *self.path_after_commit.borrow_mut() = Some(PathContinuation {
+                        previous,
+                        second: path.second,
+                    });
+                }
+                result
+            }
+            ChromeIntent::SetTheme(mode) => {
+                let result = self.browser.borrow_mut().set_theme_mode(mode);
+                self.schedule_refresh();
+                result
+            }
             ChromeIntent::SelectTree(tree) => {
                 let target = self.browser.borrow().tree_target(tree);
                 target.and_then(|visit| self.engine.restore(visit))

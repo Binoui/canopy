@@ -1,10 +1,12 @@
 mod card;
 mod favicon;
+mod forest_view;
 mod graph;
 mod icons;
 mod memory;
 mod palette;
 mod presentation;
+mod start;
 mod strip;
 mod tabs;
 mod theme;
@@ -23,7 +25,8 @@ pub use theme::register_font;
 
 use crate::{
     browser::{
-        NavigationTarget, SearchHit, ThemeMode, TreeId, Visit, VisitId, VisitPreview, VisitState,
+        NavigationTarget, SearchHit, StartSuggestions, ThemeMode, TreeId, UsualPath, Visit,
+        VisitId, VisitPreview, VisitState,
     },
     forest::ForestProjection,
 };
@@ -47,6 +50,7 @@ pub struct ChromeFrame {
     pub forest: ForestProjection,
     pub capture_enabled: bool,
     pub theme: ThemeMode,
+    pub suggestions: StartSuggestions,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,6 +69,9 @@ pub enum PaletteSeed {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChromeIntent {
     SelectTree(TreeId),
+    OpenPath(UsualPath),
+    SetTheme(ThemeMode),
+    CancelContinuation,
     Restore(VisitId),
     /// Activate a queued page, then open a palette anchored on it once it commits.
     BranchFromQueued(VisitId),
@@ -95,8 +102,19 @@ pub struct NativeChrome {
     inner: Rc<Inner>,
 }
 
+#[derive(Clone, Copy, Default, PartialEq)]
+enum Surface {
+    #[default]
+    Reading,
+    Start,
+    Forest,
+}
+
 struct Inner {
     page: gtk::Widget,
+    surface: Cell<Surface>,
+    start: Rc<start::StartPage>,
+    forest_view: Rc<forest_view::ForestView>,
     css: gtk::CssProvider,
     theme: Cell<ThemeMode>,
     shade: Cell<Option<Shade>>,
@@ -173,6 +191,31 @@ impl NativeChrome {
                     }
                 },
             );
+            let w = weak.clone();
+            let start = start::StartPage::new(favicons.clone(), move |intent| {
+                if let Some(inner) = w.upgrade() {
+                    match intent {
+                        Some(intent) => inner.emit(intent),
+                        None => inner.open_palette(PaletteScope::NewTree, PaletteSeed::Empty),
+                    }
+                }
+            });
+            let w = weak.clone();
+            let close = weak.clone();
+            let forest_view = forest_view::ForestView::new(
+                favicons.clone(),
+                move |id| {
+                    if let Some(inner) = w.upgrade() {
+                        inner.set_surface(Surface::Reading);
+                        inner.emit(ChromeIntent::Restore(id));
+                    }
+                },
+                move || {
+                    if let Some(inner) = close.upgrade() {
+                        inner.set_surface(Surface::Reading);
+                    }
+                },
+            );
             let toast = gtk::Revealer::new();
             toast.set_widget_name("toast-revealer");
             toast.set_transition_type(gtk::RevealerTransitionType::Crossfade);
@@ -189,6 +232,9 @@ impl NativeChrome {
             toast_box.show_all();
             Inner {
                 page: page.clone().upcast(),
+                surface: Cell::new(Surface::Reading),
+                start,
+                forest_view,
                 css,
                 theme: Cell::new(ThemeMode::System),
                 shade: Cell::new(None),
@@ -232,6 +278,8 @@ impl NativeChrome {
         card_frame.pack_start(&inner.card.frame, true, true, 0);
         overlay.add_overlay(&card_frame);
         overlay.set_overlay_pass_through(&card_frame, true);
+        overlay.add_overlay(&inner.start.root);
+        overlay.add_overlay(&inner.forest_view.root);
         overlay.add_overlay(&inner.palette.root);
         overlay.add_overlay(&inner.toast);
         overlay.set_overlay_pass_through(&inner.toast, true);
@@ -259,6 +307,7 @@ impl NativeChrome {
                         natural.min(height - y - 8 + bottom),
                     )
                 }
+                "forest-view" | "start-page" => (0, 94, width, height - 94),
                 "palette" => (0, 0, width, height),
                 "toast-revealer" => {
                     let (_, natural) = widget.preferred_size();
@@ -293,8 +342,18 @@ impl NativeChrome {
     pub fn present(&self, frame: ChromeFrame) {
         let inner = &self.inner;
         let forest = Rc::new(frame.forest);
+        let previous = inner.current();
         *inner.forest.borrow_mut() = Some(forest.clone());
+        if forest.current() != previous && inner.surface.get() != Surface::Reading {
+            inner.set_surface(Surface::Reading);
+        }
         inner.tabs.present(&forest);
+        inner.forest_view.present(forest.clone());
+        inner.start.present(&frame.suggestions);
+        inner.palette.set_suggestions(frame.suggestions);
+        if forest.trees().is_empty() {
+            inner.set_surface(Surface::Start);
+        }
         inner.strip.present(forest.clone());
         inner.palette.present(forest.clone());
         if let Some(id) = inner.card.visit() {
@@ -305,13 +364,31 @@ impl NativeChrome {
         }
         inner.theme.set(frame.theme);
         inner.apply_theme();
-        inner
-            .memory
-            .present(frame.capture_enabled, forest.current(), inner.shade());
+        inner.memory.present(
+            frame.capture_enabled,
+            forest.current(),
+            inner.shade(),
+            frame.theme,
+        );
     }
 
     pub fn open_palette(&self, scope: PaletteScope, seed: PaletteSeed) {
+        let scope = if self.inner.surface.get() == Surface::Start {
+            PaletteScope::NewTree
+        } else {
+            scope
+        };
         self.inner.open_palette(scope, seed);
+    }
+
+    pub fn new_tree(&self) {
+        self.inner.emit(ChromeIntent::CancelContinuation);
+        self.inner.set_surface(Surface::Start);
+    }
+
+    pub fn toggle_forest(&self) {
+        self.inner.emit(ChromeIntent::CancelContinuation);
+        self.inner.toggle_forest();
     }
 
     pub fn toast(&self, toast: Toast) {
@@ -332,11 +409,42 @@ impl NativeChrome {
             self.inner.palette.close();
             return true;
         }
+        if self.inner.surface.get() != Surface::Reading && self.inner.current().is_some() {
+            self.inner.set_surface(Surface::Reading);
+            self.inner.page.grab_focus();
+            return true;
+        }
         false
     }
 }
 
 impl Inner {
+    fn set_surface(self: &Rc<Self>, surface: Surface) {
+        self.surface.set(surface);
+        self.start.root.set_visible(surface == Surface::Start);
+        self.forest_view
+            .root
+            .set_visible(surface == Surface::Forest);
+        self.step(Input::Layer(if surface == Surface::Reading {
+            Layer::None
+        } else {
+            Layer::Palette
+        }));
+        if surface == Surface::Forest {
+            self.forest_view.open();
+        }
+    }
+
+    fn toggle_forest(self: &Rc<Self>) {
+        self.emit(ChromeIntent::CancelContinuation);
+        self.palette.close();
+        self.set_surface(if self.surface.get() == Surface::Forest {
+            Surface::Reading
+        } else {
+            Surface::Forest
+        });
+    }
+
     fn shade(&self) -> Shade {
         self.shade.get().unwrap_or(Shade::Light)
     }
@@ -367,6 +475,8 @@ impl Inner {
             .load_from_data(shade.css().as_bytes())
             .expect("the generated chrome CSS parses");
         self.strip.set_shade(shade);
+        self.start.set_shade(shade);
+        self.forest_view.set_shade(shade);
     }
 
     fn step(self: &Rc<Self>, input: Input) {
@@ -456,13 +566,28 @@ impl Inner {
         }
     }
 
-    fn emit(&self, intent: ChromeIntent) {
+    fn emit(self: &Rc<Self>, intent: ChromeIntent) {
+        if matches!(
+            intent,
+            ChromeIntent::Navigate { .. }
+                | ChromeIntent::OpenPath(_)
+                | ChromeIntent::Restore(_)
+                | ChromeIntent::SelectTree(_)
+        ) {
+            self.set_surface(Surface::Reading);
+        }
         if let Some(host) = self.host.upgrade() {
             host.dispatch(intent);
         }
     }
 
     fn open_palette(self: &Rc<Self>, scope: PaletteScope, seed: PaletteSeed) {
+        self.emit(ChromeIntent::CancelContinuation);
+        let scope = if self.surface.get() == Surface::Start {
+            PaletteScope::NewTree
+        } else {
+            scope
+        };
         self.step(Input::Layer(Layer::Palette));
         self.palette.open(scope, seed);
     }
@@ -474,7 +599,11 @@ impl Inner {
     fn tab_event(self: &Rc<Self>, event: TabEvent) {
         match event {
             TabEvent::Select(tree) => self.emit(ChromeIntent::SelectTree(tree)),
-            TabEvent::NewTree => self.open_palette(PaletteScope::NewTree, PaletteSeed::Empty),
+            TabEvent::NewTree => {
+                self.emit(ChromeIntent::CancelContinuation);
+                self.set_surface(Surface::Start);
+            }
+            TabEvent::Forest => self.toggle_forest(),
             TabEvent::Search => {
                 let scope = self
                     .current()
@@ -516,7 +645,13 @@ impl Inner {
     fn palette_event(self: &Rc<Self>, event: PaletteEvent) {
         match event {
             PaletteEvent::Run(intent) => self.emit(intent),
-            PaletteEvent::Closed => self.step(Input::Layer(Layer::None)),
+            PaletteEvent::Closed => {
+                self.step(Input::Layer(if self.surface.get() == Surface::Reading {
+                    Layer::None
+                } else {
+                    Layer::Palette
+                }))
+            }
         }
     }
 

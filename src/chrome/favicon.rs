@@ -68,13 +68,23 @@ impl Favicons {
     }
 
     pub fn surface(self: &Rc<Self>, visit: &Visit, size: i32, scale: i32) -> cairo::Surface {
-        let key = visit.url.to_string();
-        let host = visit.url.host_str().unwrap_or("?");
+        self.url_surface(&visit.url, visit.state == VisitState::Opened, size, scale)
+    }
+
+    pub fn url_surface(
+        self: &Rc<Self>,
+        url: &url::Url,
+        opened: bool,
+        size: i32,
+        scale: i32,
+    ) -> cairo::Surface {
+        let key = url.to_string();
+        let host = url.host_str().unwrap_or("?");
         let known = self.pages.borrow_mut().get(&key).cloned();
         let icon = match known {
             Some(icon) => icon,
             None => {
-                if visit.state == VisitState::Opened {
+                if opened {
                     self.request(key);
                 }
                 None

@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     address::{destination, web_search, Destination},
-    browser::{NavigationTarget, SearchHit, VisitId, VisitState},
+    browser::{NavigationTarget, SearchHit, StartSuggestions, UsualPath, VisitId, VisitState},
     forest::ForestProjection,
 };
 
@@ -29,6 +29,8 @@ pub(crate) enum PaletteItem {
         excerpt: String,
     },
     Go(Url),
+    Shortcut(Url),
+    Path(UsualPath),
     WebSearch {
         url: Url,
         query: String,
@@ -37,6 +39,8 @@ pub(crate) enum PaletteItem {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Group {
+    Shortcuts,
+    Paths,
     Pending,
     Forest,
     Saved,
@@ -46,6 +50,8 @@ pub(crate) enum Group {
 impl Group {
     fn title(self) -> &'static str {
         match self {
+            Group::Shortcuts => "Frequent pages",
+            Group::Paths => "Usual paths",
             Group::Pending => "Pending in this tree",
             Group::Forest => "In your forest",
             Group::Saved => "Saved text",
@@ -133,6 +139,11 @@ pub(crate) fn intent(
         (false, PaletteScope::From(parent)) => NavigationTarget::ChildOf(parent),
     };
     Some(match item {
+        PaletteItem::Path(path) => ChromeIntent::OpenPath(path.clone()),
+        PaletteItem::Shortcut(url) => ChromeIntent::Navigate {
+            url: url.clone(),
+            target: NavigationTarget::Root,
+        },
         PaletteItem::Page(visit) if new_tree => ChromeIntent::Navigate {
             url: forest.visit(*visit)?.url.clone(),
             target: NavigationTarget::Root,
@@ -170,6 +181,7 @@ pub(super) struct Palette {
 
 struct State {
     scope: PaletteScope,
+    suggestions: StartSuggestions,
     forest: Option<Rc<ForestProjection>>,
     items: Vec<PaletteItem>,
     rows: Vec<(gtk::ListBoxRow, Option<usize>)>,
@@ -240,6 +252,7 @@ impl Palette {
             generation: Cell::new(0),
             state: RefCell::new(State {
                 scope: PaletteScope::NewTree,
+                suggestions: StartSuggestions::default(),
                 forest: None,
                 items: Vec::new(),
                 rows: Vec::new(),
@@ -307,6 +320,10 @@ impl Palette {
             }
             glib::Propagation::Proceed
         });
+    }
+
+    pub fn set_suggestions(&self, suggestions: StartSuggestions) {
+        self.state.borrow_mut().suggestions = suggestions;
     }
 
     pub fn is_open(&self) -> bool {
@@ -389,7 +406,24 @@ impl Palette {
         let Some(forest) = self.state.borrow().forest.clone() else {
             return;
         };
-        let (items, first) = results(&query, hits, &forest);
+        let (mut items, first) = results(&query, hits, &forest);
+        if query.trim().is_empty() {
+            let state = self.state.borrow();
+            items.extend(
+                state
+                    .suggestions
+                    .shortcuts
+                    .iter()
+                    .map(|s| (Group::Shortcuts, PaletteItem::Shortcut(s.url.clone()))),
+            );
+            items.extend(
+                state
+                    .suggestions
+                    .paths
+                    .iter()
+                    .map(|p| (Group::Paths, PaletteItem::Path(p.clone()))),
+            );
+        }
         for row in self.list.children() {
             self.list.remove(&row);
         }
@@ -414,6 +448,8 @@ impl Palette {
                 PaletteItem::Page(_) => "palette-page",
                 PaletteItem::Saved { .. } => "palette-saved",
                 PaletteItem::Go(_) => "palette-go",
+                PaletteItem::Shortcut(_) => "palette-shortcut",
+                PaletteItem::Path(_) => "palette-path",
                 PaletteItem::WebSearch { .. } => "palette-search",
             });
             row.add(&self.item_widget(item, &forest, scale));
@@ -454,6 +490,18 @@ impl Palette {
                 let excerpt = excerpt.split_whitespace().collect::<Vec<_>>().join(" ");
                 (title.clone(), excerpt.chars().take(140).collect())
             }
+            PaletteItem::Path(path) => (
+                format!(
+                    "{} → {}",
+                    path.first.host_str().unwrap_or_default(),
+                    path.second.host_str().unwrap_or_default()
+                ),
+                format!("{} visits", path.visits),
+            ),
+            PaletteItem::Shortcut(url) => (
+                url.host_str().unwrap_or_default().to_owned(),
+                url.path().to_owned(),
+            ),
             PaletteItem::Go(url) => {
                 content.pack_start(&icon(Icon::Globe, 15), false, false, 0);
                 (format!("Go to {url}"), String::new())
