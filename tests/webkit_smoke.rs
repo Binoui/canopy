@@ -14,7 +14,7 @@ use std::{
 use anyhow::{bail, Context, Result};
 use canopy::{
     address::web_url,
-    browser::{Snapshot, VisitState},
+    browser::{NavigationTarget, Snapshot, VisitState},
     ui::Ui,
 };
 use gdk::prelude::*;
@@ -36,7 +36,7 @@ fn main() -> Result<()> {
         .context("champ adresse absent")?
         .downcast::<gtk::Entry>()
         .unwrap();
-    ui.open_address(true);
+    ui.open_address(NavigationTarget::Root);
     address.set_text(&fixture.url("/a"));
     address.emit_activate();
     loaded(&ui, "/a", 1)?;
@@ -101,8 +101,10 @@ fn main() -> Result<()> {
     assert_eq!(ui.snapshot()?.current, Some(c));
     println!("PASS rechargement sans nouveau nœud.");
 
-    ui.engine
-        .navigate(web_url(&fixture.url("/redirect"))?, false)?;
+    ui.engine.navigate(
+        web_url(&fixture.url("/redirect"))?,
+        NavigationTarget::ChildOf(ui.snapshot()?.current.unwrap()),
+    )?;
     loaded(&ui, "/final", 4)?;
     assert_eq!(ui.snapshot()?.current_visit().unwrap().url.path(), "/final");
     println!("PASS redirection HTTP 302 enregistrée une seule fois avec URL finale.");
@@ -116,7 +118,10 @@ fn main() -> Result<()> {
         .unwrap()
         .downcast::<gtk::Label>()
         .unwrap();
-    ui.engine.navigate(web_url(&failed_url)?, false)?;
+    ui.engine.navigate(
+        web_url(&failed_url)?,
+        NavigationTarget::ChildOf(ui.snapshot()?.current.unwrap()),
+    )?;
     wait("échec de connexion", || {
         notice.is_visible()
             && notice.text().contains("Impossible de charger")
@@ -145,8 +150,12 @@ fn main() -> Result<()> {
     assert_eq!(ui.snapshot()?.current, Some(pending.id));
     println!("PASS lien target=_blank gardé en attente puis activé sans doublon.");
 
-    ui.engine.navigate(web_url(&fixture.url("/b"))?, false)?;
-    ui.engine.navigate(web_url(&fixture.url("/c"))?, true)?;
+    ui.engine.navigate(
+        web_url(&fixture.url("/b"))?,
+        NavigationTarget::ChildOf(ui.snapshot()?.current.unwrap()),
+    )?;
+    ui.engine
+        .navigate(web_url(&fixture.url("/c"))?, NavigationTarget::Root)?;
     loaded(&ui, "/c", 6)?;
     assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
     println!("PASS requêtes rapprochées coalescées ; le dernier nouvel arbre reste racine.");

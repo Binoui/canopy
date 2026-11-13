@@ -10,7 +10,7 @@ use gtk::prelude::*;
 
 use crate::{
     address::destination,
-    browser::{Browser, CaptureKind, SearchHit, Snapshot, VisitId, VisitState},
+    browser::{Browser, CaptureKind, NavigationTarget, SearchHit, Snapshot, VisitId, VisitState},
     engine::{Engine, EngineEvent},
 };
 
@@ -20,7 +20,7 @@ pub struct Ui {
     browser: Rc<RefCell<Browser>>,
     address: gtk::Entry,
     address_revealer: gtk::Revealer,
-    root_mode: Cell<bool>,
+    navigation_target: Cell<NavigationTarget>,
     address_mode: gtk::Label,
     crumbs: gtk::Box,
     domain: gtk::Button,
@@ -235,7 +235,7 @@ impl Ui {
             browser,
             address,
             address_revealer,
-            root_mode: Cell::new(false),
+            navigation_target: Cell::new(NavigationTarget::Root),
             address_mode,
             crumbs,
             domain,
@@ -339,7 +339,7 @@ impl Ui {
             ui.address.connect_activate(move |entry| {
                 if let Some(ui) = weak.upgrade() {
                     match destination(entry.text().as_str())
-                        .and_then(|url| ui.engine.navigate(url, ui.root_mode.get()))
+                        .and_then(|url| ui.engine.navigate(url, ui.navigation_target.get()))
                     {
                         Ok(()) => {
                             ui.hide_address();
@@ -354,7 +354,7 @@ impl Ui {
             let weak = Rc::downgrade(&ui);
             ui.domain.connect_clicked(move |_| {
                 if let Some(ui) = weak.upgrade() {
-                    ui.open_address(false);
+                    ui.open_current_address();
                 }
             });
         }
@@ -362,7 +362,7 @@ impl Ui {
             let weak = Rc::downgrade(&ui);
             new_tree.connect_clicked(move |_| {
                 if let Some(ui) = weak.upgrade() {
-                    ui.open_address(true);
+                    ui.open_address(NavigationTarget::Root);
                 }
             });
         }
@@ -417,11 +417,11 @@ impl Ui {
                 let control = event.state().contains(gdk::ModifierType::CONTROL_MASK);
                 let alt = event.state().contains(gdk::ModifierType::MOD1_MASK);
                 if control && (key == gdk::keys::constants::l || key == gdk::keys::constants::L) {
-                    ui.open_address(false);
+                    ui.open_current_address();
                 } else if control
                     && (key == gdk::keys::constants::t || key == gdk::keys::constants::T)
                 {
-                    ui.open_address(true);
+                    ui.open_address(NavigationTarget::Root);
                 } else if control
                     && (key == gdk::keys::constants::r || key == gdk::keys::constants::R)
                 {
@@ -462,8 +462,20 @@ impl Ui {
         self.address_revealer.set_reveal_child(false);
     }
 
-    pub fn open_address(&self, new_root: bool) {
-        self.root_mode.set(new_root);
+    fn open_current_address(&self) {
+        match self.snapshot() {
+            Ok(snapshot) => self.open_address(
+                snapshot
+                    .current
+                    .map_or(NavigationTarget::Root, NavigationTarget::ChildOf),
+            ),
+            Err(error) => self.show_error(&error.to_string()),
+        }
+    }
+
+    pub fn open_address(&self, target: NavigationTarget) {
+        self.navigation_target.set(target);
+        let new_root = matches!(target, NavigationTarget::Root);
         self.address_mode.set_text(if new_root {
             "Nouvel arbre"
         } else {

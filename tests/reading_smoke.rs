@@ -13,7 +13,11 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use canopy::{address::web_url, browser::VisitState, ui::Ui};
+use canopy::{
+    address::web_url,
+    browser::{NavigationTarget, VisitState},
+    ui::Ui,
+};
 use gdk::prelude::*;
 use gtk::prelude::*;
 use javascriptcore::ValueExt;
@@ -28,8 +32,10 @@ fn main() -> Result<()> {
     ui.window.show_all();
     ui.hide_address();
     pump(300);
-    ui.engine
-        .navigate(web_url(&fixture.url("/discussion"))?, true)?;
+    ui.engine.navigate(
+        web_url(&fixture.url("/discussion"))?,
+        NavigationTarget::Root,
+    )?;
     loaded(&ui, "/discussion")?;
     let source_id = ui.snapshot()?.current.unwrap();
     let original_url = ui.snapshot()?.current_visit().unwrap().url.clone();
@@ -250,8 +256,10 @@ fn main() -> Result<()> {
     assert!(ui.search_hits("SOURCE_EDIT_SECRET")?.is_empty());
     println!("PASS explicit selections work with automatic capture disabled; mixed and editable ranges do not leak controls.");
 
-    ui.engine
-        .navigate(web_url(&fixture.url("/no-capture"))?, true)?;
+    ui.engine.navigate(
+        web_url(&fixture.url("/no-capture"))?,
+        NavigationTarget::Root,
+    )?;
     loaded(&ui, "/no-capture")?;
     pump(100);
     assert!(ui.search_hits("automatic off sentinel")?.is_empty());
@@ -259,7 +267,8 @@ fn main() -> Result<()> {
     wait("capture réactivée", || {
         !ui.search_hits("automatic off sentinel").unwrap().is_empty()
     })?;
-    ui.engine.navigate(web_url(&fixture.url("/login"))?, true)?;
+    ui.engine
+        .navigate(web_url(&fixture.url("/login"))?, NavigationTarget::Root)?;
     loaded(&ui, "/login")?;
     pump(150);
     assert!(ui.search_hits("VISIBLE_LOGIN_SENTINEL")?.is_empty());

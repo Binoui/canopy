@@ -36,6 +36,12 @@ impl TreeId {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NavigationTarget {
+    Root,
+    ChildOf(VisitId),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TreeState {
     pub root: TreeId,
@@ -458,9 +464,25 @@ impl Browser {
             .context("Cette visite n'existe plus.")
     }
 
-    pub fn navigate(&mut self, url: Url, new_root: bool) -> Result<Url> {
+    pub fn navigate(&mut self, url: Url, target: NavigationTarget) -> Result<Url> {
         web_url(url.as_str())?;
-        let parent = if new_root { None } else { self.current_id()? };
+        let parent = match target {
+            NavigationTarget::Root => None,
+            NavigationTarget::ChildOf(parent) => {
+                let opened: bool = self
+                    .connection
+                    .query_row(
+                        "SELECT opened_at IS NOT NULL FROM visits WHERE id=?1",
+                        [parent.to_string()],
+                        |row| row.get(0),
+                    )
+                    .context("The navigation parent does not exist.")?;
+                if !opened {
+                    bail!("The navigation parent has not been opened.");
+                }
+                Some(parent)
+            }
+        };
         self.navigation = Navigation::Requested {
             intent: Intent::New {
                 parent,
@@ -864,22 +886,27 @@ mod tests {
     fn memory() -> Browser {
         Browser::with_connection(Connection::open_in_memory().unwrap()).unwrap()
     }
-    fn follow(browser: &mut Browser, path: &str, root: bool) -> VisitId {
-        let url = browser.navigate(url(path), root).unwrap();
+    fn follow(browser: &mut Browser, path: &str, target: NavigationTarget) -> VisitId {
+        let url = browser.navigate(url(path), target).unwrap();
         browser.started(url.clone()).unwrap();
         assert!(browser.committed(url).unwrap());
         browser.snapshot().unwrap().current.unwrap()
     }
 
+    fn follow_child(browser: &mut Browser, path: &str) -> VisitId {
+        let parent = browser.current_id().unwrap().unwrap();
+        follow(browser, path, NavigationTarget::ChildOf(parent))
+    }
+
     #[test]
     fn returning_then_following_keeps_both_children() {
         let mut browser = memory();
-        let a = follow(&mut browser, "a", true);
-        let b = follow(&mut browser, "b", false);
+        let a = follow(&mut browser, "a", NavigationTarget::Root);
+        let b = follow_child(&mut browser, "b");
         let load = browser.restore(a).unwrap();
         browser.started(load.clone()).unwrap();
         browser.committed(load).unwrap();
-        let c = follow(&mut browser, "c", false);
+        let c = follow_child(&mut browser, "c");
         let snapshot = browser.snapshot().unwrap();
         assert_eq!(snapshot.visits.len(), 3);
         assert_eq!(snapshot.current, Some(c));
@@ -905,8 +932,8 @@ mod tests {
     #[test]
     fn same_url_in_another_context_is_a_new_visit() {
         let mut browser = memory();
-        let a = follow(&mut browser, "same", true);
-        let b = follow(&mut browser, "same", false);
+        let a = follow(&mut browser, "same", NavigationTarget::Root);
+        let b = follow_child(&mut browser, "same");
         assert_ne!(a, b);
         assert_eq!(browser.snapshot().unwrap().visits[1].parent, Some(a));
     }
@@ -914,7 +941,7 @@ mod tests {
     #[test]
     fn reload_redirect_and_duplicate_commits_do_not_grow_the_tree() {
         let mut browser = memory();
-        let a = follow(&mut browser, "a", true);
+        let a = follow(&mut browser, "a", NavigationTarget::Root);
         let request = browser.reload().unwrap().unwrap();
         browser.started(request).unwrap();
         browser.redirected(url("final"));
@@ -929,12 +956,16 @@ mod tests {
     #[test]
     fn failed_and_cancelled_navigation_preserve_committed_state() {
         let mut browser = memory();
-        let a = follow(&mut browser, "a", true);
-        browser.navigate(url("bad"), false).unwrap();
+        let a = follow(&mut browser, "a", NavigationTarget::Root);
+        browser
+            .navigate(url("bad"), NavigationTarget::ChildOf(a))
+            .unwrap();
         browser.started(url("bad")).unwrap();
         browser.failed(&url("bad"), false);
         assert!(!browser.committed(url("bad")).unwrap());
-        browser.navigate(url("new"), false).unwrap();
+        browser
+            .navigate(url("new"), NavigationTarget::ChildOf(a))
+            .unwrap();
         browser.failed(&url("bad"), true);
         browser.started(url("new")).unwrap();
         browser.committed(url("new")).unwrap();
@@ -949,11 +980,11 @@ mod tests {
         let db = directory.path().join("forest.sqlite3");
         let expected = {
             let mut browser = Browser::open(&db).unwrap();
-            follow(&mut browser, "a", true);
+            follow(&mut browser, "a", NavigationTarget::Root);
             browser
                 .title_changed(&url("a"), "Documentation Rust")
                 .unwrap();
-            follow(&mut browser, "b", true);
+            follow(&mut browser, "b", NavigationTarget::Root);
             browser.title_changed(&url("b"), "Une page à 100%").unwrap();
             assert_eq!(browser.search("Rust").unwrap().len(), 1);
             assert_eq!(browser.search("%").unwrap().len(), 1);
@@ -972,8 +1003,8 @@ mod tests {
     #[test]
     fn late_title_does_not_rename_a_different_page() {
         let mut browser = memory();
-        follow(&mut browser, "a", true);
-        follow(&mut browser, "b", false);
+        follow(&mut browser, "a", NavigationTarget::Root);
+        follow_child(&mut browser, "b");
         browser.title_changed(&url("a"), "Old title").unwrap();
         assert!(browser
             .snapshot()
@@ -1005,8 +1036,10 @@ mod tests {
     #[test]
     fn queueing_keeps_cursor_and_pending_navigation() {
         let mut browser = memory();
-        let parent = follow(&mut browser, "thread", true);
-        browser.navigate(url("other-root"), true).unwrap();
+        let parent = follow(&mut browser, "thread", NavigationTarget::Root);
+        browser
+            .navigate(url("other-root"), NavigationTarget::Root)
+            .unwrap();
         let children: Vec<_> = (0..3)
             .map(|i| {
                 browser
@@ -1038,7 +1071,7 @@ mod tests {
     #[test]
     fn identical_destinations_from_different_comments_remain_distinct() {
         let mut browser = memory();
-        let parent = follow(&mut browser, "thread", true);
+        let parent = follow(&mut browser, "thread", NavigationTarget::Root);
         let first = browser
             .queue_link(parent, url("article"), source("one"))
             .unwrap();
@@ -1053,7 +1086,7 @@ mod tests {
     #[test]
     fn failed_queued_activation_preserves_queue_then_redirect_opens_same_row() {
         let mut browser = memory();
-        let parent = follow(&mut browser, "thread", true);
+        let parent = follow(&mut browser, "thread", NavigationTarget::Root);
         let queued = browser
             .queue_link(parent, url("article"), source("one"))
             .unwrap();
@@ -1078,7 +1111,7 @@ mod tests {
     #[test]
     fn captures_keep_versions_and_selection_hits_are_individual() {
         let mut browser = memory();
-        let visit = follow(&mut browser, "article", true);
+        let visit = follow(&mut browser, "article", NavigationTarget::Root);
         let first = payload(
             "article",
             "The velvet orbital caching phrase is here.",
@@ -1132,7 +1165,7 @@ mod tests {
     #[test]
     fn capture_search_uses_immutable_source_and_keeps_uncaptured_queue_hits() {
         let mut browser = memory();
-        let parent = follow(&mut browser, "thread", true);
+        let parent = follow(&mut browser, "thread", NavigationTarget::Root);
         let mut origin = source("one");
         origin.excerpt = "commentcontextneedle from the original source".into();
         let article = browser
@@ -1178,7 +1211,7 @@ mod tests {
     #[test]
     fn invalid_or_stale_capture_and_source_results_do_not_mutate_visits() {
         let mut browser = memory();
-        let parent = follow(&mut browser, "thread", true);
+        let parent = follow(&mut browser, "thread", NavigationTarget::Root);
         let queued = browser
             .queue_link(parent, url("article"), source("one"))
             .unwrap();
@@ -1224,7 +1257,7 @@ mod tests {
     #[test]
     fn unicode_capture_cap_and_empty_capture_are_safe() {
         let mut browser = memory();
-        let visit = follow(&mut browser, "article", true);
+        let visit = follow(&mut browser, "article", NavigationTarget::Root);
         assert!(browser
             .save_capture(
                 visit,
@@ -1251,7 +1284,7 @@ mod tests {
         let path = directory.path().join("reading.sqlite3");
         let (snapshot, saved, parent) = {
             let mut browser = Browser::open(&path).unwrap();
-            let parent = follow(&mut browser, "thread", true);
+            let parent = follow(&mut browser, "thread", NavigationTarget::Root);
             browser
                 .queue_link(parent, url("first"), source("one"))
                 .unwrap();
@@ -1290,7 +1323,7 @@ mod tests {
     #[test]
     fn source_citation_creates_child_without_replacing_parent_feed_url() {
         let mut browser = memory();
-        let parent = follow(&mut browser, "thread", true);
+        let parent = follow(&mut browser, "thread", NavigationTarget::Root);
         let mut origin = source("one");
         origin.citation_url = Some(url("exact-comment#one"));
         let child = browser.queue_link(parent, url("article"), origin).unwrap();
@@ -1357,7 +1390,7 @@ mod tests {
         let path = directory.path().join("exploration.sqlite3");
         let (parent, opened, queued) = {
             let mut browser = Browser::open(&path).unwrap();
-            let parent = follow(&mut browser, "thread", true);
+            let parent = follow(&mut browser, "thread", NavigationTarget::Root);
             let links: Vec<_> = (0..3)
                 .map(|i| {
                     browser
@@ -1402,9 +1435,9 @@ mod tests {
         let path = dir.path().join("forest.db");
         let (a, child) = {
             let mut browser = Browser::open(&path).unwrap();
-            let a = follow(&mut browser, "thread", true);
-            let child = follow(&mut browser, "child", false);
-            let b = follow(&mut browser, "b", true);
+            let a = follow(&mut browser, "thread", NavigationTarget::Root);
+            let child = follow_child(&mut browser, "child");
+            let b = follow(&mut browser, "b", NavigationTarget::Root);
             let queued = browser
                 .queue_link(a, url("queued"), source("context"))
                 .unwrap();
@@ -1491,5 +1524,33 @@ mod tests {
             .query_row("SELECT theme_mode FROM session", [], |r| r.get(0))
             .unwrap();
         assert_eq!(theme, "dark");
+    }
+    #[test]
+    fn explicit_parent_is_validated_and_survives_cursor_changes_before_start() {
+        let mut browser = memory();
+        let a = follow(&mut browser, "thread", NavigationTarget::Root);
+        let b = follow(&mut browser, "b", NavigationTarget::Root);
+        let queued = browser
+            .queue_link(a, url("queued"), source("context"))
+            .unwrap();
+        let missing = VisitId(Ulid::new());
+        for parent in [queued, missing] {
+            assert!(browser
+                .navigate(url("bad"), NavigationTarget::ChildOf(parent))
+                .is_err());
+        }
+        let request = browser
+            .navigate(url("anchored"), NavigationTarget::ChildOf(a))
+            .unwrap();
+        browser
+            .connection
+            .execute("UPDATE session SET current_id=?1", [b.to_string()])
+            .unwrap();
+        browser.started(request.clone()).unwrap();
+        browser.committed(request).unwrap();
+        assert_eq!(
+            browser.snapshot().unwrap().current_visit().unwrap().parent,
+            Some(a)
+        );
     }
 }

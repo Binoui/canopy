@@ -19,7 +19,9 @@ use wry::{WebViewBuilderExtUnix, WebViewExtUnix};
 
 use crate::{
     address::web_url,
-    browser::{Browser, Capture, CaptureKind, CapturePayload, SourceContext, VisitId},
+    browser::{
+        Browser, Capture, CaptureKind, CapturePayload, NavigationTarget, SourceContext, VisitId,
+    },
 };
 
 const WORLD: &str = "canopy-reading-memory";
@@ -251,8 +253,8 @@ impl Engine {
         *self.state.observer.borrow_mut() = Some(Box::new(callback));
     }
 
-    pub fn navigate(&self, url: Url, new_root: bool) -> Result<()> {
-        let url = self.state.browser.borrow_mut().navigate(url, new_root)?;
+    pub fn navigate(&self, url: Url, target: NavigationTarget) -> Result<()> {
+        let url = self.state.browser.borrow_mut().navigate(url, target)?;
         self.state.load(url);
         Ok(())
     }
