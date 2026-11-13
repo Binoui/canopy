@@ -130,7 +130,9 @@ const RULES: &str = r#"
 * { font-family: "FONT", sans-serif; text-shadow: none; -gtk-icon-shadow: none; }
 #forest-view, #start-page { background: @bg; color: @text; }
 .forest-toolbar { padding: 10px 14px; border-bottom: 1px solid @border; }
-.forest-path { border-color: @green; background: @green_soft; }
+.node.forest-path { border-color: @green; background: @green_soft; }
+.forest-toolbar .card-action:checked { background: @green_soft; color: @green_ink; }
+.forest-toolbar .card-action:checked label { color: @green_ink; }
 .start-title { font-size: 26px; font-weight: 600; color: @text; }
 .start-search { min-height: 46px; border: 1px solid @border; border-radius: 12px; background: @bg; color: @muted; box-shadow: 0 1px 2px alpha(@shadow, 0.3); }
 .shortcut-tile { padding: 12px 4px 10px; min-width: 70px; border: none; border-radius: 12px; background: transparent; color: @muted; box-shadow: none; font-size: 12px; }
