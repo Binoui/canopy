@@ -41,6 +41,60 @@ fn main() -> Result<()> {
         "a new forest starts dark"
     );
     println!("PASS a new forest starts in the dark theme.");
+    {
+        use canopy::{
+            cookies::{Cookie, CookieDomain, Inbox, SameSite},
+            secret::Secret,
+        };
+        use std::{cell::RefCell, rc::Rc};
+        use webkit2gtk::{CookieManagerExt, WebContextExt, WebsiteDataManagerExt};
+        let inbox = Inbox::new(directory.path());
+        let cookie = |domain: &str, name: &str| Cookie {
+            domain: CookieDomain::parse(domain).unwrap(),
+            path: "/".into(),
+            name: name.into(),
+            value: Secret::new("fake-cookie".into()),
+            expires: None,
+            secure: false,
+            http_only: true,
+            same_site: SameSite::Lax,
+        };
+        inbox.post(&[
+            cookie(".example.test", "domain"),
+            cookie("example.test", "host"),
+        ])?;
+        wait("UI applies cookie inbox", || {
+            inbox.collect().is_ok_and(|b| b.is_empty())
+        })?;
+        let manager = ui
+            .engine
+            .native
+            .context()
+            .unwrap()
+            .website_data_manager()
+            .unwrap()
+            .cookie_manager()
+            .unwrap();
+        let received = Rc::new(RefCell::new(None));
+        let result = received.clone();
+        manager.cookies(
+            "http://sub.example.test/",
+            None::<&gio::Cancellable>,
+            move |cookies| {
+                *result.borrow_mut() = Some(cookies);
+            },
+        );
+        wait("subdomain cookies", || received.borrow().is_some())?;
+        let mut cookies = received.borrow_mut().take().unwrap()?;
+        assert!(cookies
+            .iter_mut()
+            .any(|c| c.name().as_deref() == Some("domain")));
+        assert!(!cookies
+            .iter_mut()
+            .any(|c| c.name().as_deref() == Some("host")));
+        assert!(inbox.collect()?.is_empty());
+        println!("PASS the running UI applies domain cookies to subdomains, keeps host cookies host-only, and accepts the inbox.");
+    }
 
     key("ctrl+k")?;
     wait("palette focus", || chrome_focused(&ui, "#palette-input"))?;
