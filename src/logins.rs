@@ -1,3 +1,13 @@
+use aes_gcm::{
+    aead::{rand_core::RngCore, Aead, AeadCore, OsRng, Payload},
+    Aes256Gcm, KeyInit, Nonce,
+};
+use rusqlite::{params, Connection, OptionalExtension};
+use sha2::{Digest, Sha256};
+use std::{cell::RefCell, fs::OpenOptions, os::unix::fs::OpenOptionsExt, path::Path};
+use url::Url;
+use zeroize::Zeroizing;
+
 use crate::{address::WebOrigin, secret::Secret};
 
 #[derive(Debug)]
@@ -17,16 +27,6 @@ pub struct SavedLogin {
     pub origin: WebOrigin,
     pub username: String,
 }
-
-use aes_gcm::{
-    aead::{rand_core::RngCore, Aead, AeadCore, OsRng, Payload},
-    Aes256Gcm, KeyInit, Nonce,
-};
-use rusqlite::{params, Connection, OptionalExtension};
-use sha2::{Digest, Sha256};
-use std::{cell::RefCell, fs::OpenOptions, os::unix::fs::OpenOptionsExt, path::Path};
-use url::Url;
-use zeroize::Zeroizing;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LoginsError {
