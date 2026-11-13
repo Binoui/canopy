@@ -1,4 +1,10 @@
-use super::{favicon::Favicons, forest_view::dapple, theme::Shade, ChromeIntent};
+use super::{
+    favicon::Favicons,
+    forest_view::dapple,
+    icons::{icon, Icon},
+    theme::Shade,
+    ChromeIntent,
+};
 use crate::browser::StartSuggestions;
 use gtk::prelude::*;
 use std::{cell::Cell, rc::Rc};
@@ -63,19 +69,22 @@ impl StartPage {
         let title = gtk::Label::new(Some("New tree"));
         title.style_context().add_class("start-title");
         self.content.pack_start(&title, false, false, 0);
-        let search =
-            gtk::Button::with_label("An address, a search, or a page in your forest     Ctrl+K");
+        let search = gtk::Button::new();
         search.set_widget_name("start-search");
         search.set_size_request(540, 46);
         search.set_halign(gtk::Align::Center);
-        if let Some(label) = search
-            .child()
-            .and_then(|child| child.downcast::<gtk::Label>().ok())
-        {
-            label.set_max_width_chars(58);
-            label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        }
         search.style_context().add_class("start-search");
+        let field = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        field.pack_start(&icon(Icon::Search, 16), false, false, 0);
+        let hint = gtk::Label::new(Some("An address, a search, or a page in your forest"));
+        hint.set_xalign(0.);
+        hint.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        field.pack_start(&hint, true, true, 0);
+        let kbd = gtk::Label::new(Some("Ctrl K"));
+        kbd.set_valign(gtk::Align::Center);
+        kbd.style_context().add_class("kbd");
+        field.pack_start(&kbd, false, false, 0);
+        search.add(&field);
         let on_event = self.on_event.clone();
         search.connect_clicked(move |_| on_event(None));
         self.content.pack_start(&search, false, false, 0);
@@ -124,18 +133,45 @@ impl StartPage {
             self.content.pack_start(&empty, false, false, 0);
         }
         let paths = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        paths.set_size_request(540, -1);
+        paths.set_halign(gtk::Align::Center);
         let label = gtk::Label::new(Some("Usual paths"));
         label.set_xalign(0.);
         label.style_context().add_class("menu-heading");
         paths.pack_start(&label, false, false, 0);
         for (index, path) in suggestions.paths.iter().enumerate() {
-            let text = format!(
-                "{}  →  {}",
-                path.first.host_str().unwrap_or_default(),
-                path.second.host_str().unwrap_or_default()
-            );
-            let button = gtk::Button::with_label(&text);
+            let scale = self.root.scale_factor();
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+            let chain = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+            for (step, url) in [&path.first, &path.second].into_iter().enumerate() {
+                if step > 0 {
+                    let link = gtk::Label::new(Some("→"));
+                    link.style_context().add_class("path-link");
+                    chain.pack_start(&link, false, false, 0);
+                }
+                let favicon = gtk::Image::from_surface(Some(
+                    &self.favicons.url_surface(url, true, 14, scale),
+                ));
+                favicon.style_context().add_class("path-icon");
+                chain.pack_start(&favicon, false, false, 0);
+            }
+            row.pack_start(&chain, false, false, 0);
+            let text = gtk::Label::new(Some(&format!(
+                "{}, then {}",
+                short_place(&path.first),
+                short_place(&path.second)
+            )));
+            text.set_xalign(0.);
+            text.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            text.style_context().add_class("path-text");
+            row.pack_start(&text, true, true, 0);
+            let count = gtk::Label::new(Some(&format!("{} times", path.visits)));
+            count.style_context().add_class("menu-detail");
+            row.pack_start(&count, false, false, 0);
+            let button = gtk::Button::new();
+            button.add(&row);
             button.set_widget_name(&format!("start-path-{index}"));
+            button.set_tooltip_text(Some(&format!("{}\n{}", path.first, path.second)));
             button.style_context().add_class("menu-row");
             let on_event = self.on_event.clone();
             let path = path.clone();
@@ -151,4 +187,10 @@ impl StartPage {
         self.content.pack_start(&paths, false, false, 0);
         self.content.show_all();
     }
+}
+
+fn short_place(url: &url::Url) -> &str {
+    url.host_str()
+        .unwrap_or_default()
+        .trim_start_matches("www.")
 }

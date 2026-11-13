@@ -137,7 +137,12 @@ const RULES: &str = r#"
 .start-search { min-height: 46px; border: 1px solid @border; border-radius: 12px; background: @bg; color: @muted; box-shadow: 0 1px 2px alpha(@shadow, 0.3); }
 .shortcut-tile { padding: 12px 4px 10px; min-width: 70px; border: none; border-radius: 12px; background: transparent; color: @muted; box-shadow: none; font-size: 12px; }
 .shortcut-tile:hover { background: @hover; }
-.shortcut-icon { min-width: 44px; min-height: 44px; border-radius: 12px; background: @green_soft; color: @green_ink; font-size: 20px; }
+.shortcut-icon { min-width: 44px; min-height: 44px; border-radius: 12px; border: 1px solid @tile_border; background: @tile; color: @text; font-size: 20px; }
+.start-search label { color: @faint; }
+.start-search .kbd { color: @faint; }
+.path-icon { min-width: 20px; min-height: 20px; border-radius: 6px; border: 1px solid @tile_border; background: @tile; }
+.path-link { color: @green; font-size: 11px; }
+.path-text { color: @text; }
 tooltip { background: @text; border: none; border-radius: 6px; }
 tooltip label { color: @bg; font-size: 11.5px; }
 combobox button, menu { background: @bg; color: @text; border-color: @border; box-shadow: none; }
