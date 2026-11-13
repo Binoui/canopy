@@ -769,3 +769,115 @@ fn parse_capture(value: &Value, kind: CaptureKind) -> Result<CapturePayload> {
 const HOME: &str = r#"<!doctype html><html lang="en"><meta charset="utf-8"><title>Canopy</title>
 <style>body{margin:0;background:#f6f5f0;color:#29362e;font:18px system-ui;display:grid;place-content:center;height:100vh}main{max-width:520px;padding:40px}.mark{font-size:56px;color:#53795b}h1{font-weight:550;font-size:36px;letter-spacing:-1px}p{line-height:1.7;color:#647168}kbd{font:14px system-ui;border:1px solid #ccd3c8;border-radius:6px;padding:4px 9px;background:white}.small{font-size:14px;margin-top:36px}</style>
 <main><div class="mark">⌘</div><h1>A trail starts here.</h1><p>Open a page, follow a link, then come back to explore another direction. Your branches stay within reach.</p><p class="small"><kbd>Ctrl</kbd> + <kbd>K</kbd> to search or go to an address.</p></main></html>"#;
+
+#[derive(Clone, Copy, Debug)]
+pub struct CookieApplyError;
+impl std::fmt::Display for CookieApplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Could not add imported cookies.")
+    }
+}
+impl std::error::Error for CookieApplyError {}
+
+impl Engine {
+    pub fn apply_cookie_batches(
+        &self,
+        batches: Vec<crate::cookies::Batch>,
+        done: impl FnOnce(std::result::Result<usize, CookieApplyError>) + 'static,
+    ) {
+        use webkit2gtk::WebsiteDataManagerExt;
+        let manager = self
+            .native
+            .context()
+            .and_then(|c| c.website_data_manager())
+            .and_then(|d| d.cookie_manager());
+        let Some(manager) = manager else {
+            done(Err(CookieApplyError));
+            return;
+        };
+        CookieDrain {
+            manager,
+            batches: batches.into(),
+            current: None,
+            count: 0,
+            done: Box::new(done),
+        }
+        .advance();
+    }
+}
+
+struct CookieDrain {
+    manager: webkit2gtk::CookieManager,
+    batches: std::collections::VecDeque<crate::cookies::Batch>,
+    current: Option<(
+        crate::cookies::Batch,
+        std::vec::IntoIter<crate::cookies::Cookie>,
+    )>,
+    count: usize,
+    done: Box<dyn FnOnce(std::result::Result<usize, CookieApplyError>)>,
+}
+impl CookieDrain {
+    fn advance(mut self) {
+        use webkit2gtk::CookieManagerExt;
+        loop {
+            if self.current.is_none() {
+                let Some(mut batch) = self.batches.pop_front() else {
+                    (self.done)(Ok(self.count));
+                    return;
+                };
+                let cookies = std::mem::take(&mut batch.cookies).into_iter();
+                self.current = Some((batch, cookies));
+            }
+            let (_, cookies) = self.current.as_mut().expect("current batch");
+            if let Some(cookie) = cookies.next() {
+                // A cookie WebKit cannot represent is skipped, so it never blocks later imports.
+                let Ok(mut native) = soup_cookie(&cookie) else {
+                    continue;
+                };
+                self.manager.clone().add_cookie(
+                    &mut native,
+                    None::<&gio::Cancellable>,
+                    move |result| {
+                        if result.is_err() {
+                            (self.done)(Err(CookieApplyError));
+                        } else {
+                            self.count += 1;
+                            self.advance();
+                        }
+                    },
+                );
+                return;
+            }
+            let (batch, _) = self.current.take().expect("completed batch");
+            if batch.accept().is_err() {
+                (self.done)(Err(CookieApplyError));
+                return;
+            }
+        }
+    }
+}
+
+fn soup_cookie(
+    cookie: &crate::cookies::Cookie,
+) -> std::result::Result<soup::Cookie, CookieApplyError> {
+    use crate::cookies::SameSite;
+    let mut native = soup::Cookie::new(
+        &cookie.name,
+        cookie.value.expose(),
+        &cookie.domain.dotted(),
+        &cookie.path,
+        -1,
+    );
+    if let Some(expires) = cookie.expires {
+        let expires = glib::DateTime::from_unix_utc(expires).map_err(|_| CookieApplyError)?;
+        native.set_expires(&expires);
+    }
+    native.set_secure(cookie.secure);
+    native.set_http_only(cookie.http_only);
+    native.set_same_site_policy(match cookie.same_site {
+        SameSite::None => soup::SameSitePolicy::None,
+        SameSite::Lax => soup::SameSitePolicy::Lax,
+        SameSite::Strict => soup::SameSitePolicy::Strict,
+    });
+    Ok(native)
+}
