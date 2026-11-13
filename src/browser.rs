@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -25,6 +25,60 @@ impl std::str::FromStr for VisitId {
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         s.parse().map(Self)
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct TreeId(pub(crate) VisitId);
+
+impl TreeId {
+    pub fn root(self) -> VisitId {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NavigationTarget {
+    Root,
+    ChildOf(VisitId),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VisitPreview {
+    pub title: String,
+    pub snippet: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Shortcut {
+    pub url: Url,
+    pub title: String,
+    pub visits: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UsualPath {
+    pub first: Url,
+    pub second: Url,
+    pub visits: usize,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StartSuggestions {
+    pub shortcuts: Vec<Shortcut>,
+    pub paths: Vec<UsualPath>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TreeState {
+    pub root: TreeId,
+    pub last_visit: VisitId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ThemeMode {
+    System,
+    Light,
+    Dark,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -196,8 +250,8 @@ impl Browser {
              INSERT OR IGNORE INTO session(singleton, current_id) VALUES(1, NULL);",
         )?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version > 1 {
-            bail!("Cette base provient d'une version plus récente de Canopy.");
+        if version > 2 {
+            bail!("This database comes from a newer version of Canopy.");
         }
         if version == 0 {
             let transaction = connection.transaction()?;
@@ -248,6 +302,47 @@ impl Browser {
             )?;
             transaction.commit()?;
         }
+        if version < 2 {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(
+                "CREATE TABLE tree_state (
+                    root_id TEXT PRIMARY KEY NOT NULL REFERENCES visits(id),
+                    last_visit_id TEXT NOT NULL REFERENCES visits(id)
+                 );
+                 ALTER TABLE session ADD COLUMN theme_mode TEXT NOT NULL DEFAULT 'system'
+                    CHECK(theme_mode IN ('system', 'light', 'dark'));
+                 INSERT INTO tree_state(root_id, last_visit_id)
+                    SELECT id, id FROM visits WHERE parent_id IS NULL;
+                 WITH RECURSIVE ancestry(id, parent_id) AS (
+                    SELECT id, parent_id FROM visits
+                    WHERE id = (SELECT current_id FROM session WHERE singleton = 1)
+                    UNION
+                    SELECT v.id, v.parent_id FROM visits v JOIN ancestry a ON v.id=a.parent_id
+                 )
+                 UPDATE tree_state SET last_visit_id =
+                    (SELECT current_id FROM session WHERE singleton = 1)
+                    WHERE root_id IN (SELECT id FROM ancestry WHERE parent_id IS NULL);
+                 PRAGMA user_version = 2;",
+            )?;
+            for action in ["INSERT", "UPDATE"] {
+                transaction.execute_batch(&format!(
+                    "CREATE TRIGGER tree_state_validate_{action} BEFORE {action} ON tree_state
+                     BEGIN
+                        SELECT RAISE(ABORT, 'Invalid tree target') WHERE NOT EXISTS (
+                            WITH RECURSIVE ancestry(id, parent_id, opened_at) AS (
+                                SELECT id, parent_id, opened_at FROM visits WHERE id=NEW.last_visit_id
+                                UNION
+                                SELECT v.id, v.parent_id, v.opened_at FROM visits v
+                                    JOIN ancestry a ON v.id=a.parent_id
+                            )
+                            SELECT 1 FROM ancestry WHERE id=NEW.root_id AND parent_id IS NULL
+                                AND (SELECT opened_at FROM visits WHERE id=NEW.last_visit_id) IS NOT NULL
+                        );
+                     END;"
+                ))?;
+            }
+            transaction.commit()?;
+        }
         Ok(Self {
             connection,
             navigation: Navigation::Idle,
@@ -284,6 +379,64 @@ impl Browser {
         }
         let current = self.current_id()?;
         Ok(Snapshot { visits, current })
+    }
+
+    pub fn preview(&self, id: VisitId) -> Result<VisitPreview> {
+        self.connection
+            .query_row(
+                "SELECT CASE WHEN trim(v.title)='' THEN v.url ELSE v.title END,
+                COALESCE(NULLIF(substr(o.source_excerpt, 1, 320), ''),
+                    (SELECT substr(c.body, 1, 320) FROM captures c
+                     WHERE c.visit_id=v.id ORDER BY c.id DESC LIMIT 1), '')
+             FROM visits v LEFT JOIN origins o ON o.visit_id=v.id WHERE v.id=?1",
+                [id.to_string()],
+                |row| {
+                    Ok(VisitPreview {
+                        title: row.get(0)?,
+                        snippet: row.get(1)?,
+                    })
+                },
+            )
+            .context("This visit no longer exists.")
+            .map(|mut preview| {
+                let snippet = preview.snippet.trim();
+                preview.snippet = snippet
+                    .strip_prefix(preview.title.trim())
+                    .unwrap_or(snippet)
+                    .trim_start_matches(|c: char| {
+                        c.is_whitespace() || matches!(c, '|' | ':' | '–' | '-')
+                    })
+                    .to_owned();
+                preview
+            })
+    }
+
+    pub fn tree_states(&self) -> Result<Vec<TreeState>> {
+        let mut statement = self.connection.prepare(
+            "SELECT t.root_id, t.last_visit_id FROM tree_state t
+             JOIN visits v ON v.id=t.root_id ORDER BY v.created_at, v.rowid",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut states = Vec::new();
+        while let Some(row) = rows.next()? {
+            states.push(TreeState {
+                root: TreeId(row.get::<_, String>(0)?.parse()?),
+                last_visit: row.get::<_, String>(1)?.parse()?,
+            });
+        }
+        Ok(states)
+    }
+
+    pub fn tree_target(&self, tree: TreeId) -> Result<VisitId> {
+        let id: String = self
+            .connection
+            .query_row(
+                "SELECT last_visit_id FROM tree_state WHERE root_id=?1",
+                [tree.0.to_string()],
+                |row| row.get(0),
+            )
+            .context("This tree no longer exists.")?;
+        Ok(id.parse()?)
     }
 
     pub fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
@@ -371,12 +524,28 @@ impl Browser {
             .visits
             .into_iter()
             .find(|visit| visit.id == id)
-            .context("Cette visite n'existe plus.")
+            .context("This visit no longer exists.")
     }
 
-    pub fn navigate(&mut self, url: Url, new_root: bool) -> Result<Url> {
+    pub fn navigate(&mut self, url: Url, target: NavigationTarget) -> Result<Url> {
         web_url(url.as_str())?;
-        let parent = if new_root { None } else { self.current_id()? };
+        let parent = match target {
+            NavigationTarget::Root => None,
+            NavigationTarget::ChildOf(parent) => {
+                let opened: bool = self
+                    .connection
+                    .query_row(
+                        "SELECT opened_at IS NOT NULL FROM visits WHERE id=?1",
+                        [parent.to_string()],
+                        |row| row.get(0),
+                    )
+                    .context("The navigation parent does not exist.")?;
+                if !opened {
+                    bail!("The navigation parent has not been opened.");
+                }
+                Some(parent)
+            }
+        };
         self.navigation = Navigation::Requested {
             intent: Intent::New {
                 parent,
@@ -460,13 +629,24 @@ impl Browser {
                     params![url.as_str(), visit.to_string(), now_ms()?],
                 )?;
                 if changed != 1 {
-                    bail!("Cette visite n'existe plus.")
+                    bail!("This visit no longer exists.")
                 }
                 visit
             }
         };
         transaction.execute(
             "UPDATE session SET current_id = ?1 WHERE singleton = 1",
+            [id.to_string()],
+        )?;
+        transaction.execute(
+            "WITH RECURSIVE ancestry(id, parent_id) AS (
+                SELECT id, parent_id FROM visits WHERE id=?1
+                UNION
+                SELECT v.id, v.parent_id FROM visits v JOIN ancestry a ON v.id=a.parent_id
+             )
+             INSERT INTO tree_state(root_id, last_visit_id)
+                SELECT id, ?1 FROM ancestry WHERE parent_id IS NULL
+             ON CONFLICT(root_id) DO UPDATE SET last_visit_id=excluded.last_visit_id",
             [id.to_string()],
         )?;
         transaction.commit()?;
@@ -577,11 +757,11 @@ impl Browser {
     fn checked_source(&self, parent: VisitId, mut source: SourceContext) -> Result<SourceContext> {
         let visit = self.visit(parent)?;
         if visit.state != VisitState::Opened {
-            bail!("La source de ce lien n'a pas encore été ouverte.");
+            bail!("The source of this link has not been opened yet.");
         }
         web_url(source.page_url.as_str())?;
         if visit.url.origin() != source.page_url.origin() {
-            bail!("La source ne correspond pas à la page affichée.");
+            bail!("The source does not match the page on screen.");
         }
         check_citation(&source.page_url, source.citation_url.as_ref())?;
         source.link_text = bounded(&source.link_text, 300);
@@ -658,7 +838,7 @@ impl Browser {
                 source_page_url,source_citation_url,source_link_text,source_excerpt FROM captures WHERE id=?1",
         )?;
         let mut rows = statement.query([id])?;
-        capture_from_row(rows.next()?.context("Cette capture n'existe plus.")?)
+        capture_from_row(rows.next()?.context("This saved text no longer exists.")?)
     }
 
     pub fn captures(&self, visit: VisitId) -> Result<Vec<Capture>> {
@@ -673,6 +853,89 @@ impl Browser {
             captures.push(capture_from_row(row)?);
         }
         Ok(captures)
+    }
+
+    pub fn start_suggestions(&self) -> Result<StartSuggestions> {
+        let mut statement = self.connection.prepare(
+            "SELECT url, MAX(title), COUNT(*) FROM visits WHERE opened_at IS NOT NULL
+             GROUP BY url ORDER BY COUNT(*) DESC, MAX(opened_at) DESC, url LIMIT 6",
+        )?;
+        let shortcuts = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, usize>(2)?,
+                ))
+            })?
+            .map(|row| {
+                let (url, title, visits) = row?;
+                Ok(Shortcut {
+                    url: web_url(&url)?,
+                    title,
+                    visits,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut statement = self.connection.prepare(
+            "SELECT p.url, c.url FROM visits c JOIN visits p ON c.parent_id=p.id
+             WHERE c.opened_at IS NOT NULL AND p.opened_at IS NOT NULL
+             ORDER BY c.opened_at, c.id",
+        )?;
+        let mut pairs: HashMap<(String, String), UsualPath> = HashMap::new();
+        for row in statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            let (first, second) = row?;
+            let (first, second) = (web_url(&first)?, web_url(&second)?);
+            let key = (
+                first.host_str().unwrap_or_default().to_owned(),
+                second.host_str().unwrap_or_default().to_owned(),
+            );
+            let path = pairs.entry(key).or_insert_with(|| UsualPath {
+                first: first.clone(),
+                second: second.clone(),
+                visits: 0,
+            });
+            path.first = first;
+            path.second = second;
+            path.visits += 1;
+        }
+        let mut paths: Vec<_> = pairs.into_values().collect();
+        paths.sort_by(|a, b| {
+            b.visits
+                .cmp(&a.visits)
+                .then_with(|| a.first.as_str().cmp(b.first.as_str()))
+                .then_with(|| a.second.as_str().cmp(b.second.as_str()))
+        });
+        paths.truncate(3);
+        Ok(StartSuggestions { shortcuts, paths })
+    }
+
+    pub fn set_theme_mode(&mut self, mode: ThemeMode) -> Result<()> {
+        let value = match mode {
+            ThemeMode::System => "system",
+            ThemeMode::Light => "light",
+            ThemeMode::Dark => "dark",
+        };
+        self.connection.execute(
+            "UPDATE session SET theme_mode=?1 WHERE singleton=1",
+            [value],
+        )?;
+        Ok(())
+    }
+
+    pub fn theme_mode(&self) -> Result<ThemeMode> {
+        let mode: String = self.connection.query_row(
+            "SELECT theme_mode FROM session WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(match mode.as_str() {
+            "light" => ThemeMode::Light,
+            "dark" => ThemeMode::Dark,
+            _ => ThemeMode::System,
+        })
     }
 
     pub fn capture_enabled(&self) -> Result<bool> {
@@ -704,7 +967,7 @@ fn check_citation(document: &Url, citation: Option<&Url>) -> Result<()> {
     if let Some(citation) = citation {
         web_url(citation.as_str())?;
         if document.origin() != citation.origin() {
-            bail!("Le lien de citation doit appartenir au site source.");
+            bail!("The citation link must belong to the source site.");
         }
     }
     Ok(())
@@ -741,7 +1004,7 @@ fn capture_from_row(row: &Row<'_>) -> Result<Capture> {
     let kind = match kind.as_str() {
         "page" => CaptureKind::Page,
         "selection" => CaptureKind::Selection,
-        _ => bail!("Type de capture inconnu."),
+        _ => bail!("Unknown saved text kind."),
     };
     Ok(Capture {
         id: row.get(0)?,
@@ -769,22 +1032,80 @@ mod tests {
     fn memory() -> Browser {
         Browser::with_connection(Connection::open_in_memory().unwrap()).unwrap()
     }
-    fn follow(browser: &mut Browser, path: &str, root: bool) -> VisitId {
-        let url = browser.navigate(url(path), root).unwrap();
+    fn follow(browser: &mut Browser, path: &str, target: NavigationTarget) -> VisitId {
+        let url = browser.navigate(url(path), target).unwrap();
         browser.started(url.clone()).unwrap();
         assert!(browser.committed(url).unwrap());
         browser.snapshot().unwrap().current.unwrap()
     }
 
+    fn follow_child(browser: &mut Browser, path: &str) -> VisitId {
+        let parent = browser.current_id().unwrap().unwrap();
+        follow(browser, path, NavigationTarget::ChildOf(parent))
+    }
+
+    #[test]
+    fn suggestions_are_bounded_and_do_not_count_unopened_links() {
+        let mut b = memory();
+        let root = follow(&mut b, "root", NavigationTarget::Root);
+        b.queue_link(root, url("never-opened"), source("queued"))
+            .unwrap();
+        for i in 0..10 {
+            follow(
+                &mut b,
+                &format!("page-{i}"),
+                NavigationTarget::ChildOf(root),
+            );
+        }
+        let suggestions = b.start_suggestions().unwrap();
+        assert_eq!(suggestions.shortcuts.len(), 6);
+        assert!(!suggestions
+            .shortcuts
+            .iter()
+            .any(|s| s.url.path() == "/never-opened"));
+        assert_eq!(
+            suggestions.paths.len(),
+            1,
+            "URL variants share one host pair"
+        );
+        assert_eq!(suggestions.paths[0].visits, 10);
+        assert_eq!(suggestions.paths[0].first, url("root"));
+    }
+
+    #[test]
+    fn suggestions_count_opened_urls_and_parent_child_hosts() {
+        let mut b = memory();
+        assert_eq!(b.start_suggestions().unwrap(), StartSuggestions::default());
+        for _ in 0..3 {
+            let first = web_url("https://first.example/start").unwrap();
+            b.navigate(first.clone(), NavigationTarget::Root).unwrap();
+            b.started(first.clone()).unwrap();
+            b.committed(first).unwrap();
+            let root = b.snapshot().unwrap().current.unwrap();
+            let second = web_url("https://second.example/end").unwrap();
+            b.navigate(second.clone(), NavigationTarget::ChildOf(root))
+                .unwrap();
+            b.started(second.clone()).unwrap();
+            b.committed(second).unwrap();
+        }
+        let suggestions = b.start_suggestions().unwrap();
+        assert_eq!(suggestions.shortcuts.len(), 2);
+        assert!(suggestions.shortcuts.iter().all(|s| s.visits == 3));
+        assert_eq!(suggestions.paths.len(), 1);
+        assert_eq!(suggestions.paths[0].visits, 3);
+        b.set_theme_mode(ThemeMode::Dark).unwrap();
+        assert_eq!(b.theme_mode().unwrap(), ThemeMode::Dark);
+    }
+
     #[test]
     fn returning_then_following_keeps_both_children() {
         let mut browser = memory();
-        let a = follow(&mut browser, "a", true);
-        let b = follow(&mut browser, "b", false);
+        let a = follow(&mut browser, "a", NavigationTarget::Root);
+        let b = follow_child(&mut browser, "b");
         let load = browser.restore(a).unwrap();
         browser.started(load.clone()).unwrap();
         browser.committed(load).unwrap();
-        let c = follow(&mut browser, "c", false);
+        let c = follow_child(&mut browser, "c");
         let snapshot = browser.snapshot().unwrap();
         assert_eq!(snapshot.visits.len(), 3);
         assert_eq!(snapshot.current, Some(c));
@@ -810,8 +1131,8 @@ mod tests {
     #[test]
     fn same_url_in_another_context_is_a_new_visit() {
         let mut browser = memory();
-        let a = follow(&mut browser, "same", true);
-        let b = follow(&mut browser, "same", false);
+        let a = follow(&mut browser, "same", NavigationTarget::Root);
+        let b = follow_child(&mut browser, "same");
         assert_ne!(a, b);
         assert_eq!(browser.snapshot().unwrap().visits[1].parent, Some(a));
     }
@@ -819,7 +1140,7 @@ mod tests {
     #[test]
     fn reload_redirect_and_duplicate_commits_do_not_grow_the_tree() {
         let mut browser = memory();
-        let a = follow(&mut browser, "a", true);
+        let a = follow(&mut browser, "a", NavigationTarget::Root);
         let request = browser.reload().unwrap().unwrap();
         browser.started(request).unwrap();
         browser.redirected(url("final"));
@@ -834,12 +1155,16 @@ mod tests {
     #[test]
     fn failed_and_cancelled_navigation_preserve_committed_state() {
         let mut browser = memory();
-        let a = follow(&mut browser, "a", true);
-        browser.navigate(url("bad"), false).unwrap();
+        let a = follow(&mut browser, "a", NavigationTarget::Root);
+        browser
+            .navigate(url("bad"), NavigationTarget::ChildOf(a))
+            .unwrap();
         browser.started(url("bad")).unwrap();
         browser.failed(&url("bad"), false);
         assert!(!browser.committed(url("bad")).unwrap());
-        browser.navigate(url("new"), false).unwrap();
+        browser
+            .navigate(url("new"), NavigationTarget::ChildOf(a))
+            .unwrap();
         browser.failed(&url("bad"), true);
         browser.started(url("new")).unwrap();
         browser.committed(url("new")).unwrap();
@@ -854,11 +1179,11 @@ mod tests {
         let db = directory.path().join("forest.sqlite3");
         let expected = {
             let mut browser = Browser::open(&db).unwrap();
-            follow(&mut browser, "a", true);
+            follow(&mut browser, "a", NavigationTarget::Root);
             browser
                 .title_changed(&url("a"), "Documentation Rust")
                 .unwrap();
-            follow(&mut browser, "b", true);
+            follow(&mut browser, "b", NavigationTarget::Root);
             browser.title_changed(&url("b"), "Une page à 100%").unwrap();
             assert_eq!(browser.search("Rust").unwrap().len(), 1);
             assert_eq!(browser.search("%").unwrap().len(), 1);
@@ -877,8 +1202,8 @@ mod tests {
     #[test]
     fn late_title_does_not_rename_a_different_page() {
         let mut browser = memory();
-        follow(&mut browser, "a", true);
-        follow(&mut browser, "b", false);
+        follow(&mut browser, "a", NavigationTarget::Root);
+        follow_child(&mut browser, "b");
         browser.title_changed(&url("a"), "Old title").unwrap();
         assert!(browser
             .snapshot()
@@ -910,8 +1235,10 @@ mod tests {
     #[test]
     fn queueing_keeps_cursor_and_pending_navigation() {
         let mut browser = memory();
-        let parent = follow(&mut browser, "thread", true);
-        browser.navigate(url("other-root"), true).unwrap();
+        let parent = follow(&mut browser, "thread", NavigationTarget::Root);
+        browser
+            .navigate(url("other-root"), NavigationTarget::Root)
+            .unwrap();
         let children: Vec<_> = (0..3)
             .map(|i| {
                 browser
@@ -943,7 +1270,7 @@ mod tests {
     #[test]
     fn identical_destinations_from_different_comments_remain_distinct() {
         let mut browser = memory();
-        let parent = follow(&mut browser, "thread", true);
+        let parent = follow(&mut browser, "thread", NavigationTarget::Root);
         let first = browser
             .queue_link(parent, url("article"), source("one"))
             .unwrap();
@@ -958,7 +1285,7 @@ mod tests {
     #[test]
     fn failed_queued_activation_preserves_queue_then_redirect_opens_same_row() {
         let mut browser = memory();
-        let parent = follow(&mut browser, "thread", true);
+        let parent = follow(&mut browser, "thread", NavigationTarget::Root);
         let queued = browser
             .queue_link(parent, url("article"), source("one"))
             .unwrap();
@@ -983,7 +1310,7 @@ mod tests {
     #[test]
     fn captures_keep_versions_and_selection_hits_are_individual() {
         let mut browser = memory();
-        let visit = follow(&mut browser, "article", true);
+        let visit = follow(&mut browser, "article", NavigationTarget::Root);
         let first = payload(
             "article",
             "The velvet orbital caching phrase is here.",
@@ -1037,7 +1364,7 @@ mod tests {
     #[test]
     fn capture_search_uses_immutable_source_and_keeps_uncaptured_queue_hits() {
         let mut browser = memory();
-        let parent = follow(&mut browser, "thread", true);
+        let parent = follow(&mut browser, "thread", NavigationTarget::Root);
         let mut origin = source("one");
         origin.excerpt = "commentcontextneedle from the original source".into();
         let article = browser
@@ -1083,7 +1410,7 @@ mod tests {
     #[test]
     fn invalid_or_stale_capture_and_source_results_do_not_mutate_visits() {
         let mut browser = memory();
-        let parent = follow(&mut browser, "thread", true);
+        let parent = follow(&mut browser, "thread", NavigationTarget::Root);
         let queued = browser
             .queue_link(parent, url("article"), source("one"))
             .unwrap();
@@ -1129,7 +1456,7 @@ mod tests {
     #[test]
     fn unicode_capture_cap_and_empty_capture_are_safe() {
         let mut browser = memory();
-        let visit = follow(&mut browser, "article", true);
+        let visit = follow(&mut browser, "article", NavigationTarget::Root);
         assert!(browser
             .save_capture(
                 visit,
@@ -1156,7 +1483,7 @@ mod tests {
         let path = directory.path().join("reading.sqlite3");
         let (snapshot, saved, parent) = {
             let mut browser = Browser::open(&path).unwrap();
-            let parent = follow(&mut browser, "thread", true);
+            let parent = follow(&mut browser, "thread", NavigationTarget::Root);
             browser
                 .queue_link(parent, url("first"), source("one"))
                 .unwrap();
@@ -1195,7 +1522,7 @@ mod tests {
     #[test]
     fn source_citation_creates_child_without_replacing_parent_feed_url() {
         let mut browser = memory();
-        let parent = follow(&mut browser, "thread", true);
+        let parent = follow(&mut browser, "thread", NavigationTarget::Root);
         let mut origin = source("one");
         origin.citation_url = Some(url("exact-comment#one"));
         let child = browser.queue_link(parent, url("article"), origin).unwrap();
@@ -1246,6 +1573,7 @@ mod tests {
                 .visits
                 .iter()
                 .all(|visit| visit.state == VisitState::Opened));
+            assert_eq!(browser.tree_target(TreeId(first)).unwrap(), second);
             assert_eq!(browser.visit(first).unwrap().opened_at, Some(1234));
             assert_eq!(browser.visit(second).unwrap().parent, Some(first));
             assert!(browser.capture_enabled().unwrap());
@@ -1261,7 +1589,7 @@ mod tests {
         let path = directory.path().join("exploration.sqlite3");
         let (parent, opened, queued) = {
             let mut browser = Browser::open(&path).unwrap();
-            let parent = follow(&mut browser, "thread", true);
+            let parent = follow(&mut browser, "thread", NavigationTarget::Root);
             let links: Vec<_> = (0..3)
                 .map(|i| {
                     browser
@@ -1299,5 +1627,197 @@ mod tests {
             assert_eq!(visit.state, VisitState::Queued);
             assert_eq!(visit.source, Some(source("comment-one")));
         }
+    }
+    #[test]
+    fn tree_targets_survive_queue_failure_selection_and_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("forest.db");
+        let (a, child) = {
+            let mut browser = Browser::open(&path).unwrap();
+            let a = follow(&mut browser, "thread", NavigationTarget::Root);
+            let child = follow_child(&mut browser, "child");
+            let b = follow(&mut browser, "b", NavigationTarget::Root);
+            let queued = browser
+                .queue_link(a, url("queued"), source("context"))
+                .unwrap();
+            assert_eq!(browser.tree_target(TreeId(a)).unwrap(), child);
+            let request = browser.restore(queued).unwrap();
+            browser.started(request.clone()).unwrap();
+            browser.failed(&request, false);
+            assert_eq!(browser.tree_target(TreeId(a)).unwrap(), child);
+            assert_eq!(browser.snapshot().unwrap().current, Some(b));
+            let request = browser
+                .restore(browser.tree_target(TreeId(a)).unwrap())
+                .unwrap();
+            browser.started(request.clone()).unwrap();
+            browser.committed(request).unwrap();
+            assert_eq!(browser.snapshot().unwrap().current, Some(child));
+            (a, child)
+        };
+        let browser = Browser::open(&path).unwrap();
+        assert_eq!(browser.tree_target(TreeId(a)).unwrap(), child);
+        assert_eq!(browser.snapshot().unwrap().current, Some(child));
+    }
+
+    #[test]
+    fn migration_from_v1_initializes_targets_and_preserves_theme_on_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v1.db");
+        let a = VisitId(Ulid::new());
+        let child = VisitId(Ulid::new());
+        let b = VisitId(Ulid::new());
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection.execute_batch("CREATE TABLE visits(id TEXT PRIMARY KEY NOT NULL,
+                parent_id TEXT REFERENCES visits(id), url TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL, opened_at INTEGER);
+                CREATE TABLE session(singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+                current_id TEXT REFERENCES visits(id), capture_enabled INTEGER NOT NULL DEFAULT 1);
+                PRAGMA user_version=1;").unwrap();
+            for (id, parent) in [(a, None), (child, Some(a)), (b, None)] {
+                connection
+                    .execute(
+                        "INSERT INTO visits VALUES(?1,?2,'https://example.org','',1,1)",
+                        params![id.to_string(), parent.map(|id| id.to_string())],
+                    )
+                    .unwrap();
+            }
+            connection
+                .execute("INSERT INTO session VALUES(1,?1,1)", [child.to_string()])
+                .unwrap();
+        }
+        let expected = {
+            let browser = Browser::open(&path).unwrap();
+            assert_eq!(browser.tree_target(TreeId(a)).unwrap(), child);
+            assert_eq!(browser.tree_target(TreeId(b)).unwrap(), b);
+            assert_eq!(browser.theme_mode().unwrap(), ThemeMode::System);
+            browser
+                .connection
+                .execute("UPDATE session SET theme_mode='dark'", [])
+                .unwrap();
+            assert!(browser
+                .connection
+                .execute("UPDATE session SET theme_mode='unknown'", [])
+                .is_err());
+            assert!(browser
+                .connection
+                .execute(
+                    "UPDATE tree_state SET last_visit_id=?1 WHERE root_id=?2",
+                    params![b.to_string(), a.to_string()]
+                )
+                .is_err());
+            assert!(browser
+                .connection
+                .execute("INSERT INTO tree_state VALUES(?1,?1)", [child.to_string()])
+                .is_err());
+            browser.tree_states().unwrap()
+        };
+        let browser = Browser::open(&path).unwrap();
+        assert_eq!(browser.tree_states().unwrap(), expected);
+        assert_eq!(browser.theme_mode().unwrap(), ThemeMode::Dark);
+    }
+    #[test]
+    fn explicit_parent_is_validated_and_survives_cursor_changes_before_start() {
+        let mut browser = memory();
+        let a = follow(&mut browser, "thread", NavigationTarget::Root);
+        let b = follow(&mut browser, "b", NavigationTarget::Root);
+        let queued = browser
+            .queue_link(a, url("queued"), source("context"))
+            .unwrap();
+        let missing = VisitId(Ulid::new());
+        for parent in [queued, missing] {
+            assert!(browser
+                .navigate(url("bad"), NavigationTarget::ChildOf(parent))
+                .is_err());
+        }
+        let request = browser
+            .navigate(url("anchored"), NavigationTarget::ChildOf(a))
+            .unwrap();
+        browser
+            .connection
+            .execute("UPDATE session SET current_id=?1", [b.to_string()])
+            .unwrap();
+        browser.started(request.clone()).unwrap();
+        browser.committed(request).unwrap();
+        assert_eq!(
+            browser.snapshot().unwrap().current_visit().unwrap().parent,
+            Some(a)
+        );
+    }
+    #[test]
+    fn preview_is_bounded_prefers_source_and_uses_latest_capture() {
+        let mut browser = memory();
+        let root = follow(&mut browser, "thread", NavigationTarget::Root);
+        assert_eq!(browser.preview(root).unwrap().snippet, "");
+        browser
+            .save_capture(
+                root,
+                &url("thread"),
+                payload("thread", "old capture", CaptureKind::Page),
+            )
+            .unwrap();
+        let body = "界".repeat(200_000);
+        browser
+            .save_capture(
+                root,
+                &url("thread"),
+                payload("thread", &body, CaptureKind::Page),
+            )
+            .unwrap();
+        assert_eq!(browser.preview(root).unwrap().snippet, "界".repeat(320));
+        let queued = browser
+            .queue_link(root, url("article"), source("context"))
+            .unwrap();
+        let excerpt = browser.visit(queued).unwrap().source.unwrap().excerpt;
+        assert_eq!(browser.preview(queued).unwrap().snippet, excerpt);
+        let request = browser.restore(queued).unwrap();
+        browser.started(request.clone()).unwrap();
+        browser.committed(request).unwrap();
+        browser
+            .save_capture(
+                queued,
+                &url("article"),
+                payload(
+                    "article",
+                    "capture must not replace source",
+                    CaptureKind::Page,
+                ),
+            )
+            .unwrap();
+        assert_eq!(browser.preview(queued).unwrap().snippet, excerpt);
+        assert!(browser.preview(VisitId(Ulid::new())).is_err());
+    }
+
+    #[test]
+    fn cursor_insert_and_tree_target_roll_back_together() {
+        let mut browser = memory();
+        let a = follow(&mut browser, "thread", NavigationTarget::Root);
+        let queued = browser
+            .queue_link(a, url("queued"), source("context"))
+            .unwrap();
+        let before = browser.snapshot().unwrap();
+        let states = browser.tree_states().unwrap();
+        assert!(browser
+            .connection
+            .execute(
+                "UPDATE tree_state SET last_visit_id=?1 WHERE root_id=?2",
+                params![queued.to_string(), a.to_string()]
+            )
+            .is_err());
+        browser
+            .connection
+            .execute_batch(
+                "CREATE TRIGGER reject_target BEFORE UPDATE ON tree_state
+            BEGIN SELECT RAISE(ABORT, 'test failure'); END;",
+            )
+            .unwrap();
+        let request = browser
+            .navigate(url("child"), NavigationTarget::ChildOf(a))
+            .unwrap();
+        browser.started(request.clone()).unwrap();
+        assert!(browser.committed(request).is_err());
+        let after = browser.snapshot().unwrap();
+        assert_eq!(after, before);
+        assert_eq!(browser.tree_states().unwrap(), states);
     }
 }

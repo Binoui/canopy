@@ -1,35 +1,39 @@
 use std::{
-    cell::RefCell,
     collections::BTreeMap,
     io::{Read, Write},
     net::TcpListener,
-    rc::Rc,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
-use anyhow::{bail, Context, Result};
-use canopy::{address::web_url, browser::VisitState, ui::Ui};
-use gdk::prelude::*;
+use anyhow::{Context, Result};
+use canopy::{
+    address::web_url,
+    browser::{NavigationTarget, VisitState},
+    ui::Ui,
+};
 use gtk::prelude::*;
-use javascriptcore::ValueExt;
-use serde_json::Value;
 use webkit2gtk::WebViewExt;
 
+mod common;
+
+use common::*;
+
 fn main() -> Result<()> {
-    gtk::init().context("Ce test nécessite Xvfb avec un écran 1440x1000.")?;
-    let fixture = Fixture::start()?;
     let directory = tempfile::tempdir()?;
+    start(directory.path())?;
+    let fixture = Fixture::start()?;
     let ui = Ui::new(directory.path())?;
     ui.window.show_all();
-    ui.hide_address();
     pump(300);
-    ui.engine
-        .navigate(web_url(&fixture.url("/discussion"))?, true)?;
+    ui.engine.navigate(
+        web_url(&fixture.url("/discussion"))?,
+        NavigationTarget::Root,
+    )?;
     loaded(&ui, "/discussion")?;
     let source_id = ui.snapshot()?.current.unwrap();
     let original_url = ui.snapshot()?.current_visit().unwrap().url.clone();
@@ -40,13 +44,13 @@ fn main() -> Result<()> {
         1,
         "a page-owned timer click must not queue links"
     );
-    click(&ui, "one", 1, true)?;
-    wait("premier lien en attente", || queued(&ui) == 1)?;
-    click(&ui, "two", 2, false)?;
-    wait("deuxième lien en attente", || queued(&ui) == 2)?;
-    click(&ui, "three", 1, false)?;
-    wait("troisième lien en attente", || queued(&ui) == 3)?;
-    wait("contexte des commentaires", || {
+    page_click(&ui, "one", 1, true)?;
+    wait("first queued link", || queued(&ui) == 1)?;
+    page_click(&ui, "two", 2, false)?;
+    wait("second queued link", || queued(&ui) == 2)?;
+    page_click(&ui, "three", 1, false)?;
+    wait("third queued link", || queued(&ui) == 3)?;
+    wait("comment context", || {
         ui.snapshot()
             .unwrap()
             .visits
@@ -86,7 +90,7 @@ fn main() -> Result<()> {
         .id;
     ui.engine.restore(article)?;
     loaded(&ui, "/article-a")?;
-    wait("capture automatique du texte", || {
+    wait("automatic text capture", || {
         !ui.search_hits("amber otter cache").unwrap().is_empty()
     })?;
     let saved = ui
@@ -111,56 +115,59 @@ fn main() -> Result<()> {
     assert!(saved.captured_at.is_some());
     println!("PASS queued activation reuses its visit and captures article text; hidden login modal and all controls are excluded.");
     eval(&ui, "document.querySelector('main').insertAdjacentHTML('beforeend','<p>mossy lantern delayed article text</p>'); JSON.stringify(true)")?;
-    wait("texte arrivé après Finished", || {
+    wait("text arriving after Finished", || {
         !ui.search_hits("mossy lantern delayed").unwrap().is_empty()
     })?;
     println!("PASS a bounded follow-up captures article text arriving after Finished.");
-    pump(200);
-    if let Some(window) = ui.window.window() {
-        let allocation = ui.window.allocation();
-        let image = window
-            .pixbuf(0, 0, allocation.width(), allocation.height())
-            .context("capture impossible")?;
-        image.savev("/tmp/canopy-mvp2.png", "png", &[])?;
-    }
-
-    let memory_search = named(&ui.window, "memory-search")
-        .downcast::<gtk::SearchEntry>()
-        .unwrap();
-    memory_search.set_text("amber otter cache");
-    wait("recherche de la capture", || {
-        find_named(ui.window.upcast_ref(), "search-hit").is_some()
+    open_strip(&ui)?;
+    move_to_widget(&ui, &node(&ui, article))?;
+    let back = named(&ui.window, "card-source");
+    wait("source context on the current page's card", || {
+        back.is_visible()
     })?;
-    named(&ui.window, "search-hit")
-        .downcast::<gtk::Button>()
-        .unwrap()
-        .emit_clicked();
-    wait("lecteur ouvert", || reader().is_some())?;
+    assert!(label_texts(&named(&ui.window, "card"))
+        .iter()
+        .any(|text| text.contains("commentaire source")));
+    pump(150);
+    click(&ui, &back)?;
+    wait("Back to source from the card", || {
+        ui.snapshot().unwrap().current == Some(source_id) && !ui.engine.native.is_loading()
+    })?;
+    assert_eq!(queued(&ui), 2);
+    ui.engine.restore(article)?;
+    loaded(&ui, "/article-a")?;
+    println!("PASS the current page's card shows its source excerpt and Back to source restores the parent.");
+    save_window(&ui, "/tmp/canopy-chrome-reading.png")?;
+
+    search_saved_text(&ui, "amber otter cache")?;
+    wait("reader open", || reader().is_some())?;
     let opened_reader = reader().unwrap();
     named(&opened_reader, "capture-restore-source")
         .downcast::<gtk::Button>()
         .unwrap()
         .emit_clicked();
-    wait("source restaurée", || {
+    wait("source restored", || {
         ui.snapshot().unwrap().current == Some(source_id) && reader().is_none()
     })?;
     loaded(&ui, "/discussion")?;
-    assert!(memory_search.text().is_empty());
-    assert_eq!(
-        named(&ui.window, "navigation-mode")
-            .downcast::<gtk::Stack>()
-            .unwrap()
-            .visible_child_name()
-            .as_deref(),
-        Some("tree")
-    );
+    assert!(!named(&ui.window, "palette").is_visible());
     assert_eq!(queued(&ui), 2);
+    for sibling in ui
+        .snapshot()?
+        .visits
+        .iter()
+        .filter(|v| v.state == VisitState::Queued)
+    {
+        wait("queued sibling in the strip", || {
+            node(&ui, sibling.id).is_visible()
+        })?;
+    }
     assert_eq!(ui.snapshot()?.current, Some(source_id));
     assert_eq!(ui.snapshot()?.current_visit().unwrap().url, original_url);
-    println!("PASS Source after phrase-search closes the reader, clears the filter and reveals the original parent plus two queued siblings.");
+    println!("PASS Back to source after a palette phrase search closes the reader and the palette and shows the parent with its two queued siblings in the strip.");
 
-    click(&ui, "hash", 1, true)?;
-    wait("fragment en attente", || queued(&ui) == 3)?;
+    page_click(&ui, "hash", 1, true)?;
+    wait("queued fragment", || queued(&ui) == 3)?;
     let fragment = ui
         .snapshot()?
         .visits
@@ -171,36 +178,36 @@ fn main() -> Result<()> {
         .unwrap()
         .id;
     ui.engine.restore(fragment)?;
-    wait("activation du fragment", || {
+    wait("fragment activation", || {
         ui.snapshot().unwrap().current == Some(fragment) && !ui.engine.native.is_loading()
     })?;
     assert_eq!(queued(&ui), 2);
     ui.engine.restore(source_id)?;
-    wait("retour au parent après fragment", || {
+    wait("back to the parent after the fragment", || {
         ui.snapshot().unwrap().current == Some(source_id) && !ui.engine.native.is_loading()
     })?;
     ui.engine.open_citation(article)?;
-    wait("commentaire ouvert par action native", || {
+    wait("comment opened by the native action", || {
         ui.snapshot().unwrap().current_visit().is_some_and(|visit| {
             visit.parent == Some(source_id) && visit.url.fragment() == Some("comment-1")
         }) && !ui.engine.native.is_loading()
     })?;
     ui.engine.restore(source_id)?;
-    wait("source inchangée après citation", || {
+    wait("source unchanged after the citation", || {
         ui.snapshot().unwrap().current == Some(source_id) && !ui.engine.native.is_loading()
     })?;
     assert_eq!(ui.snapshot()?.current_visit().unwrap().url, original_url);
     println!("PASS queued fragments and native citation actions complete without changing the parent feed URL.");
     let before_anchor = ui.snapshot()?.visits.len();
-    click(&ui, "hash", 1, false)?;
-    wait("navigation dans le document", || {
+    page_click(&ui, "hash", 1, false)?;
+    wait("same-document navigation", || {
         ui.engine
             .native
             .uri()
             .is_some_and(|uri| uri.ends_with("#comment-1"))
     })?;
     assert_eq!(ui.snapshot()?.visits.len(), before_anchor);
-    click(&ui, "one", 1, false)?;
+    page_click(&ui, "one", 1, false)?;
     loaded(&ui, "/article-a")?;
     assert_eq!(ui.snapshot()?.visits.len(), before_anchor + 1);
     assert_eq!(
@@ -209,18 +216,13 @@ fn main() -> Result<()> {
     );
     println!("PASS a same-document anchor does not poison the following navigation.");
 
-    let automatic = named(&ui.window, "automatic-capture")
-        .downcast::<gtk::CheckButton>()
-        .unwrap();
-    automatic.set_active(false);
+    set_remember_pages(&ui, false)?;
+    assert!(!ui.engine.capture_enabled()?);
     ui.engine.restore(source_id)?;
     loaded(&ui, "/discussion")?;
     eval(&ui, "(() => {document.getElementById('remember').textContent='luminous notebook memory saved while automatic capture is off';const r=document.createRange();r.selectNodeContents(document.getElementById('remember'));const s=getSelection();s.removeAllRanges();s.addRange(r);return JSON.stringify(true)})()")?;
-    named(&ui.window, "remember-selection")
-        .downcast::<gtk::Button>()
-        .unwrap()
-        .emit_clicked();
-    wait("sélection mémorisée", || {
+    remember_selection(&ui)?;
+    wait("selection remembered", || {
         ui.search_hits("luminous notebook memory")
             .unwrap()
             .iter()
@@ -233,37 +235,34 @@ fn main() -> Result<()> {
         .unwrap();
     assert!(selection > 0);
     eval(&ui, "(() => {document.getElementById('public-start').textContent='cerulean satellite ';const r=document.createRange();r.setStart(document.getElementById('public-start').firstChild,0);r.setEnd(document.getElementById('public-end').firstChild,13);const s=getSelection();s.removeAllRanges();s.addRange(r);return JSON.stringify(true)})()")?;
-    named(&ui.window, "remember-selection")
-        .downcast::<gtk::Button>()
-        .unwrap()
-        .emit_clicked();
-    wait("sélection partiellement publique", || {
+    remember_selection(&ui)?;
+    wait("partly public selection", || {
         !ui.search_hits("cerulean satellite").unwrap().is_empty()
     })?;
     assert!(ui.search_hits("SOURCE_EDIT_SECRET")?.is_empty());
     eval(&ui, "(() => {const r=document.createRange();r.selectNodeContents(document.getElementById('editable'));const s=getSelection();s.removeAllRanges();s.addRange(r);return JSON.stringify(true)})()")?;
-    named(&ui.window, "remember-selection")
-        .downcast::<gtk::Button>()
-        .unwrap()
-        .emit_clicked();
+    remember_selection(&ui)?;
     pump(150);
     assert!(ui.search_hits("SOURCE_EDIT_SECRET")?.is_empty());
     println!("PASS explicit selections work with automatic capture disabled; mixed and editable ranges do not leak controls.");
 
-    ui.engine
-        .navigate(web_url(&fixture.url("/no-capture"))?, true)?;
+    ui.engine.navigate(
+        web_url(&fixture.url("/no-capture"))?,
+        NavigationTarget::Root,
+    )?;
     loaded(&ui, "/no-capture")?;
     pump(100);
     assert!(ui.search_hits("automatic off sentinel")?.is_empty());
-    automatic.set_active(true);
-    wait("capture réactivée", || {
+    set_remember_pages(&ui, true)?;
+    wait("capture turned back on", || {
         !ui.search_hits("automatic off sentinel").unwrap().is_empty()
     })?;
-    ui.engine.navigate(web_url(&fixture.url("/login"))?, true)?;
+    ui.engine
+        .navigate(web_url(&fixture.url("/login"))?, NavigationTarget::Root)?;
     loaded(&ui, "/login")?;
     pump(150);
     assert!(ui.search_hits("VISIBLE_LOGIN_SENTINEL")?.is_empty());
-    automatic.set_active(false);
+    set_remember_pages(&ui, false)?;
     println!("PASS capture setting controls new saves and a rendered password form suppresses automatic capture.");
 
     let expected = ui.snapshot()?;
@@ -273,24 +272,13 @@ fn main() -> Result<()> {
     drop(fixture);
     let reopened = Ui::new(directory.path())?;
     reopened.window.show_all();
-    reopened.hide_address();
+    pump(300);
     assert_eq!(reopened.snapshot()?, expected);
     assert!(!reopened.engine.capture_enabled()?);
     let hits = reopened.search_hits("amber otter cache")?;
     assert!(hits.iter().any(|hit| hit.capture_id == saved.capture_id));
-    let entry = named(&reopened.window, "memory-search")
-        .downcast::<gtk::SearchEntry>()
-        .unwrap();
-    entry.set_text("amber otter cache");
-    wait("résultats de recherche visibles", || {
-        find_named(reopened.window.upcast_ref(), "search-hit").is_some()
-    })?;
-    pump(200);
-    named(&reopened.window, "search-hit")
-        .downcast::<gtk::Button>()
-        .unwrap()
-        .emit_clicked();
-    wait("lecteur de capture hors ligne", || reader().is_some())?;
+    search_saved_text(&reopened, "amber otter cache")?;
+    wait("offline reader", || reader().is_some())?;
     let reader = reader().unwrap();
     let text = named(&reader, "capture-text")
         .downcast::<gtk::TextView>()
@@ -313,11 +301,10 @@ fn main() -> Result<()> {
         let allocation = reader.allocation();
         let image = window
             .pixbuf(0, 0, allocation.width(), allocation.height())
-            .context("capture du lecteur impossible")?;
-        image.savev("/tmp/canopy-mvp2-reader.png", "png", &[])?;
+            .context("reader capture")?;
+        image.savev("/tmp/canopy-chrome-reader.png", "png", &[])?;
     }
     reader.close();
-    entry.set_text("luminous notebook memory");
     pump(200);
     let selected = reopened.search_hits("luminous notebook memory")?;
     assert!(selected.iter().any(|hit| hit.capture_id == Some(selection)));
@@ -343,7 +330,7 @@ fn queued(ui: &Ui) -> usize {
 }
 
 fn loaded(ui: &Ui, path: &str) -> Result<()> {
-    wait(&format!("chargement {path}"), || {
+    wait(&format!("{path} loaded"), || {
         ui.snapshot()
             .unwrap()
             .current_visit()
@@ -352,103 +339,68 @@ fn loaded(ui: &Ui, path: &str) -> Result<()> {
     })
 }
 
-fn named(window: &impl IsA<gtk::Widget>, name: &str) -> gtk::Widget {
-    find_named(window.as_ref(), name).unwrap_or_else(|| panic!("missing widget {name}"))
+/// Types `query` into the palette and clicks its first saved-text result.
+fn search_saved_text(ui: &Ui, query: &str) -> Result<()> {
+    key("ctrl+k")?;
+    let entry = named(&ui.window, "palette-entry")
+        .downcast::<gtk::Entry>()
+        .unwrap();
+    wait("palette focus", || entry.has_focus())?;
+    type_text(query)?;
+    wait("saved text result", || {
+        find_named(ui.window.upcast_ref(), "palette-saved").is_some()
+    })?;
+    pump(150);
+    click(ui, &named(&ui.window, "palette-saved"))
 }
 
-fn find_named(widget: &gtk::Widget, name: &str) -> Option<gtk::Widget> {
-    if widget.widget_name() == name {
-        return Some(widget.clone());
+fn open_memory_menu(ui: &Ui) -> Result<gtk::Popover> {
+    let popover = popover_of(ui, "memory-menu");
+    if !popover.is_visible() {
+        click(ui, &named(&ui.window, "memory-menu"))?;
+        wait("Memory menu", || popover.is_visible())?;
+        pump(150);
     }
-    widget
-        .downcast_ref::<gtk::Container>()?
-        .children()
-        .iter()
-        .find_map(|child| find_named(child, name))
+    Ok(popover)
 }
 
-fn eval(ui: &Ui, script: &str) -> Result<Value> {
-    let output = Rc::new(RefCell::new(None));
-    let result = output.clone();
-    ui.engine.native.evaluate_javascript(
-        script,
-        None,
-        None,
-        None::<&gio::Cancellable>,
-        move |value| {
-            *result.borrow_mut() = Some(value.map(|value| value.to_str().to_string()));
-        },
-    );
-    wait("JavaScript fixture", || output.borrow().is_some())?;
-    let text = output.borrow_mut().take().unwrap()?;
-    Ok(serde_json::from_str(&text)?)
+fn set_remember_pages(ui: &Ui, on: bool) -> Result<()> {
+    let popover = open_memory_menu(ui)?;
+    let switch = named(&popover, "automatic-capture")
+        .downcast::<gtk::Switch>()
+        .unwrap();
+    if switch.is_active() != on {
+        click(ui, &switch)?;
+        wait("Remember pages toggled", || {
+            ui.engine.capture_enabled().unwrap() == on
+        })?;
+    }
+    key("Escape")?;
+    wait("Memory menu closed", || !popover.is_visible())
 }
 
-fn click(ui: &Ui, id: &str, button: u8, control: bool) -> Result<()> {
-    let script = format!("(() => {{const r=document.getElementById({}).getBoundingClientRect();return JSON.stringify({{x:r.x+r.width/2,y:r.y+r.height/2}})}})()",serde_json::to_string(id)?);
-    let point = eval(ui, &script)?;
-    let (x, y) = ui
-        .engine
-        .native
-        .translate_coordinates(
-            &ui.window,
-            point["x"].as_f64().unwrap() as i32,
-            point["y"].as_f64().unwrap() as i32,
-        )
-        .context("position native de la webview")?;
-    let (_, wx, wy) = ui.window.window().unwrap().origin();
-    let search = std::process::Command::new("xdotool")
-        .args(["search", "--onlyvisible", "--name", "Canopy"])
-        .output()?;
-    let ids = String::from_utf8(search.stdout)?;
-    let id = ids.lines().last().context("fenêtre X11")?;
-    let mut command = std::process::Command::new("xdotool");
-    command.args([
-        "windowfocus",
-        id,
-        "mousemove",
-        "--sync",
-        &(x + wx).to_string(),
-        &(y + wy).to_string(),
-    ]);
+fn remember_selection(ui: &Ui) -> Result<()> {
+    let popover = open_memory_menu(ui)?;
+    click(ui, &named(&popover, "remember-selection"))?;
+    wait("Memory menu closed", || !popover.is_visible())
+}
+
+fn page_click(ui: &Ui, id: &str, button: u8, control: bool) -> Result<()> {
+    let (x, y) = element_point(ui, id)?;
+    focus_window()?;
+    move_to(x, y)?;
+    let button = button.to_string();
+    let mut args = vec![];
     if control {
-        command.args(["keydown", "Control_L"]);
+        args.extend(["keydown", "Control_L"]);
     }
-    command.args(["click", &button.to_string()]);
+    args.extend(["click", button.as_str()]);
     if control {
-        command.args(["keyup", "Control_L"]);
+        args.extend(["keyup", "Control_L"]);
     }
-    if !command.status()?.success() {
-        bail!("xdotool click failed");
-    }
+    xdo(&args)?;
     pump(80);
     Ok(())
-}
-
-fn wait(label: &str, condition: impl Fn() -> bool) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(12);
-    loop {
-        while gtk::events_pending() {
-            gtk::main_iteration_do(false);
-        }
-        if condition() {
-            return Ok(());
-        }
-        if Instant::now() > deadline {
-            bail!("Délai dépassé pour {label}");
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn pump(ms: u64) {
-    let deadline = Instant::now() + Duration::from_millis(ms);
-    while Instant::now() < deadline {
-        while gtk::events_pending() {
-            gtk::main_iteration_do(false);
-        }
-        thread::sleep(Duration::from_millis(5));
-    }
 }
 
 struct Fixture {

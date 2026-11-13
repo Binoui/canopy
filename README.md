@@ -1,72 +1,86 @@
 # Canopy
 
-Canopy est un prototype de navigateur Linux en Rust. Tes visites forment des arbres. Revenir sur une page puis suivre un autre lien conserve les deux branches.
+Canopy is a prototype Linux browser written in Rust. Your visits form trees. Going back to a page and following another link keeps both branches.
 
-## Lancer le navigateur
+## Run the browser
 
-Installe Rust stable, GTK 3, WebKitGTK 4.1 et les fichiers de développement SQLite.
+Install stable Rust, GTK 3, WebKitGTK 4.1 and the SQLite development files.
 
-Sur Debian ou Ubuntu, installe les dépendances natives avec cette commande :
+On Debian or Ubuntu, install the native dependencies with this command:
 
 ```sh
 sudo apt install build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libsqlite3-dev
 ```
 
-Sur Arch Linux, utilise cette commande :
+On Arch Linux, use this command:
 
 ```sh
 sudo pacman -S --needed base-devel pkgconf gtk3 webkit2gtk sqlite
 ```
 
-Depuis le dossier du projet, lance cette commande :
+From the project folder, run this command:
 
 ```sh
 cargo run --locked
 ```
 
-Pour conserver les données dans un dossier distinct, indique son chemin :
+To keep the data in a separate folder, pass its path:
 
 ```sh
 cargo run --locked -- --data-dir .data
 ```
 
-Le fichier `rust-toolchain.toml` sélectionne Rust stable pour ce projet. Il ne change pas ta version par défaut dans les autres projets.
+The `rust-toolchain.toml` file selects stable Rust for this project. It does not change your default version in other projects.
 
-## Essayer une bifurcation
+Canopy ships the Inter typeface in `assets/fonts/`, under the SIL Open Font License in `assets/fonts/LICENSE.txt`.
 
-1. Appuie sur **Ctrl+L**, saisis une adresse et valide.
-2. Suis un lien vers une deuxième page.
-3. Reviens à la première page avec le fil d'Ariane ou l'arbre.
-4. Suis un autre lien. Les deux visites apparaissent sous la première page.
-5. Ferme le navigateur, puis relance-le avec le même dossier de données. L'arbre et la position courante sont conservés.
+## Find your way around
 
-Cliquer sur une ancienne visite recharge son URL. La reprise ne restaure pas le scroll ni les formulaires.
+The top row has one tab per tree, in the order you started them. Trees that do not fit wait behind the arrow at the end of the row. Under the tabs, a strip shows the current tree: the path to the current page, with small buds for the other branches. Rest the pointer on the strip and it opens over the page with every branch. Rest it on a page in the strip to see a card with its title, site and a preview.
 
-Pour commencer un arbre indépendant, utilise **Ctrl+T** ou **Nouvel arbre**. **Alt+Gauche** revient au parent et **Ctrl+R** recharge la visite courante.
+- **Ctrl+K** or the **Search or go…** pill opens the palette. Type to search your forest and your saved text, or to go to an address. **Enter** opens the selected result. **Alt+Enter** opens it in a new tree. **Escape** closes the palette and gives the focus back to the page.
+- **Ctrl+L** opens the same palette with the current address selected.
+- **Ctrl+E** or the forest button opens every tree. Drag or scroll to pan, Ctrl+scroll to zoom, and use **Titles** to switch between pills and icons. Click a page to restore it.
+- **Ctrl+T** or **+** opens the new-tree page with frequent pages and usual paths from your history. A usual path loads its first page as a root, then its second page as a child. **Escape** returns to your page.
+- **Ctrl+1** to **Ctrl+9** switch to a tree.
+- **F6** moves the keyboard focus between the page and the current page in the strip. **Left** and **Right** walk the path, and **Enter** opens the focused page.
+- **Alt+Left** goes back to the parent page and **Ctrl+R** reloads the current page.
 
-## Reprendre une lecture
+## Try a fork
 
-1. Depuis un commentaire ou un article, ouvre plusieurs liens avec **Ctrl+clic**, le **clic milieu** ou un lien destiné à une nouvelle fenêtre. Les destinations apparaissent en attente dans l'arbre. La page source reste ouverte et les destinations ne sont pas téléchargées.
-2. Active un enfant en attente pour le lire. La visite conserve son parent et le contexte du lien quand il est disponible.
-3. Laisse **Mémoriser les pages** enregistrer le texte de la page ouverte, ou sélectionne un passage et appuie sur **Ctrl+S**. Le bouton **Mémoriser la sélection** effectue la même action.
-4. Ferme le navigateur, puis relance-le avec le même dossier de données.
-5. Recherche quelques mots du texte enregistré. Ouvre la capture pour relire le passage hors ligne, ou reviens à la source pour retrouver les liens encore en attente.
+1. Press **Ctrl+K**, type an address and press **Enter**.
+2. Follow a link to a second page.
+3. Go back to the first page by clicking it in the strip.
+4. Follow another link. Both visits appear under the first page.
+5. Close the browser, then start it again with the same data folder. The tree and the current page are kept.
 
-Les résultats recherchent les titres, les URL, le texte enregistré et le contexte source. Une capture possède sa date. Ouvrir la capture et charger la page vivante sont deux actions distinctes.
+Clicking an older visit reloads its URL. Resuming does not restore the scroll position or forms.
 
-Décoche **Mémoriser les pages** pour désactiver la capture automatique. La mémorisation d'une sélection reste disponible. **Lire une capture** permet de relire les textes enregistrés pour la page courante.
+On a page's card, **New branch here** opens the palette from that page without loading it, so the next address you type becomes its child. A tree's tab reopens the page you were last reading in that tree.
 
-Les champs de formulaire et les zones éditables sont exclus du texte enregistré. Les formulaires de mot de passe visibles bloquent la capture automatique.
+## Resume reading
 
-La récupération du commentaire ou du permalien dépend du DOM du site. Si ce contexte fin manque, la page parent reste conservée. Le corpus Chrome importé reste séparé de la navigation vivante.
+1. From a comment or an article, open several links with **Ctrl+click**, a **middle click** or a link meant for a new window. The destinations wait in the tree, drawn dashed. The source page stays open and the destinations are not downloaded.
+2. Click a waiting page to read it. The visit keeps its parent and the link's context when it is available.
+3. Let **Remember pages** save the text of the open page, or select a passage and press **Ctrl+S**. These live in the **Memory** menu, behind the dot at the end of the current page in the strip. **Remember selection** in that menu does the same as Ctrl+S.
+4. Close the browser, then start it again with the same data folder.
+5. Search a few words of the saved text with **Ctrl+K**. Open a **Saved text** result to read the passage offline, or go back to the source to find the links that are still waiting.
 
-Pour un post qui apparaît plus tard dans un fil dynamique, sélectionne le passage et utilise **Ctrl+S**. La capture automatique ne mémorise pas en continu tout ce qui apparaît pendant le défilement.
+Results cover titles, URLs, saved text and source context. Saved text carries its date. Reading saved text and loading the live page are two separate actions. On the current page's card, **Back to source** and **Open comment** lead back to where the page was found.
 
-Sans `--data-dir`, Canopy conserve la base et le profil WebKit dans `$XDG_DATA_HOME/canopy`, ou dans `~/.local/share/canopy`.
+Turn off **Remember pages** in the Memory menu to stop automatic capture. Remembering a selection stays available. **Read saved text** shows the text saved for the current page. The Memory menu also lists recent errors, which otherwise appear briefly at the bottom of the window.
 
-## Vérifier le projet
+Form fields and editable areas are left out of saved text. Visible password forms block automatic capture.
 
-Vérifie le format, les tests du cœur et les diagnostics du compilateur :
+Recovering the comment or permalink depends on the site's DOM. When that context is missing, the parent page is still kept. The imported Chrome corpus stays separate from live browsing.
+
+For a post that appears later in a dynamic feed, select the passage and press **Ctrl+S**. Automatic capture does not keep saving everything that appears while you scroll.
+
+Without `--data-dir`, Canopy keeps its database and WebKit profile in `$XDG_DATA_HOME/canopy`, or in `~/.local/share/canopy`. Choose **Theme: System**, **Theme: Light** or **Theme: Dark** in the Memory menu. The choice persists in the `theme_mode` session setting and applies immediately. With `system`, it follows GTK's dark preference.
+
+## Check the project
+
+Check the formatting, the core tests and the compiler diagnostics:
 
 ```sh
 cargo fmt --check
@@ -74,11 +88,11 @@ cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
-Le test WebKit charge des pages servies localement. Installe Xvfb et xdotool, puis lance-le ainsi :
+The GUI tests load locally served pages and drive the window with real pointer and keyboard input. Install Xvfb and xdotool, then run them like this:
 
 ```sh
-xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test webkit_smoke
-xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test reading_smoke
+GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test webkit_smoke
+GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test reading_smoke
 ```
 
-Les choix de structure sont décrits dans [Une forêt de visites](docs/design.md) et [La mémoire d'une exploration](docs/reading-memory.md).
+The design choices are described, in French, in [Une forêt de visites](docs/design.md) and [La mémoire d'une exploration](docs/reading-memory.md).

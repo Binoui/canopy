@@ -3,7 +3,7 @@ name = "canopy"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.92"
-description = "Un navigateur personnel dont les parcours forment des arbres."
+description = "A personal browser where browsing forms trees."
 license = "MIT"
 
 [features]

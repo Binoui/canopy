@@ -19,7 +19,9 @@ use wry::{WebViewBuilderExtUnix, WebViewExtUnix};
 
 use crate::{
     address::web_url,
-    browser::{Browser, Capture, CaptureKind, CapturePayload, SourceContext, VisitId},
+    browser::{
+        Browser, Capture, CaptureKind, CapturePayload, NavigationTarget, SourceContext, VisitId,
+    },
 };
 
 const WORLD: &str = "canopy-reading-memory";
@@ -71,9 +73,16 @@ impl Engine {
             .with_html(HOME)
             .build_gtk(container)?;
         let native = view.webview();
+        if let Some(web_context) = native.context() {
+            // WebKitGTK 2.54 loads icons for this view only through the context's database;
+            // enabling favicons on the data manager alone leaves them unrequested.
+            #[allow(deprecated)]
+            web_context
+                .set_favicon_database_directory(Some(&profile.join("favicons").to_string_lossy()));
+        }
         let manager = native
             .user_content_manager()
-            .context("Contexte JavaScript indisponible.")?;
+            .context("The JavaScript context is unavailable.")?;
         manager.add_script(&UserScript::for_world(
             HELPER,
             UserContentInjectedFrames::TopFrame,
@@ -173,7 +182,7 @@ impl Engine {
                 if !cancelled {
                     state.recover_document();
                     state.emit(EngineEvent::Error(format!(
-                        "Impossible de charger cette page. {}",
+                        "Could not load this page. {}",
                         error.message()
                     )));
                     state.emit(EngineEvent::Loading(false));
@@ -190,7 +199,7 @@ impl Engine {
                     }
                     state.recover_document();
                     state.emit(EngineEvent::Error(
-                        "Certificat HTTPS refusé. La connexion n'a pas été ouverte.".into(),
+                        "HTTPS certificate rejected. The connection was not opened.".into(),
                     ));
                     state.emit(EngineEvent::Loading(false));
                 }
@@ -235,7 +244,7 @@ impl Engine {
                 download.cancel();
                 if let Some(state) = weak.upgrade() {
                     state.emit(EngineEvent::Error(
-                        "Les téléchargements ne sont pas encore pris en charge.".into(),
+                        "Downloads are not supported yet.".into(),
                     ));
                 }
             });
@@ -251,8 +260,8 @@ impl Engine {
         *self.state.observer.borrow_mut() = Some(Box::new(callback));
     }
 
-    pub fn navigate(&self, url: Url, new_root: bool) -> Result<()> {
-        let url = self.state.browser.borrow_mut().navigate(url, new_root)?;
+    pub fn navigate(&self, url: Url, target: NavigationTarget) -> Result<()> {
+        let url = self.state.browser.borrow_mut().navigate(url, target)?;
         self.state.load(url);
         Ok(())
     }
@@ -313,7 +322,7 @@ impl Engine {
 
     pub fn remember_selection(&self) -> Result<()> {
         if self.state.ticket().is_none() {
-            bail!("Ouvre une page et sélectionne le texte à mémoriser.")
+            bail!("Open a page and select the text to remember.")
         }
         self.state.capture(CaptureKind::Selection, true);
         Ok(())
@@ -498,7 +507,7 @@ impl NativeState {
             {
                 decision.ignore();
                 self.emit(EngineEvent::Error(
-                    "Les téléchargements ne sont pas encore pris en charge.".into(),
+                    "Downloads are not supported yet.".into(),
                 ));
                 return true;
             }
@@ -519,7 +528,7 @@ impl NativeState {
         let Ok(url) = web_url(&uri) else {
             decision.ignore();
             self.emit(EngineEvent::Error(
-                "Ce type de lien n'est pas pris en charge.".into(),
+                "This kind of link is not supported.".into(),
             ));
             return true;
         };
@@ -640,26 +649,52 @@ impl NativeState {
         let script =
             format!("JSON.stringify(globalThis.__canopyMemory?.capture({selection}) ?? null)");
         self.evaluate(&script, move |state, value| {
-            if !state.valid(&ticket) { return; }
-            if !explicit && !state.browser.borrow().capture_enabled().unwrap_or(false) { return; }
+            if !state.valid(&ticket) {
+                return;
+            }
+            if !explicit && !state.browser.borrow().capture_enabled().unwrap_or(false) {
+                return;
+            }
             let Some(value) = value else { return };
-            if value.get("blocked").and_then(Value::as_bool).unwrap_or(false) {
-                if explicit { state.emit(EngineEvent::Error("Les champs de formulaire et les pages avec mot de passe ne sont pas mémorisés.".into())); }
+            if value
+                .get("blocked")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                if explicit {
+                    state.emit(EngineEvent::Error(
+                        "Form fields and pages with a password are never remembered.".into(),
+                    ));
+                }
                 return;
             }
-            let Ok(payload) = parse_capture(&value, kind) else { return };
-            if payload.document_url != ticket.page_url { return; }
+            let Ok(payload) = parse_capture(&value, kind) else {
+                return;
+            };
+            if payload.document_url != ticket.page_url {
+                return;
+            }
             if payload.text.trim().is_empty() {
-                if explicit { state.emit(EngineEvent::Error("Sélectionne le texte du post ou de l'article à mémoriser.".into())); }
+                if explicit {
+                    state.emit(EngineEvent::Error(
+                        "Select the text of the post or article to remember.".into(),
+                    ));
+                }
                 return;
             }
-            let result = state.browser.borrow_mut().save_capture(ticket.visit, &ticket.stored_url, payload);
+            let result =
+                state
+                    .browser
+                    .borrow_mut()
+                    .save_capture(ticket.visit, &ticket.stored_url, payload);
             match result {
                 Ok(Some(id)) => {
                     state.emit(EngineEvent::Changed);
-                    if explicit { state.emit(EngineEvent::Remembered(id)); }
+                    if explicit {
+                        state.emit(EngineEvent::Remembered(id));
+                    }
                 }
-                Ok(None) => {},
+                Ok(None) => {}
                 Err(error) => state.emit(EngineEvent::Error(error.to_string())),
             }
         });
@@ -713,6 +748,6 @@ fn parse_capture(value: &Value, kind: CaptureKind) -> Result<CapturePayload> {
     })
 }
 
-const HOME: &str = r#"<!doctype html><html lang="fr"><meta charset="utf-8"><title>Canopy</title>
+const HOME: &str = r#"<!doctype html><html lang="en"><meta charset="utf-8"><title>Canopy</title>
 <style>body{margin:0;background:#f6f5f0;color:#29362e;font:18px system-ui;display:grid;place-content:center;height:100vh}main{max-width:520px;padding:40px}.mark{font-size:56px;color:#53795b}h1{font-weight:550;font-size:36px;letter-spacing:-1px}p{line-height:1.7;color:#647168}kbd{font:14px system-ui;border:1px solid #ccd3c8;border-radius:6px;padding:4px 9px;background:white}.small{font-size:14px;margin-top:36px}</style>
-<main><div class="mark">⌘</div><h1>Une piste commence ici.</h1><p>Ouvre une page, suis un lien et reviens explorer une autre direction. Tes branches restent à portée de main.</p><p class="small"><kbd>Ctrl</kbd> + <kbd>L</kbd> pour une adresse ou une recherche.</p></main></html>"#;
+<main><div class="mark">⌘</div><h1>A trail starts here.</h1><p>Open a page, follow a link, then come back to explore another direction. Your branches stay within reach.</p><p class="small"><kbd>Ctrl</kbd> + <kbd>K</kbd> to search or go to an address.</p></main></html>"#;
