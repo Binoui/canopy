@@ -1,5 +1,3 @@
-mod reader;
-
 use std::{
     cell::{Cell, RefCell},
     path::Path,
@@ -10,23 +8,21 @@ use anyhow::Result;
 use gtk::prelude::*;
 use webkit2gtk::WebViewExt;
 
-pub use crate::chrome::register_font;
 use crate::{
     browser::{Browser, NavigationTarget, SearchHit, Snapshot, VisitId, VisitPreview},
     chrome::{
-        ChromeFrame, ChromeHost, ChromeIntent, NativeChrome, PaletteScope, PaletteSeed, Toast,
+        ChromeFrame, ChromeHost, ChromeIntent, Favicons, HtmlChrome, PaletteScope, PaletteSeed,
+        Toast, CHROME_HEIGHT,
     },
     engine::{Engine, EngineEvent},
     forest::ForestProjection,
 };
 
-const CHROME_HEIGHT: i32 = 94;
-
 pub struct Ui {
     pub window: gtk::Window,
     pub engine: Engine,
+    pub chrome: HtmlChrome,
     browser: Rc<RefCell<Browser>>,
-    chrome: NativeChrome,
     refresh_scheduled: Cell<bool>,
     /// A queued page activated by "New branch here", whose palette opens once it commits.
     branch_after_commit: Cell<Option<VisitId>>,
@@ -48,28 +44,42 @@ impl Ui {
         window.set_title("Canopy");
         window.set_default_size(1240, 800);
         window.set_widget_name("canopy");
-        let overlay = gtk::Overlay::new();
-        window.add(&overlay);
-        let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        spacer.set_size_request(-1, CHROME_HEIGHT);
-        column.pack_start(&spacer, false, false, 0);
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        column.pack_start(&content, true, true, 0);
-        overlay.add(&column);
-        let engine = Engine::new(&content, browser.clone(), &data_dir.join("profile"))?;
+        // wry sizes its views with size requests; inside this wrapper they cannot pin the
+        // window's minimum size, so a tiling compositor can still shrink it.
+        let scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::External)
+            .vscrollbar_policy(gtk::PolicyType::External)
+            .build();
+        let fixed = gtk::Fixed::new();
+        scroller.add(&fixed);
+        window.add(&scroller);
+        let engine = Engine::new(&fixed, browser.clone(), &data_dir.join("profile"))?;
+        let chrome = HtmlChrome::mount(&fixed, Favicons::new(&engine.native))?;
         let ui = Rc::new_cyclic(|me: &Weak<Ui>| {
             let host: Weak<dyn ChromeHost> = me.clone();
-            let chrome = NativeChrome::mount(&overlay, &engine.native, host);
+            chrome.attach(host);
             Ui {
                 window,
                 engine,
-                browser,
                 chrome,
+                browser,
                 refresh_scheduled: Cell::new(false),
                 branch_after_commit: Cell::new(None),
                 path_after_commit: RefCell::new(None),
                 me: me.clone(),
+            }
+        });
+        let weak = Rc::downgrade(&ui);
+        scroller.connect_size_allocate(move |_, allocation| {
+            if let Some(ui) = weak.upgrade() {
+                let (width, height) = (
+                    f64::from(allocation.width()),
+                    f64::from(allocation.height()),
+                );
+                ui.engine
+                    .set_bounds(0., CHROME_HEIGHT, width, height - CHROME_HEIGHT);
+                ui.chrome.resize(width, height);
+                ui.chrome.raise();
             }
         });
         let weak = Rc::downgrade(&ui);
@@ -100,6 +110,17 @@ impl Ui {
             weak.upgrade()
                 .map_or(glib::Propagation::Proceed, |ui| ui.shortcut(event))
         });
+        if let Some(settings) = gtk::Settings::default() {
+            for property in ["gtk-application-prefer-dark-theme", "gtk-theme-name"] {
+                let weak = Rc::downgrade(&ui);
+                settings.connect_notify_local(Some(property), move |_, _| {
+                    if let Some(ui) = weak.upgrade() {
+                        ui.chrome.set_system_dark(prefers_dark());
+                    }
+                });
+            }
+        }
+        ui.chrome.set_system_dark(prefers_dark());
         ui.refresh();
         Ok(ui)
     }
@@ -308,8 +329,12 @@ impl ChromeHost for Ui {
             }
             ChromeIntent::OpenCitation(child) => self.engine.open_citation(child),
             ChromeIntent::Navigate { url, target } => self.engine.navigate(url, target),
-            ChromeIntent::ReadCapture(id) => reader::show_capture(&ui, id),
-            ChromeIntent::ReadCaptures(visit) => reader::show_captures(&ui, visit),
+            ChromeIntent::ReadCapture(id) => ui.read_capture(id),
+            ChromeIntent::ReadCaptures(visit) => ui.read_captures(visit),
+            ChromeIntent::OpenSaved(id) => {
+                let capture = self.browser.borrow().capture(id);
+                capture.and_then(|capture| self.engine.open_saved(&capture))
+            }
             ChromeIntent::SetCaptureEnabled(enabled) => {
                 let result = self.engine.set_capture_enabled(enabled);
                 self.schedule_refresh();
@@ -327,4 +352,43 @@ impl ChromeHost for Ui {
     fn preview(&self, visit: VisitId) -> Result<VisitPreview> {
         self.browser.borrow().preview(visit)
     }
+
+    fn focus_page(&self) {
+        self.engine.focus();
+        self.chrome.raise();
+    }
+}
+
+impl Ui {
+    fn read_capture(&self, id: i64) -> Result<()> {
+        let browser = self.browser.borrow();
+        let capture = browser.capture(id)?;
+        let visit = browser.visit(capture.visit)?;
+        drop(browser);
+        self.chrome.read(&capture, &visit);
+        Ok(())
+    }
+
+    fn read_captures(&self, visit: VisitId) -> Result<()> {
+        let captures = self.browser.borrow().captures(visit)?;
+        match captures.as_slice() {
+            [] => anyhow::bail!(
+                "No saved text for this page yet. Select some text and remember it, or turn on Remember pages."
+            ),
+            [only] => self.read_capture(only.id),
+            several => {
+                self.chrome.choose(several);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Whether the desktop prefers dark, which `Theme: System` follows.
+fn prefers_dark() -> bool {
+    gtk::Settings::default().is_some_and(|s| {
+        s.is_gtk_application_prefer_dark_theme()
+            || s.gtk_theme_name()
+                .is_some_and(|name| name.to_lowercase().contains("dark"))
+    })
 }

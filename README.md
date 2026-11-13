@@ -79,7 +79,7 @@ On a page's card, **New branch here** opens the palette from that page without l
 
 Results cover titles, URLs, saved text and source context. Saved text carries its date. Reading saved text and loading the live page are two separate actions. On the current page's card, **Back to source** and **Open comment** lead back to where the page was found.
 
-Turn off **Remember pages** in the Memory menu to stop automatic capture. Remembering a selection stays available. **Read saved text** shows the text saved for the current page. The Memory menu also lists recent errors, which otherwise appear briefly at the bottom of the window.
+Turn off **Remember pages** in the Memory menu to stop automatic capture. Remembering a selection stays available. **Read saved text** shows the text saved for the current page. The Memory menu also lists recent errors, which otherwise appear briefly under the tab row.
 
 Form fields and editable areas are left out of saved text. Visible password forms block automatic capture.
 
@@ -87,7 +87,7 @@ Recovering the comment or permalink depends on the site's DOM. When that context
 
 For a post that appears later in a dynamic feed, select the passage and press **Ctrl+S**. Automatic capture does not keep saving everything that appears while you scroll.
 
-Without `--data-dir`, Canopy keeps its database and WebKit profile in `$XDG_DATA_HOME/canopy`, or in `~/.local/share/canopy`. Choose **Theme: System**, **Theme: Light** or **Theme: Dark** in the Memory menu. The choice persists in the `theme_mode` session setting and applies immediately. With `system`, it follows GTK's dark preference.
+Without `--data-dir`, Canopy keeps its database and WebKit profile in `$XDG_DATA_HOME/canopy`, or in `~/.local/share/canopy`. Choose **System**, **Light** or **Dark** under **Theme** in the Memory menu. The choice persists in the `theme_mode` session setting and applies immediately. With **System**, it follows the desktop's dark preference.
 
 ## Check the project
 
@@ -99,11 +99,11 @@ cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
-The GUI tests load locally served pages and drive the window with real pointer and keyboard input. Install Xvfb and xdotool, then run them like this:
+The GUI tests load locally served pages and drive the window with real pointer and keyboard input. They check the HTML chrome through its own DOM. Install Xvfb and xdotool, then run them like this. Unsetting `WAYLAND_DISPLAY` keeps the window on Xvfb from a Wayland session:
 
 ```sh
-GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test webkit_smoke
-GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test reading_smoke
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test webkit_smoke
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test reading_smoke
 ```
 
 The design choices are described, in French, in [Une forêt de visites](docs/design.md) and [La mémoire d'une exploration](docs/reading-memory.md).

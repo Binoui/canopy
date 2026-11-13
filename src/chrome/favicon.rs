@@ -4,36 +4,25 @@ use std::{
     rc::Rc,
 };
 
-use gtk::{cairo, gdk, gdk::prelude::GdkPixbufExt, gdk_pixbuf::Pixbuf};
+use gtk::{cairo, gdk, gdk_pixbuf::Pixbuf};
 use webkit2gtk::{FaviconDatabaseExt, WebContextExt, WebViewExt};
-
-use crate::browser::{Visit, VisitState};
 
 const PAGE_LIMIT: usize = 512;
 const HOST_LIMIT: usize = 256;
 const STORED: i32 = 32;
 
-const MONOGRAM_COLORS: [(f64, f64, f64); 8] = [
-    (0.85, 0.36, 0.26),
-    (0.23, 0.48, 0.84),
-    (0.18, 0.62, 0.37),
-    (0.61, 0.42, 0.87),
-    (0.85, 0.59, 0.18),
-    (0.23, 0.60, 0.68),
-    (0.82, 0.33, 0.48),
-    (0.42, 0.45, 0.50),
-];
+type ChangeHandler = Box<dyn Fn(u64)>;
 
-/// Page icons from WebKit's own favicon database, in a bounded cache keyed by page URL.
-/// A queued page is never fetched: it borrows an icon already seen on its host, or gets
-/// a monogram.
-pub(crate) struct Favicons {
+/// Page icons from WebKit's own favicon database, in a bounded cache keyed by page URL, as
+/// PNG bytes for the chrome view. A queued page is never fetched: it borrows an icon already
+/// seen on its host, or the view draws a monogram.
+pub struct Favicons {
     page: webkit2gtk::WebView,
-    pages: RefCell<Bounded<String, Option<Pixbuf>>>,
-    hosts: RefCell<Bounded<String, Pixbuf>>,
+    pages: RefCell<Bounded<String, Option<Rc<[u8]>>>>,
+    hosts: RefCell<Bounded<String, Rc<[u8]>>>,
     requested: RefCell<HashSet<String>>,
     revision: Cell<u64>,
-    on_change: RefCell<Option<Box<dyn Fn()>>>,
+    on_change: RefCell<Option<ChangeHandler>>,
 }
 
 impl Favicons {
@@ -58,28 +47,15 @@ impl Favicons {
         favicons
     }
 
-    pub fn connect_changed(&self, callback: impl Fn() + 'static) {
+    /// Called with the new revision whenever a newly known icon could change what is drawn.
+    pub fn connect_changed(&self, callback: impl Fn(u64) + 'static) {
         *self.on_change.borrow_mut() = Some(Box::new(callback));
     }
 
-    /// Bumps whenever a newly known icon could change what is drawn.
-    pub fn revision(&self) -> u64 {
-        self.revision.get()
-    }
-
-    pub fn surface(self: &Rc<Self>, visit: &Visit, size: i32, scale: i32) -> cairo::Surface {
-        self.url_surface(&visit.url, visit.state == VisitState::Opened, size, scale)
-    }
-
-    pub fn url_surface(
-        self: &Rc<Self>,
-        url: &url::Url,
-        opened: bool,
-        size: i32,
-        scale: i32,
-    ) -> cairo::Surface {
+    /// The icon for `url` as PNG, or `None` for a monogram. An opened page missing from the
+    /// cache is requested from the database, and `connect_changed` fires when it arrives.
+    pub fn png(self: &Rc<Self>, url: &url::Url, opened: bool) -> Option<Rc<[u8]>> {
         let key = url.to_string();
-        let host = url.host_str().unwrap_or("?");
         let known = self.pages.borrow_mut().get(&key).cloned();
         let icon = match known {
             Some(icon) => icon,
@@ -90,17 +66,10 @@ impl Favicons {
                 None
             }
         };
-        let icon = icon.or_else(|| self.hosts.borrow_mut().get(&host.to_owned()).cloned());
-        icon.and_then(|pixbuf| {
-            pixbuf
-                .scale_simple(
-                    size * scale,
-                    size * scale,
-                    gtk::gdk_pixbuf::InterpType::Bilinear,
-                )?
-                .create_surface(scale, None::<&gdk::Window>)
+        icon.or_else(|| {
+            let host = url.host_str()?.to_owned();
+            self.hosts.borrow_mut().get(&host).cloned()
         })
-        .unwrap_or_else(|| monogram(host, size, scale))
     }
 
     fn request(self: &Rc<Self>, url: String) {
@@ -119,28 +88,31 @@ impl Favicons {
     }
 
     fn store(&self, url: String, surface: Option<&cairo::Surface>) {
-        let pixbuf = surface.and_then(normalize);
+        let png = surface.and_then(normalize);
         let host = url::Url::parse(&url)
             .ok()
             .and_then(|u| u.host_str().map(str::to_owned));
-        if let (Some(host), Some(pixbuf)) = (host, &pixbuf) {
-            self.hosts.borrow_mut().insert(host, pixbuf.clone());
+        if let (Some(host), Some(png)) = (host, &png) {
+            self.hosts.borrow_mut().insert(host, png.clone());
         }
-        let changed = pixbuf.is_some();
-        self.pages.borrow_mut().insert(url, pixbuf);
+        let changed = png.is_some();
+        self.pages.borrow_mut().insert(url, png);
         if changed {
-            self.revision.set(self.revision.get() + 1);
+            let revision = self.revision.get() + 1;
+            self.revision.set(revision);
             if let Some(callback) = self.on_change.borrow().as_ref() {
-                callback();
+                callback(revision);
             }
         }
     }
 }
 
-fn normalize(surface: &cairo::Surface) -> Option<Pixbuf> {
+fn normalize(surface: &cairo::Surface) -> Option<Rc<[u8]>> {
     let image = cairo::ImageSurface::try_from(surface.clone()).ok()?;
     let pixbuf = gdk::pixbuf_get_from_surface(surface, 0, 0, image.width(), image.height())?;
-    pixbuf.scale_simple(STORED, STORED, gtk::gdk_pixbuf::InterpType::Bilinear)
+    let pixbuf: Pixbuf =
+        pixbuf.scale_simple(STORED, STORED, gtk::gdk_pixbuf::InterpType::Bilinear)?;
+    pixbuf.save_to_bufferv("png", &[]).ok().map(Rc::from)
 }
 
 /// A map that forgets its least recently used entry beyond `limit`.
@@ -185,65 +157,6 @@ impl<K: std::hash::Hash + Eq + Clone, V> Bounded<K, V> {
             self.order.push_back(key);
         }
     }
-}
-
-/// The prototype's fallback: the host's initial on a color derived from the host.
-fn monogram(host: &str, size: i32, scale: i32) -> cairo::Surface {
-    let host = host.strip_prefix("www.").unwrap_or(host);
-    let letter = host.chars().next().map_or('?', |c| c.to_ascii_uppercase());
-    let hash = host.bytes().fold(2166136261u32, |h, b| {
-        (h ^ u32::from(b)).wrapping_mul(16777619)
-    });
-    let (r, g, b) = MONOGRAM_COLORS[hash as usize % MONOGRAM_COLORS.len()];
-    let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, size * scale, size * scale)
-        .expect("a small image surface");
-    surface.set_device_scale(f64::from(scale), f64::from(scale));
-    let cr = cairo::Context::new(&surface).expect("a context for an image surface");
-    let s = f64::from(size);
-    let radius = 3.0f64.min(s / 4.);
-    cr.new_sub_path();
-    cr.arc(s - radius, radius, radius, -std::f64::consts::FRAC_PI_2, 0.);
-    cr.arc(
-        s - radius,
-        s - radius,
-        radius,
-        0.,
-        std::f64::consts::FRAC_PI_2,
-    );
-    cr.arc(
-        radius,
-        s - radius,
-        radius,
-        std::f64::consts::FRAC_PI_2,
-        std::f64::consts::PI,
-    );
-    cr.arc(
-        radius,
-        radius,
-        radius,
-        std::f64::consts::PI,
-        1.5 * std::f64::consts::PI,
-    );
-    cr.close_path();
-    cr.set_source_rgb(r, g, b);
-    let _ = cr.fill();
-    cr.select_font_face(
-        super::theme::FONT,
-        cairo::FontSlant::Normal,
-        cairo::FontWeight::Bold,
-    );
-    cr.set_font_size((s * 0.62).round());
-    let text = letter.to_string();
-    if let Ok(extents) = cr.text_extents(&text) {
-        cr.move_to(
-            (s - extents.width()) / 2. - extents.x_bearing(),
-            (s - extents.height()) / 2. - extents.y_bearing(),
-        );
-        cr.set_source_rgb(1., 1., 1.);
-        let _ = cr.show_text(&text);
-    }
-    drop(cr);
-    (*surface).clone()
 }
 
 #[cfg(test)]

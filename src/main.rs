@@ -60,7 +60,6 @@ fn run() -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o700))?;
     }
-    canopy::ui::register_font(&data_dir)?;
     gtk::init()
         .context("Could not open a window. Start Canopy from your Linux desktop session.")?;
     let ui = canopy::ui::Ui::new(&data_dir)?;

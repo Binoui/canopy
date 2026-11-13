@@ -55,14 +55,14 @@ struct NativeState {
 }
 
 pub struct Engine {
-    _view: wry::WebView,
+    view: wry::WebView,
     pub native: webkit2gtk::WebView,
     state: Rc<NativeState>,
 }
 
 impl Engine {
     pub fn new(
-        container: &gtk::Box,
+        container: &gtk::Fixed,
         browser: Rc<RefCell<Browser>>,
         profile: &Path,
     ) -> Result<Self> {
@@ -250,10 +250,22 @@ impl Engine {
             });
         }
         Ok(Self {
-            _view: view,
+            view,
             native,
             state,
         })
+    }
+
+    /// Places the page in its container, in logical pixels.
+    pub fn set_bounds(&self, x: f64, y: f64, width: f64, height: f64) {
+        let _ = self.view.set_bounds(wry::Rect {
+            position: wry::dpi::LogicalPosition::new(x, y).into(),
+            size: wry::dpi::LogicalSize::new(width.max(1.), height.max(1.)).into(),
+        });
+    }
+
+    pub fn focus(&self) {
+        let _ = self.view.focus();
     }
 
     pub fn observe(&self, callback: impl Fn(EngineEvent) + 'static) {

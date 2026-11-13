@@ -1,49 +1,60 @@
-mod card;
+//! The chrome: tabs, the tree strip, the palette, cards, menus, the new-tree page, the forest
+//! view and the saved-text reader, drawn in HTML by a transparent web view over the page.
+//!
+//! Rust owns the state and every decision: layouts, palette results, intents. The view paints
+//! what `view` serializes and reports input over IPC. At rest the view covers only the top
+//! 94 px. It grows down to whatever is open over the page (the open strip, a card, a menu)
+//! and covers the window only for the palette, the reader and the full-page surfaces, so the
+//! page keeps its clicks everywhere else.
+
 mod favicon;
-mod forest_view;
+mod forest_layout;
 pub(crate) mod graph;
-mod icons;
-mod memory;
 mod palette;
-mod presentation;
-mod start;
-mod strip;
-mod tabs;
-mod theme;
+mod view;
 
 use std::{
+    borrow::Cow,
     cell::{Cell, RefCell},
     rc::{Rc, Weak},
-    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::Result;
-use gtk::{gdk, pango, prelude::*};
+use anyhow::{Context, Result};
+use serde_json::{json, Value};
 use url::Url;
+use wry::{
+    dpi::{LogicalPosition, LogicalSize},
+    http::{header::CONTENT_TYPE, Request, Response},
+    Rect, WebView, WebViewBuilder,
+};
 
-pub use theme::register_font;
+pub use favicon::Favicons;
+use palette::{Group, PaletteItem};
 
 use crate::{
     browser::{
-        NavigationTarget, SearchHit, StartSuggestions, ThemeMode, TreeId, UsualPath, Visit,
-        VisitId, VisitPreview, VisitState,
+        Capture, NavigationTarget, SearchHit, StartSuggestions, ThemeMode, TreeId, UsualPath,
+        Visit, VisitId, VisitPreview,
     },
     forest::ForestProjection,
 };
-use card::{Card, CardEvent};
-use favicon::Favicons;
-use memory::{Memory, MemoryEvent};
-use palette::{Palette, PaletteEvent};
-use presentation::{Input, Layer, Output, Presentation};
-use strip::{Strip, StripEvent};
-use tabs::{TabEvent, Tabs};
-use theme::Shade;
 
-const HEADER: i32 = 42;
-/// Room around the strip and the card for their shadows. Their frames pass pointer
-/// input through, so the shadow never covers a click on the page.
-const STRIP_SHADOW: i32 = 24;
-const CARD_SHADOW: (i32, i32, i32) = (18, 6, 30);
+/// The tab row and the resting strip.
+pub const CHROME_HEIGHT: f64 = 94.;
+
+const INDEX: &str = include_str!("assets/index.html");
+const CSS: &str = include_str!("assets/chrome.css");
+const SCRIPT: &str = include_str!("assets/chrome.js");
+const INTER: &[u8] = include_bytes!("../../assets/fonts/InterVariable.ttf");
+
+thread_local! {
+    /// The icon cache, for the protocol handler, which wry wants `Send` but calls on the
+    /// main thread.
+    static FAVICONS: RefCell<Weak<Favicons>> = const { RefCell::new(Weak::new()) };
+}
+
+/// The palette's last query, its results, and the row Enter runs first.
+type PaletteCache = (String, Vec<(Group, PaletteItem)>, usize);
 
 /// Everything the chrome shows, read from SQLite in one go.
 pub struct ChromeFrame {
@@ -82,6 +93,8 @@ pub enum ChromeIntent {
     OpenCitation(VisitId),
     ReadCapture(i64),
     ReadCaptures(VisitId),
+    /// Load the live page a saved text came from.
+    OpenSaved(i64),
     SetCaptureEnabled(bool),
     RememberSelection,
 }
@@ -96,623 +109,446 @@ pub trait ChromeHost {
     fn dispatch(&self, intent: ChromeIntent);
     fn search(&self, query: &str) -> Result<Vec<SearchHit>>;
     fn preview(&self, visit: VisitId) -> Result<VisitPreview>;
+    /// Gives the keyboard back to the page.
+    fn focus_page(&self);
 }
 
-pub struct NativeChrome {
+pub struct HtmlChrome {
     inner: Rc<Inner>,
 }
 
-#[derive(Clone, Copy, Default, PartialEq)]
-enum Surface {
-    #[default]
-    Reading,
-    Start,
-    Forest,
-}
-
 struct Inner {
-    page: gtk::Widget,
-    surface: Cell<Surface>,
-    start: Rc<start::StartPage>,
-    forest_view: Rc<forest_view::ForestView>,
-    css: gtk::CssProvider,
-    theme: Cell<ThemeMode>,
-    shade: Cell<Option<Shade>>,
-    tabs: Rc<Tabs>,
-    strip: Rc<Strip>,
-    card: Rc<Card>,
-    card_x: Cell<i32>,
-    palette: Rc<Palette>,
-    memory: Rc<Memory>,
-    toast: gtk::Revealer,
-    toast_label: gtk::Label,
-    toast_generation: Cell<u64>,
-    icons_stale: Cell<bool>,
-    presentation: RefCell<Presentation>,
-    forest: RefCell<Option<Rc<ForestProjection>>>,
-    host: Weak<dyn ChromeHost>,
+    view: WebView,
+    host: RefCell<Option<Weak<dyn ChromeHost>>>,
+    _favicons: Rc<Favicons>,
+    ready: Cell<bool>,
+    /// Calls made before the view loaded, replayed once it reports ready.
+    queue: RefCell<Vec<String>>,
+    size: Cell<(f64, f64)>,
+    /// How far down the view reaches, or `None` to cover the window.
+    cover: Cell<Option<f64>>,
+    /// Something is open that Escape closes.
+    modal: Cell<bool>,
+    frame: RefCell<Option<ChromeFrame>>,
+    /// The last palette results, so Enter runs exactly the row the view showed.
+    palette: RefCell<Option<PaletteCache>>,
 }
 
-impl NativeChrome {
-    /// Adds the chrome above `overlay`'s main child, whose first 94 px it covers.
-    pub fn mount(
-        overlay: &gtk::Overlay,
-        page: &webkit2gtk::WebView,
-        host: Weak<dyn ChromeHost>,
-    ) -> Self {
-        let css = gtk::CssProvider::new();
-        if let Some(screen) = gdk::Screen::default() {
-            gtk::StyleContext::add_provider_for_screen(
-                &screen,
-                &css,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
-        let favicons = Favicons::new(page);
-        let inner = Rc::new_cyclic(|weak: &Weak<Inner>| {
-            let w = weak.clone();
-            let tabs = Tabs::new(favicons.clone(), move |event| {
-                if let Some(inner) = w.upgrade() {
-                    inner.tab_event(event);
-                }
-            });
-            let w = weak.clone();
-            let memory = Memory::new(move |event| {
-                if let Some(inner) = w.upgrade() {
-                    inner.memory_event(event);
-                }
-            });
-            let w = weak.clone();
-            let strip = Strip::new(favicons.clone(), &memory.button, move |event| {
-                if let Some(inner) = w.upgrade() {
-                    inner.strip_event(event);
-                }
-            });
-            let w = weak.clone();
-            let card = Card::new(favicons.clone(), move |event| {
-                if let Some(inner) = w.upgrade() {
-                    inner.card_event(event);
-                }
-            });
-            let search_host = host.clone();
-            let w = weak.clone();
-            let palette = Palette::new(
-                favicons.clone(),
-                page.clone().upcast(),
-                move |query| {
-                    search_host
-                        .upgrade()
-                        .and_then(|host| host.search(query).ok())
-                        .unwrap_or_default()
-                },
-                move |event| {
-                    if let Some(inner) = w.upgrade() {
-                        inner.palette_event(event);
-                    }
-                },
-            );
-            let w = weak.clone();
-            let start = start::StartPage::new(favicons.clone(), move |intent| {
-                if let Some(inner) = w.upgrade() {
-                    match intent {
-                        Some(intent) => inner.emit(intent),
-                        None => inner.open_palette(PaletteScope::NewTree, PaletteSeed::Empty),
-                    }
-                }
-            });
-            let w = weak.clone();
-            let close = weak.clone();
-            let forest_view = forest_view::ForestView::new(
-                favicons.clone(),
-                move |id| {
-                    if let Some(inner) = w.upgrade() {
-                        inner.set_surface(Surface::Reading);
-                        inner.emit(ChromeIntent::Restore(id));
-                    }
-                },
-                move || {
-                    if let Some(inner) = close.upgrade() {
-                        inner.set_surface(Surface::Reading);
-                    }
-                },
-            );
-            let toast = gtk::Revealer::new();
-            toast.set_widget_name("toast-revealer");
-            toast.set_transition_type(gtk::RevealerTransitionType::Crossfade);
-            toast.set_transition_duration(200);
-            let toast_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            toast_box.set_widget_name("toast");
-            let toast_label = gtk::Label::new(None);
-            toast_label.set_widget_name("toast-label");
-            toast_label.set_line_wrap(true);
-            toast_label.set_max_width_chars(70);
-            toast_box.pack_start(&toast_label, false, false, 0);
-            toast.add(&toast_box);
-            toast.set_no_show_all(true);
-            toast_box.show_all();
-            Inner {
-                page: page.clone().upcast(),
-                surface: Cell::new(Surface::Reading),
-                start,
-                forest_view,
-                css,
-                theme: Cell::new(ThemeMode::System),
-                shade: Cell::new(None),
-                tabs,
-                strip,
-                card,
-                card_x: Cell::new(0),
-                palette,
-                memory,
-                toast,
-                toast_label,
-                toast_generation: Cell::new(0),
-                icons_stale: Cell::new(false),
-                presentation: RefCell::new(Presentation::default()),
-                forest: RefCell::new(None),
-                host,
-            }
-        });
-        overlay.add_overlay(&inner.tabs.root);
-        let strip_frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        strip_frame.set_widget_name("strip-frame");
-        inner.strip.root.set_margin_bottom(STRIP_SHADOW);
-        strip_frame.pack_start(&inner.strip.root, true, true, 0);
-        let weak = Rc::downgrade(&inner);
-        strip_frame.connect_draw(move |frame, cr| {
-            if let Some(inner) = weak.upgrade() {
-                inner.strip.paint_shadow(cr, frame.allocated_width());
-            }
-            glib::Propagation::Proceed
-        });
-        overlay.add_overlay(&strip_frame);
-        overlay.set_overlay_pass_through(&strip_frame, true);
-        let (x, top, bottom) = CARD_SHADOW;
-        inner.card.frame.set_margin_start(x);
-        inner.card.frame.set_margin_end(x);
-        inner.card.frame.set_margin_top(top);
-        inner.card.frame.set_margin_bottom(bottom);
-        let card_frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        card_frame.set_widget_name("card-frame");
-        card_frame.set_no_show_all(true);
-        card_frame.pack_start(&inner.card.frame, true, true, 0);
-        overlay.add_overlay(&card_frame);
-        overlay.set_overlay_pass_through(&card_frame, true);
-        overlay.add_overlay(&inner.start.root);
-        overlay.add_overlay(&inner.forest_view.root);
-        overlay.add_overlay(&inner.palette.root);
-        overlay.add_overlay(&inner.toast);
-        overlay.set_overlay_pass_through(&inner.toast, true);
-        let weak = Rc::downgrade(&inner);
-        overlay.connect_get_child_position(move |overlay, widget| {
-            let inner = weak.upgrade()?;
-            let width = overlay.allocated_width();
-            let height = overlay.allocated_height();
-            let rect = match widget.widget_name().as_str() {
-                "tabs" => (0, 0, width, HEADER),
-                "strip-frame" => (
-                    0,
-                    HEADER,
-                    width,
-                    inner.strip.allocation_height() + STRIP_SHADOW,
-                ),
-                "card-frame" => {
-                    let (x, top, bottom) = CARD_SHADOW;
-                    let y = HEADER + graph::OPEN_HEIGHT as i32 + 8 - top;
-                    let (_, natural) = widget.preferred_height_for_width(card::WIDTH + 2 * x);
-                    (
-                        inner.card_x.get() - x,
-                        y,
-                        card::WIDTH + 2 * x,
-                        natural.min(height - y - 8 + bottom),
-                    )
-                }
-                "forest-view" | "start-page" => (0, 94, width, height - 94),
-                "palette" => (0, 0, width, height),
-                "toast-revealer" => {
-                    let (_, natural) = widget.preferred_size();
-                    let w = natural.width.min(width - 40);
-                    let h = natural.height;
-                    ((width - w) / 2, height - h - 20, w, h)
-                }
-                _ => return None,
-            };
-            Some(gdk::Rectangle::new(rect.0, rect.1, rect.2, rect.3))
-        });
-        if let Some(settings) = gtk::Settings::default() {
-            for property in ["gtk-application-prefer-dark-theme", "gtk-theme-name"] {
-                let weak = Rc::downgrade(&inner);
-                settings.connect_notify_local(Some(property), move |_, _| {
+impl HtmlChrome {
+    /// Adds the chrome view to `container`, above the page already in it.
+    pub fn mount(container: &gtk::Fixed, favicons: Rc<Favicons>) -> Result<Self> {
+        use wry::WebViewBuilderExtUnix;
+
+        FAVICONS.with(|slot| *slot.borrow_mut() = Rc::downgrade(&favicons));
+        let slot: Rc<RefCell<Weak<Inner>>> = Rc::default();
+        let messages = slot.clone();
+        let view = WebViewBuilder::new()
+            .with_transparent(true)
+            .with_bounds(rect(0., 0., 1., CHROME_HEIGHT))
+            .with_custom_protocol("canopy".into(), |_, request| serve(&request))
+            .with_ipc_handler(move |request: Request<String>| {
+                let weak = messages.borrow().clone();
+                let body = request.into_body();
+                // Out of WebKit's callback, so handling may call back into the view.
+                glib::idle_add_local_once(move || {
                     if let Some(inner) = weak.upgrade() {
-                        inner.apply_theme();
+                        inner.message(&body);
                     }
                 });
-            }
-        }
-        inner.apply_theme();
+            })
+            .with_url("canopy://localhost/index.html")
+            .build_gtk(container)
+            .context("Could not create the chrome view.")?;
+        let inner = Rc::new(Inner {
+            view,
+            host: RefCell::new(None),
+            _favicons: favicons.clone(),
+            ready: Cell::new(false),
+            queue: RefCell::new(Vec::new()),
+            size: Cell::new((1., 1.)),
+            cover: Cell::new(Some(CHROME_HEIGHT)),
+            modal: Cell::new(false),
+            frame: RefCell::new(None),
+            palette: RefCell::new(None),
+        });
+        *slot.borrow_mut() = Rc::downgrade(&inner);
         let weak = Rc::downgrade(&inner);
-        favicons.connect_changed(move || {
+        favicons.connect_changed(move |revision| {
             if let Some(inner) = weak.upgrade() {
-                inner.schedule_icon_refresh();
+                inner.call("icons", &[json!(revision)]);
             }
         });
-        Self { inner }
+        Ok(Self { inner })
+    }
+
+    /// Connects the browser the chrome sends its intents and queries to.
+    pub fn attach(&self, host: Weak<dyn ChromeHost>) {
+        *self.inner.host.borrow_mut() = Some(host);
     }
 
     pub fn present(&self, frame: ChromeFrame) {
         let inner = &self.inner;
-        let forest = Rc::new(frame.forest);
-        let previous = inner.current();
-        *inner.forest.borrow_mut() = Some(forest.clone());
-        if forest.current() != previous && inner.surface.get() != Surface::Reading {
-            inner.set_surface(Surface::Reading);
-        }
-        inner.tabs.present(&forest);
-        inner.forest_view.present(forest.clone());
-        inner.start.present(&frame.suggestions);
-        inner.palette.set_suggestions(frame.suggestions);
-        if forest.trees().is_empty() {
-            inner.set_surface(Surface::Start);
-        }
-        inner.strip.present(forest.clone());
-        inner.palette.present(forest.clone());
-        if let Some(id) = inner.card.visit() {
-            match forest.visit(id) {
-                Some(_) => inner.show_card(id),
-                None => inner.step(Input::Activated),
+        let (width, _) = inner.size.get();
+        inner.call("present", &[view::frame(&frame, width)]);
+        *inner.frame.borrow_mut() = Some(frame);
+        inner.palette.borrow_mut().take();
+    }
+
+    /// Follows the window: the page sits below `CHROME_HEIGHT`, the view on top.
+    pub fn resize(&self, width: f64, height: f64) {
+        let inner = &self.inner;
+        let previous = inner.size.replace((width, height));
+        inner.apply_bounds();
+        if previous.0 != width {
+            if let Some(frame) = inner.frame.borrow().as_ref() {
+                inner.call("strip", &[view::strip(&frame.forest, width)]);
             }
         }
-        inner.theme.set(frame.theme);
-        inner.apply_theme();
-        inner.memory.present(
-            frame.capture_enabled,
-            forest.current(),
-            inner.shade(),
-            frame.theme,
-        );
     }
 
     pub fn open_palette(&self, scope: PaletteScope, seed: PaletteSeed) {
-        let scope = if self.inner.surface.get() == Surface::Start {
-            PaletteScope::NewTree
-        } else {
-            scope
+        let inner = &self.inner;
+        let text = match seed {
+            PaletteSeed::Empty => String::new(),
+            PaletteSeed::CurrentAddress => inner
+                .frame
+                .borrow()
+                .as_ref()
+                .and_then(|frame| frame.forest.current().and_then(|id| frame.forest.visit(id)))
+                .map(|visit| visit.url.to_string())
+                .unwrap_or_default(),
         };
-        self.inner.open_palette(scope, seed);
+        let scope = match scope {
+            PaletteScope::NewTree => Value::Null,
+            PaletteScope::From(id) => json!(id.to_string()),
+        };
+        inner.call("openPalette", &[json!({ "scope": scope, "text": text })]);
+        let _ = inner.view.focus();
     }
 
     pub fn new_tree(&self) {
-        self.inner.emit(ChromeIntent::CancelContinuation);
-        self.inner.set_surface(Surface::Start);
+        self.inner.call("newTree", &[]);
     }
 
     pub fn toggle_forest(&self) {
-        self.inner.emit(ChromeIntent::CancelContinuation);
-        self.inner.toggle_forest();
+        self.inner.call("toggleForest", &[]);
     }
 
     pub fn toast(&self, toast: Toast) {
-        self.inner.toast(toast);
+        let (kind, text) = match toast {
+            Toast::Info(text) => ("info", text),
+            Toast::Error(text) => ("error", text),
+        };
+        self.inner.call("toast", &[json!(kind), json!(text)]);
     }
 
     /// F6 moves keyboard focus between the page and the current node.
     pub fn toggle_focus(&self) {
-        if self.inner.strip.has_focus_inside() || !self.inner.strip.focus_current() {
-            self.inner.page.grab_focus();
-        }
+        self.inner.call("toggleFocus", &[]);
     }
 
     /// Closes the topmost chrome surface. Returns false when there was none, so the page
     /// can have the key.
     pub fn escape(&self) -> bool {
-        if self.inner.palette.is_open() {
-            self.inner.palette.close();
-            return true;
+        if !self.inner.modal.get() {
+            return false;
         }
-        if self.inner.surface.get() != Surface::Reading && self.inner.current().is_some() {
-            self.inner.set_surface(Surface::Reading);
-            self.inner.page.grab_focus();
-            return true;
-        }
-        false
+        self.inner.call("escape", &[]);
+        true
+    }
+
+    /// Shows one saved text in the reader.
+    pub fn read(&self, capture: &Capture, visit: &Visit) {
+        self.inner.call("reader", &[view::capture(capture, visit)]);
+        let _ = self.inner.view.focus();
+    }
+
+    /// Lets the user pick one of several saved texts for a page.
+    pub fn choose(&self, captures: &[Capture]) {
+        self.inner.call("readerList", &[view::captures(captures)]);
+        let _ = self.inner.view.focus();
+    }
+
+    /// Whether `system` resolves to dark, from the desktop's preference.
+    pub fn set_system_dark(&self, dark: bool) {
+        self.inner.call("systemDark", &[json!(dark)]);
+    }
+
+    /// Puts the chrome back above the page, after the page moved or took focus.
+    pub fn raise(&self) {
+        self.inner.raise();
+    }
+
+    /// Runs `script` in the chrome view. For tests.
+    pub fn evaluate(&self, script: &str) -> Result<()> {
+        self.inner.view.evaluate_script(script)?;
+        Ok(())
+    }
+
+    /// The chrome's WebKit view. For tests.
+    pub fn native(&self) -> webkit2gtk::WebView {
+        use wry::WebViewExtUnix;
+        self.inner.view.webview()
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.inner.ready.get()
     }
 }
 
 impl Inner {
-    fn set_surface(self: &Rc<Self>, surface: Surface) {
-        self.surface.set(surface);
-        self.start.root.set_visible(surface == Surface::Start);
-        self.forest_view
-            .root
-            .set_visible(surface == Surface::Forest);
-        self.step(Input::Layer(if surface == Surface::Reading {
-            Layer::None
+    fn call(&self, function: &str, arguments: &[Value]) {
+        let arguments: Vec<String> = arguments.iter().map(Value::to_string).collect();
+        let script = format!("canopy.{function}({})", arguments.join(","));
+        if self.ready.get() {
+            let _ = self.view.evaluate_script(&script);
         } else {
-            Layer::Palette
-        }));
-        if surface == Surface::Forest {
-            self.forest_view.open();
+            self.queue.borrow_mut().push(script);
         }
     }
 
-    fn toggle_forest(self: &Rc<Self>) {
-        self.emit(ChromeIntent::CancelContinuation);
-        self.palette.close();
-        self.set_surface(if self.surface.get() == Surface::Forest {
-            Surface::Reading
-        } else {
-            Surface::Forest
-        });
+    fn apply_bounds(&self) {
+        let (width, height) = self.size.get();
+        let height = self.cover.get().map_or(height, |cover| cover.min(height));
+        let _ = self.view.set_bounds(rect(0., 0., width, height));
+        self.raise();
     }
 
-    fn shade(&self) -> Shade {
-        self.shade.get().unwrap_or(Shade::Light)
+    /// Keeps the chrome's window above the page's. WebKit can restack the page's window
+    /// (on focus, on reallocation), and input then reaches the page through the chrome.
+    fn raise(&self) {
+        use wry::WebViewExtUnix;
+        if let Some(window) = gtk::prelude::WidgetExt::window(&self.view.webview()) {
+            window.raise();
+        }
     }
 
-    /// Resolves `session.theme_mode`, with `system` following GTK's dark preference.
-    fn apply_theme(&self) {
-        let shade = match self.theme.get() {
-            ThemeMode::Light => Shade::Light,
-            ThemeMode::Dark => Shade::Dark,
-            ThemeMode::System => {
-                let settings = gtk::Settings::default();
-                let prefers_dark = settings.as_ref().is_some_and(|s| {
-                    s.is_gtk_application_prefer_dark_theme()
-                        || s.gtk_theme_name()
-                            .is_some_and(|name| name.to_lowercase().contains("dark"))
-                });
-                if prefers_dark {
-                    Shade::Dark
+    fn host(&self) -> Option<Rc<dyn ChromeHost>> {
+        self.host.borrow().as_ref()?.upgrade()
+    }
+
+    fn report(&self, error: anyhow::Error) {
+        self.call("toast", &[json!("error"), json!(error.to_string())]);
+    }
+
+    fn message(self: &Rc<Self>, body: &str) {
+        if let Err(error) = self.handle(body) {
+            self.report(error);
+        }
+    }
+
+    fn handle(self: &Rc<Self>, body: &str) -> Result<()> {
+        let message: Value = serde_json::from_str(body)?;
+        match message["t"].as_str().unwrap_or_default() {
+            "ready" => {
+                self.ready.set(true);
+                let queued = std::mem::take(&mut *self.queue.borrow_mut());
+                for script in queued {
+                    self.view.evaluate_script(&script)?;
+                }
+            }
+            "layer" => {
+                self.modal.set(message["modal"].as_bool().unwrap_or(false));
+                let cover = message["height"].as_f64().map(|h| h.max(CHROME_HEIGHT));
+                if self.cover.replace(cover) != cover {
+                    self.apply_bounds();
+                }
+            }
+            "focus" => {
+                if message["target"] == "page" {
+                    if let Some(host) = self.host() {
+                        host.focus_page();
+                    }
                 } else {
-                    Shade::Light
+                    self.view.focus()?;
                 }
             }
-        };
-        if self.shade.replace(Some(shade)) == Some(shade) {
-            return;
-        }
-        self.css
-            .load_from_data(shade.css().as_bytes())
-            .expect("the generated chrome CSS parses");
-        self.strip.set_shade(shade);
-        self.start.set_shade(shade);
-        self.forest_view.set_shade(shade);
-    }
-
-    fn step(self: &Rc<Self>, input: Input) {
-        let outputs = self.presentation.borrow_mut().step(input);
-        for output in outputs {
-            match output {
-                Output::Schedule(timer, delay, token) => {
-                    let weak = Rc::downgrade(self);
-                    glib::timeout_add_local_once(delay, move || {
-                        if let Some(inner) = weak.upgrade() {
-                            inner.step(Input::Fired(timer, token));
-                        }
-                    });
-                }
-                Output::Strip { open } => self.strip.set_open(open),
-                Output::ShowCard(id) => self.show_card(id),
-                Output::HideCard => self.card.hide(),
-            }
-        }
-    }
-
-    /// Icons arrive in bursts while a page loads; redraw them once per idle.
-    fn schedule_icon_refresh(self: &Rc<Self>) {
-        if self.icons_stale.replace(true) {
-            return;
-        }
-        let weak = Rc::downgrade(self);
-        glib::idle_add_local_once(move || {
-            let Some(inner) = weak.upgrade() else { return };
-            inner.icons_stale.set(false);
-            let forest = inner.forest.borrow().clone();
-            if let Some(forest) = forest {
-                inner.tabs.present(&forest);
-                inner.strip.refresh_icons();
-                if let Some(id) = inner.card.visit() {
-                    inner.show_card(id);
+            "intent" => {
+                let intent = self
+                    .intent(&message)
+                    .context("The chrome sent an unknown action.")?;
+                if let Some(host) = self.host() {
+                    host.dispatch(intent);
                 }
             }
-        });
-    }
-
-    fn show_card(&self, id: VisitId) {
-        let forest = self.forest.borrow().clone();
-        let (Some(forest), Some(rect)) = (forest, self.strip.node_rect(id)) else {
-            return;
-        };
-        let Some(preview) = self.host.upgrade().and_then(|host| host.preview(id).ok()) else {
-            return;
-        };
-        let width = self.strip.root.allocated_width();
-        let x = rect.x() + rect.width() / 2 - card::WIDTH / 2;
-        self.card_x.set(x.min(width - card::WIDTH - 8).max(8));
-        self.card.show(&forest, id, preview);
-        self.card.frame.queue_resize();
-    }
-
-    fn card_event(self: &Rc<Self>, event: CardEvent) {
-        match event {
-            CardEvent::Enter => self.step(Input::EnterCard),
-            CardEvent::Leave => self.step(Input::LeaveCard),
-            CardEvent::Open(id) => {
-                self.step(Input::Activated);
-                self.emit(ChromeIntent::Restore(id));
+            "palette" => {
+                let query = message["q"].as_str().unwrap_or_default();
+                let rows = {
+                    let (items, first) = self.palette_items(query);
+                    let frame = self.frame.borrow();
+                    let forest = &frame
+                        .as_ref()
+                        .context("The chrome has no forest yet.")?
+                        .forest;
+                    json!({ "rows": view::palette_rows(&items, forest), "first": first })
+                };
+                self.call("paletteResults", &[message["seq"].clone(), rows]);
             }
-            CardEvent::Branch(id) => {
-                self.step(Input::Activated);
-                let queued = self
-                    .forest
+            "run" => {
+                let query = message["q"].as_str().unwrap_or_default();
+                let fresh = self
+                    .palette
                     .borrow()
                     .as_ref()
-                    .and_then(|forest| forest.visit(id))
-                    .is_some_and(|visit| visit.state == VisitState::Queued);
-                if queued {
-                    self.emit(ChromeIntent::BranchFromQueued(id));
+                    .is_some_and(|(shown, _, _)| shown == query);
+                let (items, first) = self.palette_items(query);
+                let index = if fresh {
+                    message["item"].as_u64().map_or(first, |i| i as usize)
                 } else {
-                    self.open_palette(PaletteScope::From(id), PaletteSeed::Empty);
+                    first
+                };
+                let scope = match message["scope"].as_str() {
+                    Some(id) => PaletteScope::From(id.parse()?),
+                    None => PaletteScope::NewTree,
+                };
+                let new_tree = message["newTree"].as_bool().unwrap_or(false);
+                let intent = {
+                    let frame = self.frame.borrow();
+                    let forest = &frame
+                        .as_ref()
+                        .context("The chrome has no forest yet.")?
+                        .forest;
+                    items
+                        .get(index)
+                        .and_then(|(_, item)| palette::intent(item, scope, new_tree, forest))
+                };
+                if let (Some(intent), Some(host)) = (intent, self.host()) {
+                    host.dispatch(intent);
                 }
             }
-            CardEvent::BackToSource(parent) => {
-                self.step(Input::Activated);
-                self.emit(ChromeIntent::Restore(parent));
+            "preview" => {
+                let id: VisitId = message["id"].as_str().unwrap_or_default().parse()?;
+                let host = self.host().context("The browser closed.")?;
+                let preview = host.preview(id)?;
+                let value = {
+                    let frame = self.frame.borrow();
+                    let forest = &frame
+                        .as_ref()
+                        .context("The chrome has no forest yet.")?
+                        .forest;
+                    view::preview(forest, id, &preview)
+                };
+                self.call("previewResult", &[message["seq"].clone(), value]);
             }
-            CardEvent::OpenComment(child) => {
-                self.step(Input::Activated);
-                self.emit(ChromeIntent::OpenCitation(child));
-            }
+            other => anyhow::bail!("The chrome sent an unknown message: {other}"),
         }
+        Ok(())
     }
 
-    fn emit(self: &Rc<Self>, intent: ChromeIntent) {
-        if matches!(
-            intent,
-            ChromeIntent::Navigate { .. }
-                | ChromeIntent::OpenPath(_)
-                | ChromeIntent::Restore(_)
-                | ChromeIntent::SelectTree(_)
-        ) {
-            self.set_surface(Surface::Reading);
+    /// The palette's results for `query`, kept so that running a row runs what was shown.
+    fn palette_items(&self, query: &str) -> (Vec<(Group, PaletteItem)>, usize) {
+        if let Some((shown, items, first)) = self.palette.borrow().as_ref() {
+            if shown == query {
+                return (items.clone(), *first);
+            }
         }
-        if let Some(host) = self.host.upgrade() {
-            host.dispatch(intent);
-        }
-    }
-
-    fn open_palette(self: &Rc<Self>, scope: PaletteScope, seed: PaletteSeed) {
-        self.emit(ChromeIntent::CancelContinuation);
-        let scope = if self.surface.get() == Surface::Start {
-            PaletteScope::NewTree
+        let hits = if query.trim().is_empty() {
+            Vec::new()
         } else {
-            scope
+            self.host()
+                .and_then(|host| host.search(query).ok())
+                .unwrap_or_default()
         };
-        self.step(Input::Layer(Layer::Palette));
-        self.palette.open(scope, seed);
-    }
-
-    fn current(&self) -> Option<VisitId> {
-        self.forest.borrow().as_ref().and_then(|f| f.current())
-    }
-
-    fn tab_event(self: &Rc<Self>, event: TabEvent) {
-        match event {
-            TabEvent::Select(tree) => self.emit(ChromeIntent::SelectTree(tree)),
-            TabEvent::NewTree => {
-                self.emit(ChromeIntent::CancelContinuation);
-                self.set_surface(Surface::Start);
-            }
-            TabEvent::Forest => self.toggle_forest(),
-            TabEvent::Search => {
-                let scope = self
-                    .current()
-                    .map_or(PaletteScope::NewTree, PaletteScope::From);
-                self.open_palette(scope, PaletteSeed::Empty);
-            }
-        }
-    }
-
-    fn strip_event(self: &Rc<Self>, event: StripEvent) {
-        match event {
-            StripEvent::Enter => self.step(Input::EnterStrip),
-            StripEvent::Leave => self.step(Input::LeaveStrip),
-            StripEvent::EnterNode(id) => self.step(Input::EnterNode(id)),
-            StripEvent::LeaveNode => self.step(Input::LeaveNode),
-            StripEvent::Activate(id) => {
-                self.step(Input::Activated);
-                if Some(id) != self.current() {
-                    self.emit(ChromeIntent::Restore(id));
-                }
-            }
-            StripEvent::Menu(open) => self.menu(open),
-        }
-    }
-
-    fn memory_event(self: &Rc<Self>, event: MemoryEvent) {
-        match event {
-            MemoryEvent::Run(intent) => self.emit(intent),
-            MemoryEvent::Menu(open) => self.menu(open),
-        }
-    }
-
-    fn menu(self: &Rc<Self>, open: bool) {
-        if self.presentation.borrow().layer() != Layer::Palette {
-            self.step(Input::Layer(if open { Layer::Menu } else { Layer::None }));
-        }
-    }
-
-    fn palette_event(self: &Rc<Self>, event: PaletteEvent) {
-        match event {
-            PaletteEvent::Run(intent) => self.emit(intent),
-            PaletteEvent::Closed => {
-                self.step(Input::Layer(if self.surface.get() == Surface::Reading {
-                    Layer::None
-                } else {
-                    Layer::Palette
-                }))
-            }
-        }
-    }
-
-    fn toast(self: &Rc<Self>, toast: Toast) {
-        let (text, duration) = match &toast {
-            Toast::Info(text) => (text.as_str(), 2600),
-            Toast::Error(text) => {
-                self.memory.record_error(text);
-                (text.as_str(), 5000)
-            }
+        let frame = self.frame.borrow();
+        let Some(frame) = frame.as_ref() else {
+            return (Vec::new(), 0);
         };
-        self.toast_label.set_text(text);
-        self.toast.show();
-        self.toast.set_reveal_child(true);
-        let generation = self.toast_generation.get() + 1;
-        self.toast_generation.set(generation);
-        let weak = Rc::downgrade(self);
-        glib::timeout_add_local_once(Duration::from_millis(duration), move || {
-            if let Some(inner) = weak.upgrade() {
-                if inner.toast_generation.get() == generation {
-                    inner.toast.set_reveal_child(false);
-                }
-            }
-        });
+        let (mut items, first) = palette::results(query, hits, &frame.forest);
+        if query.trim().is_empty() {
+            let suggestions = &frame.suggestions;
+            items.extend(
+                suggestions
+                    .shortcuts
+                    .iter()
+                    .map(|s| (Group::Shortcuts, PaletteItem::Shortcut(s.url.clone()))),
+            );
+            items.extend(
+                suggestions
+                    .paths
+                    .iter()
+                    .map(|p| (Group::Paths, PaletteItem::Path(p.clone()))),
+            );
+        }
+        *self.palette.borrow_mut() = Some((query.to_owned(), items.clone(), first));
+        (items, first)
+    }
+
+    fn intent(&self, message: &Value) -> Option<ChromeIntent> {
+        let id = |key: &str| message[key].as_str()?.parse::<VisitId>().ok();
+        let frame = self.frame.borrow();
+        let suggestions = &frame.as_ref()?.suggestions;
+        let index = || message["index"].as_u64().map(|i| i as usize);
+        Some(match message["kind"].as_str()? {
+            "select-tree" => ChromeIntent::SelectTree(TreeId(id("id")?)),
+            "restore" => ChromeIntent::Restore(id("id")?),
+            "branch-queued" => ChromeIntent::BranchFromQueued(id("id")?),
+            "open-citation" => ChromeIntent::OpenCitation(id("id")?),
+            "read-captures" => ChromeIntent::ReadCaptures(id("id")?),
+            "read-capture" => ChromeIntent::ReadCapture(message["capture"].as_i64()?),
+            "open-saved" => ChromeIntent::OpenSaved(message["capture"].as_i64()?),
+            "theme" => ChromeIntent::SetTheme(match message["mode"].as_str()? {
+                "light" => ThemeMode::Light,
+                "dark" => ThemeMode::Dark,
+                _ => ThemeMode::System,
+            }),
+            "capture" => ChromeIntent::SetCaptureEnabled(message["on"].as_bool()?),
+            "remember" => ChromeIntent::RememberSelection,
+            "cancel" => ChromeIntent::CancelContinuation,
+            "path" => ChromeIntent::OpenPath(suggestions.paths.get(index()?)?.clone()),
+            "shortcut" => ChromeIntent::Navigate {
+                url: suggestions.shortcuts.get(index()?)?.url.clone(),
+                target: NavigationTarget::Root,
+            },
+            _ => return None,
+        })
     }
 }
 
-/// A clickable row with a page's icon, title and state, as used in the "+N" lists.
-fn visit_row(favicons: &Rc<Favicons>, visit: &Visit, scale: i32) -> gtk::Button {
-    let row = gtk::Button::new();
-    row.style_context().add_class("menu-row");
-    let content = gtk::Box::new(gtk::Orientation::Horizontal, 9);
-    let surface = favicons.surface(visit, 16, scale);
-    content.pack_start(&gtk::Image::from_surface(Some(&surface)), false, false, 0);
-    let title = gtk::Label::new(Some(visit.label()));
-    title.set_xalign(0.);
-    title.set_ellipsize(pango::EllipsizeMode::End);
-    title.set_max_width_chars(34);
-    content.pack_start(&title, true, true, 0);
-    let detail = gtk::Label::new(Some(&match visit.state {
-        VisitState::Queued => "pending".to_owned(),
-        VisitState::Opened => ago(visit.opened_at.unwrap_or(visit.created_at)),
-    }));
-    detail.style_context().add_class("menu-detail");
-    content.pack_start(&detail, false, false, 0);
-    row.add(&content);
-    row
+/// The chrome's own files, its font, and page icons, on the `canopy://` scheme. Only the
+/// chrome view registers it, so pages cannot read it.
+fn serve(request: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
+    let respond = |kind: &str, body: Cow<'static, [u8]>| {
+        Response::builder()
+            .header(CONTENT_TYPE, kind)
+            .body(body)
+            .expect("a static response builds")
+    };
+    match request.uri().path() {
+        "/" | "/index.html" => respond("text/html", Cow::Borrowed(INDEX.as_bytes())),
+        "/chrome.css" => respond("text/css", Cow::Borrowed(CSS.as_bytes())),
+        "/chrome.js" => respond("text/javascript", Cow::Borrowed(SCRIPT.as_bytes())),
+        "/inter.ttf" => respond("font/ttf", Cow::Borrowed(INTER)),
+        "/icon" => {
+            let query = request.uri().query().unwrap_or_default();
+            let mut url = None;
+            let mut opened = false;
+            for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+                match &*key {
+                    "u" => url = Url::parse(&value).ok(),
+                    "o" => opened = value == "1",
+                    _ => {}
+                }
+            }
+            let png = url
+                .and_then(|url| FAVICONS.with(|slot| slot.borrow().upgrade()?.png(&url, opened)));
+            match png {
+                Some(png) => respond("image/png", Cow::Owned(png.to_vec())),
+                None => Response::builder()
+                    .status(404)
+                    .body(Cow::Borrowed(&[][..]))
+                    .expect("a static response builds"),
+            }
+        }
+        _ => Response::builder()
+            .status(404)
+            .body(Cow::Borrowed(&[][..]))
+            .expect("a static response builds"),
+    }
 }
 
-fn ago(timestamp_ms: i64) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64);
-    let minutes = (now - timestamp_ms).max(0) / 60_000;
-    match minutes {
-        0 => "just now".into(),
-        1..=59 => format!("{minutes} min ago"),
-        60..=1439 => format!("{} h ago", (minutes + 30) / 60),
-        _ => match (minutes + 720) / 1440 {
-            1 => "yesterday".into(),
-            days => format!("{days} days ago"),
-        },
+fn rect(x: f64, y: f64, width: f64, height: f64) -> Rect {
+    Rect {
+        position: LogicalPosition::new(x, y).into(),
+        size: LogicalSize::new(width.max(1.), height.max(1.)).into(),
     }
 }

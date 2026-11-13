@@ -15,9 +15,15 @@ use javascriptcore::ValueExt;
 use serde_json::Value;
 use webkit2gtk::WebViewExt;
 
-pub fn start(directory: &std::path::Path) -> Result<()> {
-    canopy::ui::register_font(directory)?;
+pub fn start(_directory: &std::path::Path) -> Result<()> {
     gtk::init().context("This test needs a display. Run it under xvfb-run -a.")?;
+    Ok(())
+}
+
+/// Waits until the chrome view has loaded and drawn its first frame.
+pub fn ready(ui: &Ui) -> Result<()> {
+    wait("chrome ready", || ui.chrome.is_ready())?;
+    pump(200);
     Ok(())
 }
 
@@ -104,11 +110,6 @@ pub fn screen_point(ui: &Ui, widget: &impl IsA<gtk::Widget>, x: i32, y: i32) -> 
     Ok((x + ox, y + oy))
 }
 
-pub fn center(ui: &Ui, widget: &impl IsA<gtk::Widget>) -> Result<(i32, i32)> {
-    let a = widget.as_ref().allocation();
-    screen_point(ui, widget, a.width() / 2, a.height() / 2)
-}
-
 pub fn move_to(x: i32, y: i32) -> Result<()> {
     xdo(&["mousemove", "--sync", &x.to_string(), &y.to_string()])
 }
@@ -120,71 +121,130 @@ pub fn click_at(x: i32, y: i32) -> Result<()> {
     Ok(())
 }
 
-pub fn move_to_widget(ui: &Ui, widget: &impl IsA<gtk::Widget>) -> Result<()> {
-    let (x, y) = center(ui, widget)?;
-    move_to(x, y)
-}
-
-pub fn click(ui: &Ui, widget: &impl IsA<gtk::Widget>) -> Result<()> {
-    let (x, y) = center(ui, widget)?;
-    click_at(x, y)
-}
-
 /// A point in the page, in window coordinates, converted to the screen.
 pub fn page_point(ui: &Ui, x: i32, y: i32) -> Result<(i32, i32)> {
     let (_, ox, oy) = ui.window.window().context("realized window")?.origin();
     Ok((x + ox, y + oy))
 }
 
-pub fn find_named(widget: &gtk::Widget, name: &str) -> Option<gtk::Widget> {
-    if widget.widget_name() == name {
-        return Some(widget.clone());
-    }
-    widget
-        .downcast_ref::<gtk::Container>()?
-        .children()
-        .iter()
-        .find_map(|child| find_named(child, name))
+/// Evaluates `expression` in the chrome view and returns its value as JSON.
+pub fn chrome(ui: &Ui, expression: &str) -> Result<Value> {
+    let output = Rc::new(RefCell::new(None));
+    let result = output.clone();
+    let script = format!("JSON.stringify((() => ({expression}))() ?? null)");
+    ui.chrome.native().evaluate_javascript(
+        &script,
+        None,
+        None,
+        None::<&gio::Cancellable>,
+        move |value| {
+            *result.borrow_mut() = Some(value.map(|value| value.to_str().to_string()));
+        },
+    );
+    wait("chrome JavaScript", || output.borrow().is_some())?;
+    let text = output.borrow_mut().take().unwrap()?;
+    Ok(serde_json::from_str(&text)?)
 }
 
-pub fn named(widget: &impl IsA<gtk::Widget>, name: &str) -> gtk::Widget {
-    find_named(widget.as_ref(), name).unwrap_or_else(|| panic!("missing widget {name}"))
+fn quoted(selector: &str) -> String {
+    serde_json::to_string(selector).unwrap()
 }
 
-pub fn find_all(widget: &gtk::Widget, name: &str, out: &mut Vec<gtk::Widget>) {
-    if widget.widget_name() == name {
-        out.push(widget.clone());
-    }
-    if let Some(container) = widget.downcast_ref::<gtk::Container>() {
-        for child in container.children() {
-            find_all(&child, name, out);
-        }
-    }
+/// Whether an element of the chrome is rendered.
+pub fn visible(ui: &Ui, selector: &str) -> bool {
+    chrome(
+        ui,
+        &format!(
+            "(() => {{ const e = document.querySelector({}); return !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden'; }})()",
+            quoted(selector)
+        ),
+    )
+    .is_ok_and(|value| value == true)
 }
 
-pub fn label_texts(widget: &gtk::Widget) -> Vec<String> {
-    let mut out = Vec::new();
-    if let Some(label) = widget.downcast_ref::<gtk::Label>() {
-        out.push(label.text().to_string());
-    }
-    if let Some(container) = widget.downcast_ref::<gtk::Container>() {
-        for child in container.children() {
-            out.extend(label_texts(&child));
-        }
-    }
-    out
+pub fn text(ui: &Ui, selector: &str) -> String {
+    chrome(
+        ui,
+        &format!(
+            "document.querySelector({})?.innerText ?? ''",
+            quoted(selector)
+        ),
+    )
+    .ok()
+    .and_then(|value| value.as_str().map(str::to_owned))
+    .unwrap_or_default()
 }
 
-pub fn popover_of(ui: &Ui, button: &str) -> gtk::Popover {
-    named(&ui.window, button)
-        .downcast::<gtk::MenuButton>()
-        .unwrap()
-        .popover()
-        .expect("menu button has a popover")
+/// The chrome element's box, in window coordinates.
+pub fn rect(ui: &Ui, selector: &str) -> Result<(f64, f64, f64, f64)> {
+    let r = chrome(
+        ui,
+        &format!(
+            "(() => {{ const r = document.querySelector({}).getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; }})()",
+            quoted(selector)
+        ),
+    )?;
+    let n = |i: usize| r[i].as_f64().unwrap_or_default();
+    Ok((n(0), n(1), n(2), n(3)))
 }
 
-pub fn strip_height(ui: &Ui) -> i32 {
-    named(&ui.window, "strip").allocated_height()
+/// Waits until the strip has finished moving, so element positions hold still.
+pub fn settle(ui: &Ui) -> Result<()> {
+    wait("chrome animations", || {
+        chrome(ui, "canopy.state().animating").is_ok_and(|value| value == false)
+    })
+}
+
+/// Screen point at the center of a chrome element, once the strip holds still.
+pub fn chrome_point(ui: &Ui, selector: &str) -> Result<(i32, i32)> {
+    settle(ui)?;
+    let (x, y, w, h) = rect(ui, selector)?;
+    screen_point(
+        ui,
+        &ui.chrome.native(),
+        (x + w / 2.) as i32,
+        (y + h / 2.) as i32,
+    )
+}
+
+pub fn click_chrome(ui: &Ui, selector: &str) -> Result<()> {
+    let (x, y) = chrome_point(ui, selector)?;
+    click_at(x, y)
+}
+
+pub fn hover_chrome(ui: &Ui, selector: &str) -> Result<()> {
+    let (x, y) = chrome_point(ui, selector)?;
+    move_to(x, y)
+}
+
+/// Whether the chrome view has the keyboard and `selector` is its focused element.
+pub fn chrome_focused(ui: &Ui, selector: &str) -> bool {
+    ui.chrome.native().has_focus()
+        && chrome(
+            ui,
+            &format!(
+                "document.hasFocus() && !!document.activeElement?.matches({})",
+                quoted(selector)
+            ),
+        )
+        .is_ok_and(|value| value == true)
+}
+
+pub fn node(id: impl std::fmt::Display) -> String {
+    format!("#strip-nodes [data-id='{id}']")
+}
+
+pub fn strip_height(ui: &Ui) -> i64 {
+    chrome(ui, "document.getElementById('strip').offsetHeight")
+        .ok()
+        .and_then(|value| value.as_i64())
+        .unwrap_or_default()
+}
+
+/// How far down the chrome view reaches, as it last told Rust; `None` covers the window.
+pub fn cover(ui: &Ui) -> Option<i64> {
+    let state = chrome(ui, "canopy.state().reported").ok()?;
+    state.as_str()?.split('/').next()?.parse().ok()
 }
 
 /// Hovers the strip and waits until it has opened and its nodes settled.
@@ -200,25 +260,34 @@ pub fn leave_strip(ui: &Ui) -> Result<()> {
     let (x, y) = page_point(ui, ui.window.allocated_width() - 60, 600)?;
     move_to(x, y)?;
     wait("strip closed", || strip_height(ui) == 52)?;
-    pump(50);
+    pump(300);
     Ok(())
 }
 
-pub fn node(ui: &Ui, id: impl std::fmt::Display) -> gtk::Widget {
-    named(&ui.window, &format!("node-{id}"))
+pub fn toast_text(ui: &Ui) -> Option<String> {
+    visible(ui, "#toast").then(|| text(ui, "#toast"))
 }
 
-pub fn toast_text(ui: &Ui) -> Option<String> {
-    let revealer = named(&ui.window, "toast-revealer")
-        .downcast::<gtk::Revealer>()
-        .unwrap();
-    revealer.reveals_child().then(|| {
-        named(&ui.window, "toast-label")
-            .downcast::<gtk::Label>()
-            .unwrap()
-            .text()
-            .to_string()
-    })
+/// Opens the Memory menu from the dot on the current-page pill.
+pub fn open_memory_menu(ui: &Ui) -> Result<()> {
+    if !visible(ui, "#popover #automatic-capture") {
+        click_chrome(ui, "#memory-dot")?;
+        wait("Memory menu", || visible(ui, "#popover #automatic-capture"))?;
+        pump(100);
+    }
+    Ok(())
+}
+
+/// Whether the page's favicon has loaded on `selector`, in the given color channel order.
+pub fn icon_is_blue(ui: &Ui, selector: &str) -> bool {
+    chrome(
+        ui,
+        &format!(
+            "(() => {{ const img = document.querySelector({}); if (!img || !img.complete || !img.naturalWidth) return false; const c = document.createElement('canvas'); c.width = c.height = 16; const x = c.getContext('2d'); x.drawImage(img, 0, 0, 16, 16); const d = x.getImageData(8, 8, 1, 1).data; return d[2] > 200 && d[0] < 80; }})()",
+            quoted(&format!("{selector} img"))
+        ),
+    )
+    .is_ok_and(|value| value == true)
 }
 
 pub fn eval(ui: &Ui, script: &str) -> Result<Value> {
