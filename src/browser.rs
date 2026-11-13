@@ -48,6 +48,19 @@ pub struct VisitPreview {
     pub snippet: String,
 }
 
+/// A page known from another browser's history or bookmarks.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImportedPage {
+    pub url: Url,
+    pub title: String,
+    pub visits: usize,
+    pub typed: usize,
+    /// Milliseconds since the Unix epoch.
+    pub last_visit: Option<i64>,
+    /// Where the page is bookmarked, as "Bookmarks bar › Folder", if it is.
+    pub folder: Option<String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Shortcut {
     pub url: Url,
@@ -250,7 +263,7 @@ impl Browser {
              INSERT OR IGNORE INTO session(singleton, current_id) VALUES(1, NULL);",
         )?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version > 3 {
+        if version > 4 {
             bail!("This database comes from a newer version of Canopy.");
         }
         if version == 0 {
@@ -353,10 +366,107 @@ impl Browser {
             )?;
             transaction.commit()?;
         }
+        if version < 4 {
+            // Pages and bookmarks imported from another browser. They stay out of the forest:
+            // search and the new-tree page read them, and opening one starts a visit.
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(
+                "CREATE TABLE imported_pages (
+                    source TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    visits INTEGER NOT NULL,
+                    typed INTEGER NOT NULL,
+                    last_visit INTEGER,
+                    folder TEXT,
+                    PRIMARY KEY(source, url)
+                 );
+                 PRAGMA user_version = 4;",
+            )?;
+            transaction.commit()?;
+        }
         Ok(Self {
             connection,
             navigation: Navigation::Idle,
         })
+    }
+
+    /// Replaces everything imported from `source` with `pages`, in one transaction.
+    pub fn replace_imported(&mut self, source: &str, pages: &[ImportedPage]) -> Result<usize> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute("DELETE FROM imported_pages WHERE source=?1", [source])?;
+        {
+            let mut insert = transaction.prepare(
+                "INSERT INTO imported_pages(source, url, title, visits, typed, last_visit, folder)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(source, url) DO UPDATE SET
+                    title=excluded.title, visits=excluded.visits, typed=excluded.typed,
+                    last_visit=excluded.last_visit, folder=excluded.folder",
+            )?;
+            for page in pages {
+                insert.execute(params![
+                    source,
+                    page.url.as_str(),
+                    page.title,
+                    page.visits as i64,
+                    page.typed as i64,
+                    page.last_visit,
+                    page.folder,
+                ])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(pages.len())
+    }
+
+    /// Imported pages whose title or URL contains `query`: bookmarks first, then the pages
+    /// typed and visited most.
+    pub fn search_imported(&self, query: &str, limit: usize) -> Result<Vec<ImportedPage>> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let literal = query
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let mut statement = self.connection.prepare(
+            r"SELECT url, MAX(title), SUM(visits), SUM(typed), MAX(last_visit), MAX(folder)
+              FROM imported_pages
+              WHERE title LIKE ?1 ESCAPE '\' OR url LIKE ?1 ESCAPE '\'
+              GROUP BY url
+              ORDER BY MAX(folder) IS NULL, SUM(typed) DESC, SUM(visits) DESC, MAX(last_visit) DESC
+              LIMIT ?2",
+        )?;
+        let rows =
+            statement.query_map(params![format!("%{literal}%"), limit as i64], imported_row)?;
+        let mut pages = Vec::new();
+        for row in rows {
+            pages.extend(row?);
+        }
+        Ok(pages)
+    }
+
+    /// The most visited imported page of each of the busiest hosts.
+    fn imported_favorites(&self, limit: usize) -> Result<Vec<ImportedPage>> {
+        let mut statement = self.connection.prepare(
+            "SELECT url, MAX(title), SUM(visits), SUM(typed), MAX(last_visit), MAX(folder)
+             FROM imported_pages GROUP BY url
+             ORDER BY SUM(typed) DESC, SUM(visits) DESC, url",
+        )?;
+        let mut hosts = HashSet::new();
+        let mut favorites = Vec::new();
+        let rows = statement.query_map([], imported_row)?;
+        for row in rows {
+            let Some(page) = row? else { continue };
+            if hosts.insert(page.url.host_str().unwrap_or_default().to_owned()) {
+                favorites.push(page);
+                if favorites.len() == limit {
+                    break;
+                }
+            }
+        }
+        Ok(favorites)
     }
 
     pub fn snapshot(&self) -> Result<Snapshot> {
@@ -887,6 +997,27 @@ impl Browser {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        // Until Canopy has its own habits, the busiest imported sites fill the shortcuts.
+        let mut shortcuts = shortcuts;
+        if shortcuts.len() < 6 {
+            let hosts: HashSet<String> = shortcuts
+                .iter()
+                .map(|s| s.url.host_str().unwrap_or_default().to_owned())
+                .collect();
+            for page in self.imported_favorites(6)? {
+                if shortcuts.len() == 6 {
+                    break;
+                }
+                if hosts.contains(page.url.host_str().unwrap_or_default()) {
+                    continue;
+                }
+                shortcuts.push(Shortcut {
+                    url: page.url,
+                    title: page.title,
+                    visits: page.visits,
+                });
+            }
+        }
         let mut statement = self.connection.prepare(
             "SELECT p.url, c.url FROM visits c JOIN visits p ON c.parent_id=p.id
              WHERE c.opened_at IS NOT NULL AND p.opened_at IS NOT NULL
@@ -1030,6 +1161,22 @@ fn capture_from_row(row: &Row<'_>) -> Result<Capture> {
         kind,
         source: source_from_row(row, 8)?,
     })
+}
+
+/// An imported page from a search row, or `None` when its URL is not a web address.
+fn imported_row(row: &Row) -> rusqlite::Result<Option<ImportedPage>> {
+    let url: String = row.get(0)?;
+    let Ok(url) = web_url(&url) else {
+        return Ok(None);
+    };
+    Ok(Some(ImportedPage {
+        url,
+        title: row.get(1)?,
+        visits: row.get::<_, i64>(2)?.max(0) as usize,
+        typed: row.get::<_, i64>(3)?.max(0) as usize,
+        last_visit: row.get(4)?,
+        folder: row.get(5)?,
+    }))
 }
 
 #[cfg(test)]
@@ -1833,5 +1980,65 @@ mod tests {
         let after = browser.snapshot().unwrap();
         assert_eq!(after, before);
         assert_eq!(browser.tree_states().unwrap(), states);
+    }
+
+    #[test]
+    fn imported_pages_are_searchable_replaceable_and_fill_the_shortcuts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut browser = Browser::open(&dir.path().join("forest.sqlite3")).unwrap();
+        let page = |url: &str, title: &str, visits, folder: Option<&str>| ImportedPage {
+            url: Url::parse(url).unwrap(),
+            title: title.into(),
+            visits,
+            typed: 0,
+            last_visit: Some(1),
+            folder: folder.map(str::to_owned),
+        };
+        browser
+            .replace_imported(
+                "chrome:Default",
+                &[
+                    page("https://docs.rs/wry", "wry 100% docs", 3, None),
+                    page("https://docs.rs/tao", "tao docs", 9, None),
+                    page("https://servo.org/", "Servo", 0, Some("Bookmarks bar")),
+                ],
+            )
+            .unwrap();
+        let hits = browser.search_imported("docs", 10).unwrap();
+        assert_eq!(
+            hits.iter().map(|p| p.url.path()).collect::<Vec<_>>(),
+            ["/tao", "/wry"],
+            "the most visited first"
+        );
+        assert_eq!(
+            browser.search_imported("100%", 10).unwrap().len(),
+            1,
+            "LIKE wildcards are literal"
+        );
+        assert_eq!(
+            browser.search_imported("o", 10).unwrap()[0].url.host_str(),
+            Some("servo.org"),
+            "bookmarks first"
+        );
+        assert!(
+            browser.snapshot().unwrap().visits.is_empty(),
+            "imports plant no trees"
+        );
+        let shortcuts = browser.start_suggestions().unwrap().shortcuts;
+        assert_eq!(
+            shortcuts.iter().map(|s| s.url.as_str()).collect::<Vec<_>>(),
+            ["https://docs.rs/tao", "https://servo.org/"],
+            "one shortcut per busy host"
+        );
+        browser
+            .replace_imported(
+                "chrome:Default",
+                &[page("https://servo.org/", "Servo", 1, None)],
+            )
+            .unwrap();
+        assert!(
+            browser.search_imported("docs", 10).unwrap().is_empty(),
+            "a re-import replaces its source"
+        );
     }
 }

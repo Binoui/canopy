@@ -437,6 +437,42 @@ fn main() -> Result<()> {
     assert!(second.opened_at.is_some());
     println!("PASS a shortcut plants a root and a usual path really loads a root and its child.");
 
+    {
+        let mut other = canopy::browser::Browser::open(&directory.path().join("forest.sqlite3"))?;
+        let page = |path: &str, title: &str, folder: Option<&str>| canopy::browser::ImportedPage {
+            url: web_url(&fixture.url(path)).unwrap(),
+            title: title.into(),
+            visits: 4,
+            typed: 1,
+            last_visit: Some(1),
+            folder: folder.map(str::to_owned),
+        };
+        other.replace_imported(
+            "chrome:Default",
+            &[
+                page("/imported-history", "Quokka field notes", None),
+                page("/imported-bookmark", "Quokka atlas", Some("Bookmarks bar")),
+            ],
+        )?;
+    }
+    let count = ui.snapshot()?.visits.len();
+    key("ctrl+k")?;
+    wait("palette focus", || chrome_focused(&ui, "#palette-input"))?;
+    type_text("quokka")?;
+    wait("imported results", || {
+        visible(&ui, "#palette [data-kind=bookmark]")
+            && visible(&ui, "#palette [data-kind=imported]")
+    })?;
+    assert!(text(&ui, "#palette-results").contains("From Chrome"));
+    assert_eq!(
+        ui.snapshot()?.visits.len(),
+        count,
+        "imported pages plant nothing by themselves"
+    );
+    click_chrome(&ui, "#palette [data-kind=imported]")?;
+    loaded(&ui, "/imported-history", count + 1)?;
+    println!("PASS imported Chrome history and bookmarks show in the palette, and opening one loads it as a visit.");
+
     let shots = std::env::var("CANOPY_PHASE3_SHOTS").ok();
     for theme in ["light", "dark"] {
         open_settings(&ui)?;
