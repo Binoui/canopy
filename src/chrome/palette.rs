@@ -5,7 +5,7 @@ use url::Url;
 use super::{ChromeIntent, PaletteScope};
 use crate::{
     address::{destination, web_search, Destination},
-    browser::{NavigationTarget, SearchHit, UsualPath, VisitId, VisitState},
+    browser::{ImportedPage, NavigationTarget, SearchHit, UsualPath, VisitId, VisitState},
     forest::ForestProjection,
 };
 
@@ -22,6 +22,8 @@ pub(crate) enum PaletteItem {
     Go(Url),
     Shortcut(Url),
     Path(UsualPath),
+    /// A page from an imported browser history or its bookmarks.
+    Imported(ImportedPage),
     WebSearch {
         url: Url,
         query: String,
@@ -34,7 +36,9 @@ pub(crate) enum Group {
     Paths,
     Pending,
     Forest,
+    Bookmarks,
     Saved,
+    Imported,
     Elsewhere,
 }
 
@@ -45,17 +49,21 @@ impl Group {
             Group::Paths => "Usual paths",
             Group::Pending => "Pending in this tree",
             Group::Forest => "In your forest",
+            Group::Bookmarks => "Bookmarks",
             Group::Saved => "Saved text",
+            Group::Imported => "From Chrome",
             Group::Elsewhere => "Elsewhere",
         }
     }
 }
 
 /// The palette's results for `query`, in display order, and the item Enter runs first.
-/// Pages and saved text stay distinct: a saved-text hit opens the local reader.
+/// Pages and saved text stay distinct: a saved-text hit opens the local reader. Imported
+/// pages already in the forest are left out, so the forest's own visit wins.
 pub(crate) fn results(
     query: &str,
     hits: Vec<SearchHit>,
+    imported: Vec<ImportedPage>,
     forest: &ForestProjection,
 ) -> (Vec<(Group, PaletteItem)>, usize) {
     let query = query.trim();
@@ -83,6 +91,23 @@ pub(crate) fn results(
             .take(GROUP_LIMIT)
             .map(|hit| (Group::Forest, PaletteItem::Page(hit.visit))),
     );
+    let shown: std::collections::HashSet<&Url> = items
+        .iter()
+        .filter_map(|(_, item)| match item {
+            PaletteItem::Page(id) => forest.visit(*id).map(|visit| &visit.url),
+            _ => None,
+        })
+        .collect();
+    let (bookmarks, history): (Vec<_>, Vec<_>) = imported
+        .into_iter()
+        .filter(|page| !shown.contains(&page.url))
+        .partition(|page| page.folder.is_some());
+    items.extend(
+        bookmarks
+            .into_iter()
+            .take(GROUP_LIMIT)
+            .map(|page| (Group::Bookmarks, PaletteItem::Imported(page))),
+    );
     items.extend(saved.into_iter().take(GROUP_LIMIT).map(|hit| {
         (
             Group::Saved,
@@ -93,6 +118,12 @@ pub(crate) fn results(
             },
         )
     }));
+    items.extend(
+        history
+            .into_iter()
+            .take(GROUP_LIMIT)
+            .map(|page| (Group::Imported, PaletteItem::Imported(page))),
+    );
     let mut first = 0;
     match destination(query) {
         Ok(Destination::Address(url)) => {
@@ -143,6 +174,10 @@ pub(crate) fn intent(
         PaletteItem::Saved { capture, .. } => ChromeIntent::ReadCapture(*capture),
         PaletteItem::Go(url) | PaletteItem::WebSearch { url, .. } => ChromeIntent::Navigate {
             url: url.clone(),
+            target,
+        },
+        PaletteItem::Imported(page) => ChromeIntent::Navigate {
+            url: page.url.clone(),
             target,
         },
     })
@@ -198,9 +233,22 @@ mod tests {
     #[test]
     fn pages_saved_text_then_address_then_web_search() {
         let (forest, root, _) = forest();
+        let imported = |url: &str, folder: Option<&str>| ImportedPage {
+            url: Url::parse(url).unwrap(),
+            title: "Imported".into(),
+            visits: 3,
+            typed: 0,
+            last_visit: None,
+            folder: folder.map(str::to_owned),
+        };
         let (items, first) = results(
             "example.org",
             vec![hit(root, Some(7)), hit(root, None)],
+            vec![
+                imported("https://example.org/page", Some("Bookmarks bar")),
+                imported("https://example.org/bookmarked", Some("Bookmarks bar")),
+                imported("https://example.org/visited", None),
+            ],
             &forest,
         );
         let kinds: Vec<_> = items.iter().map(|(group, _)| *group).collect();
@@ -208,35 +256,52 @@ mod tests {
             kinds,
             [
                 Group::Forest,
+                Group::Bookmarks,
                 Group::Saved,
+                Group::Imported,
                 Group::Elsewhere,
                 Group::Elsewhere
-            ]
+            ],
+            "an imported page already in the forest is left out"
         );
         assert_eq!(items[0].1, PaletteItem::Page(root));
-        assert!(matches!(items[1].1, PaletteItem::Saved { capture: 7, .. }));
+        assert!(
+            matches!(&items[1].1, PaletteItem::Imported(page) if page.url.path() == "/bookmarked")
+        );
+        assert!(matches!(items[2].1, PaletteItem::Saved { capture: 7, .. }));
         assert_eq!(
-            items[2].1,
+            items[4].1,
             PaletteItem::Go(Url::parse("https://example.org/").unwrap())
         );
-        assert!(matches!(items[3].1, PaletteItem::WebSearch { .. }));
-        assert_eq!(first, 2, "Enter goes to a typed address");
+        assert!(matches!(items[5].1, PaletteItem::WebSearch { .. }));
+        assert_eq!(first, 4, "Enter goes to a typed address");
+        let PaletteItem::Imported(page) = &items[3].1 else {
+            panic!("an imported page")
+        };
+        assert_eq!(
+            intent(&items[3].1, PaletteScope::From(root), false, &forest),
+            Some(ChromeIntent::Navigate {
+                url: page.url.clone(),
+                target: NavigationTarget::ChildOf(root),
+            }),
+            "an imported page opens like a typed address"
+        );
     }
 
     #[test]
     fn words_only_offer_a_web_search_and_select_the_first_hit() {
         let (forest, root, _) = forest();
-        let (items, first) = results("otter", vec![hit(root, None)], &forest);
+        let (items, first) = results("otter", vec![hit(root, None)], vec![], &forest);
         assert_eq!(items.len(), 2);
         assert_eq!(first, 0);
-        let (items, _) = results("javascript:alert(1)", vec![], &forest);
+        let (items, _) = results("javascript:alert(1)", vec![], vec![], &forest);
         assert!(items.is_empty());
     }
 
     #[test]
     fn an_empty_query_lists_pending_pages_of_the_current_tree() {
         let (forest, _, queued) = forest();
-        let (items, _) = results("  ", vec![], &forest);
+        let (items, _) = results("  ", vec![], vec![], &forest);
         assert_eq!(items, [(Group::Pending, PaletteItem::Page(queued))]);
     }
 

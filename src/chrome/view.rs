@@ -230,6 +230,16 @@ pub(crate) fn palette_rows(items: &[(Group, PaletteItem)], forest: &ForestProjec
                     url.path().to_owned(),
                     json!({ "url": url.as_str(), "opened": true }),
                 ),
+                PaletteItem::Imported(page) => {
+                    let host = short_host(&page.url).to_owned();
+                    let title = if page.title.trim().is_empty() { host.clone() } else { page.title.clone() };
+                    let (kind, detail) = match &page.folder {
+                        Some(folder) => ("bookmark", folder.clone()),
+                        None if page.visits > 0 => ("imported", format!("{host} · {}", plural(page.visits, "visit"))),
+                        None => ("imported", host),
+                    };
+                    (kind, title, detail, json!({ "url": page.url.as_str(), "opened": true }))
+                }
                 PaletteItem::Go(url) => ("go", format!("Go to {url}"), String::new(), json!("globe")),
                 PaletteItem::WebSearch { query, .. } => (
                     "search",

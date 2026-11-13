@@ -538,6 +538,12 @@ impl NativeState {
             return false;
         }
         let Ok(url) = web_url(&uri) else {
+            // Frames load about:, blob: and data: documents all the time; only a link the
+            // user clicked deserves a refusal and a message.
+            if action.navigation_type() != NavigationType::LinkClicked || !action.is_user_gesture()
+            {
+                return false;
+            }
             decision.ignore();
             self.emit(EngineEvent::Error(
                 "This kind of link is not supported.".into(),

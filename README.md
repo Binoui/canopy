@@ -45,6 +45,20 @@ The `rust-toolchain.toml` file selects stable Rust for this project. It does not
 
 Canopy ships the Inter typeface in `assets/fonts/`, under the SIL Open Font License in `assets/fonts/LICENSE.txt`.
 
+## Bring your Chrome history
+
+To search your Chrome history and bookmarks from Canopy, run this command once:
+
+```sh
+canopy --import-chrome
+```
+
+It reads `~/.config/google-chrome/Default`. Pass another profile folder after the flag to read that one instead, and add `--data-dir PATH` to import into a separate data folder. Chrome can stay open.
+
+**Ctrl+K** then shows **Bookmarks** and **From Chrome** results next to your forest. Opening one loads it like a typed address. Until Canopy has habits of its own, the new-tree page offers your busiest Chrome sites. Imported pages plant no trees and add no tabs.
+
+Running the command again replaces the earlier import from that profile. Canopy loads none of the pages and reads neither cookies nor passwords.
+
 ## Find your way around
 
 The top row has one tab per tree, in the order you started them. Trees that do not fit wait behind the arrow at the end of the row. Under the tabs, a strip shows the current tree: the path to the current page, with small buds for the other branches. Rest the pointer on the strip and it opens over the page with every branch. Rest it on a page in the strip to see a card with its title, site and a preview.

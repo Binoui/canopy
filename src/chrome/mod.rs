@@ -33,8 +33,8 @@ use palette::{Group, PaletteItem};
 
 use crate::{
     browser::{
-        Capture, NavigationTarget, SearchHit, StartSuggestions, ThemeMode, TreeId, UsualPath,
-        Visit, VisitId, VisitPreview,
+        Capture, ImportedPage, NavigationTarget, SearchHit, StartSuggestions, ThemeMode, TreeId,
+        UsualPath, Visit, VisitId, VisitPreview,
     },
     forest::ForestProjection,
 };
@@ -108,6 +108,8 @@ pub enum Toast {
 pub trait ChromeHost {
     fn dispatch(&self, intent: ChromeIntent);
     fn search(&self, query: &str) -> Result<Vec<SearchHit>>;
+    /// Pages from imported browser history and bookmarks.
+    fn search_imported(&self, query: &str) -> Result<Vec<ImportedPage>>;
     fn preview(&self, visit: VisitId) -> Result<VisitPreview>;
     /// Gives the keyboard back to the page.
     fn focus_page(&self);
@@ -442,18 +444,18 @@ impl Inner {
                 return (items.clone(), *first);
             }
         }
-        let hits = if query.trim().is_empty() {
-            Vec::new()
-        } else {
-            self.host()
-                .and_then(|host| host.search(query).ok())
-                .unwrap_or_default()
+        let (hits, imported) = match self.host() {
+            Some(host) if !query.trim().is_empty() => (
+                host.search(query).unwrap_or_default(),
+                host.search_imported(query).unwrap_or_default(),
+            ),
+            _ => (Vec::new(), Vec::new()),
         };
         let frame = self.frame.borrow();
         let Some(frame) = frame.as_ref() else {
             return (Vec::new(), 0);
         };
-        let (mut items, first) = palette::results(query, hits, &frame.forest);
+        let (mut items, first) = palette::results(query, hits, imported, &frame.forest);
         if query.trim().is_empty() {
             let suggestions = &frame.suggestions;
             items.extend(

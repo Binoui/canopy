@@ -9,7 +9,9 @@ use gtk::prelude::*;
 use webkit2gtk::WebViewExt;
 
 use crate::{
-    browser::{Browser, NavigationTarget, SearchHit, Snapshot, VisitId, VisitPreview},
+    browser::{
+        Browser, ImportedPage, NavigationTarget, SearchHit, Snapshot, VisitId, VisitPreview,
+    },
     chrome::{
         ChromeFrame, ChromeHost, ChromeIntent, Favicons, HtmlChrome, PaletteScope, PaletteSeed,
         Toast, CHROME_HEIGHT,
@@ -347,6 +349,10 @@ impl ChromeHost for Ui {
 
     fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
         self.browser.borrow().search(query)
+    }
+
+    fn search_imported(&self, query: &str) -> Result<Vec<ImportedPage>> {
+        self.browser.borrow().search_imported(query, 24)
     }
 
     fn preview(&self, visit: VisitId) -> Result<VisitPreview> {

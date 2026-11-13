@@ -1,5 +1,7 @@
 # Capture Chrome history and bookmarks
 
+To search your Chrome history from Canopy itself, use `canopy --import-chrome` instead, as described in the main README. This script builds a separate research dataset.
+
 From the project directory, run the importer with a Chrome profile and a new output directory:
 
 ```sh
