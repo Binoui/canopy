@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Canopy
+GenericName=Web Browser
+Comment=A personal browser where browsing forms trees
+Exec=canopy
+Icon=web-browser
+Terminal=false
+Categories=Network;WebBrowser;
