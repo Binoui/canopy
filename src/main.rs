@@ -110,7 +110,10 @@ fn import_chrome(data_dir: &std::path::Path, profile: &std::path::Path) -> Resul
             let result = canopy::logins::Logins::open(data_dir)
                 .and_then(|mut vault| vault.upsert_imported(&chrome.source, &read.items));
             match result {
-                Ok(count) => println!("Imported {count} passwords. Skipped {:?}.", read.skipped),
+                Ok(count) => println!(
+                    "Imported {count} passwords into the encrypted vault{}.",
+                    skipped(&read.skipped)
+                ),
                 Err(error) => {
                     failed = true;
                     println!("Passwords not imported. {error}");
@@ -124,7 +127,10 @@ fn import_chrome(data_dir: &std::path::Path, profile: &std::path::Path) -> Resul
     }
     match chrome.cookies {
         Ok(read) => match canopy::cookies::Inbox::new(data_dir).post(&read.items) {
-            Ok(count) => println!("Posted {count} cookies. Skipped {:?}. Canopy adds them while running or at its next start.", read.skipped),
+            Ok(count) => println!(
+                "Imported {count} cookies{}. Canopy adds them now if it is open, or when it starts.",
+                skipped(&read.skipped)
+            ),
             Err(_) => { failed = true; println!("Cookies not imported. Could not post imported cookies."); }
         },
         Err(error) => { failed = true; println!("Cookies not imported. {error}"); }
@@ -133,4 +139,16 @@ fn import_chrome(data_dir: &std::path::Path, profile: &std::path::Path) -> Resul
         bail!("Part of the profile was not imported. Resolve the section errors and run the command again.");
     }
     Ok(())
+}
+
+/// ", skipped 12 expired, 3 duplicate", or nothing when no row was skipped.
+fn skipped(counts: &std::collections::BTreeMap<canopy::import::SkipReason, usize>) -> String {
+    if counts.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = counts
+        .iter()
+        .map(|(reason, count)| format!("{count} {}", reason.label()))
+        .collect();
+    format!(", skipped {}", parts.join(", "))
 }

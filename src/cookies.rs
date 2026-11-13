@@ -1,3 +1,12 @@
+use anyhow::{anyhow, Result};
+use serde_json::{json, Value};
+use std::{
+    fs::{self, OpenOptions},
+    io::{BufRead, BufReader, Write},
+    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+    path::{Path, PathBuf},
+};
+
 use crate::secret::Secret;
 
 #[derive(Debug)]
@@ -71,15 +80,6 @@ impl Cookie {
                     && self.path == "/"))
     }
 }
-
-use anyhow::{anyhow, Result};
-use serde_json::{json, Value};
-use std::{
-    fs::{self, OpenOptions},
-    io::{BufRead, BufReader, Write},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
-    path::{Path, PathBuf},
-};
 
 pub struct Inbox {
     dir: PathBuf,

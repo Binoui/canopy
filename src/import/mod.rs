@@ -10,8 +10,28 @@ use serde_json::Value;
 
 use crate::{address::web_url, browser::ImportedPage};
 
+mod linux;
+use crate::{
+    address::WebOrigin,
+    cookies::{Cookie, CookieDomain, SameSite},
+    logins::Login,
+    secret::Secret,
+};
+use linux::ChromeKeys;
+use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
+
 /// Chrome counts microseconds from 1601-01-01; this is that epoch in Unix milliseconds.
 const CHROME_EPOCH_MS: i64 = -11_644_473_600_000;
+
+/// Chrome's microseconds since 1601 as Unix milliseconds. Zero, never used, stays zero.
+fn chrome_ms(value: i64) -> i64 {
+    if value > 0 {
+        value / 1000 + CHROME_EPOCH_MS
+    } else {
+        0
+    }
+}
 
 /// Every web page in the profile's history and bookmarks, one entry per URL.
 fn read_pages(profile: &Path) -> Result<Vec<ImportedPage>> {
@@ -119,82 +139,6 @@ fn read_bookmarks(path: &Path, pages: &mut HashMap<String, ImportedPage>) -> Res
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A profile with Chrome's `urls` schema and a Bookmarks file.
-    fn profile() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        let history = Connection::open(dir.path().join("History")).unwrap();
-        history
-            .execute_batch(
-                "CREATE TABLE urls(id INTEGER PRIMARY KEY, url LONGVARCHAR, title LONGVARCHAR,
-                    visit_count INTEGER DEFAULT 0 NOT NULL, typed_count INTEGER DEFAULT 0 NOT NULL,
-                    last_visit_time INTEGER NOT NULL, hidden INTEGER DEFAULT 0 NOT NULL);
-                 INSERT INTO urls(url, title, visit_count, typed_count, last_visit_time, hidden) VALUES
-                    ('https://docs.rs/wry', 'wry - Rust', 12, 3, 13438991510813493, 0),
-                    ('https://news.ycombinator.com/', 'Hacker News', 40, 9, 13438991510813493, 0),
-                    ('chrome://settings/', 'Settings', 5, 5, 13438991510813493, 0),
-                    ('https://hidden.example/', 'Hidden', 1, 0, 13438991510813493, 1);",
-            )
-            .unwrap();
-        std::fs::write(
-            dir.path().join("Bookmarks"),
-            r#"{"roots":{
-                "bookmark_bar":{"type":"folder","name":"Bookmarks bar","children":[
-                    {"type":"url","name":"Rust docs: wry","url":"https://docs.rs/wry"},
-                    {"type":"folder","name":"Reading","children":[
-                        {"type":"url","name":"Servo","url":"https://servo.org/"},
-                        {"type":"url","name":"Bad","url":"javascript:alert(1)"}]}]},
-                "other":{"type":"folder","name":"Other bookmarks","children":[]},
-                "synced":{"type":"folder","name":"Mobile bookmarks","children":[]}},
-              "version":1}"#,
-        )
-        .unwrap();
-        dir
-    }
-
-    #[test]
-    fn history_and_bookmarks_merge_by_url_and_skip_non_web_pages() {
-        let dir = profile();
-        let pages = chrome_profile(dir.path()).unwrap().pages;
-        let urls: Vec<_> = pages.iter().map(|p| p.url.as_str()).collect();
-        assert_eq!(
-            urls,
-            [
-                "https://docs.rs/wry",
-                "https://news.ycombinator.com/",
-                "https://servo.org/"
-            ]
-        );
-        let wry = &pages[0];
-        assert_eq!(wry.title, "Rust docs: wry");
-        assert_eq!((wry.visits, wry.typed), (12, 3));
-        assert_eq!(wry.folder.as_deref(), Some("Bookmarks bar"));
-        assert_eq!(wry.last_visit, Some(1_794_517_910_813));
-        assert_eq!(pages[2].folder.as_deref(), Some("Bookmarks bar › Reading"));
-        assert_eq!(pages[1].folder, None);
-    }
-
-    #[test]
-    fn an_empty_directory_is_not_a_profile() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(chrome_profile(dir.path()).is_err());
-    }
-}
-
-mod linux;
-use crate::{
-    address::WebOrigin,
-    cookies::{Cookie, CookieDomain, SameSite},
-    logins::Login,
-    secret::Secret,
-};
-use linux::ChromeKeys;
-use sha2::{Digest, Sha256};
-use zeroize::Zeroizing;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImportError {
     SourceBusy,
@@ -234,6 +178,25 @@ pub enum SkipReason {
     EmptyPassword,
     Duplicate,
 }
+impl SkipReason {
+    /// How the import report names rows skipped for this reason.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Expired => "expired",
+            Self::Partitioned => "partitioned third-party",
+            Self::InsecureSameSite => "insecure cross-site",
+            Self::InvalidCookie => "invalid",
+            Self::Undecryptable => "unreadable",
+            Self::Blacklisted => "never-save",
+            Self::NonHtml => "not from a web form",
+            Self::InvalidOrigin => "not a web address",
+            Self::RealmMismatch => "for another realm",
+            Self::EmptyPassword => "empty",
+            Self::Duplicate => "duplicate",
+        }
+    }
+}
+
 pub type Section<T> = std::result::Result<Decrypted<T>, ImportError>;
 pub struct Decrypted<T> {
     pub items: Vec<T>,
@@ -461,7 +424,7 @@ fn read_logins(path: &Path, keys: &ChromeKeys) -> Section<Login> {
             origin: origin.clone(),
             username: username.clone(),
             password,
-            last_used: rank.0,
+            last_used: chrome_ms(rank.0),
         };
         let key = (origin, username);
         if let Some((old, _)) = accounts.get(&key) {
@@ -693,5 +656,70 @@ mod encrypted_tests {
             std::fs::remove_file(sidecar).unwrap();
         }
         assert!(open_chrome_db(&path).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A profile with Chrome's `urls` schema and a Bookmarks file.
+    fn profile() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let history = Connection::open(dir.path().join("History")).unwrap();
+        history
+            .execute_batch(
+                "CREATE TABLE urls(id INTEGER PRIMARY KEY, url LONGVARCHAR, title LONGVARCHAR,
+                    visit_count INTEGER DEFAULT 0 NOT NULL, typed_count INTEGER DEFAULT 0 NOT NULL,
+                    last_visit_time INTEGER NOT NULL, hidden INTEGER DEFAULT 0 NOT NULL);
+                 INSERT INTO urls(url, title, visit_count, typed_count, last_visit_time, hidden) VALUES
+                    ('https://docs.rs/wry', 'wry - Rust', 12, 3, 13438991510813493, 0),
+                    ('https://news.ycombinator.com/', 'Hacker News', 40, 9, 13438991510813493, 0),
+                    ('chrome://settings/', 'Settings', 5, 5, 13438991510813493, 0),
+                    ('https://hidden.example/', 'Hidden', 1, 0, 13438991510813493, 1);",
+            )
+            .unwrap();
+        std::fs::write(
+            dir.path().join("Bookmarks"),
+            r#"{"roots":{
+                "bookmark_bar":{"type":"folder","name":"Bookmarks bar","children":[
+                    {"type":"url","name":"Rust docs: wry","url":"https://docs.rs/wry"},
+                    {"type":"folder","name":"Reading","children":[
+                        {"type":"url","name":"Servo","url":"https://servo.org/"},
+                        {"type":"url","name":"Bad","url":"javascript:alert(1)"}]}]},
+                "other":{"type":"folder","name":"Other bookmarks","children":[]},
+                "synced":{"type":"folder","name":"Mobile bookmarks","children":[]}},
+              "version":1}"#,
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn history_and_bookmarks_merge_by_url_and_skip_non_web_pages() {
+        let dir = profile();
+        let pages = chrome_profile(dir.path()).unwrap().pages;
+        let urls: Vec<_> = pages.iter().map(|p| p.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            [
+                "https://docs.rs/wry",
+                "https://news.ycombinator.com/",
+                "https://servo.org/"
+            ]
+        );
+        let wry = &pages[0];
+        assert_eq!(wry.title, "Rust docs: wry");
+        assert_eq!((wry.visits, wry.typed), (12, 3));
+        assert_eq!(wry.folder.as_deref(), Some("Bookmarks bar"));
+        assert_eq!(wry.last_visit, Some(1_794_517_910_813));
+        assert_eq!(pages[2].folder.as_deref(), Some("Bookmarks bar › Reading"));
+        assert_eq!(pages[1].folder, None);
+    }
+
+    #[test]
+    fn an_empty_directory_is_not_a_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(chrome_profile(dir.path()).is_err());
     }
 }
