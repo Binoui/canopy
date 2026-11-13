@@ -8,9 +8,11 @@ use std::{
 use anyhow::Result;
 use gtk::prelude::*;
 
+mod reader;
+
 use crate::{
     address::destination,
-    browser::{Browser, CaptureKind, NavigationTarget, SearchHit, Snapshot, VisitId, VisitState},
+    browser::{Browser, NavigationTarget, SearchHit, Snapshot, VisitId, VisitState},
     engine::{Engine, EngineEvent},
 };
 
@@ -296,7 +298,7 @@ impl Ui {
                 if let Some(ui) = weak.upgrade() {
                     if let Ok(snapshot) = ui.snapshot() {
                         if let Some(id) = snapshot.current {
-                            ui.report(ui.show_captures(id));
+                            ui.report(reader::show_captures(&ui, id));
                         }
                     }
                 }
@@ -526,24 +528,24 @@ impl Ui {
             let button = gtk::Button::new();
             button.set_widget_name("search-hit");
             let content = gtk::Box::new(gtk::Orientation::Vertical, 5);
-            let title = plain_label(&hit.title, 32);
+            let title = reader::plain_label(&hit.title, 32);
             title.style_context().add_class("result-title");
             content.pack_start(&title, false, false, 0);
             let detail = if let Some(at) = hit.captured_at {
-                format!("Capture · {}", date(at))
+                format!("Capture · {}", reader::date(at))
             } else if hit.state == VisitState::Queued {
                 "Lien en attente".into()
             } else {
                 "Page visitée".into()
             };
-            let label = plain_label(&detail, 32);
+            let label = reader::plain_label(&detail, 32);
             label.style_context().add_class("result-detail");
             content.pack_start(&label, false, false, 0);
             let excerpt: String = hit.excerpt.chars().take(160).collect();
-            let label = plain_label(&excerpt, 32);
+            let label = reader::plain_label(&excerpt, 32);
             content.pack_start(&label, false, false, 0);
             if let Some(source) = &hit.source {
-                let label = plain_label(
+                let label = reader::plain_label(
                     &format!(
                         "Depuis {}",
                         source.page_url.host_str().unwrap_or("la source")
@@ -560,7 +562,7 @@ impl Ui {
             button.connect_clicked(move |_| {
                 if let Some(ui) = weak.upgrade() {
                     if let Some(id) = capture {
-                        ui.report(ui.show_capture(id));
+                        ui.report(reader::show_capture(&ui, id));
                     } else {
                         ui.report(ui.engine.restore(visit));
                     }
@@ -573,183 +575,6 @@ impl Ui {
 
     pub fn search_hits(&self, query: &str) -> Result<Vec<SearchHit>> {
         self.browser.borrow().search(query)
-    }
-
-    pub fn show_capture(self: &Rc<Self>, id: i64) -> Result<()> {
-        let capture = self.browser.borrow().capture(id)?;
-        let visit = self.browser.borrow().visit(capture.visit)?;
-        let dialog = gtk::Dialog::with_buttons(
-            Some("Capture locale"),
-            Some(&self.window),
-            gtk::DialogFlags::DESTROY_WITH_PARENT,
-            &[("Fermer", gtk::ResponseType::Close)],
-        );
-        dialog.set_widget_name("capture-reader");
-        dialog.set_default_size(760, 620);
-        let area = dialog.content_area();
-        area.set_spacing(10);
-        area.set_margin_start(18);
-        area.set_margin_end(18);
-        area.set_margin_top(14);
-        area.set_margin_bottom(14);
-        let heading = plain_label(&capture.title, 75);
-        heading.style_context().add_class("capture-title");
-        area.pack_start(&heading, false, false, 0);
-        let kind = if capture.kind == CaptureKind::Selection {
-            "Sélection"
-        } else {
-            "Page"
-        };
-        area.pack_start(
-            &plain_label(
-                &format!(
-                    "{kind} mémorisée le {} · {}",
-                    date(capture.captured_at),
-                    capture.document_url
-                ),
-                90,
-            ),
-            false,
-            false,
-            0,
-        );
-        if let Some(source) = &capture.source {
-            let label = plain_label(
-                &format!(
-                    "Depuis {}\n{}\n{}",
-                    source.page_url, source.link_text, source.excerpt
-                ),
-                85,
-            );
-            label.set_widget_name("capture-source");
-            area.pack_start(&label, false, false, 0);
-        }
-        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let live = gtk::Button::with_label("Ouvrir la page");
-        let source = gtk::Button::with_label("Revenir à la source");
-        let citation = gtk::Button::with_label("Ouvrir le commentaire source");
-        source.set_sensitive(visit.parent.is_some());
-        citation.set_sensitive(
-            visit
-                .source
-                .as_ref()
-                .and_then(|source| source.citation_url.as_ref())
-                .is_some(),
-        );
-        actions.pack_start(&live, false, false, 0);
-        actions.pack_start(&source, false, false, 0);
-        actions.pack_start(&citation, false, false, 0);
-        area.pack_start(&actions, false, false, 0);
-        let text = gtk::TextView::new();
-        text.set_widget_name("capture-text");
-        text.set_editable(false);
-        text.set_wrap_mode(gtk::WrapMode::WordChar);
-        text.set_left_margin(10);
-        text.set_right_margin(10);
-        text.buffer().unwrap().set_text(&capture.text);
-        let scroll = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
-        scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
-        scroll.add(&text);
-        area.pack_start(&scroll, true, true, 0);
-        {
-            let weak = Rc::downgrade(self);
-            let capture = capture.clone();
-            let reader = dialog.downgrade();
-            live.connect_clicked(move |_| {
-                if let Some(ui) = weak.upgrade() {
-                    match ui.engine.open_saved(&capture) {
-                        Ok(()) => {
-                            if let Some(reader) = reader.upgrade() {
-                                reader.close();
-                            }
-                        }
-                        Err(error) => ui.show_error(&error.to_string()),
-                    }
-                }
-            });
-        }
-        {
-            let weak = Rc::downgrade(self);
-            let parent = visit.parent;
-            let reader = dialog.downgrade();
-            source.set_widget_name("capture-restore-source");
-            source.connect_clicked(move |_| {
-                if let Some(ui) = weak.upgrade() {
-                    if let Some(parent) = parent {
-                        match ui.engine.restore(parent) {
-                            Ok(()) => {
-                                ui.search.set_text("");
-                                if let Some(reader) = reader.upgrade() {
-                                    reader.close();
-                                }
-                            }
-                            Err(error) => ui.show_error(&error.to_string()),
-                        }
-                    }
-                }
-            });
-        }
-        {
-            let weak = Rc::downgrade(self);
-            let child = visit.id;
-            let reader = dialog.downgrade();
-            citation.connect_clicked(move |_| {
-                if let Some(ui) = weak.upgrade() {
-                    match ui.engine.open_citation(child) {
-                        Ok(()) => {
-                            ui.search.set_text("");
-                            if let Some(reader) = reader.upgrade() {
-                                reader.close();
-                            }
-                        }
-                        Err(error) => ui.show_error(&error.to_string()),
-                    }
-                }
-            });
-        }
-        dialog.connect_response(|dialog, _| dialog.close());
-        dialog.show_all();
-        Ok(())
-    }
-
-    fn show_captures(self: &Rc<Self>, visit: VisitId) -> Result<()> {
-        let captures = self.browser.borrow().captures(visit)?;
-        if captures.is_empty() {
-            self.show_error("Aucune capture pour cette page. Sélectionne du texte et mémorise-le, ou active la mémorisation des pages.");
-            return Ok(());
-        }
-        if captures.len() == 1 {
-            return self.show_capture(captures[0].id);
-        }
-        let dialog = gtk::Dialog::with_buttons(
-            Some("Captures de cette page"),
-            Some(&self.window),
-            gtk::DialogFlags::DESTROY_WITH_PARENT,
-            &[("Fermer", gtk::ResponseType::Close)],
-        );
-        dialog.set_default_size(500, 420);
-        let list = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        list.set_margin_start(16);
-        list.set_margin_end(16);
-        list.set_margin_top(12);
-        list.set_margin_bottom(12);
-        for capture in captures {
-            let label = format!("{} · {}", date(capture.captured_at), capture.title);
-            let button = gtk::Button::with_label(&label);
-            let weak = Rc::downgrade(self);
-            button.connect_clicked(move |_| {
-                if let Some(ui) = weak.upgrade() {
-                    ui.report(ui.show_capture(capture.id));
-                }
-            });
-            list.pack_start(&button, false, false, 0);
-        }
-        let scroll = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
-        scroll.add(&list);
-        dialog.content_area().pack_start(&scroll, true, true, 0);
-        dialog.connect_response(|dialog, _| dialog.close());
-        dialog.show_all();
-        Ok(())
     }
 
     fn render(self: &Rc<Self>) -> Result<()> {
@@ -911,21 +736,6 @@ fn icon_button(icon: &str, tooltip: &str) -> gtk::Button {
     let button = gtk::Button::from_icon_name(Some(icon), gtk::IconSize::Button);
     button.set_tooltip_text(Some(tooltip));
     button
-}
-
-fn plain_label(text: &str, width: i32) -> gtk::Label {
-    let label = gtk::Label::new(Some(text));
-    label.set_xalign(0.0);
-    label.set_line_wrap(true);
-    label.set_max_width_chars(width);
-    label
-}
-
-fn date(timestamp: i64) -> String {
-    glib::DateTime::from_unix_local(timestamp / 1000)
-        .and_then(|value| value.format("%d %b %Y, %H:%M"))
-        .map(|value| value.to_string())
-        .unwrap_or_else(|_| "Date indisponible".into())
 }
 
 const STYLE: &str = "
