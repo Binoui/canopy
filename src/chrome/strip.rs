@@ -25,6 +25,8 @@ const FADE: f64 = 34.;
 pub(super) enum StripEvent {
     Enter,
     Leave,
+    EnterNode(VisitId),
+    LeaveNode,
     Activate(VisitId),
     Menu(bool),
 }
@@ -271,6 +273,21 @@ impl Strip {
         self.state.borrow().allocation_height()
     }
 
+    /// Target rectangle of a node in strip coordinates, after the current animation.
+    pub fn node_rect(&self, id: VisitId) -> Option<gdk::Rectangle> {
+        let state = self.state.borrow();
+        let rect = state.target.node(id)?.rect;
+        let pan = state
+            .manual_pan
+            .unwrap_or_else(|| graph::pan(&state.target, self.width()));
+        Some(gdk::Rectangle::new(
+            (rect.x - rect.w / 2. + pan).round() as i32,
+            (rect.y - rect.s / 2.).round() as i32,
+            rect.w.round() as i32,
+            rect.s.round() as i32,
+        ))
+    }
+
     pub fn focus_current(&self) -> bool {
         let state = self.state.borrow();
         let current = state.forest.as_ref().and_then(|forest| forest.current());
@@ -429,6 +446,20 @@ impl Strip {
             if let Some(strip) = weak.upgrade() {
                 (strip.on_event)(StripEvent::Activate(id));
             }
+        });
+        let weak = Rc::downgrade(self);
+        button.connect_enter_notify_event(move |_, _| {
+            if let Some(strip) = weak.upgrade() {
+                (strip.on_event)(StripEvent::EnterNode(id));
+            }
+            glib::Propagation::Proceed
+        });
+        let weak = Rc::downgrade(self);
+        button.connect_leave_notify_event(move |_, _| {
+            if let Some(strip) = weak.upgrade() {
+                (strip.on_event)(StripEvent::LeaveNode);
+            }
+            glib::Propagation::Proceed
         });
         self.fixed.put(&button, 0, 0);
         button.show_all();

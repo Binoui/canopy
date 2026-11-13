@@ -129,6 +129,21 @@ fn main() -> Result<()> {
         "a click below the open strip reaches the page"
     );
     open_strip(&ui)?;
+    move_to_widget(&ui, &node(&ui, c))?;
+    let card = named(&ui.window, "card");
+    wait("hover card", || card.is_visible())?;
+    pump(150);
+    move_to_widget(&ui, &card)?;
+    pump(500);
+    assert!(
+        card.is_visible() && strip_height(&ui) == 120,
+        "the card holds the strip open"
+    );
+    let bounds = card.allocation();
+    let (x, y) = screen_point(&ui, &card, bounds.width() + 180, bounds.height() / 2)?;
+    click_at(x, y)?;
+    assert_eq!(clicks(&ui), 2, "a click beside the card reaches the page");
+    open_strip(&ui)?;
     let (away_x, away_y) = page_point(&ui, 900, 600)?;
     move_to(away_x, away_y)?;
     pump(430);
@@ -141,7 +156,7 @@ fn main() -> Result<()> {
     click_at(x, y)?;
     assert_eq!(
         clicks(&ui),
-        1,
+        2,
         "the closing band swallows a click during the close"
     );
     move_to(away_x, away_y)?;
@@ -150,10 +165,10 @@ fn main() -> Result<()> {
     click_at(x, y)?;
     assert_eq!(
         clicks(&ui),
-        2,
+        3,
         "the same point reaches the page once the strip is closed"
     );
-    println!("PASS page clicks pass below the open strip; the 220 ms closing band is swallowed, then the page is reachable again.");
+    println!("PASS page clicks pass below the open strip and beside the card; the 220 ms closing band is swallowed, then the page is reachable again.");
 
     save_window(&ui, "/tmp/canopy-chrome-webkit.png")?;
 
@@ -206,10 +221,22 @@ fn main() -> Result<()> {
         .context("queued target=_blank")?;
     assert_eq!(pending.parent, Some(a));
     assert_eq!(ui.snapshot()?.current, Some(a));
-    ui.engine.restore(pending.id)?;
+    open_strip(&ui)?;
+    move_to_widget(&ui, &node(&ui, pending.id))?;
+    let card = named(&ui.window, "card");
+    wait("card of the queued page", || card.is_visible())?;
+    pump(150);
+    click(&ui, &named(&ui.window, "card-branch"))?;
     loaded(&ui, "/d", 6)?;
     assert_eq!(ui.snapshot()?.current, Some(pending.id));
-    println!("PASS a target=_blank link waits in the tree, then opens without a duplicate.");
+    wait("palette anchored after the commit", || {
+        named(&ui.window, "palette").is_visible() && entry.has_focus()
+    })?;
+    assert!(label_texts(&named(&ui.window, "palette"))
+        .iter()
+        .any(|text| text == "Link opened in another window"));
+    key("Escape")?;
+    println!("PASS a target=_blank link waits in the tree; New branch here activates it without a duplicate, then anchors the palette on it.");
 
     ui.engine.navigate(
         web_url(&fixture.url("/b"))?,

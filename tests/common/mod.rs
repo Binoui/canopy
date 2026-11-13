@@ -120,6 +120,11 @@ pub fn click_at(x: i32, y: i32) -> Result<()> {
     Ok(())
 }
 
+pub fn move_to_widget(ui: &Ui, widget: &impl IsA<gtk::Widget>) -> Result<()> {
+    let (x, y) = center(ui, widget)?;
+    move_to(x, y)
+}
+
 pub fn click(ui: &Ui, widget: &impl IsA<gtk::Widget>) -> Result<()> {
     let (x, y) = center(ui, widget)?;
     click_at(x, y)

@@ -71,7 +71,6 @@ pub(crate) struct StripLayout {
 }
 
 impl StripLayout {
-    #[cfg(test)]
     pub fn node(&self, id: VisitId) -> Option<&PlacedNode> {
         self.nodes.iter().find(|node| node.id == id)
     }

@@ -1,3 +1,4 @@
+mod card;
 mod favicon;
 mod graph;
 mod icons;
@@ -21,9 +22,12 @@ use url::Url;
 pub use theme::register_font;
 
 use crate::{
-    browser::{NavigationTarget, SearchHit, ThemeMode, TreeId, Visit, VisitId, VisitState},
+    browser::{
+        NavigationTarget, SearchHit, ThemeMode, TreeId, Visit, VisitId, VisitPreview, VisitState,
+    },
     forest::ForestProjection,
 };
+use card::{Card, CardEvent};
 use favicon::Favicons;
 use memory::{Memory, MemoryEvent};
 use palette::{Palette, PaletteEvent};
@@ -58,7 +62,13 @@ pub enum PaletteSeed {
 pub enum ChromeIntent {
     SelectTree(TreeId),
     Restore(VisitId),
-    Navigate { url: Url, target: NavigationTarget },
+    /// Activate a queued page, then open a palette anchored on it once it commits.
+    BranchFromQueued(VisitId),
+    Navigate {
+        url: Url,
+        target: NavigationTarget,
+    },
+    OpenCitation(VisitId),
     ReadCapture(i64),
     ReadCaptures(VisitId),
     SetCaptureEnabled(bool),
@@ -74,6 +84,7 @@ pub enum Toast {
 pub trait ChromeHost {
     fn dispatch(&self, intent: ChromeIntent);
     fn search(&self, query: &str) -> Result<Vec<SearchHit>>;
+    fn preview(&self, visit: VisitId) -> Result<VisitPreview>;
 }
 
 pub struct NativeChrome {
@@ -87,6 +98,8 @@ struct Inner {
     shade: Cell<Option<Shade>>,
     tabs: Rc<Tabs>,
     strip: Rc<Strip>,
+    card: Rc<Card>,
+    card_x: Cell<i32>,
     palette: Rc<Palette>,
     memory: Rc<Memory>,
     toast: gtk::Revealer,
@@ -128,6 +141,12 @@ impl NativeChrome {
                     inner.strip_event(event);
                 }
             });
+            let w = weak.clone();
+            let card = Card::new(favicons.clone(), move |event| {
+                if let Some(inner) = w.upgrade() {
+                    inner.card_event(event);
+                }
+            });
             let search_host = host.clone();
             let w = weak.clone();
             let palette = Palette::new(
@@ -166,6 +185,8 @@ impl NativeChrome {
                 shade: Cell::new(None),
                 tabs,
                 strip,
+                card,
+                card_x: Cell::new(0),
                 palette,
                 memory,
                 toast,
@@ -178,6 +199,7 @@ impl NativeChrome {
         });
         overlay.add_overlay(&inner.tabs.root);
         overlay.add_overlay(&inner.strip.root);
+        overlay.add_overlay(&inner.card.root);
         overlay.add_overlay(&inner.palette.root);
         overlay.add_overlay(&inner.toast);
         overlay.set_overlay_pass_through(&inner.toast, true);
@@ -189,6 +211,16 @@ impl NativeChrome {
             let rect = match widget.widget_name().as_str() {
                 "tabs" => (0, 0, width, HEADER),
                 "strip" => (0, HEADER, width, inner.strip.allocation_height()),
+                "card" => {
+                    let top = HEADER + graph::OPEN_HEIGHT as i32 + 8;
+                    let (_, natural) = widget.preferred_height_for_width(card::WIDTH);
+                    (
+                        inner.card_x.get(),
+                        top,
+                        card::WIDTH,
+                        natural.min(height - top - 8),
+                    )
+                }
                 "palette" => (0, 0, width, height),
                 "toast-revealer" => {
                     let (_, natural) = widget.preferred_size();
@@ -221,6 +253,12 @@ impl NativeChrome {
         inner.tabs.present(&forest);
         inner.strip.present(forest.clone());
         inner.palette.present(forest.clone());
+        if let Some(id) = inner.card.visit() {
+            match forest.visit(id) {
+                Some(_) => inner.show_card(id),
+                None => inner.step(Input::Activated),
+            }
+        }
         inner.theme.set(frame.theme);
         inner.apply_theme();
         inner
@@ -300,6 +338,56 @@ impl Inner {
                     });
                 }
                 Output::Strip { open } => self.strip.set_open(open),
+                Output::ShowCard(id) => self.show_card(id),
+                Output::HideCard => self.card.hide(),
+            }
+        }
+    }
+
+    fn show_card(&self, id: VisitId) {
+        let forest = self.forest.borrow().clone();
+        let (Some(forest), Some(rect)) = (forest, self.strip.node_rect(id)) else {
+            return;
+        };
+        let Some(preview) = self.host.upgrade().and_then(|host| host.preview(id).ok()) else {
+            return;
+        };
+        let width = self.strip.root.allocated_width();
+        let x = rect.x() + rect.width() / 2 - card::WIDTH / 2;
+        self.card_x.set(x.min(width - card::WIDTH - 8).max(8));
+        self.card.show(&forest, id, preview);
+        self.card.root.queue_resize();
+    }
+
+    fn card_event(self: &Rc<Self>, event: CardEvent) {
+        match event {
+            CardEvent::Enter => self.step(Input::EnterCard),
+            CardEvent::Leave => self.step(Input::LeaveCard),
+            CardEvent::Open(id) => {
+                self.step(Input::Activated);
+                self.emit(ChromeIntent::Restore(id));
+            }
+            CardEvent::Branch(id) => {
+                self.step(Input::Activated);
+                let queued = self
+                    .forest
+                    .borrow()
+                    .as_ref()
+                    .and_then(|forest| forest.visit(id))
+                    .is_some_and(|visit| visit.state == VisitState::Queued);
+                if queued {
+                    self.emit(ChromeIntent::BranchFromQueued(id));
+                } else {
+                    self.open_palette(PaletteScope::From(id), PaletteSeed::Empty);
+                }
+            }
+            CardEvent::BackToSource(parent) => {
+                self.step(Input::Activated);
+                self.emit(ChromeIntent::Restore(parent));
+            }
+            CardEvent::OpenComment(child) => {
+                self.step(Input::Activated);
+                self.emit(ChromeIntent::OpenCitation(child));
             }
         }
     }
@@ -336,7 +424,10 @@ impl Inner {
         match event {
             StripEvent::Enter => self.step(Input::EnterStrip),
             StripEvent::Leave => self.step(Input::LeaveStrip),
+            StripEvent::EnterNode(id) => self.step(Input::EnterNode(id)),
+            StripEvent::LeaveNode => self.step(Input::LeaveNode),
             StripEvent::Activate(id) => {
+                self.step(Input::Activated);
                 if Some(id) != self.current() {
                     self.emit(ChromeIntent::Restore(id));
                 }

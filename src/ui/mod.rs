@@ -8,10 +8,11 @@ use std::{
 
 use anyhow::Result;
 use gtk::prelude::*;
+use webkit2gtk::WebViewExt;
 
 pub use crate::chrome::register_font;
 use crate::{
-    browser::{Browser, SearchHit, Snapshot},
+    browser::{Browser, SearchHit, Snapshot, VisitId, VisitPreview},
     chrome::{
         ChromeFrame, ChromeHost, ChromeIntent, NativeChrome, PaletteScope, PaletteSeed, Toast,
     },
@@ -27,6 +28,8 @@ pub struct Ui {
     browser: Rc<RefCell<Browser>>,
     chrome: NativeChrome,
     refresh_scheduled: Cell<bool>,
+    /// A queued page activated by "New branch here", whose palette opens once it commits.
+    branch_after_commit: Cell<Option<VisitId>>,
     me: Weak<Ui>,
 }
 
@@ -58,6 +61,7 @@ impl Ui {
                 browser,
                 chrome,
                 refresh_scheduled: Cell::new(false),
+                branch_after_commit: Cell::new(None),
                 me: me.clone(),
             }
         });
@@ -65,9 +69,19 @@ impl Ui {
         ui.engine.observe(move |event| {
             let Some(ui) = weak.upgrade() else { return };
             match event {
-                EngineEvent::Changed | EngineEvent::Loading(false) => ui.schedule_refresh(),
+                EngineEvent::Changed => ui.schedule_refresh(),
+                EngineEvent::Loading(false) => {
+                    let current = ui.snapshot().ok().and_then(|s| s.current);
+                    if ui.branch_after_commit.get() != current {
+                        ui.branch_after_commit.set(None);
+                    }
+                    ui.schedule_refresh();
+                }
                 EngineEvent::Loading(true) => {}
-                EngineEvent::Error(message) => ui.chrome.toast(Toast::Error(message)),
+                EngineEvent::Error(message) => {
+                    ui.branch_after_commit.set(None);
+                    ui.chrome.toast(Toast::Error(message));
+                }
                 EngineEvent::Remembered(_) => ui
                     .chrome
                     .toast(Toast::Info("Selection remembered on this computer.".into())),
@@ -129,7 +143,18 @@ impl Ui {
                         |v| format!("{} · Canopy", v.label()),
                     );
                 self.window.set_title(&title);
+                let current = frame.forest.current();
                 self.chrome.present(frame);
+                if current.is_some()
+                    && self.branch_after_commit.get() == current
+                    && !self.engine.native.is_loading()
+                {
+                    self.branch_after_commit.set(None);
+                    self.chrome.open_palette(
+                        current.map_or(PaletteScope::NewTree, PaletteScope::From),
+                        PaletteSeed::Empty,
+                    );
+                }
             }
             Err(error) => self.report_error(&error.to_string()),
         }
@@ -227,12 +252,21 @@ impl Shortcut {
 impl ChromeHost for Ui {
     fn dispatch(&self, intent: ChromeIntent) {
         let Some(ui) = self.me.upgrade() else { return };
+        self.branch_after_commit.set(None);
         let result = match intent {
             ChromeIntent::SelectTree(tree) => {
                 let target = self.browser.borrow().tree_target(tree);
                 target.and_then(|visit| self.engine.restore(visit))
             }
             ChromeIntent::Restore(visit) => self.engine.restore(visit),
+            ChromeIntent::BranchFromQueued(visit) => {
+                let result = self.engine.restore(visit);
+                if result.is_ok() {
+                    self.branch_after_commit.set(Some(visit));
+                }
+                result
+            }
+            ChromeIntent::OpenCitation(child) => self.engine.open_citation(child),
             ChromeIntent::Navigate { url, target } => self.engine.navigate(url, target),
             ChromeIntent::ReadCapture(id) => reader::show_capture(&ui, id),
             ChromeIntent::ReadCaptures(visit) => reader::show_captures(&ui, visit),
@@ -248,5 +282,9 @@ impl ChromeHost for Ui {
 
     fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
         self.browser.borrow().search(query)
+    }
+
+    fn preview(&self, visit: VisitId) -> Result<VisitPreview> {
+        self.browser.borrow().preview(visit)
     }
 }

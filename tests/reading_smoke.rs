@@ -119,6 +119,24 @@ fn main() -> Result<()> {
         !ui.search_hits("mossy lantern delayed").unwrap().is_empty()
     })?;
     println!("PASS a bounded follow-up captures article text arriving after Finished.");
+    open_strip(&ui)?;
+    move_to_widget(&ui, &node(&ui, article))?;
+    let back = named(&ui.window, "card-source");
+    wait("source context on the current page's card", || {
+        back.is_visible()
+    })?;
+    assert!(label_texts(&named(&ui.window, "card"))
+        .iter()
+        .any(|text| text.contains("commentaire source")));
+    pump(150);
+    click(&ui, &back)?;
+    wait("Back to source from the card", || {
+        ui.snapshot().unwrap().current == Some(source_id) && !ui.engine.native.is_loading()
+    })?;
+    assert_eq!(queued(&ui), 2);
+    ui.engine.restore(article)?;
+    loaded(&ui, "/article-a")?;
+    println!("PASS the current page's card shows its source excerpt and Back to source restores the parent.");
     save_window(&ui, "/tmp/canopy-chrome-reading.png")?;
 
     search_saved_text(&ui, "amber otter cache")?;

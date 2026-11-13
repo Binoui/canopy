@@ -194,6 +194,17 @@ popover label { color: @text; font-size: 12.5px; }
 #toast { background: @text; border-radius: 10px; padding: 9px 14px; }
 #toast label { color: @bg; font-size: 12.5px; }
 
+.card { background: @bg; border: 1px solid @border; border-radius: 11px; padding: 12px 12px 10px; }
+.card-title { font-weight: 600; font-size: 13px; color: @text; }
+.card-meta { font-size: 11.5px; color: @muted; margin-top: 3px; }
+.card-snippet { font-size: 12px; color: @muted; }
+.card-tag { font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 5px; background: @green_soft; color: @green_ink; }
+.card-action { min-height: 0; padding: 3px 8px; border: 1px solid @border; border-radius: 6px; background: transparent;
+  box-shadow: none; font-size: 11.5px; color: @text; }
+.card-action label { color: @text; }
+.card-action:hover { background: @hover; }
+.card-action:disabled label { color: @faint; }
+
 #capture-reader { background: @bg; }
 #capture-reader label { color: @text; }
 #capture-reader textview text { color: @text; background: @bg; }
