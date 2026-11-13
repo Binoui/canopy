@@ -675,6 +675,9 @@ impl Strip {
         if resize {
             self.root.queue_resize();
         }
+        if let Some(frame) = self.root.parent() {
+            frame.queue_draw();
+        }
         self.area.queue_draw();
         self.decor.queue_draw();
         !done
@@ -728,6 +731,29 @@ impl Strip {
         }
     }
 
+    /// The open strip's drop shadow, drawn below it in the frame's margin.
+    pub fn paint_shadow(&self, cr: &cairo::Context, width: i32) {
+        let state = self.state.borrow();
+        let openness = ((state.height - REST_HEIGHT) / (OPEN_HEIGHT - REST_HEIGHT)).clamp(0., 1.);
+        if openness <= 0. {
+            return;
+        }
+        let alpha = if self.shade.get() == Shade::Dark {
+            0.5
+        } else {
+            0.12
+        } * openness;
+        let top = state.height;
+        let gradient = cairo::LinearGradient::new(0., top, 0., top + 22.);
+        gradient.add_color_stop_rgba(0., 0., 0., 0., alpha);
+        gradient.add_color_stop_rgba(0.35, 0., 0., 0., alpha * 0.35);
+        gradient.add_color_stop_rgba(1., 0., 0., 0., 0.);
+        let _ = cr.set_source(&gradient);
+        let inset = 14. * openness;
+        cr.rectangle(inset, top - 2., f64::from(width) - 2. * inset, 24.);
+        let _ = cr.fill();
+    }
+
     fn paint_edges(&self, area: &gtk::DrawingArea, cr: &cairo::Context) {
         let state = self.state.borrow();
         let shade = self.shade.get();
@@ -740,11 +766,6 @@ impl Strip {
         let _ = cr.fill_preserve();
         shade.source_alpha(cr, Token::Chrome, openness);
         let _ = cr.fill();
-        for i in 0..6 {
-            cr.set_source_rgba(0., 0., 0., 0.035 * openness * f64::from(6 - i) / 6.);
-            cr.rectangle(radius, height - 1. - f64::from(i), width - 2. * radius, 1.);
-            let _ = cr.fill();
-        }
         shade.source(cr, Token::Border);
         cr.rectangle(0., 0., width, 1.);
         let _ = cr.fill();

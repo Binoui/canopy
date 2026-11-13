@@ -37,6 +37,10 @@ use tabs::{TabEvent, Tabs};
 use theme::Shade;
 
 const HEADER: i32 = 42;
+/// Room around the strip and the card for their shadows. Their frames pass pointer
+/// input through, so the shadow never covers a click on the page.
+const STRIP_SHADOW: i32 = 24;
+const CARD_SHADOW: (i32, i32, i32) = (18, 6, 30);
 
 /// Everything the chrome shows, read from SQLite in one go.
 pub struct ChromeFrame {
@@ -204,8 +208,30 @@ impl NativeChrome {
             }
         });
         overlay.add_overlay(&inner.tabs.root);
-        overlay.add_overlay(&inner.strip.root);
-        overlay.add_overlay(&inner.card.root);
+        let strip_frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        strip_frame.set_widget_name("strip-frame");
+        inner.strip.root.set_margin_bottom(STRIP_SHADOW);
+        strip_frame.pack_start(&inner.strip.root, true, true, 0);
+        let weak = Rc::downgrade(&inner);
+        strip_frame.connect_draw(move |frame, cr| {
+            if let Some(inner) = weak.upgrade() {
+                inner.strip.paint_shadow(cr, frame.allocated_width());
+            }
+            glib::Propagation::Proceed
+        });
+        overlay.add_overlay(&strip_frame);
+        overlay.set_overlay_pass_through(&strip_frame, true);
+        let (x, top, bottom) = CARD_SHADOW;
+        inner.card.frame.set_margin_start(x);
+        inner.card.frame.set_margin_end(x);
+        inner.card.frame.set_margin_top(top);
+        inner.card.frame.set_margin_bottom(bottom);
+        let card_frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        card_frame.set_widget_name("card-frame");
+        card_frame.set_no_show_all(true);
+        card_frame.pack_start(&inner.card.frame, true, true, 0);
+        overlay.add_overlay(&card_frame);
+        overlay.set_overlay_pass_through(&card_frame, true);
         overlay.add_overlay(&inner.palette.root);
         overlay.add_overlay(&inner.toast);
         overlay.set_overlay_pass_through(&inner.toast, true);
@@ -216,15 +242,21 @@ impl NativeChrome {
             let height = overlay.allocated_height();
             let rect = match widget.widget_name().as_str() {
                 "tabs" => (0, 0, width, HEADER),
-                "strip" => (0, HEADER, width, inner.strip.allocation_height()),
-                "card" => {
-                    let top = HEADER + graph::OPEN_HEIGHT as i32 + 8;
-                    let (_, natural) = widget.preferred_height_for_width(card::WIDTH);
+                "strip-frame" => (
+                    0,
+                    HEADER,
+                    width,
+                    inner.strip.allocation_height() + STRIP_SHADOW,
+                ),
+                "card-frame" => {
+                    let (x, top, bottom) = CARD_SHADOW;
+                    let y = HEADER + graph::OPEN_HEIGHT as i32 + 8 - top;
+                    let (_, natural) = widget.preferred_height_for_width(card::WIDTH + 2 * x);
                     (
-                        inner.card_x.get(),
-                        top,
-                        card::WIDTH,
-                        natural.min(height - top - 8),
+                        inner.card_x.get() - x,
+                        y,
+                        card::WIDTH + 2 * x,
+                        natural.min(height - y - 8 + bottom),
                     )
                 }
                 "palette" => (0, 0, width, height),
@@ -388,7 +420,7 @@ impl Inner {
         let x = rect.x() + rect.width() / 2 - card::WIDTH / 2;
         self.card_x.set(x.min(width - card::WIDTH - 8).max(8));
         self.card.show(&forest, id, preview);
-        self.card.root.queue_resize();
+        self.card.frame.queue_resize();
     }
 
     fn card_event(self: &Rc<Self>, event: CardEvent) {

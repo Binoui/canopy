@@ -52,10 +52,11 @@ pub(crate) enum Token {
     GreenSoft,
     GreenInk,
     Scrim,
+    Shadow,
 }
 
 /// The prototype's `.tv` and `.tv.dark` tokens. GTK CSS and cairo both read this table.
-const TOKENS: [(Token, &str, &str, &str); 14] = [
+const TOKENS: [(Token, &str, &str, &str); 15] = [
     (Token::Bg, "bg", "#ffffff", "#0f0f0f"),
     (Token::Chrome, "chrome", "#fbfbfa", "#141414"),
     (Token::Border, "border", "#ebebea", "#252525"),
@@ -84,6 +85,12 @@ const TOKENS: [(Token, &str, &str, &str); 14] = [
         "scrim",
         "rgba(15,15,15,0.16)",
         "rgba(0,0,0,0.5)",
+    ),
+    (
+        Token::Shadow,
+        "shadow",
+        "rgba(15,15,15,0.10)",
+        "rgba(0,0,0,0.55)",
     ),
 ];
 
@@ -177,7 +184,7 @@ popover label { color: @text; font-size: 12.5px; }
 .menu-separator { background: @border; min-height: 1px; margin: 5px 4px; }
 
 #palette { background: @scrim; }
-.palette-box { background: @bg; border: 1px solid @border; border-radius: 13px; }
+.palette-box { background: @bg; border: 1px solid @border; border-radius: 13px; box-shadow: 0 1px 2px alpha(@shadow, 0.5), 0 10px 30px @shadow; }
 .palette-context { font-size: 11.5px; color: @muted; padding: 11px 14px 0; }
 .palette-tag { font-size: 10.5px; font-weight: 500; padding: 1px 6px; border-radius: 5px; background: @green_soft; color: @green_ink; }
 .palette-entry { border: none; background: transparent; box-shadow: none; padding: 13px 0; font-size: 15px; color: @text; caret-color: @text; }
@@ -194,6 +201,7 @@ popover label { color: @text; font-size: 12.5px; }
 #toast { background: @text; border-radius: 10px; padding: 9px 14px; }
 #toast label { color: @bg; font-size: 12.5px; }
 
+.card-frame { border-radius: 11px; box-shadow: 0 1px 2px alpha(@shadow, 0.5), 0 10px 30px @shadow; }
 .card { background: @bg; border: 1px solid @border; border-radius: 11px; padding: 12px 12px 10px; }
 .card-title { font-weight: 600; font-size: 13px; color: @text; }
 .card-meta { font-size: 11.5px; color: @muted; margin-top: 3px; }

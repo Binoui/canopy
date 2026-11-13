@@ -23,6 +23,8 @@ pub(super) enum CardEvent {
 
 /// The hover card under the open strip.
 pub(super) struct Card {
+    /// Draws the card's shadow around `root`, which alone takes pointer input.
+    pub frame: gtk::Box,
     pub root: gtk::EventBox,
     icon: gtk::Image,
     title: gtk::Label,
@@ -88,7 +90,12 @@ impl Card {
         body.pack_start(&indented, false, false, 0);
         root.add(&body);
         body.show_all();
+        let frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        frame.style_context().add_class("card-frame");
+        frame.pack_start(&root, true, true, 0);
+        frame.show();
         let card = Rc::new(Self {
+            frame,
             root,
             icon,
             title,
@@ -195,6 +202,9 @@ impl Card {
         self.open.set_label(if current { "Reload" } else { "Open" });
         self.show_source(visit, current);
         self.root.show();
+        if let Some(outer) = self.frame.parent() {
+            outer.show();
+        }
     }
 
     /// On the current page, the card carries the page's source context and its actions.
@@ -216,6 +226,9 @@ impl Card {
 
     pub fn hide(&self) {
         self.root.hide();
+        if let Some(outer) = self.frame.parent() {
+            outer.hide();
+        }
     }
 }
 
