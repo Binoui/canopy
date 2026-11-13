@@ -54,6 +54,13 @@ pub struct TreeState {
     pub last_visit: VisitId,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ThemeMode {
+    System,
+    Light,
+    Dark,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VisitState {
     Queued,
@@ -817,6 +824,19 @@ impl Browser {
         Ok(captures)
     }
 
+    pub fn theme_mode(&self) -> Result<ThemeMode> {
+        let mode: String = self.connection.query_row(
+            "SELECT theme_mode FROM session WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(match mode.as_str() {
+            "light" => ThemeMode::Light,
+            "dark" => ThemeMode::Dark,
+            _ => ThemeMode::System,
+        })
+    }
+
     pub fn capture_enabled(&self) -> Result<bool> {
         Ok(self.connection.query_row(
             "SELECT capture_enabled FROM session WHERE singleton=1",
@@ -1516,11 +1536,7 @@ mod tests {
             let browser = Browser::open(&path).unwrap();
             assert_eq!(browser.tree_target(TreeId(a)).unwrap(), child);
             assert_eq!(browser.tree_target(TreeId(b)).unwrap(), b);
-            let theme: String = browser
-                .connection
-                .query_row("SELECT theme_mode FROM session", [], |r| r.get(0))
-                .unwrap();
-            assert_eq!(theme, "system");
+            assert_eq!(browser.theme_mode().unwrap(), ThemeMode::System);
             browser
                 .connection
                 .execute("UPDATE session SET theme_mode='dark'", [])
@@ -1544,11 +1560,7 @@ mod tests {
         };
         let browser = Browser::open(&path).unwrap();
         assert_eq!(browser.tree_states().unwrap(), expected);
-        let theme: String = browser
-            .connection
-            .query_row("SELECT theme_mode FROM session", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(theme, "dark");
+        assert_eq!(browser.theme_mode().unwrap(), ThemeMode::Dark);
     }
     #[test]
     fn explicit_parent_is_validated_and_survives_cursor_changes_before_start() {
