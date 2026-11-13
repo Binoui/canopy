@@ -1,7 +1,7 @@
 mod card;
 mod favicon;
 mod forest_view;
-mod graph;
+pub(crate) mod graph;
 mod icons;
 mod memory;
 mod palette;

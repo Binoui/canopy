@@ -1,0 +1,199 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --chrome: #fbfbfa; --border: #ebebea; --text: #37352f; --muted: #787774; --faint: #b3b2ad;
+    --tile: #ffffff; --tile-border: #e3e3e0; --line: #d2d2ce; --green: #2f9e5f; --green-ink: #1f7a47;
+    --shadow: rgba(15, 15, 15, .14);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --chrome: #141414; --border: #252525; --text: #ececec; --muted: #8f8f8f; --faint: #5c5c5c;
+      --tile: #1b1b1b; --tile-border: #2d2d2d; --line: #3a3a3a; --green: #3fcf7d; --green-ink: #7fe3a9;
+      --shadow: rgba(0, 0, 0, .5);
+    }
+  }
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body { font: 12.5px Inter, system-ui, sans-serif; color: var(--text); user-select: none; cursor: default; }
+  #strip {
+    position: absolute; left: 0; right: 0; top: 0; height: 52px; overflow: hidden;
+    background: var(--chrome); border-bottom: 1px solid var(--border); box-sizing: border-box;
+    border-radius: 0; box-shadow: 0 0 0 var(--shadow);
+    transition: border-radius .18s, box-shadow .18s;
+  }
+  body.open #strip { border-radius: 0 0 12px 12px; box-shadow: 0 10px 24px var(--shadow); }
+  #canvas { position: absolute; inset: 0; }
+  svg { position: absolute; left: 0; top: 0; overflow: visible; }
+  path { fill: none; stroke: var(--line); stroke-width: 1.5; }
+  path.path { stroke: var(--green); stroke-width: 2; }
+  path.pending { stroke-dasharray: 3 3; }
+  .node {
+    position: absolute; box-sizing: border-box; display: flex; align-items: center; gap: 8px;
+    border: 1px solid var(--tile-border); background: var(--tile); border-radius: 8px;
+    justify-content: center; font-weight: 600; color: var(--muted); overflow: hidden;
+    transition: border-color .12s, transform .12s;
+  }
+  .node:hover { border-color: var(--green); transform: translateY(-1px); }
+  .node.path { border-color: color-mix(in srgb, var(--green) 45%, var(--tile-border)); }
+  .node.pending { border-style: dashed; opacity: .6; }
+  .node.bud { border-radius: 50%; background: var(--line); border: none; }
+  .node.raw { border-radius: 6px; }
+  .node.pill {
+    justify-content: flex-start; padding: 0 10px 0 6px; border-radius: 10px;
+    border-color: var(--green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 16%, transparent);
+  }
+  .glyph {
+    flex: none; width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center;
+    font-size: 10px; color: #fff; background: var(--green);
+  }
+  .text { min-width: 0; display: flex; flex-direction: column; line-height: 1.2; }
+  .title { font-weight: 550; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .site { font-weight: 400; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .badge {
+    position: absolute; right: -4px; top: -4px; font-size: 9px; padding: 0 4px; border-radius: 6px;
+    background: var(--green); color: #fff; line-height: 14px;
+  }
+  #go {
+    position: absolute; right: 12px; top: 12px; width: 240px; height: 28px; box-sizing: border-box;
+    border: 1px solid var(--border); border-radius: 14px; padding: 0 12px; outline: none;
+    background: var(--tile); color: var(--text); font: inherit; z-index: 2;
+  }
+  #go:focus { border-color: var(--green); }
+  #go.error { border-color: #d44c47; }
+  #empty { position: absolute; left: 22px; top: 18px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div id="strip">
+  <div id="canvas"><svg id="edges" width="1" height="1"></svg></div>
+  <div id="empty">No page yet</div>
+  <input id="go" placeholder="Search or go… (Alt+Enter: new tree)" spellcheck="false">
+</div>
+<script>
+  const post = (message) => window.ipc.postMessage(JSON.stringify(message));
+  const strip = document.getElementById('strip');
+  const canvas = document.getElementById('canvas');
+  const svg = document.getElementById('edges');
+  const go = document.getElementById('go');
+  const empty = document.getElementById('empty');
+
+  // Rust owns the layout. This view keeps the last drawn frame only to animate towards the next.
+  let shown = { nodes: new Map(), edges: new Map(), height: 52, pan: 0 };
+  let target = null, from = null, startedAt = 0, frame = 0;
+  const DURATION = 180;
+  const ease = (t) => 1 - Math.pow(1 - Math.min(Math.max(t, 0), 1), 3);
+  const mix = (a, b, t) => a + (b - a) * t;
+
+  window.render = (layout) => {
+    const wasOpen = document.body.classList.contains('open');
+    document.body.classList.toggle('open', layout.open);
+    from = shown;
+    target = layout;
+    startedAt = performance.now();
+    empty.style.display = layout.nodes.length ? 'none' : '';
+    sync(layout);
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame((now) => step(now, wasOpen && !layout.open));
+  };
+
+  window.toast = (text) => {
+    go.classList.add('error');
+    go.value = '';
+    go.placeholder = text;
+    setTimeout(() => {
+      go.classList.remove('error');
+      go.placeholder = 'Search or go… (Alt+Enter: new tree)';
+    }, 3500);
+  };
+
+  // One element per node, kept across frames so hovers and transitions survive a re-layout.
+  const elements = new Map();
+  function sync(layout) {
+    const live = new Set(layout.nodes.map((n) => n.id));
+    for (const [id, el] of elements) if (!live.has(id)) { el.remove(); elements.delete(id); }
+    for (const n of layout.nodes) {
+      let el = elements.get(n.id);
+      if (!el) {
+        el = document.createElement('div');
+        el.addEventListener('click', () => post({ t: 'go', id: el.dataset.id }));
+        canvas.appendChild(el);
+        elements.set(n.id, el);
+      }
+      el.dataset.id = n.id;
+      el.className = `node ${n.kind}` + (n.path ? ' path' : '') + (n.pending ? ' pending' : '');
+      el.title = n.kind === 'pill' ? '' : `${n.label}\n${n.site}`;
+      const glyph = n.kind === 'bud' ? '' : `<span class="glyph">${esc((n.site[0] || '?').toUpperCase())}</span>`;
+      const text = n.kind === 'pill'
+        ? `<span class="text"><span class="title">${esc(n.label)}</span><span class="site">${esc(n.site)}</span></span>` : '';
+      const badge = n.hidden ? `<span class="badge">+${n.hidden}</span>` : '';
+      const html = glyph + text + badge;
+      if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
+    }
+  }
+
+  function step(now, collapsing) {
+    const t = ease((now - startedAt) / DURATION);
+    const nodes = new Map();
+    for (const n of target.nodes) {
+      const a = from.nodes.get(n.id) || { ...n, s: 0, w: 0 };
+      nodes.set(n.id, { x: mix(a.x, n.x, t), y: mix(a.y, n.y, t), w: mix(a.w, n.w, t), s: mix(a.s, n.s, t) });
+    }
+    const edges = new Map();
+    for (const e of target.edges) {
+      const a = from.edges.get(e.id) || e.c;
+      edges.set(e.id, e.c.map((p, i) => [mix(a[i][0], p[0], t), mix(a[i][1], p[1], t)]));
+    }
+    shown = { nodes, edges, height: mix(from.height, target.height, t), pan: mix(from.pan, target.pan, t) };
+    draw();
+    if (t < 1) frame = requestAnimationFrame((next) => step(next, collapsing));
+    else if (collapsing) post({ t: 'collapsed' });
+  }
+
+  function draw() {
+    strip.style.height = `${shown.height}px`;
+    canvas.style.transform = `translateX(${shown.pan}px)`;
+    for (const [id, r] of shown.nodes) {
+      const el = elements.get(id);
+      el.style.left = `${r.x - r.w / 2}px`;
+      el.style.top = `${r.y - r.s / 2}px`;
+      el.style.width = `${r.w}px`;
+      el.style.height = `${r.s}px`;
+    }
+    svg.innerHTML = target.edges.map((e) => {
+      const c = shown.edges.get(e.id);
+      return `<path class="${e.kind}" d="M${c[0]} C${c[1]} ${c[2]} ${c[3]}"/>`;
+    }).join('');
+  }
+
+  const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+
+  // Hover to open, as in the GTK strip: a short rest opens it, leaving closes it.
+  let openTimer = 0, closeTimer = 0;
+  strip.addEventListener('mouseenter', () => {
+    clearTimeout(closeTimer);
+    if (!document.body.classList.contains('open')) openTimer = setTimeout(() => post({ t: 'open' }), 250);
+  });
+  strip.addEventListener('mouseleave', () => {
+    clearTimeout(openTimer);
+    if (document.body.classList.contains('open')) closeTimer = setTimeout(() => post({ t: 'close' }), 300);
+  });
+
+  go.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && go.value.trim()) {
+      post({ t: 'address', text: go.value, root: event.altKey });
+      go.value = '';
+      go.blur();
+    } else if (event.key === 'Escape') {
+      go.value = '';
+      go.blur();
+    }
+  });
+
+  post({ t: 'ready' });
+  // Test hook: Rust calls this to rest the pointer on the strip without a real pointer.
+  window.hover = (on) => strip.dispatchEvent(new MouseEvent(on ? 'mouseenter' : 'mouseleave'));
+</script>
+</body>
+</html>
