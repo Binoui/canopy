@@ -47,7 +47,7 @@ Canopy ships the Inter typeface in `assets/fonts/`, under the SIL Open Font Lice
 
 ## Bring your Chrome history
 
-To search your Chrome history and bookmarks from Canopy, run this command once:
+To bring your Chrome history, bookmarks, cookies, and saved passwords into Canopy, run:
 
 ```sh
 canopy --import-chrome
@@ -57,7 +57,11 @@ It reads `~/.config/google-chrome/Default`. Pass another profile folder after th
 
 **Ctrl+K** then shows **Bookmarks** and **From Chrome** results next to your forest. Opening one loads it like a typed address. Until Canopy has habits of its own, the new-tree page offers your busiest Chrome sites. Imported pages plant no trees and add no tabs.
 
-Running the command again replaces the earlier import from that profile. Canopy loads none of the pages and reads neither cookies nor passwords.
+Cookies reach Canopy while it runs, or at its next start before it reloads your page. This keeps sites signed in when their sessions still work. Chrome's cookies replace matching Canopy cookies. Session cookies last until Canopy quits. Partitioned and expired cookies are skipped.
+
+Passwords go into an encrypted vault. Its key stays in your system keyring. The import may ask you to unlock the keyring. Canopy does not fill password fields yet.
+
+Running the command again refreshes imported pages and updates matching passwords without removing other saved accounts. Canopy loads none of the imported pages. If Chrome is writing a database, or the keyring is locked, resolve the reported error and run the import again. Cookies accepted just before a crash may need another import.
 
 ## Find your way around
 
