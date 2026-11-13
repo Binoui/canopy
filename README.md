@@ -67,11 +67,13 @@ Running the command again refreshes imported pages and updates matching password
 
 The top row has one tab per tree, in the order you started them. Trees that do not fit wait behind the arrow at the end of the row. Under the tabs, a strip shows the current tree: the path to the current page, with small buds for the other branches. Rest the pointer on the strip and it opens over the page with every branch. Rest it on a page in the strip to see a card with its title, site and a preview.
 
+Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not affect them.
+
 - **Ctrl+K** or the **Search or go…** pill opens the palette. Type to search your forest and your saved text, or to go to an address. **Enter** opens the selected result. **Alt+Enter** opens it in a new tree. **Escape** closes the palette and gives the focus back to the page.
 - **Ctrl+L** opens the same palette with the current address selected.
 - **Ctrl+E** or the forest button opens every tree. Drag or scroll to pan, Ctrl+scroll to zoom, and use **Titles** to switch between pills and icons. Click a page to restore it.
 - **Ctrl+T** or **+** opens the new-tree page with frequent pages and usual paths from your history. A usual path loads its first page as a root, then its second page as a child. **Escape** returns to your page.
-- **Ctrl+1** to **Ctrl+9** switch to a tree.
+- **Ctrl+1** to **Ctrl+9** switch to a tree. Shift is also accepted for layouts such as AZERTY.
 - **F6** moves the keyboard focus between the page and the current page in the strip. **Left** and **Right** walk the path, and **Enter** opens the focused page.
 - **Alt+Left** goes back to the parent page and **Ctrl+R** reloads the current page.
 
