@@ -30,6 +30,17 @@ To keep the data in a separate folder, pass its path:
 cargo run --locked -- --data-dir .data
 ```
 
+## Install for your launcher
+
+To build an optimized binary into `~/.local/bin` and add Canopy to rofi, wofi or your desktop menu, run these commands:
+
+```sh
+cargo install --path . --locked --root ~/.local
+install -Dm644 packaging/canopy.desktop ~/.local/share/applications/canopy.desktop
+```
+
+Run the first command again after pulling changes. The binary embeds its font, so it does not need the project folder.
+
 The `rust-toolchain.toml` file selects stable Rust for this project. It does not change your default version in other projects.
 
 Canopy ships the Inter typeface in `assets/fonts/`, under the SIL Open Font License in `assets/fonts/LICENSE.txt`.
