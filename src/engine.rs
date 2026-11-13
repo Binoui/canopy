@@ -830,9 +830,9 @@ impl CookieDrain {
             }
             let (_, cookies) = self.current.as_mut().expect("current batch");
             if let Some(cookie) = cookies.next() {
+                // A cookie WebKit cannot represent is skipped, so it never blocks later imports.
                 let Ok(mut native) = soup_cookie(&cookie) else {
-                    (self.done)(Err(CookieApplyError));
-                    return;
+                    continue;
                 };
                 self.manager.clone().add_cookie(
                     &mut native,
