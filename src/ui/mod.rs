@@ -380,6 +380,8 @@ impl Shortcut {
             (Modifiers::CONTROL, key::t, Self::NewTree),
             (Modifiers::CONTROL, key::e, Self::Forest),
             (Modifiers::CONTROL, key::r, Self::Reload),
+            (Modifiers::CONTROL_SHIFT, key::r, Self::Reload),
+            (Modifiers::NONE, key::F5, Self::Reload),
             (Modifiers::CONTROL, key::s, Self::RememberSelection),
             (Modifiers::CONTROL, key::q, Self::Quit),
             (Modifiers::ALT, key::Left, Self::Back),
@@ -529,13 +531,15 @@ mod shortcut_tests {
             (key::t, Modifiers::CONTROL, Shortcut::NewTree),
             (key::e, Modifiers::CONTROL, Shortcut::Forest),
             (key::r, Modifiers::CONTROL, Shortcut::Reload),
+            (key::r, Modifiers::CONTROL_SHIFT, Shortcut::Reload),
+            (key::F5, Modifiers::NONE, Shortcut::Reload),
             (key::s, Modifiers::CONTROL, Shortcut::RememberSelection),
             (key::q, Modifiers::CONTROL, Shortcut::Quit),
             (key::Left, Modifiers::ALT, Shortcut::Back),
             (key::F6, Modifiers::NONE, Shortcut::ToggleFocus),
             (key::Escape, Modifiers::NONE, Shortcut::Escape),
         ];
-        for (key, required, action) in bindings {
+        for (key, required, _) in bindings.iter().copied() {
             for bits in 0..8 {
                 let state = if bits & 1 != 0 {
                     M::SHIFT_MASK
@@ -551,7 +555,9 @@ mod shortcut_tests {
                     M::empty()
                 };
                 let held = Modifiers::held(state);
-                let expected = (held == required).then_some(action);
+                let expected = bindings.iter().find_map(|(bound_key, modifiers, action)| {
+                    (*bound_key == key && *modifiers == held).then_some(*action)
+                });
                 assert_eq!(Shortcut::matching(held, key), expected, "{state:?} {key:?}");
                 assert_eq!(Shortcut::matching(held, key.to_upper()), expected);
                 assert_eq!(

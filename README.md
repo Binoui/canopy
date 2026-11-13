@@ -75,7 +75,8 @@ Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not aff
 - **Ctrl+T** or **+** opens the new-tree page with frequent pages and usual paths from your history. A usual path loads its first page as a root, then its second page as a child. **Escape** returns to your page.
 - **Ctrl+1** to **Ctrl+9** switch to a tree. Shift is also accepted for layouts such as AZERTY.
 - **F6** moves the keyboard focus between the page and the current page in the strip. **Left** and **Right** walk the path, and **Enter** opens the focused page.
-- **Alt+Left** goes back to the parent page and **Ctrl+R** reloads the current page.
+- **Alt+Left** goes back to the parent page.
+- **Ctrl+R**, **F5**, and **Ctrl+Shift+R** reload the current page. Canopy has no hard reload, so all three perform a plain reload.
 
 ## Try a fork
 
