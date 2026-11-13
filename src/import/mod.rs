@@ -185,3 +185,10 @@ mod tests {
         assert!(chrome_profile(dir.path()).is_err());
     }
 }
+
+mod linux;
+#[derive(Clone, Copy, Debug)]
+pub enum ImportError {
+    KeyringUnavailable,
+    Undecryptable,
+}
