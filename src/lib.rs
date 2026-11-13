@@ -6,5 +6,7 @@ pub mod forest;
 mod chrome;
 #[cfg(feature = "desktop")]
 pub mod engine;
+#[cfg(feature = "html-spike")]
+pub mod spike;
 #[cfg(feature = "desktop")]
 pub mod ui;

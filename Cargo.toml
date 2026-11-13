@@ -10,6 +10,8 @@ license = "MIT"
 default = ["desktop"]
 desktop = ["dep:gtk", "dep:gdk", "dep:glib", "dep:gio", "dep:webkit2gtk", "dep:wry", "dep:serde_json", "dep:javascriptcore"]
 gui-smoke = ["desktop"]
+# Spike: the tree strip drawn in HTML over the page, hosted by tao + wry. See examples/html_chrome.rs.
+html-spike = ["desktop", "dep:tao"]
 
 [dependencies]
 anyhow = "1"
@@ -23,6 +25,7 @@ gio = { version = "0.18", optional = true }
 webkit2gtk = { version = "2.0", features = ["v2_40"], optional = true }
 wry = { version = "=0.57.2", default-features = false, features = ["os-webview"], optional = true }
 serde_json = { version = "1", optional = true }
+tao = { version = "0.37", optional = true }
 javascriptcore = { package = "javascriptcore-rs", version = "1.1", optional = true }
 
 [dev-dependencies]
@@ -44,6 +47,10 @@ name = "reading_smoke"
 path = "tests/reading_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
+
+[[example]]
+name = "html_chrome"
+required-features = ["html-spike"]
 
 [profile.dev]
 debug = 1
