@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -46,6 +46,26 @@ pub enum NavigationTarget {
 pub struct VisitPreview {
     pub title: String,
     pub snippet: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Shortcut {
+    pub url: Url,
+    pub title: String,
+    pub visits: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UsualPath {
+    pub first: Url,
+    pub second: Url,
+    pub visits: usize,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StartSuggestions {
+    pub shortcuts: Vec<Shortcut>,
+    pub paths: Vec<UsualPath>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -378,6 +398,17 @@ impl Browser {
                 },
             )
             .context("This visit no longer exists.")
+            .map(|mut preview| {
+                let snippet = preview.snippet.trim();
+                preview.snippet = snippet
+                    .strip_prefix(preview.title.trim())
+                    .unwrap_or(snippet)
+                    .trim_start_matches(|c: char| {
+                        c.is_whitespace() || matches!(c, '|' | ':' | '–' | '-')
+                    })
+                    .to_owned();
+                preview
+            })
     }
 
     pub fn tree_states(&self) -> Result<Vec<TreeState>> {
@@ -824,6 +855,76 @@ impl Browser {
         Ok(captures)
     }
 
+    pub fn start_suggestions(&self) -> Result<StartSuggestions> {
+        let mut statement = self.connection.prepare(
+            "SELECT url, MAX(title), COUNT(*) FROM visits WHERE opened_at IS NOT NULL
+             GROUP BY url ORDER BY COUNT(*) DESC, MAX(opened_at) DESC, url LIMIT 6",
+        )?;
+        let shortcuts = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, usize>(2)?,
+                ))
+            })?
+            .map(|row| {
+                let (url, title, visits) = row?;
+                Ok(Shortcut {
+                    url: web_url(&url)?,
+                    title,
+                    visits,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut statement = self.connection.prepare(
+            "SELECT p.url, c.url FROM visits c JOIN visits p ON c.parent_id=p.id
+             WHERE c.opened_at IS NOT NULL AND p.opened_at IS NOT NULL
+             ORDER BY c.opened_at, c.id",
+        )?;
+        let mut pairs: HashMap<(String, String), UsualPath> = HashMap::new();
+        for row in statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            let (first, second) = row?;
+            let (first, second) = (web_url(&first)?, web_url(&second)?);
+            let key = (
+                first.host_str().unwrap_or_default().to_owned(),
+                second.host_str().unwrap_or_default().to_owned(),
+            );
+            let path = pairs.entry(key).or_insert_with(|| UsualPath {
+                first: first.clone(),
+                second: second.clone(),
+                visits: 0,
+            });
+            path.first = first;
+            path.second = second;
+            path.visits += 1;
+        }
+        let mut paths: Vec<_> = pairs.into_values().collect();
+        paths.sort_by(|a, b| {
+            b.visits
+                .cmp(&a.visits)
+                .then_with(|| a.first.as_str().cmp(b.first.as_str()))
+                .then_with(|| a.second.as_str().cmp(b.second.as_str()))
+        });
+        paths.truncate(3);
+        Ok(StartSuggestions { shortcuts, paths })
+    }
+
+    pub fn set_theme_mode(&mut self, mode: ThemeMode) -> Result<()> {
+        let value = match mode {
+            ThemeMode::System => "system",
+            ThemeMode::Light => "light",
+            ThemeMode::Dark => "dark",
+        };
+        self.connection.execute(
+            "UPDATE session SET theme_mode=?1 WHERE singleton=1",
+            [value],
+        )?;
+        Ok(())
+    }
+
     pub fn theme_mode(&self) -> Result<ThemeMode> {
         let mode: String = self.connection.query_row(
             "SELECT theme_mode FROM session WHERE singleton=1",
@@ -941,6 +1042,31 @@ mod tests {
     fn follow_child(browser: &mut Browser, path: &str) -> VisitId {
         let parent = browser.current_id().unwrap().unwrap();
         follow(browser, path, NavigationTarget::ChildOf(parent))
+    }
+
+    #[test]
+    fn suggestions_count_opened_urls_and_parent_child_hosts() {
+        let mut b = memory();
+        assert_eq!(b.start_suggestions().unwrap(), StartSuggestions::default());
+        for _ in 0..3 {
+            let first = web_url("https://first.example/start").unwrap();
+            b.navigate(first.clone(), NavigationTarget::Root).unwrap();
+            b.started(first.clone()).unwrap();
+            b.committed(first).unwrap();
+            let root = b.snapshot().unwrap().current.unwrap();
+            let second = web_url("https://second.example/end").unwrap();
+            b.navigate(second.clone(), NavigationTarget::ChildOf(root))
+                .unwrap();
+            b.started(second.clone()).unwrap();
+            b.committed(second).unwrap();
+        }
+        let suggestions = b.start_suggestions().unwrap();
+        assert_eq!(suggestions.shortcuts.len(), 2);
+        assert!(suggestions.shortcuts.iter().all(|s| s.visits == 3));
+        assert_eq!(suggestions.paths.len(), 1);
+        assert_eq!(suggestions.paths[0].visits, 3);
+        b.set_theme_mode(ThemeMode::Dark).unwrap();
+        assert_eq!(b.theme_mode().unwrap(), ThemeMode::Dark);
     }
 
     #[test]
