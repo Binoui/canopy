@@ -96,7 +96,7 @@ fn run() -> Result<()> {
 
 /// Reads a Chrome profile into the forest's imported pages and reports what it found.
 fn import_chrome(data_dir: &std::path::Path, profile: &std::path::Path) -> Result<()> {
-    let pages = canopy::import::chrome_profile(profile)?;
+    let pages = canopy::import::chrome_profile(profile)?.pages;
     let bookmarks = pages.iter().filter(|page| page.folder.is_some()).count();
     let name = profile.file_name().map_or_else(
         || profile.display().to_string(),
