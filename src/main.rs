@@ -1,12 +1,17 @@
-use std::path::PathBuf;
+use std::{ffi::OsString, path::PathBuf};
 
 use anyhow::{bail, Context, Result};
+use canopy::address::Destination;
 use gtk::prelude::*;
+use url::Url;
 
 const HELP: &str = "Canopy
 
-Usage: canopy [--data-dir PATH]
+Usage: canopy [--data-dir PATH] [ADDRESS...]
        canopy [--data-dir PATH] --import-chrome [PROFILE]
+
+Each ADDRESS opens as a new tree, and the last one is shown. When Canopy is already
+open on the same data directory, the addresses open in that window instead.
 
 --import-chrome reads a Chrome profile's history, bookmarks, cookies and passwords,
 then exits. PROFILE defaults to ~/.config/google-chrome/Default. Running it again
@@ -33,22 +38,32 @@ fn main() {
     }
 }
 
-fn run() -> Result<()> {
-    let args = std::env::args_os().skip(1);
+#[derive(Debug, PartialEq)]
+struct Invocation {
+    data_dir: Option<PathBuf>,
+    command: Command,
+}
+
+#[derive(Debug, PartialEq)]
+enum Command {
+    Help,
+    /// `None` means the default Chrome profile.
+    ImportChrome(Option<PathBuf>),
+    Browse(Vec<Url>),
+}
+
+fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Invocation> {
     let mut data_dir = None;
     let mut import = None;
-    let mut args = args.peekable();
+    let mut urls = Vec::new();
+    let mut args = args.into_iter().peekable();
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--import-chrome") => {
-                let profile = match args.peek().and_then(|next| next.to_str()) {
-                    Some(next) if !next.starts_with("--") => PathBuf::from(args.next().unwrap()),
-                    _ => PathBuf::from(
-                        std::env::var_os("HOME").context("Set HOME or pass a profile path.")?,
-                    )
-                    .join(".config/google-chrome/Default"),
-                };
-                import = Some(profile);
+                import = Some(match args.peek().and_then(|next| next.to_str()) {
+                    Some(next) if !next.starts_with("--") => args.next().map(PathBuf::from),
+                    _ => None,
+                });
             }
             Some("--data-dir") => {
                 data_dir = Some(PathBuf::from(
@@ -56,13 +71,70 @@ fn run() -> Result<()> {
                 ))
             }
             Some("--help" | "-h") => {
-                println!("{HELP}");
-                return Ok(());
+                return Ok(Invocation {
+                    data_dir,
+                    command: Command::Help,
+                })
             }
-            _ => bail!("Unknown option: {}. Use --help.", arg.to_string_lossy()),
+            Some(option) if option.starts_with('-') => {
+                bail!("Unknown option: {option}. Use --help.")
+            }
+            Some(address) => match canopy::address::destination(address) {
+                Ok(Destination::Address(url)) => urls.push(url),
+                Ok(Destination::Search(_)) => {
+                    bail!("Cannot open {address}. It is not a web address.")
+                }
+                Err(error) => bail!("Cannot open {address}. {error}"),
+            },
+            None => bail!(
+                "Cannot open {}. It is not a web address.",
+                arg.to_string_lossy()
+            ),
         }
     }
-    let data_dir = match data_dir {
+    let command = match import {
+        Some(_) if !urls.is_empty() => bail!("--import-chrome does not open addresses."),
+        Some(profile) => Command::ImportChrome(profile),
+        None => Command::Browse(urls),
+    };
+    Ok(Invocation { data_dir, command })
+}
+
+fn run() -> Result<()> {
+    let Invocation { data_dir, command } = parse_args(std::env::args_os().skip(1))?;
+    let urls = match command {
+        Command::Help => {
+            println!("{HELP}");
+            return Ok(());
+        }
+        Command::ImportChrome(profile) => {
+            let profile = match profile {
+                Some(profile) => profile,
+                None => PathBuf::from(
+                    std::env::var_os("HOME").context("Set HOME or pass a profile path.")?,
+                )
+                .join(".config/google-chrome/Default"),
+            };
+            return import_chrome(&prepare_data_dir(data_dir)?, &profile);
+        }
+        Command::Browse(urls) => urls,
+    };
+    let data_dir = prepare_data_dir(data_dir)?;
+    gtk::init()
+        .context("Could not open a window. Start Canopy from your Linux desktop session.")?;
+    let ui = canopy::ui::Ui::new(&data_dir)?;
+    ui.window.connect_delete_event(|_, _| {
+        gtk::main_quit();
+        glib::Propagation::Proceed
+    });
+    ui.window.show_all();
+    ui.resume(&urls)?;
+    gtk::main();
+    Ok(())
+}
+
+fn prepare_data_dir(chosen: Option<PathBuf>) -> Result<PathBuf> {
+    let data_dir = match chosen {
         Some(path) => path,
         None => std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
@@ -78,20 +150,7 @@ fn run() -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o700))?;
     }
-    if let Some(profile) = import {
-        return import_chrome(&data_dir, &profile);
-    }
-    gtk::init()
-        .context("Could not open a window. Start Canopy from your Linux desktop session.")?;
-    let ui = canopy::ui::Ui::new(&data_dir)?;
-    ui.window.connect_delete_event(|_, _| {
-        gtk::main_quit();
-        glib::Propagation::Proceed
-    });
-    ui.window.show_all();
-    ui.resume()?;
-    gtk::main();
-    Ok(())
+    Ok(data_dir)
 }
 
 fn import_chrome(data_dir: &std::path::Path, profile: &std::path::Path) -> Result<()> {
@@ -151,4 +210,79 @@ fn skipped(counts: &std::collections::BTreeMap<canopy::import::SkipReason, usize
         .map(|(reason, count)| format!("{count} {}", reason.label()))
         .collect();
     format!(", skipped {}", parts.join(", "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(args: &[&str]) -> Result<Invocation> {
+        parse_args(args.iter().map(OsString::from))
+    }
+
+    fn urls(addresses: &[&str]) -> Command {
+        Command::Browse(addresses.iter().map(|a| Url::parse(a).unwrap()).collect())
+    }
+
+    #[test]
+    fn addresses_open_in_order_with_the_chosen_data_dir() {
+        assert_eq!(
+            parse(&[
+                "https://example.org/a",
+                "--data-dir",
+                "/tmp/c",
+                "example.com",
+                "localhost:8080/x"
+            ])
+            .unwrap(),
+            Invocation {
+                data_dir: Some("/tmp/c".into()),
+                command: urls(&[
+                    "https://example.org/a",
+                    "https://example.com/",
+                    "http://localhost:8080/x"
+                ]),
+            }
+        );
+        assert_eq!(parse(&[]).unwrap().command, urls(&[]));
+    }
+
+    #[test]
+    fn help_and_import_keep_their_meaning() {
+        assert_eq!(
+            parse(&["https://example.org", "-h"]).unwrap().command,
+            Command::Help
+        );
+        assert_eq!(parse(&["--help"]).unwrap().command, Command::Help);
+        assert_eq!(
+            parse(&["--import-chrome"]).unwrap().command,
+            Command::ImportChrome(None)
+        );
+        assert_eq!(
+            parse(&["--import-chrome", "/p", "--data-dir", "/d"]).unwrap(),
+            Invocation {
+                data_dir: Some("/d".into()),
+                command: Command::ImportChrome(Some("/p".into())),
+            }
+        );
+    }
+
+    #[test]
+    fn anything_but_a_web_address_is_refused() {
+        for args in [
+            &["file:///etc/passwd"][..],
+            &["mailto:someone@example.org"],
+            &["some words"],
+            &["notanaddress"],
+            &["https://"],
+            &["https://example.org", "javascript:alert(1)"],
+            &["--private"],
+            &["--data-dir"],
+            &["--import-chrome", "/p", "https://example.org"],
+        ] {
+            assert!(parse(args).is_err(), "{args:?}");
+        }
+        let error = parse(&["file:///etc/passwd"]).unwrap_err().to_string();
+        assert!(error.contains("file:///etc/passwd"), "{error}");
+    }
 }
