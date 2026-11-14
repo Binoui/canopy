@@ -27,11 +27,69 @@ fn shown(ui: &Ui, id: canopy::browser::VisitId) -> bool {
     ui.snapshot().unwrap().current == Some(id) && !ui.pages.selected_page().native.is_loading()
 }
 
+fn reopen_scroll(
+    ui: &std::rc::Rc<Ui>,
+    base: &str,
+    hits: &std::sync::atomic::AtomicUsize,
+) -> Result<()> {
+    ui.pages.go(canopy::pages::Go::Address {
+        url: web_url(&format!("{base}/a"))?,
+        target: NavigationTarget::Root,
+    })?;
+    wait("A loaded", || {
+        !ui.pages.selected_page().native.is_loading() && ui.snapshot().unwrap().current.is_some()
+    })?;
+    let a = ui.snapshot()?.current.unwrap();
+    ui.pages.go(canopy::pages::Go::Address {
+        url: web_url(&format!("{base}/b"))?,
+        target: NavigationTarget::ChildOf(a),
+    })?;
+    wait("B loaded", || {
+        !ui.pages.selected_page().native.is_loading() && ui.snapshot().unwrap().current != Some(a)
+    })?;
+    let b = ui.snapshot()?.current.unwrap();
+    eval(
+        ui,
+        "scrollTo(0,1500); window.marker='old'; JSON.stringify(true)",
+    )?;
+    wait("B scroll saved", || {
+        ui.pages.read(|brow| brow.scroll(b)).unwrap() == Some(1500)
+    })?;
+    let forest = ui.pages.read(|b| {
+        canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)
+    })?;
+    ui.pages.settle_tree(forest.tree_of(a).unwrap())?;
+    wait("home", || {
+        ui.pages.selected_page().native.uri().as_deref() == Some("about:blank")
+            && !ui.pages.selected_page().native.is_loading()
+    })?;
+    let before = hits.load(std::sync::atomic::Ordering::Relaxed);
+    ui.pages.go(canopy::pages::Go::Visit(b))?;
+    wait("reopened B", || shown(ui, b))?;
+    assert_eq!(
+        eval(ui, "JSON.stringify(window.marker ?? null)")?,
+        serde_json::Value::Null,
+        "reopening must request a fresh page"
+    );
+    wait("reopened scroll", || {
+        eval(ui, "JSON.stringify(scrollY)").unwrap() == serde_json::json!(1500)
+    })?;
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::Relaxed),
+        before + 1,
+        "reopened page must reach the server"
+    );
+    println!("PASS reopen_scroll");
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let directory = tempfile::tempdir()?;
     start(directory.path())?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let address = listener.local_addr()?;
+    let b_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = b_hits.clone();
     thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { break };
@@ -41,8 +99,11 @@ fn main() -> Result<()> {
             };
             let request = String::from_utf8_lossy(&request[..size]);
             let path = request.split_whitespace().nth(1).unwrap_or("/");
+            if path == "/b" {
+                counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
             let body = format!(
-                "<!doctype html><title>Settling {path}</title><p>Settled tree fixture {path}</p>"
+                "<!doctype html><title>Settling {path}</title><body style='height:10000px'><p>Settled tree fixture {path}</p>"
             );
             let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
         }
@@ -50,6 +111,11 @@ fn main() -> Result<()> {
     let ui = Ui::new(directory.path())?;
     ui.window.show_all();
     ready(&ui)?;
+    if std::env::var("SETTLE_CASE").as_deref() == Ok("reopen_scroll") {
+        reopen_scroll(&ui, &format!("http://{address}"), &b_hits)?;
+        ui.window.close();
+        return Ok(());
+    }
     let mut ids = Vec::new();
     for name in ["Alpha", "Beta", "Gamma"] {
         ui.pages.selected_page().navigate(
@@ -225,5 +291,11 @@ fn main() -> Result<()> {
         resumed.window.close();
     }
     println!("PASS restarting in a settled tree uses the same landing policy.");
+    let directory = tempfile::tempdir()?;
+    let ui = Ui::new(directory.path())?;
+    ui.window.show_all();
+    ready(&ui)?;
+    reopen_scroll(&ui, &format!("http://{address}"), &b_hits)?;
+    ui.window.close();
     Ok(())
 }
