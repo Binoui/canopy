@@ -644,8 +644,24 @@ impl LivePage {
     }
 
     pub(super) fn capture_checkpoint_scroll(&self, done: impl FnOnce() + 'static) {
-        let ticket = self.state.ticket();
-        self.state.lifecycle.set(Lifecycle::CapturingScroll);
+        let state = &self.state;
+        let ticket = state.navigation.borrow().current.clone();
+        state.lifecycle.set(Lifecycle::CapturingScroll);
+        let pending = state.navigation.borrow().pending_ticket();
+        if let Some(ticket) = pending {
+            state.navigation.borrow_mut().failed(ticket);
+        }
+        *state.issue.borrow_mut() = Issue::Idle;
+        state
+            .load_generation
+            .set(state.load_generation.get().wrapping_add(1));
+        state
+            .foreground_generation
+            .set(state.foreground_generation.get().wrapping_add(1));
+        state.same_document_request.borrow_mut().take();
+        state.traversal.borrow_mut().take();
+        state.issued.borrow_mut().take();
+        self.native.stop_loading();
         if ticket.is_none() {
             done();
             return;
@@ -709,21 +725,6 @@ impl LivePage {
         let state = &self.state;
         let owner = state.pages.upgrade().context("Page owner was closed.")?;
         owner.discard_view_continuation(&state.navigation.borrow());
-        let pending = state.navigation.borrow().pending_ticket();
-        if let Some(ticket) = pending {
-            state.navigation.borrow_mut().failed(ticket);
-        }
-        *state.issue.borrow_mut() = Issue::Idle;
-        state
-            .load_generation
-            .set(state.load_generation.get().wrapping_add(1));
-        state
-            .foreground_generation
-            .set(state.foreground_generation.get().wrapping_add(1));
-        state.same_document_request.borrow_mut().take();
-        state.traversal.borrow_mut().take();
-        state.issued.borrow_mut().take();
-        self.native.stop_loading();
         let list = self
             .native
             .back_forward_list()

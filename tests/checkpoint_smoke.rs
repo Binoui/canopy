@@ -557,6 +557,28 @@ fn tree_boundary() -> Result<()> {
     Ok(())
 }
 
+fn scroll_inflight_checkpoint() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.navigate("/a")?;
+    f.eval("scrollTo(0,1000); return true;")?;
+    wait("old inflight scroll saved", || {
+        f.pages.read(|b| b.scroll(a)).unwrap() == Some(1000)
+    })?;
+    f.server.held.store(true, Ordering::Relaxed);
+    f.pages.go(Go::Address {
+        url: f.server.url("/slow"),
+        target: NavigationTarget::ChildOf(a),
+    })?;
+    wait("inflight request", || f.server.hits("/slow") > 0)?;
+    f.eval("scrollTo(0,3000); return true;")?;
+    f.release()?;
+    assert_eq!(
+        f.pages.read(|b| b.scroll(a))?,
+        Some(3000),
+        "checkpoint captures the document under a pending navigation"
+    );
+    Ok(())
+}
 fn checkpoint_pending_capture() -> Result<()> {
     let f = Fixture::new()?;
     let a = f.navigate("/a")?;
@@ -714,6 +736,7 @@ fn main() -> Result<()> {
         ("duplicate_entry", duplicate_entry),
         ("observer_release", observer_release),
         ("alias_only", alias_only),
+        ("scroll_inflight_checkpoint", scroll_inflight_checkpoint),
         ("checkpoint_pending_capture", checkpoint_pending_capture),
         ("history_release", history_release),
         ("download_release", download_release),

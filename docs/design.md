@@ -66,8 +66,9 @@ request used POST. The two URLs allow a pushState entry to alias a visit without
 changing that visit's stored address. Checkpoints contain no native objects and
 never enter SQLite or logs.
 
-Release takes the selected page out of its slot before asking its isolated script
-world for the current URL and scroll. The pending completion owns the source view.
+Release takes the selected page out of its slot, cancels its pending navigation
+and queued capabilities, and stops loading before asking its isolated script
+world for the displayed document's URL and scroll. The pending completion owns the source view.
 The answer saves scroll only for the same valid document and URL. A 500 ms GLib
 timeout cancels the query and completes release if the web process does not answer.
 The main loop must be serviced for either completion to run. A hung main loop has
@@ -75,9 +76,8 @@ no wall-clock guarantee. On timeout, the most recent SQLite and WebKit values ca
 still miss recent scrolling. The query measures scroll when the web process handles
 it, so scrolling between the release request and that answer can enter the snapshot.
 
-After the query, checkpointing cancels the pending ticket through Navigation::failed
-and discards only a continuation owned by that view. It stops loading before
-checking the native list. An unbound item, missing position, duplicate binding, or
+Pending navigation cancellation uses Navigation::failed. Checkpointing discards
+only a continuation owned by that view and checks the native list after the query. An unbound item, missing position, duplicate binding, or
 stale binding makes checkpointing fail. Entries without a Canopy visit, including
 about:blank and blob: documents, also make checkpointing fail. Release still destroys
 the view and permits a cold restore from SQLite. No form or script state survives.
