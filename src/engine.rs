@@ -64,6 +64,12 @@ enum Transfer {
     Over,
 }
 
+struct HistoryEntry {
+    item: BackForwardListItem,
+    visit: VisitId,
+    document: u64,
+}
+
 enum Issue {
     Idle,
     Active(LoadTicket),
@@ -84,7 +90,9 @@ struct NativeState {
     /// WebKit history entries and the visit each one showed, oldest first. Returning to a
     /// visit that still has an entry goes through WebKit's history, which keeps the page's
     /// scroll and, from its page cache, its live state.
-    history: RefCell<Vec<(BackForwardListItem, VisitId)>>,
+    history: RefCell<Vec<HistoryEntry>>,
+    history_document: Cell<u64>,
+    next_history_document: Cell<u64>,
     history_cursor: RefCell<Option<BackForwardListItem>>,
     /// The history entry this engine asked WebKit for, which the policy check lets through.
     traversal: RefCell<Option<Url>>,
@@ -186,6 +194,8 @@ impl Engine {
             same_document_request: RefCell::new(None),
             issued: RefCell::new(None),
             history: RefCell::new(Vec::new()),
+            history_document: Cell::new(0),
+            next_history_document: Cell::new(0),
             history_cursor: RefCell::new(None),
             traversal: RefCell::new(None),
             pending_scroll: Cell::new(None),
@@ -226,6 +236,20 @@ impl Engine {
                         *state.history_cursor.borrow_mut() = native
                             .back_forward_list()
                             .and_then(|list| list.current_item());
+                        let existing = state
+                            .history
+                            .borrow()
+                            .iter()
+                            .find(|entry| {
+                                Some(&entry.item) == state.history_cursor.borrow().as_ref()
+                            })
+                            .map(|entry| entry.document);
+                        let document = existing.unwrap_or_else(|| {
+                            let next = state.next_history_document.get() + 1;
+                            state.next_history_document.set(next);
+                            next
+                        });
+                        state.history_document.set(document);
                         state.response_page.borrow_mut().take();
                         if let Some(url) = url {
                             let result = state.commit_attempt(url.clone());
@@ -341,6 +365,7 @@ impl Engine {
             list.connect_local("changed", false, move |values| {
                 let state = weak.upgrade()?;
                 let list: webkit2gtk::BackForwardList = values[0].get().unwrap();
+                let added: Option<BackForwardListItem> = values[1].get().unwrap();
                 let current = list.current_item();
                 *state.history_cursor.borrow_mut() = current.clone();
                 let removed: glib::Pointer = values[2].get().unwrap_or(std::ptr::null_mut());
@@ -355,7 +380,7 @@ impl Engine {
                         state
                             .history
                             .borrow_mut()
-                            .retain(|(bound, _)| *bound != item);
+                            .retain(|entry| entry.item != item);
                         node = (*node).next;
                     }
                 }
@@ -366,7 +391,7 @@ impl Engine {
                         state.navigation.borrow().pending_ticket() == attempt
                             && *state.history_cursor.borrow() == current
                     }) {
-                        state.history_changed();
+                        state.history_changed(added.is_some());
                     }
                 });
                 None
@@ -374,12 +399,20 @@ impl Engine {
         }
         {
             let weak = Rc::downgrade(&state);
-            native.connect_uri_notify(move |native| {
-                if let Some(state) = weak.upgrade() {
-                    if let Some(url) = native.uri().and_then(|uri| web_url(&uri).ok()) {
-                        state.navigation.borrow_mut().same_document(url);
+            native.connect_uri_notify(move |_| {
+                let Some(state) = weak.upgrade() else {
+                    return;
+                };
+                let attempt = state.navigation.borrow().pending_ticket();
+                let weak = Rc::downgrade(&state);
+                glib::idle_add_local_once(move || {
+                    if let Some(state) = weak
+                        .upgrade()
+                        .filter(|state| state.navigation.borrow().pending_ticket() == attempt)
+                    {
+                        state.history_changed(false);
                     }
-                }
+                });
             });
         }
         {
@@ -594,7 +627,10 @@ impl NativeState {
     fn ticket(&self) -> Option<Document> {
         let navigation = self.navigation.borrow();
         let document = navigation.current.as_ref()?;
-        if !navigation.valid(document) {
+        if !navigation.valid(document)
+            || self.native.uri().as_deref() != Some(document.page_url.as_str())
+            || self.current_entry_document() != Some(self.history_document.get())
+        {
             return None;
         }
         Some(document.clone())
@@ -859,13 +895,7 @@ impl NativeState {
             if self.traversal.borrow().as_ref() == Some(&url) {
                 return false;
             }
-            if self
-                .navigation
-                .borrow()
-                .current
-                .as_ref()
-                .is_some_and(|document| same_resource(&document.stored_url, &url))
-            {
+            if self.current_entry_document() == Some(self.history_document.get()) {
                 return false;
             }
             if let Some(visit) = self.current_entry_visit() {
@@ -918,12 +948,25 @@ impl NativeState {
         self.history
             .borrow()
             .iter()
-            .find(|(item, _)| *item == current)
-            .map(|(_, visit)| *visit)
+            .find(|entry| entry.item == current)
+            .map(|entry| entry.visit)
     }
 
-    fn history_changed(self: &Rc<Self>) {
+    fn current_entry_document(&self) -> Option<u64> {
+        let current = self.history_cursor.borrow().clone()?;
+        self.history
+            .borrow()
+            .iter()
+            .find(|entry| entry.item == current)
+            .map(|entry| entry.document)
+    }
+
+    fn history_changed(self: &Rc<Self>, added: bool) {
         if self.native.is_loading() && self.navigation.borrow().pending_ticket().is_some() {
+            return;
+        }
+        // A native cross-document traversal can move the list before Started.
+        if !added && self.current_entry_document() != Some(self.history_document.get()) {
             return;
         }
         self.complete_same_document();
@@ -969,8 +1012,12 @@ impl NativeState {
         };
         let live = live_entries(&list);
         let mut history = self.history.borrow_mut();
-        history.retain(|(item, _)| *item != current && live.contains(item));
-        history.push((current, visit));
+        history.retain(|entry| entry.item != current && live.contains(&entry.item));
+        history.push(HistoryEntry {
+            item: current,
+            visit,
+            document: self.history_document.get(),
+        });
     }
 
     /// A history entry other than the current one that still shows `visit` at `url`.
@@ -982,13 +1029,13 @@ impl NativeState {
             .borrow()
             .iter()
             .rev()
-            .find(|(item, shown)| {
-                *shown == visit
-                    && Some(item) != current.as_ref()
-                    && live.contains(item)
-                    && item.uri().as_deref() == Some(url.as_str())
+            .find(|entry| {
+                entry.visit == visit
+                    && Some(&entry.item) != current.as_ref()
+                    && live.contains(&entry.item)
+                    && entry.item.uri().as_deref() == Some(url.as_str())
             })
-            .map(|(item, _)| item.clone())
+            .map(|entry| entry.item.clone())
     }
 
     fn scrolled(&self, message: &str) {

@@ -28,7 +28,7 @@ WebKitGTK builds the page view inside a GTK container. wry still builds the chro
 
 Borrows of the state are released before calls that can trigger another callback. A single webview loads the active page. The other visits stay in SQLite.
 
-Back uses an entry still present in WebKit's history, otherwise the parent in the forest. The list's changed signals drop the bindings of removed entries and bind same-document entries to their visit. The native cursor is read at changed or Committed, never at notify::uri. A cold resume reloads the URL and restores the recorded scroll. WebKit's page cache can keep the DOM and the forms of an entry still present.
+Back uses an entry still present in WebKit's history, otherwise the parent in the forest. The list's changed signals drop the bindings of removed entries and bind same-document entries to their visit. Each entry also keeps its native document group, because a return can move the list before Started. This group tells a return within the same document from a full load, even at an identical URL. The native cursor is read at changed or Committed, never at notify::uri. A cold resume reloads the URL and restores the recorded scroll. WebKit's page cache can keep the DOM and the forms of an entry still present.
 
 ## The chrome is an HTML view above the page
 
