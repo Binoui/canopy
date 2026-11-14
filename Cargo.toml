@@ -97,3 +97,9 @@ name = "navigation_smoke"
 path = "tests/navigation_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
+
+[[test]]
+name = "settle_smoke"
+path = "tests/settle_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]

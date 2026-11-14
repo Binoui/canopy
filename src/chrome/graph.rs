@@ -463,6 +463,7 @@ mod tests {
             .iter()
             .filter(|v| v.parent.is_none())
             .map(|v| TreeState {
+                lifecycle: crate::browser::Lifecycle::Open,
                 root: crate::browser::TreeId(v.id),
                 last_visit: v.id,
                 name: None,
@@ -616,6 +617,7 @@ mod tests {
                 current: Some(leaf),
             },
             vec![TreeState {
+                lifecycle: crate::browser::Lifecycle::Open,
                 root: crate::browser::TreeId(root),
                 last_visit: leaf,
                 name: None,

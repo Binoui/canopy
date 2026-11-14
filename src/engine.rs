@@ -570,6 +570,25 @@ impl Engine {
         Ok(())
     }
 
+    /// Shows the home page in place of the current one and drops any load in flight, for a
+    /// window with no current page.
+    pub fn blank(&self) {
+        let state = &self.state;
+        state
+            .load_generation
+            .set(state.load_generation.get().wrapping_add(1));
+        state
+            .foreground_generation
+            .set(state.foreground_generation.get().wrapping_add(1));
+        state.same_document_request.borrow_mut().take();
+        state.traversal.borrow_mut().take();
+        state.issued.borrow_mut().take();
+        state.pending_scroll.set(None);
+        *state.issue.borrow_mut() = Issue::Idle;
+        state.navigation.borrow_mut().clear();
+        self.native.load_html(HOME, None);
+    }
+
     pub fn restore(&self, id: VisitId) -> Result<()> {
         let url = self
             .state

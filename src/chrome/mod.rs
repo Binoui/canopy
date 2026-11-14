@@ -88,6 +88,8 @@ pub enum PaletteSeed {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChromeIntent {
     SelectTree(TreeId),
+    SettleTree(TreeId),
+    SettleCurrent,
     /// Name a tree; an empty name goes back to the automatic one.
     RenameTree(TreeId, String),
     OpenPath(UsualPath),
@@ -240,6 +242,27 @@ impl HtmlChrome {
         };
         inner.call("openPalette", &[json!({ "scope": scope, "text": text })]);
         let _ = inner.view.focus();
+    }
+
+    pub fn tab(&self, index: usize) -> Option<TreeId> {
+        self.inner
+            .frame
+            .borrow()
+            .as_ref()?
+            .forest
+            .open()
+            .get(index)
+            .map(|t| t.id)
+    }
+
+    pub fn current_tree(&self) -> Option<TreeId> {
+        let frame = self.inner.frame.borrow();
+        let forest = &frame.as_ref()?.forest;
+        forest.current().and_then(|id| forest.tree_of(id))
+    }
+
+    pub fn settle_current(&self) {
+        self.inner.call("settleCurrent", &[]);
     }
 
     pub fn new_tree(&self) {
@@ -495,6 +518,8 @@ impl Inner {
         let suggestions = &frame.as_ref()?.suggestions;
         let index = || message["index"].as_u64().map(|i| i as usize);
         Some(match message["kind"].as_str()? {
+            "settle-tree" => ChromeIntent::SettleTree(TreeId(id("id")?)),
+            "settle-current" => ChromeIntent::SettleCurrent,
             "select-tree" => ChromeIntent::SelectTree(TreeId(id("id")?)),
             "rename-tree" => {
                 ChromeIntent::RenameTree(TreeId(id("id")?), message["name"].as_str()?.to_owned())

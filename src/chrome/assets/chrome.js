@@ -25,7 +25,7 @@ const $ = (id) => document.getElementById(id);
 const post = (message) => window.ipc.postMessage(JSON.stringify(message));
 /// Intents that load a page also give the keyboard back to it, as the GTK buttons that
 /// never took focus did.
-const NAVIGATES = new Set(['restore', 'select-tree', 'shortcut', 'path', 'open-citation', 'open-saved', 'branch-queued']);
+const NAVIGATES = new Set(['restore', 'select-tree', 'settle-tree', 'settle-current', 'shortcut', 'path', 'open-citation', 'open-saved', 'branch-queued']);
 const intent = (kind, extra = {}) => {
   post({ t: 'intent', kind, ...extra });
   if (NAVIGATES.has(kind)) post({ t: 'focus', target: 'page' });
@@ -179,7 +179,7 @@ function applyTheme() {
 
 function renderTabs() {
   const row = $('tab-row');
-  const trees = S.frame?.trees ?? [];
+  const trees = S.frame?.tabs ?? [];
   row.innerHTML = trees.map((tree, index) => {
     const root = visit(tree.id);
     const pages = `${tree.pages} page${tree.pages === 1 ? '' : 's'}`;
@@ -189,6 +189,7 @@ function renderTabs() {
       + (root ? visitFav(root, 14) : '')
       + `<span class="tab-title">${esc(tree.title)}</span>`
       + (tree.pending ? `<span class="count">${tree.pending}</span>` : '')
+      + `<span class="tab-settle" data-settle="${tree.id}" title="Settle${tree.active ? ' · Ctrl+W' : ''}" aria-hidden="true">${icon('close')}</span>`
       + '</button>';
   }).join('');
   fitTabs();
@@ -613,7 +614,7 @@ function renderPopover() {
     }));
   } else if (kind === 'trees') {
     const hidden = [...$('tab-row').children].filter((tab) => tab.hidden).map((tab) => tab.dataset.id);
-    popover.innerHTML = (S.frame?.trees ?? []).filter((tree) => hidden.includes(tree.id)).map((tree) => {
+    popover.innerHTML = (S.frame?.tabs ?? []).filter((tree) => hidden.includes(tree.id)).map((tree) => {
       const root = visit(tree.id);
       return `<button class="menu-row" data-id="${tree.id}">${root ? visitFav(root, 16) : ''}<span class="grow">${esc(tree.title)}</span>`
         + (tree.pending ? `<span class="count">${tree.pending}</span>` : '') + '</button>';
@@ -626,7 +627,7 @@ function renderPopover() {
   } else if (kind === 'rename') {
     // A frame that arrives while a name is being typed must not reset the field.
     if (S.popover.field) return;
-    const title = (S.frame?.trees ?? []).find((tree) => tree.id === data)?.title ?? '';
+    const title = (S.frame?.tabs ?? []).find((tree) => tree.id === data)?.title ?? '';
     popover.innerHTML = '<div class="menu-heading">Tree name</div>'
       + `<input id="tree-name" class="menu-input" value="${esc(title)}" maxlength="80" spellcheck="false" aria-label="Tree name">`
       + '<div class="menu-hint">Leave it empty to name the tree after its pages.</div>';
@@ -856,11 +857,11 @@ function renderForest() {
     if (!v) return '';
     maxX = Math.max(maxX, n.x + n.w / 2);
     maxY = Math.max(maxY, n.y + n.s / 2);
-    const cls = `forest-node${S.forestLabels ? '' : ' icon-only'}${path.has(n.id) ? ' path' : ''}${v.queued ? ' pending' : ''}`;
+    const cls = `forest-node${n.settled ? ' settled' : ''}${S.forestLabels ? '' : ' icon-only'}${path.has(n.id) ? ' path' : ''}${v.queued ? ' pending' : ''}`;
     return `<button class="${cls}" data-id="${n.id}" title="${esc(v.label)}" style="left:${n.x - n.w / 2}px;top:${n.y - n.s / 2}px;width:${n.w}px;height:${n.s}px">`
       + visitFav(v, 16) + (S.forestLabels ? `<span>${esc(v.label)}</span>` : '') + '</button>';
   }).join('');
-  const heads = layout.heads.map((h) => `<div class="forest-head" style="top:${h.y}px"><b>${esc(h.title)}</b><span>${esc(h.detail)}</span></div>`).join('');
+  const heads = layout.heads.map((h) => `<button class="forest-head${h.settled ? ' settled' : ''}" data-id="${h.id}" style="top:${h.y}px"><b>${esc(h.title)}</b><span>${esc(h.detail)}</span></button>`).join('');
   const edges = layout.nodes.map((b) => {
     const v = visit(b.id);
     const a = v?.parent && positions.get(v.parent);
@@ -873,7 +874,9 @@ function renderForest() {
   svg.setAttribute('width', maxX + 40);
   svg.setAttribute('height', maxY + 40);
   svg.innerHTML = edges;
-  $('forest-nodes').innerHTML = heads + nodes;
+  const d = layout.divider;
+  const divider = d ? `<div class="forest-divider" style="top:${d.y}px"><b>${esc(d.title)}</b><span>${esc(d.detail)}</span></div>` : '';
+  $('forest-nodes').innerHTML = heads + divider + nodes;
   applyCamera();
 }
 
@@ -959,7 +962,7 @@ $('forest-titles').addEventListener('click', () => {
   fitForest(true);
 });
 $('forest-fit').addEventListener('click', () => fitForest(true));
-$('forest-close').addEventListener('click', () => setSurface('reading'));
+$('forest-close').addEventListener('click', () => setSurface(S.frame?.tabs.length ? 'reading' : 'start'));
 
 // ---------- reader ----------
 
@@ -996,8 +999,9 @@ window.canopy = {
     S.strip = frame.strip;
     S.manualPan = null;
     applyTheme();
-    if (!frame.trees.length) setSurface('start');
-    else if (frame.current !== previous && S.surface !== 'reading') setSurface('reading');
+    if (frame.current !== previous && S.surface !== 'reading') setSurface('reading');
+    if (!frame.tabs.length && S.surface === 'reading') setSurface('start');
+    if (S.popover?.kind === 'rename' && !frame.tabs.some((tree) => tree.id === S.popover.data)) closePopover();
     renderTabs();
     animateStrip(previous === null && strip.shown.nodes.size === 0 ? 0 : MOVE);
     renderStart();
@@ -1032,7 +1036,7 @@ window.canopy = {
   toggleForest() {
     intent('cancel');
     closePalette(false);
-    setSurface(S.surface === 'forest' ? 'reading' : 'forest');
+    setSurface(S.surface === 'forest' ? (S.frame?.tabs.length ? 'reading' : 'start') : 'forest');
   },
   toast(kind, text) {
     if (kind === 'error') {
@@ -1061,14 +1065,21 @@ window.canopy = {
     post({ t: 'focus', target: 'chrome' });
     el.focus();
   },
+  settleCurrent() {
+    if (S.reader || S.palette || S.popover || (S.surface !== 'reading' && current())) {
+      this.escape();
+    } else if (current()) {
+      intent('settle-current');
+    }
+  },
   /// Closes the topmost thing Escape owns.
   escape() {
     if (S.reader) closeReader();
     else if (S.palette) closePalette();
     else if (S.popover) closePopover();
     else if (S.card) hideCard();
-    else if (S.surface !== 'reading' && current()) {
-      setSurface('reading');
+    else if (S.surface === 'forest' || (S.surface !== 'reading' && current())) {
+      setSurface(S.frame?.tabs.length ? 'reading' : 'start');
       post({ t: 'focus', target: 'page' });
     } else if (S.open) {
       setOpen(false);
@@ -1133,10 +1144,19 @@ $('tab-overflow').innerHTML = icon('chevron');
 $('search-pill').insertAdjacentHTML('afterbegin', icon('search'));
 
 $('tab-row').addEventListener('click', (event) => {
+  const close = event.target.closest('[data-settle]');
+  if (close) { intent('settle-tree', { id: close.dataset.settle }); return; }
   const tab = event.target.closest('[data-id]');
   if (!tab) return;
   setSurface('reading');
   intent('select-tree', { id: tab.dataset.id });
+});
+$('tab-row').addEventListener('mousedown', (event) => {
+  if (event.button === 1 && event.target.closest('[data-id]')) event.preventDefault();
+});
+$('tab-row').addEventListener('auxclick', (event) => {
+  const tab = event.target.closest('[data-id]');
+  if (event.button === 1 && tab) intent('settle-tree', { id: tab.dataset.id });
 });
 // A right click on a tab names its tree.
 $('tab-row').addEventListener('contextmenu', (event) => {

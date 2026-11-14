@@ -139,6 +139,12 @@ impl Navigation {
         }
     }
 
+    /// Forgets the load in flight and the document, for a view left with no page.
+    pub fn clear(&mut self) {
+        self.pending = Pending::Idle;
+        self.current = None;
+    }
+
     pub fn valid(&self, document: &Document) -> bool {
         self.current.as_ref() == Some(document) && matches!(self.pending, Pending::Idle)
     }

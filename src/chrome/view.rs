@@ -1,7 +1,10 @@
 //! What the chrome view draws, as JSON. Rust decides every position and every string; the
 //! HTML view only paints them and reports input back.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashSet,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use serde_json::{json, Value};
 
@@ -12,7 +15,9 @@ use super::{
     ChromeFrame, PageFile,
 };
 use crate::{
-    browser::{Capture, CaptureKind, ThemeMode, Visit, VisitId, VisitPreview, VisitState},
+    browser::{
+        Capture, CaptureKind, Lifecycle, ThemeMode, Visit, VisitId, VisitPreview, VisitState,
+    },
     forest::ForestProjection,
 };
 
@@ -23,8 +28,8 @@ pub(crate) fn frame(frame: &ChromeFrame, width: f64) -> Value {
     let forest = &frame.forest;
     let current = forest.current();
     let active = current.and_then(|id| forest.tree_of(id));
-    let trees: Vec<Value> = forest
-        .trees()
+    let tabs: Vec<Value> = forest
+        .open()
         .iter()
         .map(|tree| {
             json!({
@@ -49,12 +54,16 @@ pub(crate) fn frame(frame: &ChromeFrame, width: f64) -> Value {
     let pages: usize = forest.trees().iter().map(|tree| tree.page_count).sum();
     json!({
         "current": current.map(|id| id.to_string()),
-        "trees": trees,
+        "tabs": tabs,
         "visits": visits,
         "strip": strip(forest, width),
         "files": files_value(&frame.files),
         "forest": {
-            "count": format!("{} · {}", plural(forest.trees().len(), "tree"), plural(pages, "page")),
+            "count": if forest.settled().is_empty() {
+                format!("{} · {}", plural(forest.trees().len(), "tree"), plural(pages, "page"))
+            } else {
+                format!("{} open · {} settled · {}", forest.open().len(), forest.settled().len(), plural(pages, "page"))
+            },
             "labels": forest_value(forest, true),
             "icons": forest_value(forest, false),
         },
@@ -202,20 +211,30 @@ fn size_text(bytes: u64) -> String {
 fn forest_value(forest: &ForestProjection, labels: bool) -> Value {
     let layout = forest_layout::layout(forest, labels, |text| text_width(text, 12.5, 0.55));
     let current_tree = forest.current().and_then(|id| forest.tree_of(id));
+    let settled: HashSet<_> = forest.settled().iter().map(|tree| tree.id).collect();
     json!({
         "width": layout.current_width,
+        "divider": layout.divider.map(|y| json!({
+            "y": y, "title": "Settled", "detail": plural(forest.settled().len(), "tree"),
+        })),
         "nodes": layout.nodes.iter().map(|(id, r)| json!({
+            "settled": forest.tree_of(*id).is_some_and(|tree| settled.contains(&tree)),
             "id": id.to_string(), "x": r.x, "y": r.y, "w": r.w, "s": r.s,
         })).collect::<Vec<_>>(),
         "heads": layout.heads.iter().map(|&(index, y)| {
             let tree = &forest.trees()[index];
             json!({
                 "y": y,
+                "id": tree.last_visit.to_string(),
                 "title": tree.title,
+                "settled": !tree.lifecycle.is_open(),
                 "detail": format!(
-                    "{} · {} pending{}",
+                    "{} · {}{}",
                     plural(tree.page_count, "page"),
-                    tree.pending_count,
+                    match tree.lifecycle {
+                        Lifecycle::Open => format!("{} pending", tree.pending_count),
+                        Lifecycle::Settled { since } => format!("settled {}", ago(since)),
+                    },
                     if Some(tree.id) == current_tree { " · Current tree" } else { "" },
                 ),
             })
@@ -416,6 +435,9 @@ mod tests {
     use crate::browser::{Download, Snapshot, StartSuggestions, TreeId, TreeState};
 
     fn chain() -> (ForestProjection, Vec<VisitId>) {
+        chain_with_lifecycle(Lifecycle::Open)
+    }
+    fn chain_with_lifecycle(lifecycle: Lifecycle) -> (ForestProjection, Vec<VisitId>) {
         let ids: Vec<VisitId> = (0..3)
             .map(|_| ulid::Ulid::new().to_string().parse().unwrap())
             .collect();
@@ -443,6 +465,7 @@ mod tests {
                 current: Some(ids[1]),
             },
             vec![TreeState {
+                lifecycle,
                 root: TreeId(ids[0]),
                 last_visit: ids[1],
                 name: None,
@@ -452,6 +475,67 @@ mod tests {
         (forest, ids)
     }
 
+    #[test]
+    fn tabs_list_only_open_trees_and_none_is_active_while_the_current_tree_is_settled() {
+        use crate::browser::{Browser, Navigation, NavigationTarget, Visibility};
+        let dir = tempfile::tempdir().unwrap();
+        let mut browser = Browser::open(&dir.path().join("forest.db")).unwrap();
+        let url = url::Url::parse("https://example.org/a").unwrap();
+        let mut navigation = Navigation::default();
+        browser
+            .navigate(&mut navigation, url.clone(), NavigationTarget::Root)
+            .unwrap();
+        let ticket = navigation.pending_ticket().unwrap();
+        navigation.started(ticket);
+        browser
+            .commit_load(&mut navigation, ticket, url, Visibility::Selected)
+            .unwrap();
+        let current = browser.tree_states().unwrap()[0].root;
+        browser
+            .add_roots(&[url::Url::parse("https://example.org/b").unwrap()])
+            .unwrap();
+        browser.settle_tree(current).unwrap();
+        let forest = ForestProjection::from_snapshot(
+            browser.snapshot().unwrap(),
+            browser.tree_states().unwrap(),
+        )
+        .unwrap();
+        let frame = ChromeFrame {
+            forest,
+            capture_enabled: true,
+            theme: ThemeMode::Dark,
+            suggestions: StartSuggestions::default(),
+            files: Vec::new(),
+        };
+        let value = super::frame(&frame, 1240.);
+        let tabs = value["tabs"].as_array().unwrap();
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0]["active"], false);
+        assert_ne!(tabs[0]["id"], current.root().to_string());
+    }
+
+    #[test]
+    fn settled_pages_stay_in_the_visits_map_so_search_and_the_forest_can_open_them() {
+        let (forest, ids) = chain_with_lifecycle(Lifecycle::Settled { since: 1 });
+        let frame = ChromeFrame {
+            forest,
+            capture_enabled: true,
+            theme: ThemeMode::Dark,
+            suggestions: StartSuggestions::default(),
+            files: Vec::new(),
+        };
+        let value = super::frame(&frame, 1240.);
+        assert_eq!(value["tabs"], json!([]));
+        assert_eq!(value["current"], ids[1].to_string());
+        assert_eq!(value["visits"].as_object().unwrap().len(), 3);
+        assert_eq!(value["forest"]["labels"]["heads"][0]["settled"], true);
+        assert!(value["forest"]["labels"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|n| n["settled"] == true));
+        assert_eq!(value["forest"]["labels"]["divider"]["detail"], "1 tree");
+    }
     #[test]
     fn the_frame_carries_every_visit_and_both_strip_states() {
         let (forest, ids) = chain();
@@ -470,7 +554,7 @@ mod tests {
             value["visits"][ids[0].to_string()]["site"],
             format!("example.org · {}", ago(0))
         );
-        assert_eq!(value["trees"][0]["pending"], 1);
+        assert_eq!(value["tabs"][0]["pending"], 1);
         assert_eq!(value["strip"]["rest"]["height"], graph::REST_HEIGHT);
         assert_eq!(value["strip"]["open"]["height"], graph::OPEN_HEIGHT);
         let pill = value["strip"]["rest"]["nodes"]
