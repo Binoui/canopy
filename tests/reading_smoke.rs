@@ -58,7 +58,7 @@ fn main() -> Result<()> {
             .filter(|v| v.state == VisitState::Queued)
             .all(|v| {
                 v.source.as_ref().is_some_and(|s| {
-                    s.excerpt.contains("commentaire source")
+                    s.excerpt.contains("source comment")
                         && s.citation_url
                             .as_ref()
                             .is_some_and(|u| u.fragment() == Some("comment-1"))
@@ -111,7 +111,7 @@ fn main() -> Result<()> {
         .as_ref()
         .unwrap()
         .excerpt
-        .contains("commentaire source"));
+        .contains("source comment"));
     assert!(saved.captured_at.is_some());
     println!("PASS queued activation reuses its visit and captures article text; hidden login modal and all controls are excluded.");
     eval(&ui, "document.querySelector('main').insertAdjacentHTML('beforeend','<p>mossy lantern delayed article text</p>'); JSON.stringify(true)")?;
@@ -124,7 +124,7 @@ fn main() -> Result<()> {
     wait("source context on the current page's card", || {
         visible(&ui, "#card [data-act=source]")
     })?;
-    assert!(text(&ui, "#card").contains("commentaire source"));
+    assert!(text(&ui, "#card").contains("source comment"));
     pump(150);
     click_chrome(&ui, "#card [data-act=source]")?;
     wait("Back to source from the card", || {
@@ -280,7 +280,7 @@ fn main() -> Result<()> {
         )?,
         false
     );
-    assert!(text(&reopened, "#capture-source").contains("commentaire source"));
+    assert!(text(&reopened, "#capture-source").contains("source comment"));
     assert_eq!(queued(&reopened), 2);
     assert_eq!(reopened.snapshot()?, expected);
     save_window(&reopened, "/tmp/canopy-chrome-reader.png")?;
@@ -424,18 +424,18 @@ impl Drop for Fixture {
 fn page(path: &str) -> String {
     let content = match path {
         "/discussion" => {
-            r##"<main><h1>Une discussion à explorer</h1><article id="comment-1" data-permalink="/discussion#comment-1"><p>Un commentaire source explique pourquoi ces trois articles valent le détour.</p><a id="one" href="/article-a">Comprendre le cache</a><a id="two" href="/article-b">Une deuxième piste</a><a id="three" href="/article-c" target="_blank">Une troisième piste</a><p id="remember">violet comet selection kept for tomorrow</p></article><a id="hash" href="#comment-1">Revenir au commentaire</a><div id="mixed"><span id="public-start">public satellite </span><span contenteditable="true" id="editable">SOURCE_EDIT_SECRET</span><span id="public-end">public finish</span></div></main><script>if(!sessionStorage.getItem('probe-done')){sessionStorage.setItem('probe-done','1');setTimeout(()=>document.getElementById('three').click(),250)}</script>"##
+            r##"<main><h1>A discussion to explore</h1><article id="comment-1" data-permalink="/discussion#comment-1"><p>A source comment explains why these three articles are worth the detour.</p><a id="one" href="/article-a">Understanding the cache</a><a id="two" href="/article-b">A second lead</a><a id="three" href="/article-c" target="_blank">A third lead</a><p id="remember">violet comet selection kept for tomorrow</p></article><a id="hash" href="#comment-1">Back to the comment</a><div id="mixed"><span id="public-start">public satellite </span><span contenteditable="true" id="editable">SOURCE_EDIT_SECRET</span><span id="public-end">public finish</span></div></main><script>if(!sessionStorage.getItem('probe-done')){sessionStorage.setItem('probe-done','1');setTimeout(()=>document.getElementById('three').click(),250)}</script>"##
         }
         "/article-a" => {
-            r#"<main><h1>Comprendre le cache</h1><p>amber otter cache invalidation is the phrase worth remembering.</p><p>Ce texte doit rester disponible après la fermeture du navigateur.</p><input value="INPUT_SECRET"><textarea>TEXTAREA_SECRET</textarea><select><option>SELECT_SECRET</option></select><div contenteditable="true">EDITABLE_SECRET</div><div hidden><input type="password" value="HIDDEN_LOGIN_SECRET"></div></main>"#
+            r#"<main><h1>Understanding the cache</h1><p>amber otter cache invalidation is the phrase worth remembering.</p><p>This text must stay available after the browser closes.</p><input value="INPUT_SECRET"><textarea>TEXTAREA_SECRET</textarea><select><option>SELECT_SECRET</option></select><div contenteditable="true">EDITABLE_SECRET</div><div hidden><input type="password" value="HIDDEN_LOGIN_SECRET"></div></main>"#
         }
-        "/article-b" => "<main><h1>Deuxième article</h1><p>Encore en attente.</p></main>",
-        "/article-c" => "<main><h1>Troisième article</h1><p>Encore en attente.</p></main>",
-        "/no-capture" => "<main><h1>Capture désactivée</h1><p>automatic off sentinel</p></main>",
+        "/article-b" => "<main><h1>Second article</h1><p>Still pending.</p></main>",
+        "/article-c" => "<main><h1>Third article</h1><p>Still pending.</p></main>",
+        "/no-capture" => "<main><h1>Capture turned off</h1><p>automatic off sentinel</p></main>",
         "/login" => {
             "<main><h1>Connexion</h1><p>VISIBLE_LOGIN_SENTINEL</p><input type='password'></main>"
         }
         _ => "<main><h1>Fixture</h1></main>",
     };
-    format!("<!doctype html><html lang='fr'><meta charset='utf-8'><title>{path}</title><style>body{{font:18px system-ui;color:#294331;margin:34px}}a{{display:block;margin:16px 0}}article{{max-width:750px;padding:18px;background:#f2f5ed}}p{{line-height:1.6}}input,textarea,select{{max-width:100px}}</style>{content}</html>")
+    format!("<!doctype html><html lang='en'><meta charset='utf-8'><title>{path}</title><style>body{{font:18px system-ui;color:#294331;margin:34px}}a{{display:block;margin:16px 0}}article{{max-width:750px;padding:18px;background:#f2f5ed}}p{{line-height:1.6}}input,textarea,select{{max-width:100px}}</style>{content}</html>")
 }

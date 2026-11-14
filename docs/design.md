@@ -1,45 +1,45 @@
-# Une forêt de visites
+# A forest of visits
 
-Canopy conserve le contexte d'une navigation. Une visite a une URL, un titre et un parent facultatif. Chaque racine commence un arbre.
+Canopy keeps the context of a browsing session. A visit has a URL, a title and an optional parent. Each root starts a tree.
 
-Après A puis B, revenir à A puis suivre C donne deux enfants de A. La visite B reste accessible. Suivre à nouveau une URL peut créer une autre visite, car le contexte a changé.
+After A then B, going back to A and following C gives A two children. Visit B stays reachable. Following a URL again can create another visit, because the context has changed.
 
-## SQLite possède la forêt et le curseur
+## SQLite owns the forest and the cursor
 
-La base contient les visites et la position courante. L'insertion d'une visite et le déplacement du curseur partagent une transaction. Ce que le chrome affiche est une projection de cette base.
+The database holds the visits and the current position. Inserting a visit and moving the cursor share one transaction. What the chrome shows is a projection of this database.
 
-Deux structures ont été comparées avant l'implémentation. La première donnait la propriété de l'état à SQLite. La seconde maintenait aussi une forêt en mémoire. La première a été retenue pour éviter un second chemin d'écriture et la synchronisation du curseur.
+Two structures were compared before implementation. The first gave ownership of the state to SQLite. The second also kept a forest in memory. The first was chosen to avoid a second write path and keeping the cursor in sync.
 
-L'alternative a apporté deux éléments au design retenu. L'intention de navigation reste explicite jusqu'au chargement effectif. Les tests vérifient le comportement avec WebKit et comparent la forêt avant et après réouverture de la base.
+The alternative brought two things to the chosen design. The navigation intent stays explicit until the load actually happens. The tests check the behaviour with WebKit and compare the forest before and after reopening the database.
 
-## Une intention précède une visite
+## An intent comes before a visit
 
-Une nouvelle navigation retient son parent avant le chargement. Une restauration retient l'identifiant de la visite à réutiliser. Le moteur confirme ensuite l'URL au chargement du document principal.
+A new navigation records its parent before loading. A restore records the id of the visit to reuse. The engine then confirms the URL when the main document loads.
 
-Les redirections serveur appartiennent à une seule navigation. Un rechargement ou une restauration ne crée pas de visite. Un échec conserve la dernière position enregistrée et affiche une erreur.
+Server redirects belong to a single navigation. A reload or a restore does not create a visit. A failure keeps the last recorded position and shows an error.
 
-Les identifiants persistants sont des ULID. Les URL ne sont pas des identifiants de visite. Les sous-ressources et les cadres intégrés ne deviennent pas des enfants.
+Persistent ids are ULIDs. URLs are not visit ids. Subresources and embedded frames do not become children.
 
-## GTK et WebKit restent sur leur thread
+## GTK and WebKit stay on their thread
 
-wry construit la webview dans un conteneur GTK. Son extension Unix donne accès aux signaux natifs de WebKitGTK. Ces signaux permettent de distinguer le début, la validation et l'échec d'un chargement.
+wry builds the webview inside a GTK container. Its Unix extension gives access to the native WebKitGTK signals. These signals tell apart the start, the commit and the failure of a load.
 
-Les emprunts de l'état sont relâchés avant les appels qui peuvent déclencher un autre callback. Une seule webview charge la page active. Les autres visites restent dans SQLite.
+Borrows of the state are released before calls that can trigger another callback. A single webview loads the active page. The other visits stay in SQLite.
 
-Le retour du navigateur suit le parent dans la forêt. La liste arborescente permet de choisir une autre branche. La reprise d'une visite recharge son URL. Elle ne restaure pas un instantané du DOM, du scroll ou des formulaires.
+The browser's back follows the parent in the forest. The tree list lets you pick another branch. Resuming a visit reloads its URL. It does not restore a snapshot of the DOM, the scroll position or forms.
 
-## Le chrome est une vue HTML au-dessus de la page
+## The chrome is an HTML view above the page
 
-Les onglets, la bande de l'arbre, la palette, les cartes, les menus, la page « Nouvel arbre », la vue forêt et le lecteur sont dessinés en HTML. Une seconde webview transparente, servie par le schéma `canopy://`, est posée au-dessus de la page. Rust garde l'état et toutes les décisions : les layouts, les résultats de la palette et les intentions. La vue reçoit du JSON et renvoie les clics et les touches par IPC.
+The tabs, the tree strip, the palette, the cards, the menus, the "New tree" page, the forest view and the reader are drawn in HTML. A second, transparent webview, served by the `canopy://` scheme, sits above the page. Rust keeps the state and every decision: the layouts, the palette results and the intents. The view receives JSON and sends clicks and keys back over IPC.
 
-Au repos, la vue ne couvre que les 94 px du haut. Elle s'étend jusqu'à ce qui est ouvert (bande ouverte, carte, menu) et ne couvre toute la fenêtre que pour la palette, le lecteur et les surfaces pleine page. La page reçoit donc les clics partout ailleurs. Pendant les 220 ms de fermeture de la bande, la zone ouverte garde les clics.
+At rest, the view covers only the top 94 px. It grows to cover whatever is open (open strip, card, menu) and covers the whole window only for the palette, the reader and full-page surfaces. The page therefore gets clicks everywhere else. During the 220 ms the strip takes to close, the open area keeps the clicks.
 
-Ce choix remplace le chrome GTK et cairo. Il coûte un second processus WebKit, mesuré à environ 124 Mo de PSS. En échange, une seule interface tourne sur Linux, macOS et Windows. Sur Linux, GTK reste l'hôte invisible des deux webviews, comme dans Tauri. Le moteur de page et la fenêtre hôte restent liés à WebKitGTK jusqu'au portage vers macOS et Windows.
+This choice replaces the GTK and cairo chrome. It costs a second WebKit process, measured at about 124 MB of PSS. In exchange, a single interface runs on Linux, macOS and Windows. On Linux, GTK remains the invisible host of both webviews, as in Tauri. The page engine and the host window stay tied to WebKitGTK until the port to macOS and Windows.
 
-## Le périmètre du MVP1
+## The MVP1 scope
 
-Le premier jalon vérifie la navigation, les bifurcations et la reprise après redémarrage.
+The first milestone checks navigation, forks and resuming after a restart.
 
-La mini-carte, le layout de graphe, l'extraction des pages, les résumés et l'agent attendent un prochain jalon. Le moteur n'a pas de trait générique. Une migration vers Servo ou CEF demandera de revoir l'intégration du rendu et du profil.
+The minimap, the graph layout, page extraction, summaries and the agent wait for a later milestone. The engine has no generic trait. Moving to Servo or CEF will mean revisiting the rendering and profile integration.
 
-Les changements internes des applications web restent un cas distinct. Le MVP ne promet pas de transformer chaque changement d'état JavaScript en visite.
+In-app changes inside web applications remain a separate case. The MVP does not promise to turn every JavaScript state change into a visit.

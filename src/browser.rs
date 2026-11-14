@@ -1716,10 +1716,10 @@ mod tests {
             let mut browser = Browser::open(&db).unwrap();
             follow(&mut browser, "a", NavigationTarget::Root);
             browser
-                .title_changed(&url("a"), "Documentation Rust")
+                .title_changed(&url("a"), "Rust documentation")
                 .unwrap();
             follow(&mut browser, "b", NavigationTarget::Root);
-            browser.title_changed(&url("b"), "Une page à 100%").unwrap();
+            browser.title_changed(&url("b"), "A café page at 100%").unwrap();
             assert_eq!(browser.search("Rust").unwrap().len(), 1);
             assert_eq!(browser.search("%").unwrap().len(), 1);
             assert!(browser
@@ -2531,7 +2531,7 @@ mod tests {
             let export = b
                 .record_download(
                     root,
-                    Path::new("/home/me/Downloads/Relevé (1).csv"),
+                    Path::new("/home/me/Downloads/Résumé (1).csv"),
                     0,
                     None,
                 )
@@ -2556,7 +2556,7 @@ mod tests {
             );
             assert_eq!(
                 downloads.iter().map(Download::name).collect::<Vec<_>>(),
-                ["report.pdf", "Relevé (1).csv", "report (1).pdf"]
+                ["report.pdf", "Résumé (1).csv", "report (1).pdf"]
             );
             assert_eq!(downloads[0].visit, page);
             assert_eq!(downloads[0].size, 1_234_567);

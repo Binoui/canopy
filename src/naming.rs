@@ -181,9 +181,9 @@ mod tests {
     fn search_pages_give_the_typed_words() {
         for (address, query) in [
             ("https://duckduckgo.com/?q=tauri", Some("tauri")),
-            ("https://www.google.com/search?q=Le+passage++%C3%A0+niveau&hl=fr", Some("Le passage à niveau")),
+            ("https://www.google.com/search?q=cr%C3%A8me++br%C3%BBl%C3%A9e+recipe", Some("crème brûlée recipe")),
             ("https://www.youtube.com/results?search_query=rust+gtk", Some("rust gtk")),
-            ("https://www.amazon.fr/s/ref=nb_sb_noss_2?url=search-alias%3Daps&field-keywords=lampe", Some("lampe")),
+            ("https://www.amazon.fr/s/ref=nb_sb_noss_2?url=search-alias%3Daps&field-keywords=lamp", Some("lamp")),
             ("https://www.amazon.fr/s?k=lagostina+pan", Some("lagostina pan")),
             ("https://www.reddit.com/r/starcraft/search/?q=harmstem", Some("harmstem")),
             // Not searches: a redirect, a token, a filter, a product reached from a search.
@@ -191,7 +191,7 @@ mod tests {
             ("https://example.org/?q=http://example.org", None),
             ("https://auth.example.org/search?q=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9eyJhbGci", None),
             ("https://github.com/Binoui/canopy/issues?q=is%3Aissue", None),
-            ("https://www.amazon.fr/-/en/Lamp/dp/B0?keywords=lampe", None),
+            ("https://www.amazon.fr/-/en/Lamp/dp/B0?keywords=lamp", None),
             ("https://duckduckgo.com/?q=+", None),
         ] {
             assert_eq!(search_query(&url(address)).as_deref(), query, "{address}");
@@ -242,7 +242,7 @@ mod tests {
                 "https://fr.wikipedia.org/wiki/Rust",
                 "Rust",
             ),
-            ("Amazon.fr : lampe", "https://www.amazon.fr/gp/x", "lampe"),
+            ("Amazon.fr : lamp", "https://www.amazon.fr/gp/x", "lamp"),
             (
                 "Shop | Amazon.co.uk",
                 "https://www.amazon.co.uk/shop",
@@ -255,9 +255,9 @@ mod tests {
                 "Catseye Draught - Item - WoW Forever",
             ),
             (
-                "Incendie Paris XIII ? : r/paris",
+                "Fire in Paris XIII ? : r/paris",
                 "https://www.reddit.com/r/paris/comments/1",
-                "Incendie Paris XIII ? : r/paris",
+                "Fire in Paris XIII ? : r/paris",
             ),
             ("GitHub", "https://github.com/login", "GitHub"),
             ("  ", "https://www.example.org/a", "example.org"),
@@ -278,8 +278,8 @@ mod tests {
         assert_eq!(tree_name(&search, [&page]), "tauri");
 
         let front = visit("https://www.amazon.fr/", "Amazon.fr: books, DVDs");
-        let results = visit("https://www.amazon.fr/s?k=lampe", "Amazon.fr : lampe");
-        assert_eq!(tree_name(&front, [&page, &results]), "lampe");
+        let results = visit("https://www.amazon.fr/s?k=lamp", "Amazon.fr : lamp");
+        assert_eq!(tree_name(&front, [&page, &results]), "lamp");
         assert_eq!(tree_name(&front, [&page]), "Amazon.fr");
 
         // Only a front page takes its name from a later search.

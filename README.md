@@ -173,4 +173,4 @@ env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' c
 
 The download test points `HOME`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` at a temporary folder, so it never writes to your real download folder and opens files with a stand-in app instead of yours. Set `CANOPY_DOWNLOAD_SHOTS` to a folder to keep screenshots of the leaves and their list.
 
-The design choices are described, in French, in [Une forêt de visites](docs/design.md) and [La mémoire d'une exploration](docs/reading-memory.md).
+The design choices are described in [A forest of visits](docs/design.md) and [The memory of an exploration](docs/reading-memory.md).
