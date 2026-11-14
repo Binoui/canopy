@@ -224,6 +224,17 @@ impl Pages {
         });
     }
 
+    pub fn cancel_path_continuation(&self) {
+        if self
+            .continuation
+            .borrow()
+            .as_ref()
+            .is_some_and(|c| matches!(c.action, Continuation::Path(_)))
+        {
+            self.cancel_continuation();
+        }
+    }
+
     pub fn cancel_continuation(&self) {
         self.continuation.borrow_mut().take();
     }

@@ -8,7 +8,7 @@ use crate::{address::web_url, browser::VisitId, chrome::Favicons};
 use anyhow::{Context, Result};
 use gtk::prelude::*;
 use url::Url;
-use webkit2gtk::{DownloadExt, URIRequestExt, WebContextExt};
+use webkit2gtk::{DownloadExt, URIRequestExt, WebContextExt, WebViewExt};
 
 use super::PageEvent;
 type Observer = RefCell<Option<Rc<dyn Fn(PageEvent)>>>;
@@ -103,7 +103,16 @@ impl PageContext {
             view: view.downgrade(),
             page: Box::new(page),
         });
-        self.favicons.observe_page(view);
+        drop(sources);
+        let weak = Rc::downgrade(&self.favicons);
+        view.connect_favicon_notify(move |page| {
+            let Some(favicons) = weak.upgrade() else {
+                return;
+            };
+            if let (Some(uri), Some(surface)) = (page.uri(), page.favicon()) {
+                favicons.store(uri.to_string(), Some(&surface));
+            }
+        });
     }
 
     pub fn observe(&self, callback: impl Fn(PageEvent) + 'static) {

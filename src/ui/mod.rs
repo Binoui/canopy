@@ -295,7 +295,7 @@ impl Ui {
         let Some(shortcut) = Shortcut::of(event) else {
             return glib::Propagation::Proceed;
         };
-        self.pages.cancel_continuation();
+        self.pages.cancel_path_continuation();
         match shortcut {
             Shortcut::Palette(seed) => self.open_palette(seed),
             Shortcut::SettleTree => self.chrome.settle_current(),
