@@ -91,3 +91,9 @@ name = "profile_smoke"
 path = "tests/profile_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
+
+[[test]]
+name = "settle_smoke"
+path = "tests/settle_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]

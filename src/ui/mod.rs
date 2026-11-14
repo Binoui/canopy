@@ -11,7 +11,7 @@ use webkit2gtk::WebViewExt;
 
 use crate::{
     browser::{
-        Browser, Download, ImportedPage, NavigationTarget, SearchHit, Snapshot, VisitId,
+        Browser, Download, ImportedPage, Landing, NavigationTarget, SearchHit, Snapshot, VisitId,
         VisitPreview,
     },
     chrome::{
@@ -183,7 +183,28 @@ impl Ui {
 
     /// Restores the forest, then opens `urls` as new trees in place of reloading the last page.
     pub fn resume(&self, urls: &[Url]) -> Result<()> {
-        self.after_cookies.set(Some(StartPage::Reload));
+        let mut start = Some(StartPage::Reload);
+        if urls.is_empty() {
+            let forest = ForestProjection::from_snapshot(
+                self.browser.borrow().snapshot()?,
+                self.browser.borrow().tree_states()?,
+            )?;
+            if let Some(tree) = forest.current().and_then(|id| forest.tree_of(id)) {
+                if forest
+                    .trees()
+                    .iter()
+                    .any(|t| t.id == tree && !t.lifecycle.is_open())
+                {
+                    start = match self.browser.borrow_mut().settle_tree(tree)? {
+                        Landing::Restore(visit) => Some(StartPage::Show(visit)),
+                        Landing::Start => None,
+                        Landing::Unchanged => Some(StartPage::Reload),
+                    };
+                    self.schedule_refresh();
+                }
+            }
+        }
+        self.after_cookies.set(start);
         // A failed open is already on screen as an error, and the window still starts.
         let _ = self.open(urls);
         self.drain_cookies();
@@ -372,18 +393,14 @@ impl Ui {
         self.path_after_commit.borrow_mut().take();
         match shortcut {
             Shortcut::Palette(seed) => self.open_palette(seed),
+            Shortcut::SettleTree => self.chrome.settle_current(),
             Shortcut::NewTree => self.chrome.new_tree(),
             Shortcut::Forest => self.chrome.toggle_forest(),
             Shortcut::Reload => self.report(self.engine.reload()),
             Shortcut::RememberSelection => self.report(self.engine.remember_selection()),
             Shortcut::Quit => self.window.close(),
             Shortcut::Tree(index) => {
-                let tree = self
-                    .browser
-                    .borrow()
-                    .tree_states()
-                    .ok()
-                    .and_then(|trees| trees.get(index).map(|state| state.root));
+                let tree = self.chrome.tab(index);
                 if let Some(tree) = tree {
                     self.dispatch(ChromeIntent::SelectTree(tree));
                 }
@@ -402,6 +419,7 @@ impl Ui {
 enum Shortcut {
     Palette(PaletteSeed),
     NewTree,
+    SettleTree,
     Forest,
     Reload,
     RememberSelection,
@@ -459,6 +477,7 @@ impl Shortcut {
                 Self::Palette(PaletteSeed::CurrentAddress),
             ),
             (Modifiers::CONTROL, key::t, Self::NewTree),
+            (Modifiers::CONTROL, key::w, Self::SettleTree),
             (Modifiers::CONTROL, key::e, Self::Forest),
             (Modifiers::CONTROL, key::r, Self::Reload),
             (Modifiers::CONTROL_SHIFT, key::r, Self::Reload),
@@ -513,6 +532,24 @@ impl ChromeHost for Ui {
                 let result = self.browser.borrow_mut().rename_tree(tree, &name);
                 self.schedule_refresh();
                 result
+            }
+            ChromeIntent::SettleCurrent => {
+                if let Some(tree) = self.chrome.current_tree() {
+                    self.dispatch(ChromeIntent::SettleTree(tree));
+                }
+                Ok(())
+            }
+            ChromeIntent::SettleTree(tree) => {
+                let landing = self.browser.borrow_mut().settle_tree(tree);
+                self.schedule_refresh();
+                landing.and_then(|landing| match landing {
+                    Landing::Unchanged => Ok(()),
+                    Landing::Restore(visit) => self.engine.restore(visit),
+                    Landing::Start => {
+                        self.engine.blank();
+                        Ok(())
+                    }
+                })
             }
             ChromeIntent::SelectTree(tree) => {
                 let target = self.browser.borrow().tree_target(tree);
@@ -665,6 +702,7 @@ mod shortcut_tests {
                 Shortcut::Palette(PaletteSeed::CurrentAddress),
             ),
             (key::t, Modifiers::CONTROL, Shortcut::NewTree),
+            (key::w, Modifiers::CONTROL, Shortcut::SettleTree),
             (key::e, Modifiers::CONTROL, Shortcut::Forest),
             (key::r, Modifiers::CONTROL, Shortcut::Reload),
             (key::r, Modifiers::CONTROL_SHIFT, Shortcut::Reload),
@@ -765,7 +803,6 @@ mod shortcut_tests {
             key::F5,
             key::F11,
             key::f,
-            key::w,
         ] {
             assert_eq!(Shortcut::matching(Modifiers::CONTROL, key), None);
         }

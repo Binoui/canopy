@@ -238,7 +238,7 @@ kbd { font: 500 10.5px "Inter", sans-serif; color: var(--faint); border: 1px sol
 #forest-edges path { fill: none; stroke: var(--line); stroke-width: 1.2; }
 #forest-edges path.path { stroke: var(--green); stroke-width: 1.8; }
 #forest-edges path.pending { stroke-dasharray: 4 4; }
-.forest-head { position: absolute; left: 34px; white-space: nowrap; }
+.forest-head { text-align: left; position: absolute; left: 34px; white-space: nowrap; }
 .forest-head b { display: block; font-size: 15px; font-weight: 700; }
 .forest-head span { display: block; font-size: 11.5px; color: var(--muted); margin-top: 3px; }
 .forest-node { position: absolute; display: flex; align-items: center; gap: 6px; padding: 0 7px; border: 1px solid var(--tile-border); border-radius: 8px; background: var(--tile); overflow: hidden; }
@@ -270,3 +270,11 @@ kbd { font: 500 10.5px "Inter", sans-serif; color: var(--faint); border: 1px sol
 }
 #toast.error { background: var(--danger); color: #fff; }
 #toast.leaving { opacity: 0; }
+
+.tab-settle { display: flex; align-items: center; opacity: 0; border-radius: 4px; }
+.tab:hover .tab-settle, .tab.on .tab-settle { opacity: 1; }
+.tab-settle:hover { background: var(--hover); }
+.forest-head.settled, .forest-node.settled { opacity: .55; }
+.forest-head.settled:hover, .forest-node.settled:hover { opacity: 1; }
+.forest-divider { position: absolute; left: 34px; white-space: nowrap; display: flex; gap: 12px; align-items: baseline; color: var(--muted); font-size: 12px; }
+.forest-divider b { font-weight: 500; }
