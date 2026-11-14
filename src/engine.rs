@@ -72,7 +72,10 @@ struct HistoryEntry {
 
 enum Issue {
     Idle,
-    Issued(LoadTicket),
+    Issued {
+        ticket: LoadTicket,
+        decided: bool,
+    },
     Loading(LoadTicket),
     Retiring {
         ticket: LoadTicket,
@@ -91,8 +94,8 @@ impl Issue {
                 navigation.failed(ticket);
                 None
             }
-            Self::Issued(ticket) => {
-                *self = Self::Issued(ticket);
+            Self::Issued { ticket, decided } => {
+                *self = Self::Issued { ticket, decided };
                 None
             }
             Self::Idle => None,
@@ -295,6 +298,9 @@ impl Engine {
                 let url = native.uri().and_then(|uri| web_url(&uri).ok());
                 match event {
                     LoadEvent::Started => {
+                        if matches!(*state.issue.borrow(), Issue::Issued { decided: false, .. }) {
+                            return;
+                        }
                         // Policy also reports iframe reloads; Started belongs to the main frame.
                         let reload = state.reload_candidate.borrow_mut().take();
                         if reload.is_some() && state.navigation.borrow().pending_ticket().is_none()
@@ -304,7 +310,10 @@ impl Engine {
                                 .borrow_mut()
                                 .reload(&mut state.navigation.borrow_mut());
                             if let Some(ticket) = state.navigation.borrow().pending_ticket() {
-                                *state.issue.borrow_mut() = Issue::Issued(ticket);
+                                *state.issue.borrow_mut() = Issue::Issued {
+                                    ticket,
+                                    decided: true,
+                                };
                             }
                             state.report(result.map(|_| ()));
                         }
@@ -694,14 +703,17 @@ impl NativeState {
     fn active_ticket(&self) -> Option<LoadTicket> {
         match *self.issue.borrow() {
             Issue::Idle => None,
-            Issue::Issued(ticket) | Issue::Loading(ticket) | Issue::Retiring { ticket, .. } => {
-                Some(ticket)
-            }
+            Issue::Issued { ticket, .. }
+            | Issue::Loading(ticket)
+            | Issue::Retiring { ticket, .. } => Some(ticket),
         }
     }
 
     fn start_attempt(&self, url: Url) {
         let mut navigation = self.navigation.borrow_mut();
+        if matches!(*self.issue.borrow(), Issue::Issued { decided: false, .. }) {
+            return;
+        }
         let ticket = match self.active_ticket() {
             Some(ticket) => ticket,
             None => {
@@ -713,10 +725,16 @@ impl NativeState {
                 ticket
             }
         };
-        if matches!(*self.issue.borrow(), Issue::Issued(_)) {
+        if matches!(*self.issue.borrow(), Issue::Issued { .. }) {
             *self.issue.borrow_mut() = Issue::Loading(ticket);
         }
         navigation.started(ticket);
+    }
+
+    fn accept_issue(&self) {
+        if let Issue::Issued { decided, .. } = &mut *self.issue.borrow_mut() {
+            *decided = true;
+        }
     }
 
     fn loading_ticket(&self) -> Option<LoadTicket> {
@@ -824,7 +842,10 @@ impl NativeState {
                         state.native.stop_loading();
                         return;
                     }
-                    *state.issue.borrow_mut() = Issue::Issued(requested);
+                    *state.issue.borrow_mut() = Issue::Issued {
+                        ticket: requested,
+                        decided: false,
+                    };
                     let current = state.native.uri().and_then(|uri| web_url(&uri).ok());
                     let same_document = state.navigation.borrow().current.is_some()
                         && !state.native.is_loading()
@@ -869,6 +890,7 @@ impl NativeState {
         }
         self.same_document_request.borrow_mut().take();
         self.traversal.borrow_mut().take();
+        self.accept_issue();
         self.start_attempt(target.clone());
         let committed = self.commit_attempt(target.clone());
         match committed {
@@ -1064,6 +1086,7 @@ impl NativeState {
                         && self.history_cursor.borrow().as_ref() == Some(item)
                 })
             {
+                self.accept_issue();
                 return false;
             }
             if self.current_entry_document() == Some(self.history_document.get()) {
@@ -1075,7 +1098,10 @@ impl NativeState {
                     .borrow_mut()
                     .restore(&mut self.navigation.borrow_mut(), visit);
                 if let Some(ticket) = self.navigation.borrow().pending_ticket() {
-                    *self.issue.borrow_mut() = Issue::Issued(ticket);
+                    *self.issue.borrow_mut() = Issue::Issued {
+                        ticket,
+                        decided: true,
+                    };
                 }
                 self.report(result.map(|_| ()));
             } else {
@@ -1125,6 +1151,9 @@ impl NativeState {
                 }
             });
             return true;
+        }
+        if self.issued.borrow().as_ref() == Some(&url) {
+            self.accept_issue();
         }
         false
     }

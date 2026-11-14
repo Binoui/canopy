@@ -16,7 +16,7 @@ The alternative brought two things to the chosen design. The navigation intent s
 
 Each view owns its Navigation, its pending load and its current Document. Browser owns no global load. A LoadTicket ties one incarnation of a view to an attempt number. Title, capture, context and scroll callbacks carry the Document they came from and check its epoch before writing. A failed transaction keeps the load and the Document until Finished. Finished abandons an attempt whose commit did not succeed. The engine does not retry commits.
 
-A new navigation records its parent before loading. A restore records the id of the visit to reuse. The engine then confirms the URL when the main document loads.
+A new navigation records its parent before loading. A restore records the id of the visit to reuse. The engine accepts Started for an issued attempt only after WebKit accepts policy for its requested URL or history item. Earlier Started signals cannot adopt a replacement request. The engine then confirms the URL when the main document loads.
 
 The engine distinguishes an issued request from a started load. Only a started load is stopped and drained before its replacement is issued. The queued replacement retains its own ticket. A same-document request needs no Finished signal. A page-started load cannot adopt a request the engine has not issued.
 
