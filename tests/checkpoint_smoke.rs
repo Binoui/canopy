@@ -548,6 +548,20 @@ fn tree_boundary() -> Result<()> {
     Ok(())
 }
 
+fn checkpoint_pending_capture() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.navigate("/a")?;
+    f.eval("const r=document.createRange(); r.selectNodeContents(document.getElementById('fragment')); getSelection().removeAllRanges(); getSelection().addRange(r); return true;")?;
+    let before = f.pages.read(|b| b.captures(a))?.len();
+    f.pages.remember_selection()?;
+    f.release()?;
+    assert_eq!(
+        f.pages.read(|b| b.captures(a))?.len(),
+        before,
+        "pending capture must not write during checkpoint scroll query"
+    );
+    Ok(())
+}
 fn unresponsive_release() -> Result<()> {
     let f = Fixture::new()?;
     f.navigate("/a")?;
@@ -691,6 +705,7 @@ fn main() -> Result<()> {
         ("duplicate_entry", duplicate_entry),
         ("observer_release", observer_release),
         ("alias_only", alias_only),
+        ("checkpoint_pending_capture", checkpoint_pending_capture),
         ("history_release", history_release),
         ("download_release", download_release),
         ("late_callbacks", late_callbacks),
