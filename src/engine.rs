@@ -881,8 +881,17 @@ impl NativeState {
                     self.capture(CaptureKind::Page, false);
                 }
             }
-            Ok(false) => {}
-            Err(error) => self.emit(EngineEvent::Error(error.to_string())),
+            Ok(false) => {
+                self.issue
+                    .borrow_mut()
+                    .finish(&mut self.navigation.borrow_mut());
+            }
+            Err(error) => {
+                self.issue
+                    .borrow_mut()
+                    .finish(&mut self.navigation.borrow_mut());
+                self.emit(EngineEvent::Error(error.to_string()));
+            }
         }
     }
 
