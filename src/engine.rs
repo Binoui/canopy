@@ -166,6 +166,7 @@ struct NativeState {
     /// scroll and, from its page cache, its live state.
     history: RefCell<Vec<HistoryEntry>>,
     history_document: Cell<u64>,
+    back_forward_commit: Cell<bool>,
     next_history_document: Cell<u64>,
     history_cursor: RefCell<Option<BackForwardListItem>>,
     /// The history entry this engine asked WebKit for, which the policy check lets through.
@@ -269,6 +270,7 @@ impl Engine {
             issued: RefCell::new(None),
             history: RefCell::new(Vec::new()),
             history_document: Cell::new(0),
+            back_forward_commit: Cell::new(false),
             next_history_document: Cell::new(0),
             history_cursor: RefCell::new(None),
             traversal: RefCell::new(None),
@@ -318,6 +320,8 @@ impl Engine {
                                 Some(&entry.item) == state.history_cursor.borrow().as_ref()
                             })
                             .map(|entry| entry.document);
+                        let traversal = state.back_forward_commit.replace(false);
+                        let existing = existing.filter(|_| traversal);
                         let document = existing.unwrap_or_else(|| {
                             let next = state.next_history_document.get() + 1;
                             state.next_history_document.set(next);
@@ -991,6 +995,9 @@ impl NativeState {
             }
             return true;
         }
+        if action.navigation_type() != NavigationType::BackForward {
+            self.back_forward_commit.set(false);
+        }
         if action.navigation_type() == NavigationType::Reload
             && self.navigation.borrow().pending_ticket().is_none()
         {
@@ -1008,6 +1015,7 @@ impl NativeState {
                 decision.ignore();
                 return true;
             }
+            self.back_forward_commit.set(true);
             if self
                 .traversal
                 .borrow()
@@ -1031,6 +1039,18 @@ impl NativeState {
                     *self.issue.borrow_mut() = Issue::Issued(ticket);
                 }
                 self.report(result.map(|_| ()));
+            } else {
+                decision.ignore();
+                let result = self
+                    .browser
+                    .borrow_mut()
+                    .back(&mut self.navigation.borrow_mut());
+                match result {
+                    Ok(Some(url)) => self.load(url),
+                    Ok(None) => {}
+                    Err(error) => self.emit(EngineEvent::Error(error.to_string())),
+                }
+                return true;
             }
         } else if action.navigation_type() == NavigationType::LinkClicked
             && action.is_user_gesture()
