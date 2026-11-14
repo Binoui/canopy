@@ -218,6 +218,7 @@ mod tests {
                 current: Some(leaf),
             },
             vec![TreeState {
+                lifecycle: crate::browser::Lifecycle::Open,
                 root: TreeId(root_id),
                 last_visit: leaf,
                 name: None,
@@ -245,6 +246,7 @@ mod tests {
             let second = visit(Some(root_id), i, VisitState::Queued);
             visits.extend([first, second]);
             states.push(TreeState {
+                lifecycle: crate::browser::Lifecycle::Open,
                 root: TreeId(root_id),
                 last_visit: root_id,
                 name: None,
@@ -283,6 +285,7 @@ mod tests {
         let root = visit(None, 0, VisitState::Opened);
         let child = visit(Some(root.id), 1, VisitState::Queued);
         let state = TreeState {
+            lifecycle: crate::browser::Lifecycle::Open,
             root: TreeId(root.id),
             last_visit: root.id,
             name: None,
@@ -300,6 +303,7 @@ mod tests {
         assert!(ForestProjection::from_snapshot(
             snapshot,
             vec![TreeState {
+                lifecycle: crate::browser::Lifecycle::Open,
                 last_visit: child.id,
                 ..state.clone()
             }]

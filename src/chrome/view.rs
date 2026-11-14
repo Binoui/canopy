@@ -443,6 +443,7 @@ mod tests {
                 current: Some(ids[1]),
             },
             vec![TreeState {
+                lifecycle: crate::browser::Lifecycle::Open,
                 root: TreeId(ids[0]),
                 last_visit: ids[1],
                 name: None,

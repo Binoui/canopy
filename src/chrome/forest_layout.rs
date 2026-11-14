@@ -101,6 +101,7 @@ mod tests {
             }
             current = parent;
             states.push(TreeState {
+                lifecycle: crate::browser::Lifecycle::Open,
                 root: TreeId(root),
                 last_visit: parent.unwrap(),
                 name: None,
