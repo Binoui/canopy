@@ -2,13 +2,16 @@ use anyhow::Result;
 use canopy::{
     browser::{Browser, Navigation, NavigationTarget, SourceContext, UsualPath, Visibility},
     chrome::{ChromeHost, ChromeIntent},
+    pages::{PageEvent, Pages},
     ui::Ui,
 };
 use gtk::prelude::*;
 use std::{
+    cell::RefCell,
     collections::HashMap,
     io::{Read, Write},
     net::TcpListener,
+    rc::Rc,
     sync::{Arc, Mutex},
     thread,
     time::Duration,
@@ -189,6 +192,38 @@ fn main() -> Result<()> {
         println!("PASS {case}");
         ui.window.close();
         pump(100);
+    }
+    if std::env::var("CONTINUATION_CASE")
+        .map_or(true, |case| case == "owner_survives_reentrant_observer")
+    {
+        let directory = tempfile::tempdir()?;
+        let window = gtk::Window::new(gtk::WindowType::Toplevel);
+        let fixed = gtk::Fixed::new();
+        window.add(&fixed);
+        let browser = Browser::open(&directory.path().join("forest.sqlite3"))?;
+        let pages = Pages::mount(&fixed, browser, &directory.path().join("profile"))?;
+        let native = pages.selected_page().native.downgrade();
+        let holder = Rc::new(RefCell::new(Some(pages.clone())));
+        let weak = Rc::downgrade(&holder);
+        pages.observe(move |event| {
+            if matches!(event, PageEvent::Loading(false)) {
+                if let Some(holder) = weak.upgrade() {
+                    holder.borrow_mut().take();
+                }
+            }
+        });
+        window.show_all();
+        pages.go(canopy::pages::Go::Address {
+            url: format!("http://{address}/owner/page").parse()?,
+            target: NavigationTarget::Root,
+        })?;
+        drop(pages);
+        wait("observer released owner and page", || {
+            holder.borrow().is_none() && native.upgrade().is_none()
+        })?;
+        window.close();
+        pump(100);
+        println!("PASS owner_survives_reentrant_observer");
     }
     Ok(())
 }

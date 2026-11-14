@@ -100,6 +100,31 @@ struct NativeState {
     reload_candidate: RefCell<Option<Url>>,
 }
 
+struct NativeCallback {
+    state: Rc<NativeState>,
+    _owner: Rc<Pages>,
+}
+
+impl std::ops::Deref for NativeCallback {
+    type Target = Rc<NativeState>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl Pages {
+    fn enter_native(weak: &Weak<NativeState>) -> Option<NativeCallback> {
+        let state = weak.upgrade()?;
+        let owner = state.pages.upgrade()?;
+        // A reentrant observer can release the window; its owner must outlive this callback.
+        Some(NativeCallback {
+            state,
+            _owner: owner,
+        })
+    }
+}
+
 pub(super) struct LivePage {
     pub(super) native: webkit2gtk::WebView,
     state: Rc<NativeState>,
@@ -184,11 +209,8 @@ impl LivePage {
         {
             let weak = Rc::downgrade(&state);
             manager.connect_script_message_received(Some(SCROLLED), move |_, message| {
-                if let (Some(state), Some(value)) = (
-                    weak.upgrade()
-                        .filter(|state| state.pages.strong_count() > 0),
-                    message.js_value(),
-                ) {
+                if let (Some(state), Some(value)) = (Pages::enter_native(&weak), message.js_value())
+                {
                     state.scrolled(&value.to_str());
                 }
             });
@@ -196,10 +218,7 @@ impl LivePage {
         {
             let weak = Rc::downgrade(&state);
             native.connect_load_changed(move |native, event| {
-                let Some(state) = weak
-                    .upgrade()
-                    .filter(|state| state.pages.strong_count() > 0)
-                else {
+                let Some(state) = Pages::enter_native(&weak) else {
                     return;
                 };
                 let url = native.uri().and_then(|uri| web_url(&uri).ok());
@@ -303,10 +322,7 @@ impl LivePage {
                                     glib::timeout_add_local_once(
                                         std::time::Duration::from_secs(seconds),
                                         move || {
-                                            if let Some(state) = weak
-                                                .upgrade()
-                                                .filter(|state| state.pages.strong_count() > 0)
-                                            {
+                                            if let Some(state) = Pages::enter_native(&weak) {
                                                 if state.valid(&ticket)
                                                     && state
                                                         .owner()
@@ -331,10 +347,7 @@ impl LivePage {
         {
             let weak = Rc::downgrade(&state);
             native.connect_load_failed(move |_, _, _uri, error| {
-                let Some(state) = weak
-                    .upgrade()
-                    .filter(|state| state.pages.strong_count() > 0)
-                else {
+                let Some(state) = Pages::enter_native(&weak) else {
                     return true;
                 };
                 let ticket = state.loading_ticket();
@@ -362,10 +375,7 @@ impl LivePage {
         {
             let weak = Rc::downgrade(&state);
             native.connect_load_failed_with_tls_errors(move |_, _uri, _, _| {
-                if let Some(state) = weak
-                    .upgrade()
-                    .filter(|state| state.pages.strong_count() > 0)
-                {
+                if let Some(state) = Pages::enter_native(&weak) {
                     let ticket = state.active_ticket();
                     if ticket.is_none() || ticket != state.navigation.borrow().pending_ticket() {
                         return true;
@@ -384,10 +394,7 @@ impl LivePage {
         {
             let weak = Rc::downgrade(&state);
             native.connect_title_notify(move |_| {
-                if let Some(state) = weak
-                    .upgrade()
-                    .filter(|state| state.pages.strong_count() > 0)
-                {
+                if let Some(state) = Pages::enter_native(&weak) {
                     state.update_title();
                 }
             });
@@ -395,9 +402,7 @@ impl LivePage {
         if let Some(list) = native.back_forward_list() {
             let weak = Rc::downgrade(&state);
             list.connect_local("changed", false, move |values| {
-                let state = weak
-                    .upgrade()
-                    .filter(|state| state.pages.strong_count() > 0)?;
+                let state = Pages::enter_native(&weak)?;
                 let list: webkit2gtk::BackForwardList = values[0].get().unwrap();
                 let added: Option<BackForwardListItem> = values[1].get().unwrap();
                 let current = list.current_item();
@@ -429,14 +434,10 @@ impl LivePage {
                 let attempt = state.navigation.borrow().pending_ticket();
                 let weak = Rc::downgrade(&state);
                 glib::idle_add_local_once(move || {
-                    if let Some(state) = weak
-                        .upgrade()
-                        .filter(|state| state.pages.strong_count() > 0)
-                        .filter(|state| {
-                            state.navigation.borrow().pending_ticket() == attempt
-                                && *state.history_cursor.borrow() == current
-                        })
-                    {
+                    if let Some(state) = Pages::enter_native(&weak).filter(|state| {
+                        state.navigation.borrow().pending_ticket() == attempt
+                            && *state.history_cursor.borrow() == current
+                    }) {
                         state.history_changed(added.is_some());
                     }
                 });
@@ -446,17 +447,13 @@ impl LivePage {
         {
             let weak = Rc::downgrade(&state);
             native.connect_uri_notify(move |_| {
-                let Some(state) = weak
-                    .upgrade()
-                    .filter(|state| state.pages.strong_count() > 0)
-                else {
+                let Some(state) = Pages::enter_native(&weak) else {
                     return;
                 };
                 let attempt = state.navigation.borrow().pending_ticket();
                 let weak = Rc::downgrade(&state);
                 glib::idle_add_local_once(move || {
-                    if let Some(state) = weak
-                        .upgrade()
+                    if let Some(state) = Pages::enter_native(&weak)
                         .filter(|state| state.navigation.borrow().pending_ticket() == attempt)
                     {
                         state.history_changed(false);
@@ -467,10 +464,7 @@ impl LivePage {
         {
             let weak = Rc::downgrade(&state);
             native.connect_is_loading_notify(move |_| {
-                if let Some(state) = weak
-                    .upgrade()
-                    .filter(|state| state.pages.strong_count() > 0)
-                {
+                if let Some(state) = Pages::enter_native(&weak) {
                     state.complete_same_document();
                 }
             });
@@ -478,16 +472,12 @@ impl LivePage {
         {
             let weak = Rc::downgrade(&state);
             native.connect_decide_policy(move |_, decision, kind| {
-                weak.upgrade()
-                    .filter(|state| state.pages.strong_count() > 0)
-                    .is_some_and(|state| state.decide(decision, kind))
+                Pages::enter_native(&weak).is_some_and(|state| state.decide(decision, kind))
             });
         }
         let weak = Rc::downgrade(&state);
         context.register_view(&native, move |source| {
-            weak.upgrade()
-                .filter(|state| state.pages.strong_count() > 0)
-                .and_then(|state| state.download_page(source))
+            Pages::enter_native(&weak).and_then(|state| state.download_page(source))
         });
         Ok(Self { native, state })
     }
@@ -773,10 +763,7 @@ impl NativeState {
         self.pending_scroll.set(None);
         let weak = Rc::downgrade(self);
         glib::idle_add_local_once(move || {
-            if let Some(state) = weak
-                .upgrade()
-                .filter(|state| state.pages.strong_count() > 0)
-            {
+            if let Some(state) = Pages::enter_native(&weak) {
                 if state.load_generation.get() == generation
                     && state.navigation.borrow().pending_ticket() == Some(requested)
                 {
@@ -893,16 +880,13 @@ impl NativeState {
             None,
             None::<&gio::Cancellable>,
             move |result| {
-                let Some(state) = weak
-                    .upgrade()
-                    .filter(|state| state.pages.strong_count() > 0)
-                else {
+                let Some(state) = Pages::enter_native(&weak) else {
                     return;
                 };
                 let value = result
                     .ok()
                     .and_then(|value| serde_json::from_str(value.to_str().as_str()).ok());
-                callback(state, value);
+                callback(state.state.clone(), value);
             },
         );
     }
