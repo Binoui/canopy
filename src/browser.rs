@@ -81,10 +81,14 @@ pub struct StartSuggestions {
     pub paths: Vec<UsualPath>,
 }
 
+/// Whether a tree has a tab. A settled tree keeps every page and reopens when one is visited.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Lifecycle {
     Open,
-    Settled { since: i64 },
+    /// `since` is in ms and orders the settled trees, newest first.
+    Settled {
+        since: i64,
+    },
 }
 
 impl Lifecycle {
@@ -93,10 +97,16 @@ impl Lifecycle {
     }
 }
 
+/// Where the window goes after a tree is settled.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Landing {
+    /// The current page is in an open tree, or there is none.
     Unchanged,
+    /// Load this page of the open tree visited last. The current page stays in its settled
+    /// tree until that load commits.
     Restore(VisitId),
+    /// No open tree is left. The current page is already cleared, so the caller must stop
+    /// showing it.
     Start,
 }
 
@@ -660,6 +670,8 @@ impl Browser {
         Ok(states)
     }
 
+    /// Takes `tree` out of the tabs and says where the window goes. Settling a settled tree
+    /// changes nothing and gives the landing again, so a failed landing can be retried.
     pub fn settle_tree(&mut self, tree: TreeId) -> Result<Landing> {
         let tx = self.connection.transaction()?;
         let root = tree.0.to_string();
@@ -670,15 +682,18 @@ impl Browser {
         {
             bail!("This tree no longer exists.");
         }
-        let current: Option<String> = tx.query_row(
+        // A window already resting in a settled tree, after a landing that failed or has not
+        // committed, gets a landing again whichever tree is settled now.
+        let stranded: Option<bool> = tx.query_row(
             "WITH RECURSIVE ancestry(id, parent_id) AS (
                 SELECT id, parent_id FROM visits WHERE id=(SELECT current_id FROM session WHERE singleton=1)
                 UNION
                 SELECT v.id, v.parent_id FROM visits v JOIN ancestry a ON v.id=a.parent_id
-             ) SELECT id FROM ancestry WHERE parent_id IS NULL",
+             ) SELECT t.settled_at IS NOT NULL FROM ancestry a JOIN tree_state t ON t.root_id=a.id
+               WHERE a.parent_id IS NULL",
             [], |row| row.get(0),
         ).optional()?;
-        if current.as_deref() != Some(root.as_str()) {
+        if stranded != Some(true) {
             tx.commit()?;
             return Ok(Landing::Unchanged);
         }
@@ -1643,6 +1658,17 @@ mod tests {
     }
 
     #[test]
+    fn settling_the_last_open_tree_before_the_landing_commits_clears_the_current_page() {
+        let mut b = memory();
+        let a = follow(&mut b, "a", NavigationTarget::Root);
+        let c = follow(&mut b, "c", NavigationTarget::Root);
+        assert_eq!(b.settle_tree(TreeId(c)).unwrap(), Landing::Restore(a));
+        assert_eq!(b.settle_tree(TreeId(a)).unwrap(), Landing::Start);
+        assert_eq!(b.snapshot().unwrap().current, None);
+        assert_eq!(b.snapshot().unwrap().visits.len(), 2);
+    }
+
+    #[test]
     fn a_load_in_flight_in_the_current_tree_cannot_bring_its_tab_back_once_the_landing_is_requested(
     ) {
         let mut b = memory();
@@ -1978,7 +2004,9 @@ mod tests {
                 .title_changed(&url("a"), "Rust documentation")
                 .unwrap();
             follow(&mut browser, "b", NavigationTarget::Root);
-            browser.title_changed(&url("b"), "A café page at 100%").unwrap();
+            browser
+                .title_changed(&url("b"), "A café page at 100%")
+                .unwrap();
             assert_eq!(browser.search("Rust").unwrap().len(), 1);
             assert_eq!(browser.search("%").unwrap().len(), 1);
             assert!(browser

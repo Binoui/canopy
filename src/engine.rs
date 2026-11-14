@@ -375,6 +375,8 @@ impl Engine {
         Ok(())
     }
 
+    /// Shows the home page in place of the current one and drops any load in flight, for a
+    /// window with no current page.
     pub fn blank(&self) {
         let state = &self.state;
         state

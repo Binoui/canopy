@@ -193,7 +193,7 @@ fn main() -> Result<()> {
         if all_settled {
             assert_eq!(
                 browser.settle_tree(browser.tree_states()?[0].root)?,
-                Landing::Unchanged
+                Landing::Start
             );
         }
         drop(browser);
