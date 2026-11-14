@@ -5,7 +5,7 @@ use std::{
 };
 
 use gtk::{cairo, gdk, gdk_pixbuf::Pixbuf};
-use webkit2gtk::{FaviconDatabaseExt, WebContextExt, WebViewExt};
+use webkit2gtk::{FaviconDatabaseExt, WebViewExt};
 
 const PAGE_LIMIT: usize = 512;
 const HOST_LIMIT: usize = 256;
@@ -17,7 +17,7 @@ type ChangeHandler = Box<dyn Fn(u64)>;
 /// PNG bytes for the chrome view. A queued page is never fetched: it borrows an icon already
 /// seen on its host, or the view draws a monogram.
 pub struct Favicons {
-    page: webkit2gtk::WebView,
+    database: webkit2gtk::FaviconDatabase,
     pages: RefCell<Bounded<String, Option<Rc<[u8]>>>>,
     hosts: RefCell<Bounded<String, Rc<[u8]>>>,
     requested: RefCell<HashSet<String>>,
@@ -26,9 +26,9 @@ pub struct Favicons {
 }
 
 impl Favicons {
-    pub fn new(page: &webkit2gtk::WebView) -> Rc<Self> {
+    pub fn new(database: &webkit2gtk::FaviconDatabase) -> Rc<Self> {
         let favicons = Rc::new(Self {
-            page: page.clone(),
+            database: database.clone(),
             pages: RefCell::new(Bounded::new(PAGE_LIMIT)),
             hosts: RefCell::new(Bounded::new(HOST_LIMIT)),
             requested: RefCell::new(HashSet::new()),
@@ -36,6 +36,17 @@ impl Favicons {
             on_change: RefCell::new(None),
         });
         let weak = Rc::downgrade(&favicons);
+        database.connect_favicon_changed(move |_, uri, _| {
+            if let Some(favicons) = weak.upgrade() {
+                favicons.requested.borrow_mut().remove(uri);
+                favicons.request(uri.to_owned());
+            }
+        });
+        favicons
+    }
+
+    pub(crate) fn observe_page(self: &Rc<Self>, page: &webkit2gtk::WebView) {
+        let weak = Rc::downgrade(self);
         page.connect_favicon_notify(move |page| {
             let Some(favicons) = weak.upgrade() else {
                 return;
@@ -44,7 +55,6 @@ impl Favicons {
                 favicons.store(uri.to_string(), Some(&surface));
             }
         });
-        favicons
     }
 
     /// Called with the new revision whenever a newly known icon could change what is drawn.
@@ -76,15 +86,13 @@ impl Favicons {
         if !self.requested.borrow_mut().insert(url.clone()) {
             return;
         }
-        let Some(database) = self.page.context().and_then(|c| c.favicon_database()) else {
-            return;
-        };
         let weak = Rc::downgrade(self);
-        database.favicon(&url.clone(), None::<&gio::Cancellable>, move |result| {
-            if let Some(favicons) = weak.upgrade() {
-                favicons.store(url, result.ok().as_ref());
-            }
-        });
+        self.database
+            .favicon(&url.clone(), None::<&gio::Cancellable>, move |result| {
+                if let Some(favicons) = weak.upgrade() {
+                    favicons.store(url, result.ok().as_ref());
+                }
+            });
     }
 
     fn store(&self, url: String, surface: Option<&cairo::Surface>) {
