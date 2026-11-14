@@ -177,6 +177,7 @@ struct NativeState {
     /// page its file belongs to if it becomes a download instead. WebKit may report that
     /// load as failed before it reports the download, and the navigation is forgotten then.
     response_page: RefCell<Option<(Url, Option<VisitId>)>>,
+    reload_candidate: RefCell<Option<Url>>,
 }
 
 pub struct Engine {
@@ -276,6 +277,7 @@ impl Engine {
             traversal: RefCell::new(None),
             pending_scroll: Cell::new(None),
             response_page: RefCell::new(None),
+            reload_candidate: RefCell::new(None),
         });
         manager.register_script_message_handler_in_world(SCROLLED, WORLD);
         {
@@ -293,6 +295,19 @@ impl Engine {
                 let url = native.uri().and_then(|uri| web_url(&uri).ok());
                 match event {
                     LoadEvent::Started => {
+                        let reload = state.reload_candidate.borrow_mut().take();
+                        if reload.is_some() && state.navigation.borrow().pending_ticket().is_none()
+                        {
+                            let result = state
+                                .browser
+                                .borrow_mut()
+                                .reload(&mut state.navigation.borrow_mut());
+                            if let Some(ticket) = state.navigation.borrow().pending_ticket() {
+                                *state.issue.borrow_mut() = Issue::Issued(ticket);
+                            }
+                            state.report(result.map(|_| ()));
+                        }
+
                         state.same_document_request.borrow_mut().take();
                         state.traversal.borrow_mut().take();
                         let issued = state.issued.borrow_mut().take();
@@ -941,6 +956,9 @@ impl NativeState {
             ));
             return true;
         };
+        if action.navigation_type() != NavigationType::Reload {
+            self.reload_candidate.borrow_mut().take();
+        }
         let modifiers = gdk::ModifierType::from_bits_truncate(action.modifiers());
         let background = kind == PolicyDecisionType::NewWindowAction
             || action.mouse_button() == 2
@@ -1001,15 +1019,7 @@ impl NativeState {
         if action.navigation_type() == NavigationType::Reload
             && self.navigation.borrow().pending_ticket().is_none()
         {
-            let result = self
-                .browser
-                .borrow_mut()
-                .reload(&mut self.navigation.borrow_mut())
-                .map(|_| ());
-            if let Some(ticket) = self.navigation.borrow().pending_ticket() {
-                *self.issue.borrow_mut() = Issue::Issued(ticket);
-            }
-            self.report(result);
+            *self.reload_candidate.borrow_mut() = Some(url.clone());
         } else if action.navigation_type() == NavigationType::BackForward {
             if matches!(*self.issue.borrow(), Issue::Retiring { .. }) {
                 decision.ignore();
