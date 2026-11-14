@@ -330,7 +330,7 @@ fn other_target() -> Result<()> {
 fn fork() -> Result<()> {
     fork_case(false)
 }
-fn fork_unwrapped() -> Result<()> {
+fn fork_without_binding() -> Result<()> {
     fork_case(true)
 }
 fn fork_case(unwrapped: bool) -> Result<()> {
@@ -548,6 +548,63 @@ fn tree_boundary() -> Result<()> {
     Ok(())
 }
 
+fn unresponsive_release() -> Result<()> {
+    let f = Fixture::new()?;
+    f.navigate("/a")?;
+    let started = Rc::new(std::cell::Cell::new(false));
+    let flag = started.clone();
+    f.pages.selected_page().native.evaluate_javascript(
+        "while(true) {}",
+        None,
+        None,
+        None::<&gio::Cancellable>,
+        move |_| flag.set(true),
+    );
+    let start = Instant::now();
+    f.release()?;
+    assert!(!started.get(), "release must not wait for the hung script");
+    assert!(
+        start.elapsed() < Duration::from_secs(3),
+        "release wait must be bounded"
+    );
+    Ok(())
+}
+fn scroll_checkpoint_current() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.navigate("/a")?;
+    f.eval("scrollTo(0,1000); return true;")?;
+    wait("saved old scroll", || {
+        f.pages.read(|b| b.scroll(a)).unwrap() == Some(1000)
+    })?;
+    f.eval("scrollTo(0,3000); return true;")?;
+    f.release()?;
+    assert_eq!(
+        f.pages.read(|b| b.scroll(a))?,
+        Some(3000),
+        "checkpoint captures current scroll"
+    );
+    assert!(!f.revive(a)?);
+    wait("current scroll restored", || {
+        f.eval("return scrollY;").unwrap() == json!(3000)
+    })?;
+    Ok(())
+}
+fn scroll_checkpoint_back() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.navigate("/a")?;
+    f.eval("scrollTo(0,1000); return true;")?;
+    wait("saved old scroll", || {
+        f.pages.read(|b| b.scroll(a)).unwrap() == Some(1000)
+    })?;
+    f.eval("scrollTo(0,2500); return true;")?;
+    f.navigate("/b")?;
+    f.release()?;
+    assert!(!f.revive(a)?);
+    wait("WebKit history scroll", || {
+        f.eval("return scrollY;").unwrap() == json!(2500)
+    })?;
+    Ok(())
+}
 fn duplicate_entry() -> Result<()> {
     let f = Fixture::new()?;
     let a = f.navigate("/a")?;
@@ -575,20 +632,40 @@ fn duplicate_entry() -> Result<()> {
     );
     Ok(())
 }
-fn scroll_checkpoint_back() -> Result<()> {
+fn observer_release() -> Result<()> {
+    let f = Fixture::new()?;
+    f.navigate("/a")?;
+    let weak = Rc::downgrade(&f.pages);
+    let once = Rc::new(std::cell::Cell::new(false));
+    f.pages.observe(move |event| {
+        if matches!(event, PageEvent::Changed) && !once.replace(true) {
+            let pages = weak.upgrade().unwrap();
+            pages.release_selected_page();
+            pages.resize(1000., 800.);
+            pages.focus();
+        }
+    });
+    let _ = f.pages.open_roots(&[f.server.url("/root")]);
+    wait("observer checkpoint", || {
+        f.pages.checkpoint_size().is_some()
+    })?;
+    Ok(())
+}
+fn alias_only() -> Result<()> {
     let f = Fixture::new()?;
     let a = f.navigate("/a")?;
-    f.eval("scrollTo(0,1000); return true;")?;
-    wait("saved old scroll", || {
-        f.pages.read(|b| b.scroll(a)).unwrap() == Some(1000)
+    f.eval("history.replaceState({}, '', '/route'); return true;")?;
+    wait("alias URL", || {
+        f.pages.selected_page().native.uri().as_deref() == Some(f.server.url("/route").as_str())
     })?;
-    f.eval("scrollTo(0,2500); return true;")?;
-    f.navigate("/b")?;
     f.release()?;
-    assert!(!f.revive(a)?);
-    wait("WebKit history scroll", || {
-        f.eval("return scrollY;").unwrap() == json!(2500)
-    })?;
+    assert!(f.revive(a)?);
+    let list = f.pages.selected_page().native.back_forward_list().unwrap();
+    assert_eq!(list.length(), 1);
+    assert_eq!(
+        f.pages.selected_page().native.uri().as_deref(),
+        Some(f.server.url("/a").as_str())
+    );
     Ok(())
 }
 fn main() -> Result<()> {
@@ -609,15 +686,18 @@ fn main() -> Result<()> {
     let selected = std::env::args().nth(1);
     type Case = (&'static str, fn() -> Result<()>);
     let cases: &[Case] = &[
-        ("duplicate_entry", duplicate_entry),
+        ("scroll_checkpoint_current", scroll_checkpoint_current),
         ("scroll_checkpoint_back", scroll_checkpoint_back),
+        ("duplicate_entry", duplicate_entry),
+        ("observer_release", observer_release),
+        ("alias_only", alias_only),
         ("history_release", history_release),
         ("download_release", download_release),
         ("late_callbacks", late_callbacks),
         ("tree_boundary", tree_boundary),
         ("other_target", other_target),
         ("fork", fork),
-        ("fork_unwrapped", fork_unwrapped),
+        ("fork_without_binding", fork_without_binding),
         ("wrong_length", || corrupt("length")),
         ("wrong_position", || corrupt("position")),
         ("wrong_url", || corrupt("url")),
@@ -626,6 +706,7 @@ fn main() -> Result<()> {
         ("push_state_route", push_state_route),
         ("in_flight", in_flight),
         ("failure_retry", failure_retry),
+        ("unresponsive_release", unresponsive_release),
     ];
     for (name, run) in cases {
         if selected.as_ref().is_some_and(|s| s != name) {

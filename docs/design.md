@@ -61,43 +61,45 @@ In-app changes inside web applications remain a separate case. The MVP does not 
 The per-branch rollout will call the private checkpoint lifecycle in Pages. Its
 only current callers are GUI probes. A checkpoint owns serialized WebKit session
 bytes, entry records in native list order, and the current position. Each entry
-records its visit, document group, native URL, and stored visit URL. The two URLs
-allow a pushState entry to alias a visit without changing that visit's stored
-address. Checkpoints contain no native objects and never enter SQLite or logs.
+records its visit, document group, native URL, stored visit URL, and whether its
+request used POST. The two URLs allow a pushState entry to alias a visit without
+changing that visit's stored address. Checkpoints contain no native objects and
+never enter SQLite or logs.
 
-Checkpointing cancels the pending ticket through Navigation::failed and discards
-continuations. It stops loading before checking the native list. An unbound item,
-a missing position, a duplicate binding, or a stale binding makes checkpointing
-fail. Release destroys the widget after disconnecting its handlers and clearing
-item references. Callback entry also rejects a detached state.
+Release takes the selected page out of its slot before asking its isolated script
+world for the current URL and scroll. The pending completion owns the source view.
+The answer saves scroll only for the same valid document and URL. A 500 ms GLib
+timeout cancels the query and completes release if the web process does not answer.
+The main loop must be serviced for either completion to run. A hung main loop has
+no wall-clock guarantee. On timeout, the most recent SQLite and WebKit values can
+still miss recent scrolling. The query measures scroll when the web process handles
+it, so scrolling between the release request and that answer can enter the snapshot.
 
-Revival constructs a fresh Navigation and view. Session restoration starts no
-load. Before binding any items, it checks the list length, current position,
-native URLs, and stored visit URLs. It then rebinds visits and document groups by
-position. A mismatch destroys that candidate and uses a fresh view for a cold
-restore. A requested visit outside the checkpoint also takes the cold path.
-Traversal uses the existing restore intent, Issue state, policy handler, and
-commit path. Form and script state do not survive. Per-visit scroll remains in
-SQLite, and native back and forward retain the open-tree restriction.
+After the query, checkpointing cancels the pending ticket through Navigation::failed
+and discards only a continuation owned by that view. It stops loading before
+checking the native list. An unbound item, missing position, duplicate binding, or
+stale binding makes checkpointing fail. Entries without a Canopy visit, including
+about:blank and blob: documents, also make checkpointing fail. Release still destroys
+the view and permits a cold restore from SQLite. No form or script state survives.
 
-Checkpointing disables native callbacks before stopping the load. Released state
-also blocks event emission from a callback that was already running when an
-observer released the page. Pages releases its live-page lease before any widget
-destruction. The callback guard, native traversal, session restore, and observer
-calls run without a Pages, Browser, or navigation RefCell borrow.
+Release disconnects handlers, clears item references, unparents the view, and
+destroys it. The lifecycle gate rejects native and capture callbacks during the
+scroll query and after release. The query completion alone can save the final
+scroll. Weak references and load and document generations also reject late work. Callers hold no selected
+slot borrow while calling observers. During the release wait, the slot is empty.
+Resize and focus tolerate that state. Navigation and capture requests return an
+error. Revival waits for release to complete before mounting a replacement.
 
-If only aliased native URLs remain for the requested visit, revival falls back
-to that visit's stored URL. This preserves the existing rule that selecting a
-visit reloads its stored address. Checkpoint failure also releases the source;
-the caller can cold-restore from SQLite without a checkpoint.
+Revival creates a fresh Navigation and view without loading HOME. Restoring the
+session starts no load. Validation checks list length, current position, native
+URLs, and stored visit URLs before rebinding every position. A mismatch or absent
+target takes the cold path. Alias-only targets reload their stored URL cold.
+The saved current entry wins over another entry showing the same visit and URL.
+SQLite scroll applies only when reviving the entry current at checkpoint time.
+Other entries retain WebKit's scroll, captured when the document was left.
+Native back and forward retain the open-tree restriction.
 
-A revived incarnation applies the visit's persisted scroll through the existing
-scroll-restoration helper after loading, including when it traversed native
-history. Normal traversal in an already loaded view still uses native history's
-scroll. The mount probe installs its replacement before releasing the old page through
-the shared checkpoint/release helper, so destroy callbacks can reenter Pages.
-
-Pages ignore window.close() so a page cannot destroy its browser view.
-
-Canopy refuses POST requests during back and forward navigation and loads the
-visit address with GET. Reviving a POST target takes the cold GET path.
+Canopy never automatically repeats a POST through back or forward navigation.
+The policy handler refuses that request and restores the visit's stored address
+with GET. A POST target in a checkpoint takes the cold path with GET. Pages ignore
+window.close() so page script cannot destroy the browser's page view.

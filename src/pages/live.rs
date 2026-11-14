@@ -102,14 +102,8 @@ impl Issue {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Lifecycle {
     Live,
-    Checkpointing,
+    CapturingScroll,
     Released,
-}
-
-impl Lifecycle {
-    fn accepts_callbacks(self) -> bool {
-        self == Self::Live
-    }
 }
 
 struct NativeState {
@@ -159,7 +153,7 @@ impl std::ops::Deref for NativeCallback {
 impl Pages {
     fn enter_native(weak: &Weak<NativeState>) -> Option<NativeCallback> {
         let state = weak.upgrade()?;
-        if !state.lifecycle.get().accepts_callbacks() {
+        if state.lifecycle.get() != Lifecycle::Live {
             return None;
         }
         let owner = state.pages.upgrade()?;
@@ -228,10 +222,7 @@ impl LivePage {
         settings.set_user_agent(None);
         settings.set_enable_developer_extras(cfg!(debug_assertions));
         let mut signals = Vec::new();
-        signals.push((
-            native.clone().upcast(),
-            native.connect_close(|_| {}),
-        ));
+        signals.push((native.clone().upcast(), native.connect_close(|_| {})));
         signals.extend(
             mouse::setup(&native)
                 .into_iter()
@@ -577,10 +568,16 @@ impl LivePage {
                 native.connect_decide_policy(move |_, decision, kind| {
                     Pages::enter_native(&weak).is_some_and(|state| {
                         if kind == PolicyDecisionType::NavigationAction {
-                            if let Some(request) = decision.downcast_ref::<NavigationPolicyDecision>()
-                                .and_then(|d| d.navigation_action()).and_then(|a| a.request()) {
+                            if let Some(request) = decision
+                                .downcast_ref::<NavigationPolicyDecision>()
+                                .and_then(|d| d.navigation_action())
+                                .and_then(|a| a.request())
+                            {
                                 if let Some(url) = request.uri().and_then(|u| web_url(&u).ok()) {
-                                    state.request_methods.borrow_mut().insert(url, request.http_method().as_deref() == Some("POST"));
+                                    state.request_methods.borrow_mut().insert(
+                                        url,
+                                        request.http_method().as_deref() == Some("POST"),
+                                    );
                                 }
                             }
                         }
@@ -646,11 +643,64 @@ impl LivePage {
         }
     }
 
+    pub(super) fn capture_checkpoint_scroll(&self, done: impl FnOnce() + 'static) {
+        let ticket = self.state.ticket();
+        self.state.lifecycle.set(Lifecycle::CapturingScroll);
+        let completion = Rc::new(RefCell::new(Some(done)));
+        let timeout_completion = completion.clone();
+        let cancel = gio::Cancellable::new();
+        let timeout_cancel = cancel.clone();
+        let timeout =
+            glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+                timeout_cancel.cancel();
+                if let Some(done) = timeout_completion.borrow_mut().take() {
+                    done();
+                }
+            });
+        let state = Rc::downgrade(&self.state);
+        self.native.evaluate_javascript(
+            "JSON.stringify({url:location.href,y:scrollY})",
+            Some(WORLD),
+            None,
+            Some(&cancel),
+            move |value| {
+                let Some(done) = completion.borrow_mut().take() else {
+                    return;
+                };
+                timeout.remove();
+                if let (Some(state), Some(ticket), Ok(value)) = (state.upgrade(), ticket, value) {
+                    if let Ok(value) = serde_json::from_str::<Value>(&value.to_str()) {
+                        if value["url"].as_str() == Some(ticket.page_url.as_str()) {
+                            if let Some(y) = value["y"].as_f64().filter(|y| y.is_finite()) {
+                                let owner = state.owner();
+                                if y != 0.
+                                    || owner
+                                        .browser
+                                        .borrow()
+                                        .scroll(ticket.visit)
+                                        .ok()
+                                        .flatten()
+                                        .is_some()
+                                {
+                                    let _ = owner.browser.borrow_mut().scroll_for_document(
+                                        &state.navigation.borrow(),
+                                        &ticket,
+                                        y.clamp(0., 1e8) as i64,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                done();
+            },
+        );
+    }
+
     // The per-branch PR calls the checkpoint lifecycle.
     #[cfg_attr(not(feature = "gui-smoke"), allow(dead_code))]
     pub(super) fn checkpoint(&self) -> Result<Checkpoint> {
         let state = &self.state;
-        state.lifecycle.set(Lifecycle::Checkpointing);
         let owner = state.owner();
         owner.discard_view_continuation(&state.navigation.borrow());
         let pending = state.navigation.borrow().pending_ticket();
@@ -727,7 +777,10 @@ impl LivePage {
                     .any(|e| e.visit == visit && e.uri == e.stored_url && !e.post),
                 "Visit has no traversable entry in checkpoint."
             );
-            anyhow::ensure!(!saved.entries.iter().any(|e| e.visit == visit && e.post), "POST target requires GET.");
+            anyhow::ensure!(
+                !saved.entries.iter().any(|e| e.visit == visit && e.post),
+                "POST target requires GET."
+            );
             let (items, current) =
                 ordered_entries(&page.native.back_forward_list().context("No history.")?)?;
             let urls = items
@@ -1030,7 +1083,7 @@ impl NativeState {
     }
 
     fn emit(&self, event: PageEvent) {
-        if self.lifecycle.get().accepts_callbacks() {
+        if self.lifecycle.get() == Lifecycle::Live {
             self.owner().receive(event);
         }
     }
@@ -1297,7 +1350,11 @@ impl NativeState {
             decision.ignore();
             let visit = self.current_entry_visit();
             if let Some(visit) = visit {
-                let result = self.owner().browser.borrow_mut().restore(&mut self.navigation.borrow_mut(), visit);
+                let result = self
+                    .owner()
+                    .browser
+                    .borrow_mut()
+                    .restore(&mut self.navigation.borrow_mut(), visit);
                 match result {
                     Ok(url) => self.load(url),
                     Err(error) => self.emit(PageEvent::Error(error.to_string())),
@@ -1561,9 +1618,17 @@ impl NativeState {
         };
         let live = live_entries(&list);
         let mut history = self.history.borrow_mut();
-        let post = history.iter().find(|entry| entry.item == current).map(|entry| entry.post)
-            .unwrap_or_else(|| current.uri().and_then(|u| web_url(&u).ok())
-                .and_then(|u| self.request_methods.borrow().get(&u).copied()).unwrap_or(false));
+        let post = history
+            .iter()
+            .find(|entry| entry.item == current)
+            .map(|entry| entry.post)
+            .unwrap_or_else(|| {
+                current
+                    .uri()
+                    .and_then(|u| web_url(&u).ok())
+                    .and_then(|u| self.request_methods.borrow().get(&u).copied())
+                    .unwrap_or(false)
+            });
         history.retain(|entry| entry.item != current && live.contains(&entry.item));
         history.push(HistoryEntry {
             item: current,
@@ -1582,11 +1647,12 @@ impl NativeState {
         let preferred = history.iter().filter(|entry| {
             self.history_document.get() == 0 && Some(&entry.item) == current.as_ref()
         });
-        preferred.chain(history.iter().rev()).find(|entry| {
+        preferred
+            .chain(history.iter().rev())
+            .find(|entry| {
                 entry.visit == visit
                     && entry.document != self.history_document.get()
-                    && (self.history_document.get() == 0
-                        || Some(&entry.item) != current.as_ref())
+                    && (self.history_document.get() == 0 || Some(&entry.item) != current.as_ref())
                     && live.contains(&entry.item)
                     && entry.item.uri().as_deref() == Some(url.as_str())
             })
@@ -1869,13 +1935,6 @@ mod attempt_tests {
 #[cfg(test)]
 mod checkpoint_tests {
     use super::*;
-
-    #[test]
-    fn checkpointing_and_released_states_reject_callbacks() {
-        assert!(Lifecycle::Live.accepts_callbacks());
-        assert!(!Lifecycle::Checkpointing.accepts_callbacks());
-        assert!(!Lifecycle::Released.accepts_callbacks());
-    }
 
     #[test]
     fn binding_requires_every_position_cursor_and_stored_visit_url() {

@@ -72,7 +72,6 @@ impl ContinuationState {
         }
     }
 
-
     fn transition(mut self, event: ContinuationEvent) -> Option<Self> {
         match event {
             ContinuationEvent::Commit {
@@ -144,6 +143,7 @@ pub struct Pages {
     checkpoint: RefCell<Option<live::Checkpoint>>,
     #[cfg(feature = "gui-smoke")]
     before_revival: RefCell<Option<Rc<dyn Fn()>>>,
+    releasing: Cell<bool>,
     continuation: RefCell<Option<PendingContinuation>>,
     observer: RefCell<Option<Observer>>,
     start: Cell<Option<StartPage>>,
@@ -161,6 +161,7 @@ impl Pages {
             checkpoint: RefCell::new(None),
             #[cfg(feature = "gui-smoke")]
             before_revival: RefCell::new(None),
+            releasing: Cell::new(false),
             continuation: RefCell::new(None),
             observer: RefCell::new(None),
             start: Cell::new(None),
@@ -189,6 +190,7 @@ impl Pages {
         Ok(pages)
     }
 
+    #[cfg(feature = "gui-smoke")]
     fn page(&self) -> Rc<LivePage> {
         self.live.borrow().as_ref().expect("mounted page").clone()
     }
@@ -247,7 +249,11 @@ impl Pages {
     }
 
     fn committed(self: &Rc<Self>, ticket: LoadTicket, visit: VisitId) {
-        let same_document = !self.page().native.is_loading();
+        let same_document = self
+            .live
+            .borrow()
+            .as_ref()
+            .is_some_and(|page| !page.native.is_loading());
         if let Some(ticket) = self.advance_continuation(ContinuationEvent::Commit {
             ticket,
             visit,
@@ -314,20 +320,24 @@ impl Pages {
         if matches!(go, Go::Parent) {
             self.cancel_path_continuation();
         }
-        let page = self.page();
+        let page = self
+            .live
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No selected page."))?;
         let before = page.pending_ticket();
         let result = match go {
-            Go::Visit(visit) => self.page().restore(visit),
-            Go::Parent => self.page().back(),
+            Go::Visit(visit) => page.restore(visit),
+            Go::Parent => page.back(),
             Go::Tree(tree) => {
                 let visit = self.read(|b| b.tree_target(tree))?;
-                self.page().restore(visit)
+                page.restore(visit)
             }
-            Go::Address { url, target } => self.page().navigate(url, target),
-            Go::Citation(visit) => self.page().open_citation(visit),
+            Go::Address { url, target } => page.navigate(url, target),
+            Go::Citation(visit) => page.open_citation(visit),
             Go::Saved(id) => {
                 let capture = self.read(|b| b.capture(id))?;
-                self.page().open_saved(&capture)
+                page.open_saved(&capture)
             }
         };
         if page.pending_ticket().is_some() && page.pending_ticket() != before {
@@ -350,13 +360,15 @@ impl Pages {
         Ok(())
     }
     fn continue_with(&self, action: Continuation) {
-        *self.continuation.borrow_mut() =
-            self.page()
-                .pending_ticket()
-                .map(|ticket| PendingContinuation {
-                    state: ContinuationState::Waiting(ticket),
-                    action,
-                });
+        *self.continuation.borrow_mut() = self
+            .live
+            .borrow()
+            .as_ref()
+            .and_then(|page| page.pending_ticket())
+            .map(|ticket| PendingContinuation {
+                state: ContinuationState::Waiting(ticket),
+                action,
+            });
     }
 
     pub fn settle_tree(&self, tree: TreeId) -> Result<()> {
@@ -367,7 +379,10 @@ impl Pages {
             Landing::Unchanged => Ok(()),
             Landing::Restore(visit) => self.go(Go::Visit(visit)),
             Landing::Start => {
-                self.page().blank();
+                let selected = self.live.borrow().clone();
+                if let Some(page) = selected {
+                    page.blank();
+                }
                 Ok(())
             }
         }
@@ -404,7 +419,10 @@ impl Pages {
             Some(StartPage::Show(visit)) => self.go(Go::Visit(visit)),
             Some(StartPage::Blank) => {
                 self.cancel_continuation();
-                self.page().blank();
+                let selected = self.live.borrow().clone();
+                if let Some(page) = selected {
+                    page.blank();
+                }
                 Ok(())
             }
             None => Ok(()),
@@ -426,7 +444,11 @@ impl Pages {
     }
     pub fn reload(&self) -> Result<()> {
         self.cancel_path_continuation();
-        let page = self.page();
+        let page = self
+            .live
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No selected page."))?;
         let before = page.pending_ticket();
         let result = page.reload();
         if page.pending_ticket().is_some() && page.pending_ticket() != before {
@@ -435,10 +457,20 @@ impl Pages {
         result
     }
     pub fn remember_selection(&self) -> Result<()> {
-        self.page().remember_selection()
+        let page = self
+            .live
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No selected page."))?;
+        page.remember_selection()
     }
     pub fn set_capture_enabled(&self, enabled: bool) -> Result<()> {
-        self.page().set_capture_enabled(enabled)
+        let page = self
+            .live
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No selected page."))?;
+        page.set_capture_enabled(enabled)
     }
     pub fn set_theme(&self, mode: ThemeMode) -> Result<()> {
         self.browser.borrow_mut().set_theme_mode(mode)
@@ -447,11 +479,16 @@ impl Pages {
         self.browser.borrow_mut().rename_tree(tree, name)
     }
     pub fn focus(&self) {
-        self.page().focus();
+        let selected = self.live.borrow().clone();
+        if let Some(page) = selected {
+            page.focus();
+        }
     }
     pub fn resize(&self, width: f64, height: f64) {
-        self.page()
-            .set_bounds(0., CHROME_HEIGHT, width, height - CHROME_HEIGHT);
+        let selected = self.live.borrow().clone();
+        if let Some(page) = selected {
+            page.set_bounds(0., CHROME_HEIGHT, width, height - CHROME_HEIGHT);
+        }
     }
     pub fn apply_cookie_batches(
         &self,
@@ -462,14 +499,33 @@ impl Pages {
     }
     // The per-branch PR calls the checkpoint lifecycle.
     #[cfg_attr(not(feature = "gui-smoke"), allow(dead_code))]
-    fn checkpoint_and_release(&self) -> Result<live::Checkpoint> {
+    fn checkpoint_and_release(
+        &self,
+        done: impl FnOnce(Result<live::Checkpoint>) + 'static,
+    ) -> Result<()> {
         let page = self
             .live
             .borrow_mut()
             .take()
             .ok_or_else(|| anyhow::anyhow!("No live page."))?;
+        self.releasing.set(true);
+        let weak = self.me.clone();
         self.discard_view_continuation(&page.navigation());
-        Self::release_page(page)
+        let finish = move |result| {
+            if let Some(pages) = weak.upgrade() {
+                pages.releasing.set(false);
+            }
+            done(result);
+        };
+        let pending = page.clone();
+        page.capture_checkpoint_scroll(move || finish(Self::release_page(pending)));
+        Ok(())
+    }
+
+    fn release_page(page: Rc<LivePage>) -> Result<live::Checkpoint> {
+        let saved = page.checkpoint();
+        drop(page);
+        saved
     }
 
     fn discard_view_continuation(&self, navigation: &crate::browser::Navigation) {
@@ -482,23 +538,24 @@ impl Pages {
         }
     }
 
-    fn release_page(page: Rc<LivePage>) -> Result<live::Checkpoint> {
-        let saved = page.checkpoint();
-        drop(page);
-        saved
-    }
-
     #[cfg(feature = "gui-smoke")]
     pub fn release_selected_page(&self) {
-        let saved = self.checkpoint_and_release().ok();
-        *self.checkpoint.borrow_mut() = saved;
+        let weak = self.me.clone();
+        let _ = self.checkpoint_and_release(move |saved| {
+            if let Some(pages) = weak.upgrade() {
+                *pages.checkpoint.borrow_mut() = saved.ok();
+            }
+        });
     }
     #[cfg(feature = "gui-smoke")]
     pub fn mount_selected_page(self: &Rc<Self>, container: &gtk::Fixed) -> Result<()> {
         let page = LivePage::new(container, Rc::downgrade(self), &self.context)?;
         let old = self.live.borrow_mut().replace(Rc::new(page));
         if let Some(old) = old {
-            let _ = Self::release_page(old);
+            let pending = old.clone();
+            old.capture_checkpoint_scroll(move || {
+                let _ = Self::release_page(pending);
+            });
         }
         self.checkpoint.borrow_mut().take();
         Ok(())
@@ -511,6 +568,7 @@ impl Pages {
         saved: Option<&live::Checkpoint>,
         visit: VisitId,
     ) -> Result<live::Revival> {
+        anyhow::ensure!(!self.releasing.get(), "Page release still pending.");
         anyhow::ensure!(self.live.borrow().is_none(), "Page still live.");
         let (page, cold) = match saved {
             Some(saved) => {
@@ -529,7 +587,12 @@ impl Pages {
                 observer();
             }
         }
-        self.page().restore_revived(visit)?;
+        let page = self
+            .live
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No selected page."))?;
+        page.restore_revived(visit)?;
         Ok(cold)
     }
 
@@ -624,6 +687,7 @@ impl SelectedPage<'_> {
 mod continuation_tests {
     use super::*;
     use crate::browser::Navigation;
+
     #[test]
     fn checkpoint_discards_only_the_owning_views_continuation() {
         let mut source = Navigation::default();
@@ -645,8 +709,6 @@ mod continuation_tests {
             }
         }
     }
-
-
 
     #[test]
     fn waiting_continuation_requires_its_own_attempt() {
