@@ -131,6 +131,10 @@ pub struct Pages {
     browser: RefCell<Browser>,
     context: Rc<native::PageContext>,
     live: RefCell<Option<Rc<LivePage>>>,
+    #[cfg(feature = "gui-smoke")]
+    checkpoint: RefCell<Option<live::Checkpoint>>,
+    #[cfg(feature = "gui-smoke")]
+    before_revival: RefCell<Option<Rc<dyn Fn()>>>,
     continuation: RefCell<Option<PendingContinuation>>,
     observer: RefCell<Option<Observer>>,
     start: Cell<Option<StartPage>>,
@@ -144,6 +148,10 @@ impl Pages {
             browser: RefCell::new(browser),
             context,
             live: RefCell::new(None),
+            #[cfg(feature = "gui-smoke")]
+            checkpoint: RefCell::new(None),
+            #[cfg(feature = "gui-smoke")]
+            before_revival: RefCell::new(None),
             continuation: RefCell::new(None),
             observer: RefCell::new(None),
             start: Cell::new(None),
@@ -443,17 +451,97 @@ impl Pages {
     ) {
         self.context.apply_cookie_batches(batches, done);
     }
+    // The per-branch PR calls the checkpoint lifecycle.
+    #[cfg_attr(not(feature = "gui-smoke"), allow(dead_code))]
+    fn checkpoint_and_release(&self) -> Result<live::Checkpoint> {
+        self.cancel_continuation();
+        let page = self
+            .live
+            .borrow_mut()
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("No live page."))?;
+        let saved = page.checkpoint();
+        drop(page);
+        saved
+    }
+
     #[cfg(feature = "gui-smoke")]
     pub fn release_selected_page(&self) {
-        let page = self.live.borrow_mut().take();
-        drop(page);
+        let saved = self.checkpoint_and_release().ok();
+        *self.checkpoint.borrow_mut() = saved;
     }
     #[cfg(feature = "gui-smoke")]
     pub fn mount_selected_page(self: &Rc<Self>, container: &gtk::Fixed) -> Result<()> {
         let page = LivePage::new(container, Rc::downgrade(self), &self.context)?;
+        self.checkpoint.borrow_mut().take();
         let old = self.live.borrow_mut().replace(Rc::new(page));
         drop(old);
         Ok(())
+    }
+    // The per-branch PR calls the checkpoint lifecycle.
+    #[cfg_attr(not(feature = "gui-smoke"), allow(dead_code))]
+    fn revive_at(
+        &self,
+        container: &gtk::Fixed,
+        saved: Option<&live::Checkpoint>,
+        visit: VisitId,
+    ) -> Result<live::Revival> {
+        anyhow::ensure!(self.live.borrow().is_none(), "Page still live.");
+        let (page, cold) = match saved {
+            Some(saved) => {
+                LivePage::revive(container, self.me.clone(), &self.context, saved, visit)?
+            }
+            None => (
+                LivePage::new(container, self.me.clone(), &self.context)?,
+                live::Revival::Cold,
+            ),
+        };
+        *self.live.borrow_mut() = Some(Rc::new(page));
+        #[cfg(feature = "gui-smoke")]
+        {
+            let observer = self.before_revival.borrow().clone();
+            if let Some(observer) = observer {
+                observer();
+            }
+        }
+        self.page().restore(visit)?;
+        Ok(cold)
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn revive_selected_page(&self, container: &gtk::Fixed, visit: VisitId) -> Result<bool> {
+        let saved = self.checkpoint.borrow_mut().take();
+        self.revive_at(container, saved.as_ref(), visit)
+            .map(|outcome| matches!(outcome, live::Revival::Cold))
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn before_revival_traversal(&self, observer: impl Fn() + 'static) {
+        *self.before_revival.borrow_mut() = Some(Rc::new(observer));
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn selected_history_visits(&self) -> Vec<VisitId> {
+        self.page().history_visits()
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn checkpoint_size(&self) -> Option<usize> {
+        self.checkpoint.borrow().as_ref().map(|c| c.bytes.len())
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn corrupt_checkpoint(&self, kind: &str) {
+        let mut checkpoint = self.checkpoint.borrow_mut();
+        let saved = checkpoint.as_mut().expect("checkpoint");
+        match kind {
+            "length" => {
+                saved.entries.pop();
+            }
+            "position" => saved.current = usize::MAX,
+            "url" => saved.entries[0].stored_url = Url::parse("https://invalid.example/").unwrap(),
+            _ => panic!("unknown corruption"),
+        }
     }
     #[cfg(feature = "gui-smoke")]
     pub fn selected_page(&self) -> SelectedPage<'_> {

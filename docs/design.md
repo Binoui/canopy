@@ -55,3 +55,27 @@ The first milestone checks navigation, forks and resuming after a restart.
 The minimap, the graph layout, page extraction, summaries and the agent wait for a later milestone. The live page has no generic trait. Moving to Servo or CEF will mean revisiting the rendering and profile integration.
 
 In-app changes inside web applications remain a separate case. The MVP does not promise to turn every JavaScript state change into a visit.
+
+## In-memory page checkpoints
+
+The per-branch rollout will call the private checkpoint lifecycle in Pages. Its
+only current callers are GUI probes. A checkpoint owns serialized WebKit session
+bytes, entry records in native list order, and the current position. Each entry
+records its visit, document group, native URL, and stored visit URL. The two URLs
+allow a pushState entry to alias a visit without changing that visit's stored
+address. Checkpoints contain no native objects and never enter SQLite or logs.
+
+Checkpointing cancels the pending ticket through Navigation::failed and discards
+continuations. It stops loading before checking the native list. An unbound item,
+a missing position, a duplicate binding, or a stale binding makes checkpointing
+fail. Release destroys the widget after disconnecting its handlers and clearing
+item references. Callback entry also rejects a detached state.
+
+Revival constructs a fresh Navigation and view. Session restoration starts no
+load. Before binding any items, it checks the list length, current position,
+native URLs, and stored visit URLs. It then rebinds visits and document groups by
+position. A mismatch destroys that candidate and uses a fresh view for a cold
+restore. A requested visit outside the checkpoint also takes the cold path.
+Traversal uses the existing restore intent, Issue state, policy handler, and
+commit path. Form and script state do not survive. Per-visit scroll remains in
+SQLite, and native back and forward retain the open-tree restriction.
