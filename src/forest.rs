@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use anyhow::{bail, Context, Result};
 
-use crate::browser::{Snapshot, TreeId, TreeState, Visit, VisitId, VisitState};
+use crate::{
+    browser::{Snapshot, TreeId, TreeState, Visit, VisitId, VisitState},
+    naming::tree_name,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TreeSummary {
@@ -104,7 +107,10 @@ impl ForestProjection {
             }
             trees.push(TreeSummary {
                 id: node.tree,
-                title: node.visit.label().to_owned(),
+                title: tree_name(
+                    &node.visit,
+                    node.children.iter().map(|child| &nodes[child].visit),
+                ),
                 root_host: node.visit.url.host_str().unwrap_or_default().to_owned(),
                 page_count: node.descendants + 1,
                 pending_count: node.pending_below
