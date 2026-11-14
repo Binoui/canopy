@@ -535,10 +535,13 @@ fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -
             arrived(ui, "/post")?;
             assert_eq!(
                 server.hits("POST /post"),
-                posts,
-                "history must not resend POST"
+                posts + usize::from(case == "post_back"),
+                "only a revival must not resend POST"
             );
-            assert_eq!(server.hits("GET /post"), gets + 1);
+            assert_eq!(
+                server.hits("GET /post"),
+                gets + usize::from(case == "post_revival")
+            );
         }
         "failed_commit" => {
             let finished = Rc::new(Cell::new(false));

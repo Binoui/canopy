@@ -64,6 +64,7 @@ struct HistoryEntry {
     visit: VisitId,
     document: u64,
     post: bool,
+    needs_get: bool,
 }
 
 enum Issue {
@@ -135,7 +136,9 @@ struct NativeState {
     /// load as failed before it reports the download, and the navigation is forgotten then.
     response_page: RefCell<Option<(Url, Option<VisitId>)>>,
     reload_candidate: RefCell<Option<Url>>,
-    request_methods: RefCell<std::collections::HashMap<Url, bool>>,
+    response_post: Cell<Option<bool>>,
+    #[cfg(feature = "gui-smoke")]
+    revival_refusals: Cell<usize>,
 }
 
 struct NativeCallback {
@@ -267,7 +270,9 @@ impl LivePage {
             restoration_viewport: Cell::new(None),
             response_page: RefCell::new(None),
             reload_candidate: RefCell::new(None),
-            request_methods: RefCell::new(std::collections::HashMap::new()),
+            response_post: Cell::new(None),
+            #[cfg(feature = "gui-smoke")]
+            revival_refusals: Cell::new(0),
         });
         manager.register_script_message_handler_in_world(SCROLLED, WORLD);
         {
@@ -294,6 +299,7 @@ impl LivePage {
                     let url = native.uri().and_then(|uri| web_url(&uri).ok());
                     match event {
                         LoadEvent::Started => {
+                            state.response_post.set(None);
                             if matches!(*state.issue.borrow(), Issue::Issued { decided: false, .. })
                             {
                                 return;
@@ -576,18 +582,11 @@ impl LivePage {
                         return true;
                     }
                     Pages::enter_native(&weak).is_some_and(|state| {
-                        if kind == PolicyDecisionType::NavigationAction {
-                            if let Some(request) = decision
-                                .downcast_ref::<NavigationPolicyDecision>()
-                                .and_then(|d| d.navigation_action())
-                                .and_then(|a| a.request())
-                            {
-                                if let Some(url) = request.uri().and_then(|u| web_url(&u).ok()) {
-                                    state.request_methods.borrow_mut().insert(
-                                        url,
-                                        request.http_method().as_deref() == Some("POST"),
-                                    );
-                                }
+                        if let Some(response) = decision.downcast_ref::<ResponsePolicyDecision>() {
+                            if response.is_main_frame_main_resource() {
+                                state.response_post.set(response.request().map(|request| {
+                                    request.http_method().as_deref() == Some("POST")
+                                }));
                             }
                         }
                         state.decide(decision, kind)
@@ -605,6 +604,11 @@ impl LivePage {
             state,
             signals: RefCell::new(signals),
         })
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub(super) fn revival_refusals(&self) -> usize {
+        self.state.revival_refusals.get()
     }
 
     #[cfg(feature = "gui-smoke")]
@@ -733,7 +737,6 @@ impl LivePage {
     pub(super) fn checkpoint(&self) -> Result<Checkpoint> {
         let state = &self.state;
         let owner = state.pages.upgrade().context("Page owner was closed.")?;
-        owner.discard_view_continuation(&state.navigation.borrow());
         let list = self
             .native
             .back_forward_list()
@@ -825,6 +828,7 @@ impl LivePage {
                     visit: e.visit,
                     document: e.document,
                     post: e.post,
+                    needs_get: e.post,
                 })
                 .collect())
         })();
@@ -943,6 +947,10 @@ impl LivePage {
     }
 
     pub(super) fn restore_revived(&self, id: VisitId) -> Result<()> {
+        anyhow::ensure!(
+            self.state.lifecycle.get() == Lifecycle::Live,
+            "Page no longer live."
+        );
         let url = self.state.owner().browser.borrow().visit(id)?.url;
         let target = self.state.entry(id, &url);
         let was_current = target.is_some()
@@ -1394,8 +1402,15 @@ impl NativeState {
             return true;
         };
         if action.navigation_type() == NavigationType::BackForward
-            && action.request().and_then(|r| r.http_method()).as_deref() == Some("POST")
+            && self.history.borrow().iter().any(|entry| {
+                entry.needs_get
+                    && Some(&entry.item) == self.history_cursor.borrow().as_ref()
+                    && entry.document != self.history_document.get()
+                    && entry.item.uri().as_deref() == Some(uri.as_str())
+            })
         {
+            #[cfg(feature = "gui-smoke")]
+            self.revival_refusals.set(self.revival_refusals.get() + 1);
             decision.ignore();
             let visit = self.current_entry_visit();
             if let Some(visit) = visit {
@@ -1667,23 +1682,17 @@ impl NativeState {
         };
         let live = live_entries(&list);
         let mut history = self.history.borrow_mut();
-        let post = history
-            .iter()
-            .find(|entry| entry.item == current)
-            .map(|entry| entry.post)
-            .unwrap_or_else(|| {
-                current
-                    .uri()
-                    .and_then(|u| web_url(&u).ok())
-                    .and_then(|u| self.request_methods.borrow().get(&u).copied())
-                    .unwrap_or(false)
-            });
+        let previous = history.iter().find(|entry| entry.item == current);
+        let response = self.response_post.take();
+        let post = response.unwrap_or_else(|| previous.is_some_and(|entry| entry.post));
+        let needs_get = response.is_none() && previous.is_some_and(|entry| entry.needs_get);
         history.retain(|entry| entry.item != current && live.contains(&entry.item));
         history.push(HistoryEntry {
             item: current,
             visit,
             document: self.history_document.get(),
             post,
+            needs_get,
         });
     }
 
@@ -1700,6 +1709,7 @@ impl NativeState {
             .chain(history.iter().rev())
             .find(|entry| {
                 entry.visit == visit
+                    && !entry.needs_get
                     && entry.document != self.history_document.get()
                     && (self.history_document.get() == 0 || Some(&entry.item) != current.as_ref())
                     && live.contains(&entry.item)
@@ -2012,8 +2022,6 @@ mod checkpoint_tests {
         assert!(!checkpoint_document_matches(&value, &old));
         assert!(checkpoint_document_matches(&value, &new));
     }
-    use super::*;
-
     use super::*;
 
     #[test]
