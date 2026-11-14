@@ -30,7 +30,7 @@ fn main() -> Result<()> {
     let ui = Ui::new(directory.path())?;
     ui.window.show_all();
     ready(&ui)?;
-    let page = ui.engine.native.context().unwrap();
+    let page = ui.pages.selected_page().native.context().unwrap();
     let chrome_context = ui.chrome.native().context().unwrap();
     assert_ne!(
         page, chrome_context,
@@ -48,8 +48,8 @@ fn main() -> Result<()> {
     type_text(&format!("http://{address}/"))?;
     key("Return")?;
     wait("local page loaded", || {
-        !ui.engine.native.is_loading()
-            && ui.engine.native.title().as_deref() == Some("Sandbox fixture")
+        !ui.pages.selected_page().native.is_loading()
+            && ui.pages.selected_page().native.title().as_deref() == Some("Sandbox fixture")
     })?;
     pump(250);
     let (x, y) = element_point(&ui, "probe")?;
@@ -62,7 +62,8 @@ fn main() -> Result<()> {
         "Sandbox click received"
     );
     let (x, y) = ui
-        .engine
+        .pages
+        .selected_page()
         .native
         .translate_coordinates(&ui.window, 500, 400)
         .unwrap();

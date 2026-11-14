@@ -31,7 +31,8 @@ fn main() -> Result<()> {
     ui.window.show_all();
     ready(&ui)?;
 
-    ui.engine
+    ui.pages
+        .selected_page()
         .navigate(server.url("/long")?, NavigationTarget::Root)?;
     let long = arrived(&ui, "/long")?;
     eval(
@@ -39,11 +40,12 @@ fn main() -> Result<()> {
         "window.marker = 'kept'; scrollTo(0, 1800); JSON.stringify(scrollY)",
     )?;
     pump(600);
-    ui.engine
+    ui.pages
+        .selected_page()
         .navigate(server.url("/next")?, NavigationTarget::ChildOf(long))?;
     let next = arrived(&ui, "/next")?;
 
-    ui.engine.back()?;
+    ui.pages.selected_page().back()?;
     assert_eq!(arrived(&ui, "/long")?, long);
     assert_eq!(ui.snapshot()?.visits.len(), 2, "going back adds no visit");
     assert_eq!(
@@ -61,13 +63,14 @@ fn main() -> Result<()> {
     );
     println!("PASS Back returns through WebKit's history: no fetch, no new visit, scroll and script state kept.");
 
-    ui.engine.restore(next)?;
+    ui.pages.selected_page().restore(next)?;
     assert_eq!(arrived(&ui, "/next")?, next);
     assert_eq!(server.hits("/next"), 1);
     assert_eq!(ui.snapshot()?.visits.len(), 2);
     println!("PASS opening the page just left from the tree goes forward in WebKit's history.");
 
-    ui.engine
+    ui.pages
+        .selected_page()
         .navigate(server.url("/long#end")?, NavigationTarget::ChildOf(next))?;
     wait("fragment child", || {
         ui.snapshot().unwrap().visits.len() == 3
@@ -76,26 +79,27 @@ fn main() -> Result<()> {
                 .unwrap()
                 .current_visit()
                 .is_some_and(|v| v.url.fragment() == Some("end"))
-            && !ui.engine.native.is_loading()
+            && !ui.pages.selected_page().native.is_loading()
     })?;
     let fragment = ui.snapshot()?.current.unwrap();
-    ui.engine.navigate(
+    ui.pages.selected_page().navigate(
         server.url("/long#top")?,
         NavigationTarget::ChildOf(fragment),
     )?;
     wait("second fragment child", || {
-        ui.snapshot().unwrap().visits.len() == 4 && !ui.engine.native.is_loading()
+        ui.snapshot().unwrap().visits.len() == 4 && !ui.pages.selected_page().native.is_loading()
     })?;
     let hits = server.hits("/long");
-    ui.engine.back()?;
+    ui.pages.selected_page().back()?;
     wait("same-document Back", || {
         ui.snapshot().unwrap().current == Some(fragment)
             && ui
-                .engine
+                .pages
+                .selected_page()
                 .native
                 .uri()
                 .is_some_and(|uri| uri.ends_with("#end"))
-            && !ui.engine.native.is_loading()
+            && !ui.pages.selected_page().native.is_loading()
     })?;
     pump(300);
     assert_eq!(ui.snapshot()?.current, Some(fragment));
@@ -114,9 +118,11 @@ fn main() -> Result<()> {
     reopened.window.show_all();
     ready(&reopened)?;
     pump(500);
-    wait("startup settled", || !reopened.engine.native.is_loading())?;
+    wait("startup settled", || {
+        !reopened.pages.selected_page().native.is_loading()
+    })?;
     let before = server.hits("/long");
-    reopened.engine.restore(long)?;
+    reopened.pages.selected_page().restore(long)?;
     assert_eq!(arrived(&reopened, "/long")?, long);
     assert_eq!(
         server.hits("/long"),
@@ -132,9 +138,9 @@ fn main() -> Result<()> {
 
     eval(&reopened, "scrollTo(0, 2400); JSON.stringify(scrollY)")?;
     pump(600);
-    reopened.engine.reload()?;
+    reopened.pages.selected_page().reload()?;
     wait("reload finished", || {
-        server.hits("/long") == before + 2 && !reopened.engine.native.is_loading()
+        server.hits("/long") == before + 2 && !reopened.pages.selected_page().native.is_loading()
     })?;
     wait("scroll kept on reload", || {
         eval(&reopened, "JSON.stringify(scrollY)").is_ok_and(|y| y == json!(2400))
@@ -152,11 +158,12 @@ fn arrived(ui: &Ui, path: &str) -> Result<VisitId> {
             .current_visit()
             .is_some_and(|visit| visit.url.path() == path && !visit.title.is_empty())
             && ui
-                .engine
+                .pages
+                .selected_page()
                 .native
                 .uri()
                 .is_some_and(|uri| uri.ends_with(path))
-            && !ui.engine.native.is_loading()
+            && !ui.pages.selected_page().native.is_loading()
     })?;
     Ok(ui.snapshot()?.current.unwrap())
 }

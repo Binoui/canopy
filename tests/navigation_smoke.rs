@@ -40,51 +40,56 @@ fn main() -> Result<()> {
         ui.window.close();
         return Ok(());
     }
-    ui.engine
+    ui.pages
+        .selected_page()
         .navigate(server.url("/long")?, NavigationTarget::Root)?;
     let a = arrived(&ui, "/long")?;
     eval(&ui, "window.marker = 'cached'; JSON.stringify(true)")?;
-    ui.engine
+    ui.pages
+        .selected_page()
         .navigate(server.url("/next")?, NavigationTarget::ChildOf(a))?;
     let b = arrived(&ui, "/next")?;
-    ui.engine.native.go_back();
+    ui.pages.selected_page().native.go_back();
     assert_eq!(arrived(&ui, "/long")?, a);
     assert_eq!(server.hits("/long"), 1);
     assert_eq!(eval(&ui, "JSON.stringify(window.marker)")?, json!("cached"));
-    ui.engine.native.go_forward();
+    ui.pages.selected_page().native.go_forward();
     assert_eq!(arrived(&ui, "/next")?, b);
-    ui.engine.native.go_back();
+    ui.pages.selected_page().native.go_back();
     assert_eq!(arrived(&ui, "/long")?, a);
     println!(
         "PASS native Back and Forward select their actual item, including page-cache restores."
     );
     let count = ui.snapshot()?.visits.len();
-    ui.engine
+    ui.pages
+        .selected_page()
         .navigate(server.url("/third")?, NavigationTarget::ChildOf(a))?;
     let c = arrived(&ui, "/third")?;
     assert!(ui
-        .engine
+        .pages
+        .selected_page()
         .native
         .back_forward_list()
         .unwrap()
         .forward_list_with_limit(20)
         .is_empty());
     let fork_item = ui
-        .engine
+        .pages
+        .selected_page()
         .native
         .back_forward_list()
         .unwrap()
         .current_item()
         .unwrap();
     let before = server.hits("/next");
-    ui.engine.restore(b)?;
+    ui.pages.selected_page().restore(b)?;
     assert_eq!(arrived(&ui, "/next")?, b);
     assert_eq!(
         server.hits("/next"),
         before + 1,
         "a removed item must be fetched, never traversed"
     );
-    let list = ui.engine.native.back_forward_list().unwrap();
+    let list = ui.pages.selected_page().native.back_forward_list().unwrap();
     assert_eq!(
         list.back_item(),
         Some(fork_item),
@@ -97,7 +102,7 @@ fn main() -> Result<()> {
     assert_eq!(ui.snapshot()?.visits.len(), count + 1);
     assert_ne!(b, c);
     println!("PASS a fork removes the forward suffix; opening its stored visit fetches it again.");
-    ui.engine.restore(a)?;
+    ui.pages.selected_page().restore(a)?;
     assert_eq!(arrived(&ui, "/long")?, a);
     let count = ui.snapshot()?.visits.len();
     eval(&ui, "location.hash = 'hash'; JSON.stringify(true)")?;
@@ -112,9 +117,10 @@ fn main() -> Result<()> {
         "history.pushState({}, '', '#pushed'); JSON.stringify(true)",
     )?;
     pump(250);
-    ui.engine.native.go_back();
+    ui.pages.selected_page().native.go_back();
     wait("pushState Back", || {
-        ui.engine
+        ui.pages
+            .selected_page()
             .native
             .uri()
             .is_some_and(|u| u.ends_with("#replaced"))
@@ -122,14 +128,19 @@ fn main() -> Result<()> {
     pump(250);
     assert_eq!(ui.snapshot()?.visits.len(), count);
     assert_eq!(ui.snapshot()?.current, Some(a));
-    ui.engine.native.go_back();
+    ui.pages.selected_page().native.go_back();
     wait("same-document native Back", || {
-        ui.engine.native.uri().is_some_and(|u| u.ends_with("/long"))
+        ui.pages
+            .selected_page()
+            .native
+            .uri()
+            .is_some_and(|u| u.ends_with("/long"))
     })?;
     pump(300);
-    ui.engine.native.go_forward();
+    ui.pages.selected_page().native.go_forward();
     wait("same-document native Forward", || {
-        ui.engine
+        ui.pages
+            .selected_page()
             .native
             .uri()
             .is_some_and(|u| u.ends_with("#replaced"))
@@ -139,17 +150,20 @@ fn main() -> Result<()> {
         "PASS hash, pushState and replaceState entries alias the visit through native traversal."
     );
     regression("fragment", &ui, &server)?;
-    ui.engine.restore(a)?;
+    ui.pages.selected_page().restore(a)?;
     assert_eq!(arrived(&ui, "/long")?, a);
     let count = ui.snapshot()?.visits.len();
-    ui.engine
+    ui.pages
+        .selected_page()
         .navigate(server.url("/slow")?, NavigationTarget::ChildOf(a))?;
     wait("slow attempt Started", || {
-        server.hits("/slow") > 0 && ui.engine.native.is_loading()
+        server.hits("/slow") > 0 && ui.pages.selected_page().native.is_loading()
     })?;
-    ui.engine
+    ui.pages
+        .selected_page()
         .navigate(server.url("/third")?, NavigationTarget::ChildOf(a))?;
-    ui.engine
+    ui.pages
+        .selected_page()
         .navigate(server.url("/third")?, NavigationTarget::ChildOf(a))?;
     arrived(&ui, "/third")?;
     pump(600);
@@ -187,22 +201,25 @@ fn main() -> Result<()> {
 }
 
 fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
-    ui.engine
+    ui.pages
+        .selected_page()
         .navigate(server.url("/long")?, NavigationTarget::Root)?;
     let a = arrived(ui, "/long")?;
     match case {
         "fork" => {
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/next")?, NavigationTarget::ChildOf(a))?;
             let b = arrived(ui, "/next")?;
-            ui.engine.restore(a)?;
+            ui.pages.selected_page().restore(a)?;
             arrived(ui, "/long")?;
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/third")?, NavigationTarget::ChildOf(a))?;
             arrived(ui, "/third")?;
-            let list = ui.engine.native.back_forward_list().unwrap();
+            let list = ui.pages.selected_page().native.back_forward_list().unwrap();
             let fork_item = list.current_item().unwrap();
-            ui.engine.restore(b)?;
+            ui.pages.selected_page().restore(b)?;
             arrived(ui, "/next")?;
             assert_eq!(
                 list.back_item(),
@@ -215,22 +232,28 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
             );
         }
         "fragment" => {
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/long#section")?, NavigationTarget::ChildOf(a))?;
             wait("explicit fragment visit", || {
                 ui.snapshot().unwrap().current != Some(a)
             })?;
             let fragment = ui.snapshot()?.current.unwrap();
             let count = ui.snapshot()?.visits.len();
-            ui.engine.native.go_back();
+            ui.pages.selected_page().native.go_back();
             wait("fragment back URI", || {
-                ui.engine.native.uri().is_some_and(|u| u.ends_with("/long"))
+                ui.pages
+                    .selected_page()
+                    .native
+                    .uri()
+                    .is_some_and(|u| u.ends_with("/long"))
             })?;
             pump(300);
             assert_eq!(ui.snapshot()?.current, Some(a));
-            ui.engine.native.go_forward();
+            ui.pages.selected_page().native.go_forward();
             wait("fragment forward URI", || {
-                ui.engine
+                ui.pages
+                    .selected_page()
                     .native
                     .uri()
                     .is_some_and(|u| u.ends_with("#section"))
@@ -242,36 +265,45 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
         "jank" => {
             let started = Rc::new(Cell::new(false));
             let observed = started.clone();
-            let handler = ui.engine.native.connect_load_changed(move |_, event| {
-                if event == webkit2gtk::LoadEvent::Started {
-                    observed.set(true);
-                }
-            });
+            let handler = ui
+                .pages
+                .selected_page()
+                .native
+                .connect_load_changed(move |_, event| {
+                    if event == webkit2gtk::LoadEvent::Started {
+                        observed.set(true);
+                    }
+                });
             eval(ui, "setTimeout(() => { const t = Date.now(); while (Date.now() - t < 1500) {} }, 0); JSON.stringify(true)")?;
             pump(50);
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/next")?, NavigationTarget::ChildOf(a))?;
             pump(300);
-            assert!(ui.engine.native.is_loading());
+            assert!(ui.pages.selected_page().native.is_loading());
             assert!(!started.get(), "replacement must precede Started");
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/third")?, NavigationTarget::Root)?;
             wait("replacement fetched and loaded", || {
                 server.hits("/third") > 0
                     && ui
-                        .engine
+                        .pages
+                        .selected_page()
                         .native
                         .uri()
                         .is_some_and(|u| u.ends_with("/third"))
-                    && !ui.engine.native.is_loading()
+                    && !ui.pages.selected_page().native.is_loading()
             })?;
-            ui.engine.native.disconnect(handler);
-            ui.engine
+            ui.pages.selected_page().native.disconnect(handler);
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/next")?, NavigationTarget::Root)?;
             arrived(ui, "/next")?;
         }
         "title" => {
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/spa")?, NavigationTarget::Root)?;
             let visit = arrived(ui, "/spa")?;
             eval(
@@ -281,7 +313,7 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
             pump(400);
             eval(ui, "document.title = 'Route title'; JSON.stringify(true)")?;
             wait("route title delivered", || {
-                ui.engine.native.title().as_deref() == Some("Route title")
+                ui.pages.selected_page().native.title().as_deref() == Some("Route title")
             })?;
             pump(200);
             assert_eq!(
@@ -297,60 +329,66 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
         "adopt" => {
             let started = Rc::new(Cell::new(false));
             let observed = started.clone();
-            let handler = ui.engine.native.connect_load_changed(move |_, event| {
-                if event == webkit2gtk::LoadEvent::Started {
-                    observed.set(true);
-                }
-            });
+            let handler = ui
+                .pages
+                .selected_page()
+                .native
+                .connect_load_changed(move |_, event| {
+                    if event == webkit2gtk::LoadEvent::Started {
+                        observed.set(true);
+                    }
+                });
             let fired = Rc::new(Cell::new(false));
             let observed = fired.clone();
             let weak = Rc::downgrade(ui);
             let target = server.url("/next")?;
-            let policy = ui
-                .engine
-                .native
-                .connect_decide_policy(move |_, decision, kind| {
-                    use webkit2gtk::{
-                        NavigationPolicyDecision, NavigationPolicyDecisionExt, PolicyDecisionType,
-                        URIRequestExt,
-                    };
-                    if kind != PolicyDecisionType::NavigationAction || observed.get() {
-                        return false;
-                    }
-                    let Some(navigation) = decision.downcast_ref::<NavigationPolicyDecision>()
-                    else {
-                        return false;
-                    };
-                    let Some(action) = navigation.navigation_action() else {
-                        return false;
-                    };
-                    if action
-                        .request()
-                        .and_then(|r| r.uri())
-                        .is_some_and(|u| u.ends_with("/third"))
-                    {
-                        observed.set(true);
-                        if let Some(ui) = weak.upgrade() {
-                            started.set(false);
-                            ui.engine
-                                .navigate(target.clone(), NavigationTarget::Root)
-                                .unwrap();
-                            let started = started.clone();
-                            let deadline = Instant::now() + Duration::from_secs(5);
-                            // Delay application idles while WebKit IPC delivers the earlier Started.
-                            let priority = unsafe { glib::translate::from_glib(120) };
-                            glib::idle_add_local_full(priority, move || {
-                                if started.get() || Instant::now() > deadline {
-                                    glib::ControlFlow::Break
-                                } else {
-                                    thread::sleep(Duration::from_micros(200));
-                                    glib::ControlFlow::Continue
-                                }
-                            });
+            let policy =
+                ui.pages
+                    .selected_page()
+                    .native
+                    .connect_decide_policy(move |_, decision, kind| {
+                        use webkit2gtk::{
+                            NavigationPolicyDecision, NavigationPolicyDecisionExt,
+                            PolicyDecisionType, URIRequestExt,
+                        };
+                        if kind != PolicyDecisionType::NavigationAction || observed.get() {
+                            return false;
                         }
-                    }
-                    false
-                });
+                        let Some(navigation) = decision.downcast_ref::<NavigationPolicyDecision>()
+                        else {
+                            return false;
+                        };
+                        let Some(action) = navigation.navigation_action() else {
+                            return false;
+                        };
+                        if action
+                            .request()
+                            .and_then(|r| r.uri())
+                            .is_some_and(|u| u.ends_with("/third"))
+                        {
+                            observed.set(true);
+                            if let Some(ui) = weak.upgrade() {
+                                started.set(false);
+                                ui.pages
+                                    .selected_page()
+                                    .navigate(target.clone(), NavigationTarget::Root)
+                                    .unwrap();
+                                let started = started.clone();
+                                let deadline = Instant::now() + Duration::from_secs(5);
+                                // Delay application idles while WebKit IPC delivers the earlier Started.
+                                let priority = unsafe { glib::translate::from_glib(120) };
+                                glib::idle_add_local_full(priority, move || {
+                                    if started.get() || Instant::now() > deadline {
+                                        glib::ControlFlow::Break
+                                    } else {
+                                        thread::sleep(Duration::from_micros(200));
+                                        glib::ControlFlow::Continue
+                                    }
+                                });
+                            }
+                        }
+                        false
+                    });
             eval(ui, "location.href = '/third'; JSON.stringify(true)")?;
             arrived(ui, "/next")?;
             assert!(fired.get(), "policy must schedule the user request");
@@ -358,8 +396,8 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
                 ui.snapshot()?.current_visit().unwrap().parent.is_none(),
                 "user requested a new root"
             );
-            ui.engine.native.disconnect(handler);
-            ui.engine.native.disconnect(policy);
+            ui.pages.selected_page().native.disconnect(handler);
+            ui.pages.selected_page().native.disconnect(policy);
         }
         "replace" => {
             eval(
@@ -380,7 +418,8 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
             assert_eq!(ui.snapshot()?.visits.len(), count);
         }
         "iframe" => {
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/frame")?, NavigationTarget::Root)?;
             let visit = arrived(ui, "/frame")?;
             let main_hits = server.hits("/frame");
@@ -395,7 +434,7 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
             wait("iframe fetched again", || server.hits("/inner") > before)?;
             pump(500);
             assert!(
-                ui.engine.remember_selection().is_ok(),
+                ui.pages.selected_page().remember_selection().is_ok(),
                 "iframe reload must retain document writes"
             );
             eval(ui, "location.href = '/next'; JSON.stringify(true)")?;
@@ -435,24 +474,29 @@ fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -
     {
         return regression(case, ui, server);
     }
-    ui.engine
+    ui.pages
+        .selected_page()
         .navigate(server.url("/long")?, NavigationTarget::Root)?;
     let a = arrived(ui, "/long")?;
     match case {
         "failed_commit" => {
             let finished = Rc::new(Cell::new(false));
             let seen = finished.clone();
-            let handler = ui.engine.native.connect_load_changed(move |_, event| {
-                if event == webkit2gtk::LoadEvent::Finished {
-                    seen.set(true);
-                }
-            });
+            let handler = ui
+                .pages
+                .selected_page()
+                .native
+                .connect_load_changed(move |_, event| {
+                    if event == webkit2gtk::LoadEvent::Finished {
+                        seen.set(true);
+                    }
+                });
             let other = rusqlite::Connection::open(db)?;
             other.execute_batch("CREATE TRIGGER reject BEFORE UPDATE ON tree_state BEGIN SELECT RAISE(ABORT, 'disk'); END;")?;
-            ui.engine.reload()?;
+            ui.pages.selected_page().reload()?;
             wait("rejected reload Finished", || finished.get())?;
             assert_eq!(ui.snapshot()?.current, Some(a));
-            ui.engine.native.disconnect(handler);
+            ui.pages.selected_page().native.disconnect(handler);
             other.execute_batch("DROP TRIGGER reject")?;
             eval(ui, "location.href='/next'; JSON.stringify(true)")?;
             arrived(ui, "/next")?;
@@ -470,19 +514,24 @@ fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -
             assert_eq!(ui.snapshot()?.current_visit().unwrap().parent, Some(a));
         }
         "samedoc_fail" => {
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/long#sec")?, NavigationTarget::ChildOf(a))?;
             wait("fragment committed", || {
                 ui.snapshot().unwrap().current != Some(a)
             })?;
             let f = ui.snapshot()?.current.unwrap();
-            ui.engine.restore(a)?;
+            ui.pages.selected_page().restore(a)?;
             arrived(ui, "/long")?;
             let other = rusqlite::Connection::open(db)?;
             other.execute_batch("CREATE TRIGGER reject BEFORE UPDATE ON tree_state BEGIN SELECT RAISE(ABORT, 'disk'); END;")?;
-            ui.engine.restore(f)?;
+            ui.pages.selected_page().restore(f)?;
             wait("failed fragment traversal shown", || {
-                ui.engine.native.uri().is_some_and(|u| u.ends_with("#sec"))
+                ui.pages
+                    .selected_page()
+                    .native
+                    .uri()
+                    .is_some_and(|u| u.ends_with("#sec"))
             })?;
             pump(400);
             assert_eq!(
@@ -507,7 +556,8 @@ fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -
             assert_eq!(ui.snapshot()?.visits.len(), count + 1);
         }
         "spa_reload" | "spa_restore" => {
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/spa")?, NavigationTarget::Root)?;
             let v = arrived(ui, "/spa")?;
             eval(
@@ -517,14 +567,14 @@ fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -
             pump(300);
             let hits = server.hits("/spa");
             if case == "spa_reload" {
-                ui.engine.focus();
+                ui.pages.selected_page().focus();
                 key("F5")?;
             } else {
-                ui.engine.restore(v)?;
+                ui.pages.selected_page().restore(v)?;
             }
             pump(800);
             assert!(
-                ui.engine.remember_selection().is_ok(),
+                ui.pages.selected_page().remember_selection().is_ok(),
                 "pushState restore must end its attempt and allow document writes"
             );
             if case == "spa_reload" {
@@ -547,11 +597,13 @@ fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -
             assert_eq!(ui.snapshot()?.current_visit().unwrap().parent, Some(v));
         }
         "unload_race" => {
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/heavy")?, NavigationTarget::ChildOf(a))?;
             let h = arrived(ui, "/heavy")?;
             let third_hits = server.hits("/third");
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/third")?, NavigationTarget::ChildOf(h))?;
             pump(300);
             assert_eq!(
@@ -559,7 +611,8 @@ fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -
                 third_hits,
                 "beforeunload must hold the replaced load before its request"
             );
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/next")?, NavigationTarget::Root)?;
             arrived(ui, "/next")?;
             assert!(
@@ -568,7 +621,8 @@ fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -
             );
         }
         "iframe_order" => {
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/frame")?, NavigationTarget::Root)?;
             let f = arrived(ui, "/frame")?;
             eval(ui, "location.href='/next'; document.querySelector('iframe').contentWindow.location.reload(); JSON.stringify(true)")?;
@@ -587,29 +641,34 @@ fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -
             assert_eq!(ui.snapshot()?.current_visit().unwrap().parent, Some(f));
         }
         "settle_back" => {
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/next")?, NavigationTarget::Root)?;
             let b = arrived(ui, "/next")?;
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/third")?, NavigationTarget::ChildOf(b))?;
             let c = arrived(ui, "/third")?;
-            ui.engine.restore(a)?;
+            ui.pages.selected_page().restore(a)?;
             arrived(ui, "/long")?;
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/spa")?, NavigationTarget::ChildOf(a))?;
             arrived(ui, "/spa")?;
-            ui.engine.focus();
+            ui.pages.selected_page().focus();
             key("ctrl+w")?;
             wait("settle landed on B", || {
-                ui.snapshot().unwrap().current == Some(c) && !ui.engine.native.is_loading()
+                ui.snapshot().unwrap().current == Some(c)
+                    && !ui.pages.selected_page().native.is_loading()
             })?;
             eval(ui, "history.back(); JSON.stringify(true)")?;
             wait("Back completed", || {
-                ui.engine
+                ui.pages
+                    .selected_page()
                     .native
                     .uri()
                     .is_some_and(|u| !u.ends_with("/third"))
-                    && !ui.engine.native.is_loading()
+                    && !ui.pages.selected_page().native.is_loading()
             })?;
             assert_eq!(
                 ui.snapshot()?.current,
@@ -620,7 +679,7 @@ fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -
                 chrome(ui, "document.querySelectorAll('#tab-row .tab').length")?,
                 json!(1)
             );
-            ui.engine.focus();
+            ui.pages.selected_page().focus();
             key("ctrl+w")?;
             wait("last tree blank", || {
                 ui.snapshot().unwrap().current.is_none()
@@ -633,13 +692,14 @@ fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -
             );
         }
         "settle_inflight" => {
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/slow")?, NavigationTarget::ChildOf(a))?;
             let hits = server.hits("/slow");
             wait("slow requested", || {
-                server.hits("/slow") > hits && ui.engine.native.is_loading()
+                server.hits("/slow") > hits && ui.pages.selected_page().native.is_loading()
             })?;
-            ui.engine.focus();
+            ui.pages.selected_page().focus();
             key("ctrl+w")?;
             pump(1800);
             assert!(
@@ -651,33 +711,37 @@ fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -
                 .visits
                 .iter()
                 .any(|v| v.url.path() == "/slow"));
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/next")?, NavigationTarget::Root)?;
             arrived(ui, "/next")?;
             assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
         }
         "retire_committed" => {
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/imgpage")?, NavigationTarget::ChildOf(a))?;
             wait("committed page with unfinished subresource", || {
                 ui.snapshot()
                     .unwrap()
                     .current_visit()
                     .is_some_and(|v| v.url.path() == "/imgpage")
-                    && ui.engine.native.is_loading()
+                    && ui.pages.selected_page().native.is_loading()
                     && server.hits("/slowimg") > 0
             })?;
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/next")?, NavigationTarget::Root)?;
             arrived(ui, "/next")?;
             assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
         }
         "unbound_back" => {
             let hits = server.hits("/slow");
-            ui.engine
+            ui.pages
+                .selected_page()
                 .navigate(server.url("/slow")?, NavigationTarget::ChildOf(a))?;
             wait("pending load requested", || {
-                server.hits("/slow") > hits && ui.engine.native.is_loading()
+                server.hits("/slow") > hits && ui.pages.selected_page().native.is_loading()
             })?;
             eval(
                 ui,
@@ -687,8 +751,12 @@ fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -
             let count = ui.snapshot()?.visits.len();
             eval(ui, "history.back(); JSON.stringify(true)")?;
             wait("Back returned to long", || {
-                ui.engine.native.uri().is_some_and(|u| u.contains("/long"))
-                    && !ui.engine.native.is_loading()
+                ui.pages
+                    .selected_page()
+                    .native
+                    .uri()
+                    .is_some_and(|u| u.contains("/long"))
+                    && !ui.pages.selected_page().native.is_loading()
             })?;
             pump(300);
             assert_eq!(
@@ -711,11 +779,12 @@ fn arrived(ui: &Ui, path: &str) -> Result<VisitId> {
             .current_visit()
             .is_some_and(|visit| visit.url.path() == path && !visit.title.is_empty())
             && ui
-                .engine
+                .pages
+                .selected_page()
                 .native
                 .uri()
                 .is_some_and(|uri| uri.ends_with(path))
-            && !ui.engine.native.is_loading()
+            && !ui.pages.selected_page().native.is_loading()
     })?;
     Ok(ui.snapshot()?.current.unwrap())
 }

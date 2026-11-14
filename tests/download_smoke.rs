@@ -66,7 +66,8 @@ fn main() -> Result<()> {
     let ui = Ui::new(&directory.path().join("data"))?;
     ui.window.show_all();
     ready(&ui)?;
-    ui.engine
+    ui.pages
+        .selected_page()
         .navigate(web_url(&fixture.url("/page"))?, NavigationTarget::Root)?;
     loaded(&ui, "/page")?;
     let page = ui.snapshot()?;
@@ -75,7 +76,7 @@ fn main() -> Result<()> {
         assert_eq!(now.current, page.current, "the cursor stays on the page");
         assert_eq!(now.visits, page.visits, "a download creates no visit");
         assert_eq!(
-            ui.engine.native.uri().as_deref(),
+            ui.pages.selected_page().native.uri().as_deref(),
             Some(fixture.url("/page").as_str())
         );
         Ok(())
@@ -279,7 +280,7 @@ fn main() -> Result<()> {
     println!("PASS a download that ends after the user moved on still lands on the page it started from, now an ancestor in the strip.");
 
     // A link followed from another page than the one on screen, which redirects to a file.
-    ui.engine.navigate(
+    ui.pages.selected_page().navigate(
         web_url(&fixture.url("/moved"))?,
         NavigationTarget::ChildOf(origin),
     )?;
@@ -339,7 +340,7 @@ fn main() -> Result<()> {
 
     // The pointer leaves the strip before the forest changes under it.
     leave_strip(&ui)?;
-    ui.engine.restore(origin)?;
+    ui.pages.selected_page().restore(origin)?;
     loaded(&ui, "/page")?;
     wait("the side branch drawn as a bud", || {
         chrome(
@@ -406,7 +407,7 @@ fn loaded(ui: &Ui, path: &str) -> Result<()> {
             .unwrap()
             .current_visit()
             .is_some_and(|v| v.url.path() == path && !v.title.is_empty())
-            && !ui.engine.native.is_loading()
+            && !ui.pages.selected_page().native.is_loading()
     })
 }
 

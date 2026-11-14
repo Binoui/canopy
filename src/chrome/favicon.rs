@@ -5,7 +5,7 @@ use std::{
 };
 
 use gtk::{cairo, gdk, gdk_pixbuf::Pixbuf};
-use webkit2gtk::{FaviconDatabaseExt, WebViewExt};
+use webkit2gtk::FaviconDatabaseExt;
 
 const PAGE_LIMIT: usize = 512;
 const HOST_LIMIT: usize = 256;
@@ -43,18 +43,6 @@ impl Favicons {
             }
         });
         favicons
-    }
-
-    pub(crate) fn observe_page(self: &Rc<Self>, page: &webkit2gtk::WebView) {
-        let weak = Rc::downgrade(self);
-        page.connect_favicon_notify(move |page| {
-            let Some(favicons) = weak.upgrade() else {
-                return;
-            };
-            if let (Some(uri), Some(surface)) = (page.uri(), page.favicon()) {
-                favicons.store(uri.to_string(), Some(&surface));
-            }
-        });
     }
 
     /// Called with the new revision whenever a newly known icon could change what is drawn.
@@ -95,7 +83,7 @@ impl Favicons {
             });
     }
 
-    fn store(&self, url: String, surface: Option<&cairo::Surface>) {
+    pub(crate) fn store(&self, url: String, surface: Option<&cairo::Surface>) {
         let png = surface.and_then(normalize);
         let host = url::Url::parse(&url)
             .ok()

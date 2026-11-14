@@ -109,3 +109,9 @@ name = "page_context_smoke"
 path = "tests/page_context_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
+
+[[test]]
+name = "continuation_smoke"
+path = "tests/continuation_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]

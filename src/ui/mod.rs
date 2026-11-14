@@ -1,5 +1,5 @@
 use std::{
-    cell::{Cell, RefCell},
+    cell::Cell,
     path::Path,
     rc::{Rc, Weak},
 };
@@ -7,57 +7,32 @@ use std::{
 use anyhow::Result;
 use gtk::prelude::*;
 use url::Url;
-use webkit2gtk::WebViewExt;
 
 use crate::{
-    browser::{
-        Browser, Download, ImportedPage, Landing, NavigationTarget, SearchHit, Snapshot, VisitId,
-        VisitPreview,
-    },
+    browser::{Browser, Download, ImportedPage, SearchHit, Snapshot, VisitId, VisitPreview},
     chrome::{
         ChromeFrame, ChromeHost, ChromeIntent, HtmlChrome, PageFile, PaletteScope, PaletteSeed,
-        Toast, CHROME_HEIGHT,
+        Toast,
     },
-    engine::{DownloadEvent, Engine, EngineEvent},
     forest::ForestProjection,
-    pages::native::PageContext,
+    pages::{DownloadEvent, Go, PageEvent, Pages},
 };
 
 pub struct Ui {
     pub window: gtk::Window,
-    pub engine: Engine,
-    context: Rc<PageContext>,
+    pub pages: Rc<Pages>,
     pub chrome: HtmlChrome,
-    browser: Rc<RefCell<Browser>>,
     refresh_scheduled: Cell<bool>,
-    /// A queued page activated by "New branch here", whose palette opens once it commits.
-    branch_after_commit: Cell<Option<VisitId>>,
-    path_after_commit: RefCell<Option<PathContinuation>>,
     me: Weak<Ui>,
     inbox: crate::cookies::Inbox,
     cookie_monitor: gio::FileMonitor,
     draining_cookies: Cell<bool>,
     cookies_pending: Cell<bool>,
-    /// Set from start until the first cookie drain ends, so no page loads without them.
-    after_cookies: Cell<Option<StartPage>>,
-}
-
-#[derive(Clone, Copy)]
-enum StartPage {
-    Reload,
-    Show(VisitId),
-}
-
-struct PathContinuation {
-    previous: Option<VisitId>,
-    second: url::Url,
 }
 
 impl Ui {
     pub fn new(data_dir: &Path) -> Result<Rc<Self>> {
-        let browser = Rc::new(RefCell::new(Browser::open(
-            &data_dir.join("forest.sqlite3"),
-        )?));
+        let browser = Browser::open(&data_dir.join("forest.sqlite3"))?;
         let window = gtk::Window::new(gtk::WindowType::Toplevel);
         window.set_title("Canopy");
         window.set_default_size(1240, 800);
@@ -71,14 +46,15 @@ impl Ui {
         let fixed = gtk::Fixed::new();
         scroller.add(&fixed);
         window.add(&scroller);
-        let context = PageContext::new(&data_dir.join("profile"), browser.clone())?;
-        let engine = Engine::new(&fixed, browser.clone(), &context)?;
-        let chrome = HtmlChrome::mount(&fixed, context.favicons.clone())?;
+        let pages = Pages::mount(&fixed, browser, &data_dir.join("profile"))?;
+        let chrome = HtmlChrome::mount(&fixed, pages.favicons())?;
         {
             use webkit2gtk::{WebContextExt, WebViewExt};
-            let confined = [engine.native.context(), chrome.native().context()]
-                .into_iter()
-                .all(|context| context.is_some_and(|context| context.is_sandbox_enabled()));
+            let confined = pages.sandbox_enabled()
+                && chrome
+                    .native()
+                    .context()
+                    .is_some_and(|c| c.is_sandbox_enabled());
             if !confined {
                 eprintln!(
                     "Canopy: WebKit's sandbox is off. Pages run with your full user permissions."
@@ -95,19 +71,14 @@ impl Ui {
             chrome.attach(host);
             Ui {
                 window,
-                engine,
-                context,
+                pages,
                 chrome,
-                browser,
                 refresh_scheduled: Cell::new(false),
-                branch_after_commit: Cell::new(None),
-                path_after_commit: RefCell::new(None),
                 me: me.clone(),
                 inbox,
                 cookie_monitor,
                 draining_cookies: Cell::new(false),
                 cookies_pending: Cell::new(false),
-                after_cookies: Cell::new(None),
             }
         });
         let weak = Rc::downgrade(&ui);
@@ -117,34 +88,27 @@ impl Ui {
                     f64::from(allocation.width()),
                     f64::from(allocation.height()),
                 );
-                ui.engine
-                    .set_bounds(0., CHROME_HEIGHT, width, height - CHROME_HEIGHT);
+                ui.pages.resize(width, height);
                 ui.chrome.resize(width, height);
                 ui.chrome.raise();
             }
         });
         let weak = Rc::downgrade(&ui);
-        ui.engine.observe(move |event| {
+        ui.pages.observe(move |event| {
             let Some(ui) = weak.upgrade() else { return };
             match event {
-                EngineEvent::Changed => ui.schedule_refresh(),
-                EngineEvent::Loading(false) => {
-                    let current = ui.snapshot().ok().and_then(|s| s.current);
-                    if ui.branch_after_commit.get() != current {
-                        ui.branch_after_commit.set(None);
-                    }
-                    ui.schedule_refresh();
-                }
-                EngineEvent::Loading(true) => {}
-                EngineEvent::Error(message) => {
-                    ui.branch_after_commit.set(None);
-                    ui.path_after_commit.borrow_mut().take();
-                    ui.chrome.toast(Toast::Error(message));
-                }
-                EngineEvent::Remembered(_) => ui
+                PageEvent::Changed | PageEvent::Loading(false) => ui.schedule_refresh(),
+                PageEvent::Loading(true) => {}
+                PageEvent::Error(message) => ui.chrome.toast(Toast::Error(message)),
+                PageEvent::Remembered(_) => ui
                     .chrome
                     .toast(Toast::Info("Selection remembered on this computer.".into())),
-                EngineEvent::Download(event) => ui.chrome.toast(download_toast(event)),
+                PageEvent::Download(event) => ui.chrome.toast(download_toast(event)),
+                PageEvent::OpenBranchPalette { visit } => {
+                    ui.refresh();
+                    ui.chrome
+                        .open_palette(PaletteScope::From(visit), PaletteSeed::Empty);
+                }
             }
         });
         let weak = Rc::downgrade(&ui);
@@ -174,41 +138,20 @@ impl Ui {
     }
 
     pub fn snapshot(&self) -> Result<Snapshot> {
-        self.browser.borrow().snapshot()
+        self.pages.read(|b| b.snapshot())
     }
 
     pub fn search_hits(&self, query: &str) -> Result<Vec<SearchHit>> {
-        self.browser.borrow().search(query)
+        self.pages.read(|b| b.search(query))
     }
 
     pub fn downloads(&self) -> Result<Vec<Download>> {
-        self.browser.borrow().downloads()
+        self.pages.read(|b| b.downloads())
     }
 
     /// Restores the forest, then opens `urls` as new trees in place of reloading the last page.
     pub fn resume(&self, urls: &[Url]) -> Result<()> {
-        let mut start = Some(StartPage::Reload);
-        if urls.is_empty() {
-            let forest = ForestProjection::from_snapshot(
-                self.browser.borrow().snapshot()?,
-                self.browser.borrow().tree_states()?,
-            )?;
-            if let Some(tree) = forest.current().and_then(|id| forest.tree_of(id)) {
-                if forest
-                    .trees()
-                    .iter()
-                    .any(|t| t.id == tree && !t.lifecycle.is_open())
-                {
-                    start = match self.browser.borrow_mut().settle_tree(tree)? {
-                        Landing::Restore(visit) => Some(StartPage::Show(visit)),
-                        Landing::Start => None,
-                        Landing::Unchanged => Some(StartPage::Reload),
-                    };
-                    self.schedule_refresh();
-                }
-            }
-        }
-        self.after_cookies.set(start);
+        self.pages.prepare_resume(urls)?;
         // A failed open is already on screen as an error, and the window still starts.
         let _ = self.open(urls);
         self.drain_cookies();
@@ -226,18 +169,7 @@ impl Ui {
     }
 
     fn plant(&self, urls: &[Url]) -> Result<()> {
-        let roots = self.browser.borrow_mut().add_roots(urls)?;
-        let Some(last) = roots.last().copied() else {
-            return Ok(());
-        };
-        self.schedule_refresh();
-        self.branch_after_commit.set(None);
-        self.path_after_commit.borrow_mut().take();
-        if self.after_cookies.get().is_some() {
-            self.after_cookies.set(Some(StartPage::Show(last)));
-            return Ok(());
-        }
-        self.engine.restore(last)
+        self.pages.open_roots(urls)
     }
 
     /// Raises the window, using the launching app's activation token when it passed one.
@@ -249,11 +181,7 @@ impl Ui {
     }
 
     fn show_start_page(&self) {
-        let result = match self.after_cookies.take() {
-            None => Ok(()),
-            Some(StartPage::Reload) => self.engine.reload(),
-            Some(StartPage::Show(visit)) => self.engine.restore(visit),
-        };
+        let result = self.pages.resume();
         self.report(result);
     }
 
@@ -272,7 +200,7 @@ impl Ui {
             }
         };
         let weak = self.me.clone();
-        self.context.apply_cookie_batches(batches, move |result| {
+        self.pages.apply_cookie_batches(batches, move |result| {
             let Some(ui) = weak.upgrade() else {
                 return;
             };
@@ -293,25 +221,27 @@ impl Ui {
     }
 
     fn read_frame(&self) -> Result<ChromeFrame> {
-        let browser = self.browser.borrow();
-        let forest = ForestProjection::from_snapshot(browser.snapshot()?, browser.tree_states()?)?;
-        // Only the current tree is drawn with its files, so only those are looked for on disk.
-        let tree = forest.current().and_then(|id| forest.tree_of(id));
-        let files = browser
-            .downloads()?
-            .into_iter()
-            .filter(|download| tree.is_some() && forest.tree_of(download.visit) == tree)
-            .map(|download| PageFile {
-                missing: !download.path.exists(),
-                download,
+        self.pages.read(|browser| {
+            let forest =
+                ForestProjection::from_snapshot(browser.snapshot()?, browser.tree_states()?)?;
+            // Only the current tree is drawn with its files, so only those are looked for on disk.
+            let tree = forest.current().and_then(|id| forest.tree_of(id));
+            let files = browser
+                .downloads()?
+                .into_iter()
+                .filter(|download| tree.is_some() && forest.tree_of(download.visit) == tree)
+                .map(|download| PageFile {
+                    missing: !download.path.exists(),
+                    download,
+                })
+                .collect();
+            Ok(ChromeFrame {
+                forest,
+                capture_enabled: browser.capture_enabled()?,
+                theme: browser.theme_mode()?,
+                suggestions: browser.start_suggestions()?,
+                files,
             })
-            .collect();
-        Ok(ChromeFrame {
-            forest,
-            capture_enabled: browser.capture_enabled()?,
-            theme: browser.theme_mode()?,
-            suggestions: browser.start_suggestions()?,
-            files,
         })
     }
 
@@ -341,29 +271,7 @@ impl Ui {
                         |v| format!("{} · Canopy", v.label()),
                     );
                 self.window.set_title(&title);
-                let current = frame.forest.current();
                 self.chrome.present(frame);
-                if !self.engine.native.is_loading() {
-                    let path = self.path_after_commit.borrow_mut().take();
-                    if let Some(path) = path {
-                        if let Some(root) = current.filter(|id| Some(*id) != path.previous) {
-                            self.report(
-                                self.engine
-                                    .navigate(path.second, NavigationTarget::ChildOf(root)),
-                            );
-                        }
-                    }
-                }
-                if current.is_some()
-                    && self.branch_after_commit.get() == current
-                    && !self.engine.native.is_loading()
-                {
-                    self.branch_after_commit.set(None);
-                    self.chrome.open_palette(
-                        current.map_or(PaletteScope::NewTree, PaletteScope::From),
-                        PaletteSeed::Empty,
-                    );
-                }
             }
             Err(error) => self.report_error(&error.to_string()),
         }
@@ -380,12 +288,7 @@ impl Ui {
     }
 
     fn open_palette(&self, seed: PaletteSeed) {
-        let current = self
-            .browser
-            .borrow()
-            .snapshot()
-            .ok()
-            .and_then(|s| s.current);
+        let current = self.snapshot().ok().and_then(|s| s.current);
         let scope = current.map_or(PaletteScope::NewTree, PaletteScope::From);
         self.chrome.open_palette(scope, seed);
     }
@@ -394,14 +297,14 @@ impl Ui {
         let Some(shortcut) = Shortcut::of(event) else {
             return glib::Propagation::Proceed;
         };
-        self.path_after_commit.borrow_mut().take();
+        self.pages.cancel_path_continuation();
         match shortcut {
             Shortcut::Palette(seed) => self.open_palette(seed),
             Shortcut::SettleTree => self.chrome.settle_current(),
             Shortcut::NewTree => self.chrome.new_tree(),
             Shortcut::Forest => self.chrome.toggle_forest(),
-            Shortcut::Reload => self.report(self.engine.reload()),
-            Shortcut::RememberSelection => self.report(self.engine.remember_selection()),
+            Shortcut::Reload => self.report(self.pages.reload()),
+            Shortcut::RememberSelection => self.report(self.pages.remember_selection()),
             Shortcut::Quit => self.window.close(),
             Shortcut::Tree(index) => {
                 let tree = self.chrome.tab(index);
@@ -409,7 +312,7 @@ impl Ui {
                     self.dispatch(ChromeIntent::SelectTree(tree));
                 }
             }
-            Shortcut::Back => self.report(self.engine.back()),
+            Shortcut::Back => self.report(self.pages.go(Go::Parent)),
             Shortcut::ToggleFocus => self.chrome.toggle_focus(),
             Shortcut::Escape if self.chrome.escape() => {}
             Shortcut::Escape => return glib::Propagation::Proceed,
@@ -512,28 +415,17 @@ impl Shortcut {
 impl ChromeHost for Ui {
     fn dispatch(&self, intent: ChromeIntent) {
         let Some(ui) = self.me.upgrade() else { return };
-        self.branch_after_commit.set(None);
-        self.path_after_commit.borrow_mut().take();
+        self.pages.cancel_continuation();
         let result = match intent {
             ChromeIntent::CancelContinuation => Ok(()),
-            ChromeIntent::OpenPath(path) => {
-                let previous = self.snapshot().ok().and_then(|s| s.current);
-                let result = self.engine.navigate(path.first, NavigationTarget::Root);
-                if result.is_ok() {
-                    *self.path_after_commit.borrow_mut() = Some(PathContinuation {
-                        previous,
-                        second: path.second,
-                    });
-                }
-                result
-            }
+            ChromeIntent::OpenPath(path) => self.pages.open_path(path.first, path.second),
             ChromeIntent::SetTheme(mode) => {
-                let result = self.browser.borrow_mut().set_theme_mode(mode);
+                let result = self.pages.set_theme(mode);
                 self.schedule_refresh();
                 result
             }
             ChromeIntent::RenameTree(tree, name) => {
-                let result = self.browser.borrow_mut().rename_tree(tree, &name);
+                let result = self.pages.rename_tree(tree, &name);
                 self.schedule_refresh();
                 result
             }
@@ -543,44 +435,21 @@ impl ChromeHost for Ui {
                 }
                 Ok(())
             }
-            ChromeIntent::SettleTree(tree) => {
-                let landing = self.browser.borrow_mut().settle_tree(tree);
-                self.schedule_refresh();
-                landing.and_then(|landing| match landing {
-                    Landing::Unchanged => Ok(()),
-                    Landing::Restore(visit) => self.engine.restore(visit),
-                    Landing::Start => {
-                        self.engine.blank();
-                        Ok(())
-                    }
-                })
-            }
-            ChromeIntent::SelectTree(tree) => {
-                let target = self.browser.borrow().tree_target(tree);
-                target.and_then(|visit| self.engine.restore(visit))
-            }
-            ChromeIntent::Restore(visit) => self.engine.restore(visit),
-            ChromeIntent::BranchFromQueued(visit) => {
-                let result = self.engine.restore(visit);
-                if result.is_ok() {
-                    self.branch_after_commit.set(Some(visit));
-                }
-                result
-            }
-            ChromeIntent::OpenCitation(child) => self.engine.open_citation(child),
-            ChromeIntent::Navigate { url, target } => self.engine.navigate(url, target),
+            ChromeIntent::SettleTree(tree) => self.pages.settle_tree(tree),
+            ChromeIntent::SelectTree(tree) => self.pages.go(Go::Tree(tree)),
+            ChromeIntent::Restore(visit) => self.pages.go(Go::Visit(visit)),
+            ChromeIntent::BranchFromQueued(visit) => self.pages.branch_from_queued(visit),
+            ChromeIntent::OpenCitation(child) => self.pages.go(Go::Citation(child)),
+            ChromeIntent::Navigate { url, target } => self.pages.go(Go::Address { url, target }),
             ChromeIntent::ReadCapture(id) => ui.read_capture(id),
             ChromeIntent::ReadCaptures(visit) => ui.read_captures(visit),
-            ChromeIntent::OpenSaved(id) => {
-                let capture = self.browser.borrow().capture(id);
-                capture.and_then(|capture| self.engine.open_saved(&capture))
-            }
+            ChromeIntent::OpenSaved(id) => self.pages.go(Go::Saved(id)),
             ChromeIntent::SetCaptureEnabled(enabled) => {
-                let result = self.engine.set_capture_enabled(enabled);
+                let result = self.pages.set_capture_enabled(enabled);
                 self.schedule_refresh();
                 result
             }
-            ChromeIntent::RememberSelection => self.engine.remember_selection(),
+            ChromeIntent::RememberSelection => self.pages.remember_selection(),
             ChromeIntent::OpenFile(id) => ui.open_file(id, false),
             ChromeIntent::OpenFileFolder(id) => ui.open_file(id, true),
         };
@@ -588,35 +457,36 @@ impl ChromeHost for Ui {
     }
 
     fn search(&self, query: &str) -> Result<Vec<SearchHit>> {
-        self.browser.borrow().search(query)
+        self.pages.read(|b| b.search(query))
     }
 
     fn search_imported(&self, query: &str) -> Result<Vec<ImportedPage>> {
-        self.browser.borrow().search_imported(query, 24)
+        self.pages.read(|b| b.search_imported(query, 24))
     }
 
     fn preview(&self, visit: VisitId) -> Result<VisitPreview> {
-        self.browser.borrow().preview(visit)
+        self.pages.read(|b| b.preview(visit))
     }
 
     fn focus_page(&self) {
-        self.engine.focus();
+        self.pages.focus();
         self.chrome.raise();
     }
 }
 
 impl Ui {
     fn read_capture(&self, id: i64) -> Result<()> {
-        let browser = self.browser.borrow();
-        let capture = browser.capture(id)?;
-        let visit = browser.visit(capture.visit)?;
-        drop(browser);
+        let (capture, visit) = self.pages.read(|browser| -> Result<_> {
+            let capture = browser.capture(id)?;
+            let visit = browser.visit(capture.visit)?;
+            Ok((capture, visit))
+        })?;
         self.chrome.read(&capture, &visit);
         Ok(())
     }
 
     fn read_captures(&self, visit: VisitId) -> Result<()> {
-        let captures = self.browser.borrow().captures(visit)?;
+        let captures = self.pages.read(|b| b.captures(visit))?;
         match captures.as_slice() {
             [] => anyhow::bail!(
                 "No saved text for this page yet. Select some text and remember it, or turn on Remember pages."
@@ -633,7 +503,7 @@ impl Ui {
 impl Ui {
     /// Hands a downloaded file, or the folder it was saved in, to the desktop's usual app.
     fn open_file(&self, id: i64, folder: bool) -> Result<()> {
-        let download = self.browser.borrow().download(id)?;
+        let download = self.pages.read(|b| b.download(id))?;
         let name = download.name();
         let directory = download.path.parent().unwrap_or(Path::new("/"));
         let directory_name = directory

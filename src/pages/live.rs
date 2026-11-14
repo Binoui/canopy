@@ -1,6 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
-    rc::Rc,
+    rc::{Rc, Weak},
 };
 
 use anyhow::{bail, Context, Result};
@@ -15,31 +15,22 @@ use webkit2gtk::{
     ResponsePolicyDecisionExt, URIRequestExt, UserContentInjectedFrames, UserContentManagerExt,
     UserScript, UserScriptInjectionTime, WebViewExt,
 };
+#[path = "mouse.rs"]
 mod mouse;
 
 use crate::{
     address::web_url,
     browser::{
-        Browser, Capture, CaptureKind, CapturePayload, Document, LoadTicket, Navigation,
-        NavigationTarget, SourceContext, Visibility, VisitId,
+        Capture, CaptureKind, CapturePayload, Document, LoadTicket, Navigation, NavigationTarget,
+        SourceContext, Visibility, VisitId,
     },
 };
 
 const WORLD: &str = "canopy-reading-memory";
-const HELPER: &str = include_str!("capture.js");
+const HELPER: &str = include_str!("../capture.js");
 /// Script message the helper posts, debounced, when the page scrolls.
 const SCROLLED: &str = "canopyScrolled";
-type Observer = RefCell<Option<Box<dyn Fn(EngineEvent)>>>;
-
-pub enum EngineEvent {
-    Changed,
-    Loading(bool),
-    Error(String),
-    Remembered(i64),
-    Download(DownloadEvent),
-}
-
-pub use crate::pages::native::DownloadEvent;
+use super::{PageEvent, Pages};
 
 struct HistoryEntry {
     item: BackForwardListItem,
@@ -82,8 +73,7 @@ impl Issue {
 
 struct NativeState {
     native: webkit2gtk::WebView,
-    browser: Rc<RefCell<Browser>>,
-    observer: Rc<Observer>,
+    pages: Weak<Pages>,
     navigation: RefCell<Navigation>,
     issue: RefCell<Issue>,
     load_generation: Cell<u64>,
@@ -110,22 +100,51 @@ struct NativeState {
     reload_candidate: RefCell<Option<Url>>,
 }
 
-pub struct Engine {
-    pub native: webkit2gtk::WebView,
+struct NativeCallback {
+    state: Rc<NativeState>,
+    _owner: Rc<Pages>,
+}
+
+impl std::ops::Deref for NativeCallback {
+    type Target = Rc<NativeState>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+impl Pages {
+    fn enter_native(weak: &Weak<NativeState>) -> Option<NativeCallback> {
+        let state = weak.upgrade()?;
+        let owner = state.pages.upgrade()?;
+        // A reentrant observer can release the window; its owner must outlive this callback.
+        Some(NativeCallback {
+            state,
+            _owner: owner,
+        })
+    }
+}
+
+pub(super) struct LivePage {
+    pub(super) native: webkit2gtk::WebView,
     state: Rc<NativeState>,
 }
 
-impl Drop for Engine {
+impl Drop for LivePage {
     fn drop(&mut self) {
         // GTK's parent retains the widget after the engine releases its handles.
         unsafe { self.native.destroy() };
     }
 }
 
-impl Engine {
+impl LivePage {
+    pub(super) fn pending_ticket(&self) -> Option<LoadTicket> {
+        self.state.navigation.borrow().pending_ticket()
+    }
+
     pub fn new(
         container: &gtk::Fixed,
-        browser: Rc<RefCell<Browser>>,
+        pages: Weak<Pages>,
         context: &Rc<crate::pages::native::PageContext>,
     ) -> Result<Self> {
         use webkit2gtk::{InputMethodContextExt, SettingsExt};
@@ -169,8 +188,7 @@ impl Engine {
         ));
         let state = Rc::new(NativeState {
             native: native.clone(),
-            browser,
-            observer: Rc::new(RefCell::new(None)),
+            pages,
             navigation: RefCell::new(Navigation::default()),
             issue: RefCell::new(Issue::Idle),
             load_generation: Cell::new(0),
@@ -191,7 +209,8 @@ impl Engine {
         {
             let weak = Rc::downgrade(&state);
             manager.connect_script_message_received(Some(SCROLLED), move |_, message| {
-                if let (Some(state), Some(value)) = (weak.upgrade(), message.js_value()) {
+                if let (Some(state), Some(value)) = (Pages::enter_native(&weak), message.js_value())
+                {
                     state.scrolled(&value.to_str());
                 }
             });
@@ -199,7 +218,9 @@ impl Engine {
         {
             let weak = Rc::downgrade(&state);
             native.connect_load_changed(move |native, event| {
-                let Some(state) = weak.upgrade() else { return };
+                let Some(state) = Pages::enter_native(&weak) else {
+                    return;
+                };
                 let url = native.uri().and_then(|uri| web_url(&uri).ok());
                 match event {
                     LoadEvent::Started => {
@@ -211,6 +232,7 @@ impl Engine {
                         if reload.is_some() && state.navigation.borrow().pending_ticket().is_none()
                         {
                             let result = state
+                                .owner()
                                 .browser
                                 .borrow_mut()
                                 .reload(&mut state.navigation.borrow_mut());
@@ -228,7 +250,7 @@ impl Engine {
                         let issued = state.issued.borrow_mut().take();
                         if let Some(url) = issued.or(url) {
                             state.start_attempt(url);
-                            state.emit(EngineEvent::Loading(true));
+                            state.emit(PageEvent::Loading(true));
                         }
                     }
                     LoadEvent::Redirected => {
@@ -264,10 +286,10 @@ impl Engine {
                             match result {
                                 Ok(true) => {
                                     state.bind_document();
-                                    state.emit(EngineEvent::Changed);
+                                    state.emit(PageEvent::Changed);
                                 }
                                 Ok(false) => {}
-                                Err(error) => state.emit(EngineEvent::Error(error.to_string())),
+                                Err(error) => state.emit(PageEvent::Error(error.to_string())),
                             }
                         }
                     }
@@ -284,8 +306,13 @@ impl Engine {
                         state.complete_same_document();
                         state.update_title();
                         state.restore_scroll();
-                        state.emit(EngineEvent::Loading(false));
-                        let enabled = state.browser.borrow().capture_enabled().unwrap_or(false);
+                        state.emit(PageEvent::Loading(false));
+                        let enabled = state
+                            .owner()
+                            .browser
+                            .borrow()
+                            .capture_enabled()
+                            .unwrap_or(false);
                         if enabled {
                             state.capture(CaptureKind::Page, false);
                             if let Some(ticket) = state.ticket() {
@@ -295,9 +322,10 @@ impl Engine {
                                     glib::timeout_add_local_once(
                                         std::time::Duration::from_secs(seconds),
                                         move || {
-                                            if let Some(state) = weak.upgrade() {
+                                            if let Some(state) = Pages::enter_native(&weak) {
                                                 if state.valid(&ticket)
                                                     && state
+                                                        .owner()
                                                         .browser
                                                         .borrow()
                                                         .capture_enabled()
@@ -319,7 +347,7 @@ impl Engine {
         {
             let weak = Rc::downgrade(&state);
             native.connect_load_failed(move |_, _, _uri, error| {
-                let Some(state) = weak.upgrade() else {
+                let Some(state) = Pages::enter_native(&weak) else {
                     return true;
                 };
                 let ticket = state.loading_ticket();
@@ -333,13 +361,13 @@ impl Engine {
                 // A response turned into a download ends the page load this way; the page
                 // the user was reading stays.
                 if error.matches(PolicyError::FrameLoadInterruptedByPolicyChange) {
-                    state.emit(EngineEvent::Loading(false));
+                    state.emit(PageEvent::Loading(false));
                 } else if !cancelled {
-                    state.emit(EngineEvent::Error(format!(
+                    state.emit(PageEvent::Error(format!(
                         "Could not load this page. {}",
                         error.message()
                     )));
-                    state.emit(EngineEvent::Loading(false));
+                    state.emit(PageEvent::Loading(false));
                 }
                 true
             });
@@ -347,7 +375,7 @@ impl Engine {
         {
             let weak = Rc::downgrade(&state);
             native.connect_load_failed_with_tls_errors(move |_, _uri, _, _| {
-                if let Some(state) = weak.upgrade() {
+                if let Some(state) = Pages::enter_native(&weak) {
                     let ticket = state.active_ticket();
                     if ticket.is_none() || ticket != state.navigation.borrow().pending_ticket() {
                         return true;
@@ -355,10 +383,10 @@ impl Engine {
                     if let Some(ticket) = ticket {
                         state.navigation.borrow_mut().failed(ticket);
                     }
-                    state.emit(EngineEvent::Error(
+                    state.emit(PageEvent::Error(
                         "HTTPS certificate rejected. The connection was not opened.".into(),
                     ));
-                    state.emit(EngineEvent::Loading(false));
+                    state.emit(PageEvent::Loading(false));
                 }
                 true
             });
@@ -366,7 +394,7 @@ impl Engine {
         {
             let weak = Rc::downgrade(&state);
             native.connect_title_notify(move |_| {
-                if let Some(state) = weak.upgrade() {
+                if let Some(state) = Pages::enter_native(&weak) {
                     state.update_title();
                 }
             });
@@ -374,7 +402,7 @@ impl Engine {
         if let Some(list) = native.back_forward_list() {
             let weak = Rc::downgrade(&state);
             list.connect_local("changed", false, move |values| {
-                let state = weak.upgrade()?;
+                let state = Pages::enter_native(&weak)?;
                 let list: webkit2gtk::BackForwardList = values[0].get().unwrap();
                 let added: Option<BackForwardListItem> = values[1].get().unwrap();
                 let current = list.current_item();
@@ -406,7 +434,7 @@ impl Engine {
                 let attempt = state.navigation.borrow().pending_ticket();
                 let weak = Rc::downgrade(&state);
                 glib::idle_add_local_once(move || {
-                    if let Some(state) = weak.upgrade().filter(|state| {
+                    if let Some(state) = Pages::enter_native(&weak).filter(|state| {
                         state.navigation.borrow().pending_ticket() == attempt
                             && *state.history_cursor.borrow() == current
                     }) {
@@ -419,14 +447,13 @@ impl Engine {
         {
             let weak = Rc::downgrade(&state);
             native.connect_uri_notify(move |_| {
-                let Some(state) = weak.upgrade() else {
+                let Some(state) = Pages::enter_native(&weak) else {
                     return;
                 };
                 let attempt = state.navigation.borrow().pending_ticket();
                 let weak = Rc::downgrade(&state);
                 glib::idle_add_local_once(move || {
-                    if let Some(state) = weak
-                        .upgrade()
+                    if let Some(state) = Pages::enter_native(&weak)
                         .filter(|state| state.navigation.borrow().pending_ticket() == attempt)
                     {
                         state.history_changed(false);
@@ -437,7 +464,7 @@ impl Engine {
         {
             let weak = Rc::downgrade(&state);
             native.connect_is_loading_notify(move |_| {
-                if let Some(state) = weak.upgrade() {
+                if let Some(state) = Pages::enter_native(&weak) {
                     state.complete_same_document();
                 }
             });
@@ -445,25 +472,12 @@ impl Engine {
         {
             let weak = Rc::downgrade(&state);
             native.connect_decide_policy(move |_, decision, kind| {
-                weak.upgrade()
-                    .is_some_and(|state| state.decide(decision, kind))
+                Pages::enter_native(&weak).is_some_and(|state| state.decide(decision, kind))
             });
         }
         let weak = Rc::downgrade(&state);
         context.register_view(&native, move |source| {
-            weak.upgrade().and_then(|state| state.download_page(source))
-        });
-        let observer = state.observer.clone();
-        context.observe(move |event| {
-            use crate::pages::native::ContextEvent;
-            let event = match event {
-                ContextEvent::Changed => EngineEvent::Changed,
-                ContextEvent::Error(message) => EngineEvent::Error(message),
-                ContextEvent::Download(event) => EngineEvent::Download(event),
-            };
-            if let Some(callback) = observer.borrow().as_ref() {
-                callback(event);
-            }
+            Pages::enter_native(&weak).and_then(|state| state.download_page(source))
         });
         Ok(Self { native, state })
     }
@@ -482,12 +496,8 @@ impl Engine {
         self.native.grab_focus();
     }
 
-    pub fn observe(&self, callback: impl Fn(EngineEvent) + 'static) {
-        *self.state.observer.borrow_mut() = Some(Box::new(callback));
-    }
-
     pub fn navigate(&self, url: Url, target: NavigationTarget) -> Result<()> {
-        let url = self.state.browser.borrow_mut().navigate(
+        let url = self.state.owner().browser.borrow_mut().navigate(
             &mut self.state.navigation.borrow_mut(),
             url,
             target,
@@ -520,6 +530,7 @@ impl Engine {
     pub fn restore(&self, id: VisitId) -> Result<()> {
         let url = self
             .state
+            .owner()
             .browser
             .borrow_mut()
             .restore(&mut self.state.navigation.borrow_mut(), id)?;
@@ -530,6 +541,7 @@ impl Engine {
     pub fn back(&self) -> Result<()> {
         let request = self
             .state
+            .owner()
             .browser
             .borrow_mut()
             .back(&mut self.state.navigation.borrow_mut())?;
@@ -542,6 +554,7 @@ impl Engine {
     pub fn reload(&self) -> Result<()> {
         let request = self
             .state
+            .owner()
             .browser
             .borrow_mut()
             .reload(&mut self.state.navigation.borrow_mut())?;
@@ -554,6 +567,7 @@ impl Engine {
     pub fn open_citation(&self, child: VisitId) -> Result<()> {
         let request = self
             .state
+            .owner()
             .browser
             .borrow_mut()
             .open_citation(&mut self.state.navigation.borrow_mut(), child)?;
@@ -568,9 +582,10 @@ impl Engine {
             .citation_url
             .clone()
             .unwrap_or_else(|| capture.document_url.clone());
-        let visit = self.state.browser.borrow().visit(capture.visit)?;
+        let visit = self.state.owner().browser.borrow().visit(capture.visit)?;
         let url = if target == visit.url {
             self.state
+                .owner()
                 .browser
                 .borrow_mut()
                 .restore(&mut self.state.navigation.borrow_mut(), visit.id)?
@@ -581,7 +596,7 @@ impl Engine {
                 link_text: capture.title.clone(),
                 excerpt: capture.text.chars().take(1000).collect(),
             };
-            self.state.browser.borrow_mut().follow_link(
+            self.state.owner().browser.borrow_mut().follow_link(
                 &mut self.state.navigation.borrow_mut(),
                 visit.id,
                 target,
@@ -600,12 +615,9 @@ impl Engine {
         Ok(())
     }
 
-    pub fn capture_enabled(&self) -> Result<bool> {
-        self.state.browser.borrow().capture_enabled()
-    }
-
     pub fn set_capture_enabled(&self, enabled: bool) -> Result<()> {
         self.state
+            .owner()
             .browser
             .borrow_mut()
             .set_capture_enabled(enabled)?;
@@ -665,28 +677,43 @@ impl NativeState {
         let Some(ticket) = self.loading_ticket() else {
             return Ok(false);
         };
-        self.browser.borrow_mut().commit_load(
+        let committed = self.owner().browser.borrow_mut().commit_load(
             &mut self.navigation.borrow_mut(),
             ticket,
             url,
             Visibility::Selected,
-        )
+        )?;
+        if committed {
+            let visit = self
+                .navigation
+                .borrow()
+                .current
+                .as_ref()
+                .expect("committed document")
+                .visit;
+            self.owner().committed(ticket, visit);
+        }
+        Ok(committed)
     }
 
-    fn emit(&self, event: EngineEvent) {
-        if let Some(callback) = self.observer.borrow().as_ref() {
-            callback(event);
-        }
+    fn owner(&self) -> Rc<Pages> {
+        self.pages
+            .upgrade()
+            .expect("page owner is alive during callbacks")
+    }
+
+    fn emit(&self, event: PageEvent) {
+        self.owner().receive(event);
     }
 
     fn report(&self, result: Result<()>) {
         if let Err(error) = result {
-            self.emit(EngineEvent::Error(error.to_string()));
+            self.emit(PageEvent::Error(error.to_string()));
         }
     }
 
     fn bind_document(&self) {
-        if let Some(document) = self.navigation.borrow().current.as_ref() {
+        if let Some(document) = self.navigation.borrow().current.clone() {
             self.remember_entry(document.visit);
             self.native.evaluate_javascript(
                 &format!("globalThis.__canopyDocumentEpoch = {}", document.epoch),
@@ -736,7 +763,7 @@ impl NativeState {
         self.pending_scroll.set(None);
         let weak = Rc::downgrade(self);
         glib::idle_add_local_once(move || {
-            if let Some(state) = weak.upgrade() {
+            if let Some(state) = Pages::enter_native(&weak) {
                 if state.load_generation.get() == generation
                     && state.navigation.borrow().pending_ticket() == Some(requested)
                 {
@@ -774,6 +801,7 @@ impl NativeState {
                         *state.issued.borrow_mut() = Some(url.clone());
                     }
                     let returning = state
+                        .owner()
                         .browser
                         .borrow()
                         .requested_restore(&state.navigation.borrow());
@@ -782,7 +810,7 @@ impl NativeState {
                         state.native.go_to_back_forward_list_item(&entry);
                     } else {
                         if let Some(visit) = returning.filter(|_| !same_document) {
-                            let saved = state.browser.borrow().scroll(visit).ok().flatten();
+                            let saved = state.owner().browser.borrow().scroll(visit).ok().flatten();
                             state
                                 .pending_scroll
                                 .set(saved.filter(|&y| y > 0).map(|y| (visit, y)));
@@ -815,8 +843,14 @@ impl NativeState {
                 *self.issue.borrow_mut() = Issue::Idle;
                 self.bind_document();
                 self.update_title();
-                self.emit(EngineEvent::Changed);
-                if self.browser.borrow().capture_enabled().unwrap_or(false) {
+                self.emit(PageEvent::Changed);
+                if self
+                    .owner()
+                    .browser
+                    .borrow()
+                    .capture_enabled()
+                    .unwrap_or(false)
+                {
                     self.capture(CaptureKind::Page, false);
                 }
             }
@@ -829,7 +863,7 @@ impl NativeState {
                 self.issue
                     .borrow_mut()
                     .finish(&mut self.navigation.borrow_mut());
-                self.emit(EngineEvent::Error(error.to_string()));
+                self.emit(PageEvent::Error(error.to_string()));
             }
         }
     }
@@ -846,11 +880,13 @@ impl NativeState {
             None,
             None::<&gio::Cancellable>,
             move |result| {
-                let Some(state) = weak.upgrade() else { return };
+                let Some(state) = Pages::enter_native(&weak) else {
+                    return;
+                };
                 let value = result
                     .ok()
                     .and_then(|value| serde_json::from_str(value.to_str().as_str()).ok());
-                callback(state, value);
+                callback(state.state.clone(), value);
             },
         );
     }
@@ -882,6 +918,7 @@ impl NativeState {
                     .and_then(|uri| web_url(&uri).ok());
                 let noted = url.map(|url| {
                     let page = self
+                        .owner()
                         .browser
                         .borrow()
                         .download_page(&self.navigation.borrow(), Some(&url));
@@ -919,7 +956,7 @@ impl NativeState {
                 return false;
             }
             decision.ignore();
-            self.emit(EngineEvent::Error(
+            self.emit(PageEvent::Error(
                 "This kind of link is not supported.".into(),
             ));
             return true;
@@ -949,13 +986,14 @@ impl NativeState {
                 link_text: String::new(),
                 excerpt: String::new(),
             };
-            let result = self
-                .browser
-                .borrow_mut()
-                .queue_link(ticket.visit, url.clone(), source);
+            let result =
+                self.owner()
+                    .browser
+                    .borrow_mut()
+                    .queue_link(ticket.visit, url.clone(), source);
             match result {
                 Ok(child) => {
-                    self.emit(EngineEvent::Changed);
+                    self.emit(PageEvent::Changed);
                     self.context(&url, move |state, context| {
                         if !state.valid(&ticket) {
                             return;
@@ -963,21 +1001,21 @@ impl NativeState {
                         if let Some(source) =
                             context.filter(|source| source.page_url == ticket.page_url)
                         {
-                            let result = state.browser.borrow_mut().source_for_document(
+                            let result = state.owner().browser.borrow_mut().source_for_document(
                                 &state.navigation.borrow(),
                                 &ticket,
                                 child,
                                 source,
                             );
                             match result {
-                                Ok(true) => state.emit(EngineEvent::Changed),
+                                Ok(true) => state.emit(PageEvent::Changed),
                                 Ok(false) => {}
-                                Err(error) => state.emit(EngineEvent::Error(error.to_string())),
+                                Err(error) => state.emit(PageEvent::Error(error.to_string())),
                             }
                         }
                     });
                 }
-                Err(error) => self.emit(EngineEvent::Error(error.to_string())),
+                Err(error) => self.emit(PageEvent::Error(error.to_string())),
             }
             return true;
         }
@@ -1022,6 +1060,7 @@ impl NativeState {
             }
             if let Some(visit) = returning {
                 let result = self
+                    .owner()
                     .browser
                     .borrow_mut()
                     .restore(&mut self.navigation.borrow_mut(), visit);
@@ -1035,13 +1074,14 @@ impl NativeState {
             } else {
                 decision.ignore();
                 let result = self
+                    .owner()
                     .browser
                     .borrow_mut()
                     .back(&mut self.navigation.borrow_mut());
                 match result {
                     Ok(Some(url)) => self.load(url),
                     Ok(None) => {}
-                    Err(error) => self.emit(EngineEvent::Error(error.to_string())),
+                    Err(error) => self.emit(PageEvent::Error(error.to_string())),
                 }
                 return true;
             }
@@ -1064,7 +1104,7 @@ impl NativeState {
                 }
                 if let Some(source) = context.filter(|source| source.page_url == ticket.page_url) {
                     decision.ignore();
-                    let request = state.browser.borrow_mut().follow_link(
+                    let request = state.owner().browser.borrow_mut().follow_link(
                         &mut state.navigation.borrow_mut(),
                         ticket.visit,
                         url,
@@ -1072,7 +1112,7 @@ impl NativeState {
                     );
                     match request {
                         Ok(url) => state.load(url),
-                        Err(error) => state.emit(EngineEvent::Error(error.to_string())),
+                        Err(error) => state.emit(PageEvent::Error(error.to_string())),
                     }
                 } else {
                     decision.use_();
@@ -1087,7 +1127,8 @@ impl NativeState {
     }
 
     fn native_history_allowed(&self, visit: VisitId) -> bool {
-        let browser = self.browser.borrow();
+        let owner = self.owner();
+        let browser = owner.browser.borrow();
         let projection = (|| -> Result<_> {
             crate::forest::ForestProjection::from_snapshot(
                 browser.snapshot()?,
@@ -1145,7 +1186,7 @@ impl NativeState {
                 .as_ref()
                 .is_some_and(|d| d.visit != visit);
             if different {
-                let Ok(stored) = self.browser.borrow().visit(visit) else {
+                let Ok(stored) = self.owner().browser.borrow().visit(visit) else {
                     return;
                 };
                 self.navigation.borrow_mut().publish(visit, stored.url);
@@ -1155,11 +1196,12 @@ impl NativeState {
         if let Some(document) = self.ticket() {
             self.bind_document();
             let result = self
+                .owner()
                 .browser
                 .borrow_mut()
                 .select_document(&self.navigation.borrow(), &document);
             self.report(result);
-            self.emit(EngineEvent::Changed);
+            self.emit(PageEvent::Changed);
         }
     }
 
@@ -1215,7 +1257,7 @@ impl NativeState {
             return;
         }
         // Best effort: a failed write only loses where this page was left.
-        let _ = self.browser.borrow_mut().scroll_for_document(
+        let _ = self.owner().browser.borrow_mut().scroll_for_document(
             &self.navigation.borrow(),
             &ticket,
             y.clamp(0., 1e8) as i64,
@@ -1245,6 +1287,7 @@ impl NativeState {
             Some((_, page)) => page,
             None => {
                 let page = self
+                    .owner()
                     .browser
                     .borrow()
                     .download_page(&self.navigation.borrow(), source);
@@ -1255,13 +1298,13 @@ impl NativeState {
 
     fn update_title(&self) {
         if let (Some(document), Some(title)) = (self.ticket(), self.native.title()) {
-            let result = self.browser.borrow_mut().title_for_document(
+            let result = self.owner().browser.borrow_mut().title_for_document(
                 &self.navigation.borrow(),
                 &document,
                 &title,
             );
             self.report(result);
-            self.emit(EngineEvent::Changed);
+            self.emit(PageEvent::Changed);
         }
     }
 
@@ -1274,7 +1317,14 @@ impl NativeState {
             if !state.valid(&ticket) {
                 return;
             }
-            if !explicit && !state.browser.borrow().capture_enabled().unwrap_or(false) {
+            if !explicit
+                && !state
+                    .owner()
+                    .browser
+                    .borrow()
+                    .capture_enabled()
+                    .unwrap_or(false)
+            {
                 return;
             }
             let Some(value) = value else { return };
@@ -1284,7 +1334,7 @@ impl NativeState {
                 .unwrap_or(false)
             {
                 if explicit {
-                    state.emit(EngineEvent::Error(
+                    state.emit(PageEvent::Error(
                         "Form fields and pages with a password are never remembered.".into(),
                     ));
                 }
@@ -1298,26 +1348,26 @@ impl NativeState {
             }
             if payload.text.trim().is_empty() {
                 if explicit {
-                    state.emit(EngineEvent::Error(
+                    state.emit(PageEvent::Error(
                         "Select the text of the post or article to remember.".into(),
                     ));
                 }
                 return;
             }
-            let result = state.browser.borrow_mut().capture_for_document(
+            let result = state.owner().browser.borrow_mut().capture_for_document(
                 &state.navigation.borrow(),
                 &ticket,
                 payload,
             );
             match result {
                 Ok(Some(id)) => {
-                    state.emit(EngineEvent::Changed);
+                    state.emit(PageEvent::Changed);
                     if explicit {
-                        state.emit(EngineEvent::Remembered(id));
+                        state.emit(PageEvent::Remembered(id));
                     }
                 }
                 Ok(None) => {}
-                Err(error) => state.emit(EngineEvent::Error(error.to_string())),
+                Err(error) => state.emit(PageEvent::Error(error.to_string())),
             }
         });
     }
@@ -1384,6 +1434,7 @@ const HOME: &str = r#"<!doctype html><html lang="en"><meta charset="utf-8"><titl
 #[cfg(test)]
 mod attempt_tests {
     use super::*;
+    use crate::browser::Browser;
 
     #[test]
     fn finished_failed_commit_cannot_rewrite_restored_visit() {
