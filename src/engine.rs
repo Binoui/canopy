@@ -1217,6 +1217,7 @@ impl NativeState {
             .rev()
             .find(|entry| {
                 entry.visit == visit
+                    && entry.document != self.history_document.get()
                     && Some(&entry.item) != current.as_ref()
                     && live.contains(&entry.item)
                     && entry.item.uri().as_deref() == Some(url.as_str())
