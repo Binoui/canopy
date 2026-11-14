@@ -37,7 +37,8 @@ pub enum EngineEvent {
 }
 
 pub enum DownloadEvent {
-    Started(PathBuf),
+    /// Carries the file name the download asks for. The saved name can differ.
+    Started(String),
     Saved(PathBuf),
     Failed {
         name: Option<String>,
@@ -48,9 +49,12 @@ pub enum DownloadEvent {
 /// One download's progress through WebKit's signals, which end with `finished` either way.
 enum Transfer {
     Deciding,
-    Saving(PathBuf),
+    Saving {
+        staging: crate::download::Staging,
+        name: String,
+    },
     Failed {
-        path: Option<PathBuf>,
+        name: Option<String>,
         reason: String,
     },
     Over,
@@ -756,18 +760,19 @@ fn save(download: &webkit2gtk::Download, state: std::rc::Weak<NativeState>) {
         let transfer = transfer.clone();
         let emit = emit.clone();
         download.connect_decide_destination(move |download, suggested| {
-            match crate::download::reserve(&download_directory(), suggested) {
-                Ok(path) => {
-                    download.set_allow_overwrite(true);
-                    download.set_destination(&path.to_string_lossy());
-                    transfer.replace(Transfer::Saving(path.clone()));
-                    emit(DownloadEvent::Started(path));
+            let name = crate::download::file_name(suggested);
+            match crate::download::Staging::new(&download_directory()) {
+                Ok(staging) => {
+                    download.set_allow_overwrite(false);
+                    download.set_destination(&staging.file().to_string_lossy());
+                    emit(DownloadEvent::Started(name.clone()));
+                    transfer.replace(Transfer::Saving { staging, name });
                 }
                 Err(error) => {
                     transfer.replace(Transfer::Over);
                     download.cancel();
                     emit(DownloadEvent::Failed {
-                        name: Some(crate::download::file_name(suggested)),
+                        name: Some(name),
                         reason: error.to_string(),
                     });
                 }
@@ -780,9 +785,9 @@ fn save(download: &webkit2gtk::Download, state: std::rc::Weak<NativeState>) {
         download.connect_failed(move |_, error| {
             let reason = error.message().to_owned();
             let next = match transfer.replace(Transfer::Over) {
-                Transfer::Deciding => Transfer::Failed { path: None, reason },
-                Transfer::Saving(path) => Transfer::Failed {
-                    path: Some(path),
+                Transfer::Deciding => Transfer::Failed { name: None, reason },
+                Transfer::Saving { name, .. } => Transfer::Failed {
+                    name: Some(name),
                     reason,
                 },
                 done => done,
@@ -791,27 +796,21 @@ fn save(download: &webkit2gtk::Download, state: std::rc::Weak<NativeState>) {
         });
     }
     download.connect_finished(move |download| {
-        let outcome = match transfer.replace(Transfer::Over) {
-            Transfer::Saving(path) if truncated(download) => Transfer::Failed {
-                path: Some(path),
+        emit(match transfer.replace(Transfer::Over) {
+            Transfer::Saving { name, .. } if truncated(download) => DownloadEvent::Failed {
+                name: Some(name),
                 reason: "The connection closed before the whole file arrived.".into(),
             },
-            outcome => outcome,
-        };
-        match outcome {
-            Transfer::Saving(path) => emit(DownloadEvent::Saved(path)),
-            Transfer::Failed { path, reason } => {
-                if let Some(path) = &path {
-                    let _ = std::fs::remove_file(path);
-                }
-                emit(DownloadEvent::Failed {
-                    name: path
-                        .and_then(|path| Some(path.file_name()?.to_string_lossy().into_owned())),
-                    reason,
-                });
-            }
-            Transfer::Deciding | Transfer::Over => {}
-        }
+            Transfer::Saving { staging, name } => match staging.publish(&name) {
+                Ok(path) => DownloadEvent::Saved(path),
+                Err(error) => DownloadEvent::Failed {
+                    name: Some(name),
+                    reason: error.to_string(),
+                },
+            },
+            Transfer::Failed { name, reason } => DownloadEvent::Failed { name, reason },
+            Transfer::Deciding | Transfer::Over => return,
+        });
     });
 }
 

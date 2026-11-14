@@ -468,7 +468,7 @@ fn download_toast(event: DownloadEvent) -> Toast {
             .into_owned()
     };
     match event {
-        DownloadEvent::Started(path) => Toast::Info(format!("Downloading {}…", name(&path))),
+        DownloadEvent::Started(name) => Toast::Info(format!("Downloading {name}…")),
         DownloadEvent::Saved(path) => Toast::Info(format!(
             "Saved {} in {}.",
             name(&path),
