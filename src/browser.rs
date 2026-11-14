@@ -1538,7 +1538,7 @@ mod tests {
                 .navigation
                 .pending_ticket()
                 .unwrap_or_else(|| self.navigation.native_request(url.clone()));
-            self.navigation.started(ticket, url);
+            self.navigation.started(ticket);
             Ok(())
         }
         fn committed(&mut self, url: Url) -> Result<bool> {
@@ -1611,8 +1611,8 @@ mod tests {
             .unwrap();
         let first = a.pending_ticket().unwrap();
         let other = b.pending_ticket().unwrap();
-        a.started(first, url("same"));
-        b.started(other, url("same"));
+        a.started(first);
+        b.started(other);
         a.failed(first);
         assert_eq!(b.pending_ticket(), Some(other));
         assert!(!browser
@@ -1623,7 +1623,7 @@ mod tests {
             .unwrap();
         let cancelled = first;
         let first = a.pending_ticket().unwrap();
-        a.started(first, url("same"));
+        a.started(first);
         a.failed(cancelled);
         a.failed(other);
         b.redirected(first, url("wrong"));
@@ -1652,7 +1652,7 @@ mod tests {
             .navigate(&mut a, url("same"), NavigationTarget::Root)
             .unwrap();
         let replacement = a.pending_ticket().unwrap();
-        a.started(first, url("same"));
+        a.started(first);
         a.failed(first);
         assert!(!browser
             .commit_load(&mut a, first, url("same"), Visibility::Selected)

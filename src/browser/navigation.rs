@@ -96,7 +96,7 @@ impl Navigation {
     }
 
     // Started can still report the previous URI; the issued address owns this attempt.
-    pub fn started(&mut self, ticket: LoadTicket, _actual: Url) {
+    pub fn started(&mut self, ticket: LoadTicket) {
         if self.pending_ticket() != Some(ticket) {
             return;
         }

@@ -104,14 +104,14 @@ mod attempt_tests {
             .navigate(&mut navigation, url("a"), NavigationTarget::Root)
             .unwrap();
         let ticket = navigation.pending_ticket().unwrap();
-        navigation.started(ticket, first.clone());
+        navigation.started(ticket);
         browser
             .commit_load(&mut navigation, ticket, first, Visibility::Selected)
             .unwrap();
         let a = navigation.current.as_ref().unwrap().visit;
         browser.restore(&mut navigation, a).unwrap();
         let ticket = navigation.pending_ticket().unwrap();
-        navigation.started(ticket, url("a"));
+        navigation.started(ticket);
         let mut issue = Issue::Active(ticket);
         let connection = rusqlite::Connection::open(&path).unwrap();
         connection.execute_batch("CREATE TRIGGER reject BEFORE UPDATE ON tree_state BEGIN SELECT RAISE(ABORT, 'disk'); END;").unwrap();
@@ -125,7 +125,7 @@ mod attempt_tests {
             "Finished must abandon the failed commit"
         );
         let ticket = navigation.native_request(url("elsewhere"));
-        navigation.started(ticket, url("elsewhere"));
+        navigation.started(ticket);
         browser
             .commit_load(
                 &mut navigation,
@@ -660,7 +660,7 @@ impl NativeState {
                 ticket
             }
         };
-        navigation.started(ticket, url);
+        navigation.started(ticket);
     }
 
     fn commit_attempt(&self, url: Url) -> Result<bool> {
