@@ -14,7 +14,7 @@ use std::{
     rc::Rc,
     sync::{Arc, Mutex},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use webkit2gtk::WebViewExt;
 mod common;
@@ -39,14 +39,20 @@ fn main() -> Result<()> {
                 let request = String::from_utf8_lossy(&bytes[..n]);
                 let path = request.split_whitespace().nth(1).unwrap_or("/").to_owned();
                 *requests.lock().unwrap().entry(path.clone()).or_default() += 1;
+                if path.ends_with("/meta") {
+                    thread::sleep(Duration::from_millis(300));
+                }
                 if path.contains("slow") {
                     thread::sleep(Duration::from_millis(800));
                 }
                 if path.contains("fail") {
                     return;
                 }
-                let body =
-                    format!("<!doctype html><title>{path}</title><p>Continuation fixture</p>");
+                let body = if path.ends_with("/meta") {
+                    "<!doctype html><meta http-equiv=refresh content=\"0;url=landing\">".to_owned()
+                } else {
+                    format!("<!doctype html><title>{path}</title><p>Continuation fixture</p>")
+                };
                 let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
             });
         }
@@ -55,6 +61,7 @@ fn main() -> Result<()> {
         "branch_own",
         "branch_back_root",
         "branch_reload_empty",
+        "path_meta_refresh",
         "branch_replaced",
         "path_own",
         "path_failed",
@@ -102,7 +109,9 @@ fn main() -> Result<()> {
         let ui = Ui::new(directory.path())?;
         ui.window.show_all();
         ready(&ui)?;
-        let first = if case == "path_failed" {
+        let first = if case == "path_meta_refresh" {
+            "meta"
+        } else if case == "path_failed" {
             "fail"
         } else {
             "slow"
@@ -120,6 +129,17 @@ fn main() -> Result<()> {
         wait("first request issued", || {
             hits.lock().unwrap().contains_key(&request_path)
         })?;
+        if case == "path_meta_refresh" {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            // WebKit sources run before HIGH_IDLE; continuation idles run after it.
+            glib::idle_add_local_full(glib::Priority::HIGH_IDLE, move || {
+                if Instant::now() < deadline {
+                    glib::ControlFlow::Continue
+                } else {
+                    glib::ControlFlow::Break
+                }
+            });
+        }
         if case.ends_with("replaced") {
             // This bypasses chrome dispatch, as a native page navigation can.
             if case == "branch_replaced" {
@@ -136,6 +156,7 @@ fn main() -> Result<()> {
         if case == "branch_reload_empty" {
             key("F5")?;
         }
+
         if case.starts_with("settle_pending") {
             ui.dispatch(ChromeIntent::SettleTree(tree));
         }
@@ -144,7 +165,7 @@ fn main() -> Result<()> {
                 visible(&ui, "#palette")
             })?;
             assert_eq!(ui.snapshot()?.current, Some(root));
-        } else if case == "path_own" {
+        } else if case == "path_own" || case == "path_meta_refresh" {
             wait("second path committed", || {
                 ui.snapshot().is_ok_and(|s| {
                     s.current
@@ -168,7 +189,22 @@ fn main() -> Result<()> {
                 .iter()
                 .find(|v| Some(v.id) == second.parent)
                 .unwrap();
-            assert!(parent.url.path().ends_with("/slow"));
+            assert!(
+                parent.url.path().ends_with(if case == "path_meta_refresh" {
+                    "/meta"
+                } else {
+                    "/slow"
+                }),
+                "second attaches to its own committed visit"
+            );
+            if case == "path_meta_refresh" {
+                assert!(
+                    hits.lock()
+                        .unwrap()
+                        .contains_key(&format!("/{case}/landing")),
+                    "refresh starts before the continuation idle"
+                );
+            }
         }
         pump(1600);
         if !case.starts_with("branch") || case.ends_with("replaced") {
@@ -177,7 +213,7 @@ fn main() -> Result<()> {
                 "{case} must not open the branch palette"
             );
         }
-        if case != "path_own" {
+        if case != "path_own" && case != "path_meta_refresh" {
             assert_eq!(
                 hits.lock()
                     .unwrap()

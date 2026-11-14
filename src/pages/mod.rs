@@ -44,16 +44,75 @@ struct PendingContinuation {
     action: Continuation,
 }
 
+#[derive(Clone, Copy)]
 enum ContinuationState {
     Waiting(LoadTicket),
     Committed { ticket: LoadTicket, visit: VisitId },
+    Ready { ticket: LoadTicket, visit: VisitId },
+}
+
+enum ContinuationEvent {
+    Commit {
+        ticket: LoadTicket,
+        visit: VisitId,
+        same_document: bool,
+    },
+    Finished,
+    Pending(Option<LoadTicket>),
+    Failed,
+    Discard,
 }
 
 impl ContinuationState {
+    fn transition(mut self, event: ContinuationEvent) -> Option<Self> {
+        match event {
+            ContinuationEvent::Commit {
+                ticket,
+                visit,
+                same_document,
+            } => {
+                if !matches!(self, Self::Ready { .. })
+                    && !self.committed(ticket, visit, same_document)
+                {
+                    return None;
+                }
+            }
+            ContinuationEvent::Finished => {
+                self.finished();
+            }
+            ContinuationEvent::Pending(pending) if self.invalidated_by(pending) => return None,
+            ContinuationEvent::Failed if !matches!(self, Self::Ready { .. }) => return None,
+            ContinuationEvent::Discard => return None,
+            _ => {}
+        }
+        Some(self)
+    }
+
+    fn committed(&mut self, ticket: LoadTicket, visit: VisitId, same_document: bool) -> bool {
+        if !matches!(*self, Self::Waiting(waiting) if waiting == ticket) {
+            return false;
+        }
+        *self = if same_document {
+            Self::Ready { ticket, visit }
+        } else {
+            Self::Committed { ticket, visit }
+        };
+        true
+    }
+    fn finished(&mut self) -> Option<LoadTicket> {
+        if let Self::Committed { ticket, visit } = *self {
+            *self = Self::Ready { ticket, visit };
+            Some(ticket)
+        } else {
+            None
+        }
+    }
+
     fn invalidated_by(&self, pending: Option<LoadTicket>) -> bool {
         match *self {
             Self::Waiting(ticket) => pending != Some(ticket),
             Self::Committed { ticket, .. } => pending.is_some_and(|next| next != ticket),
+            Self::Ready { .. } => false,
         }
     }
 }
@@ -137,18 +196,10 @@ impl Pages {
     // Clone the observer and end every state borrow before WebKit, GTK or Ui can reenter.
     fn receive(&self, event: PageEvent) {
         if matches!(event, PageEvent::Error(_)) {
-            self.cancel_continuation();
+            self.advance_continuation(ContinuationEvent::Failed);
         }
         if matches!(event, PageEvent::Loading(false)) {
-            let ticket = self
-                .continuation
-                .borrow()
-                .as_ref()
-                .and_then(|c| match c.state {
-                    ContinuationState::Committed { ticket, .. } => Some(ticket),
-                    ContinuationState::Waiting(_) => None,
-                });
-            if let Some(ticket) = ticket {
+            if let Some(ticket) = self.advance_continuation(ContinuationEvent::Finished) {
                 self.schedule_continuation(ticket);
             }
         }
@@ -157,51 +208,54 @@ impl Pages {
             .borrow()
             .as_ref()
             .and_then(|page| page.pending_ticket());
-        if self
-            .continuation
-            .borrow()
-            .as_ref()
-            .is_some_and(|c| c.state.invalidated_by(pending))
-        {
-            self.continuation.borrow_mut().take();
-        }
+        self.advance_continuation(ContinuationEvent::Pending(pending));
         let observer = self.observer.borrow().clone();
         if let Some(observer) = observer {
             observer(event);
         }
     }
 
-    fn committed(self: &Rc<Self>, ticket: LoadTicket, visit: VisitId) {
-        {
-            let mut continuation = self.continuation.borrow_mut();
-            let Some(c) = continuation.as_mut() else {
-                return;
-            };
-            if !matches!(c.state, ContinuationState::Waiting(waiting) if waiting == ticket) {
-                continuation.take();
-                return;
+    fn advance_continuation(&self, event: ContinuationEvent) -> Option<LoadTicket> {
+        let mut pending = self.continuation.borrow_mut();
+        let c = pending.as_mut()?;
+        if let Some(state) = c.state.transition(event) {
+            c.state = state;
+            if let ContinuationState::Ready { ticket, .. } = state {
+                return Some(ticket);
             }
-            c.state = ContinuationState::Committed { ticket, visit };
+        } else {
+            pending.take();
         }
-        self.schedule_continuation(ticket);
+        None
+    }
+
+    fn committed(self: &Rc<Self>, ticket: LoadTicket, visit: VisitId) {
+        let same_document = !self.page().native.is_loading();
+        if let Some(ticket) = self.advance_continuation(ContinuationEvent::Commit {
+            ticket,
+            visit,
+            same_document,
+        }) {
+            self.schedule_continuation(ticket);
+        }
     }
 
     fn schedule_continuation(&self, ticket: LoadTicket) {
-        // Keep the existing loading gate, and let native commit handling finish binding first.
+        // Native commit handling must finish binding before the continuation runs.
         let weak = self.me.clone();
         glib::idle_add_local_once(move || {
             let Some(pages) = weak.upgrade() else { return };
-            if pages.page().native.is_loading() {
+            if pages.live.borrow().is_none() {
                 return;
             }
             let continuation = {
                 let mut pending = pages.continuation.borrow_mut();
-                if pending.as_ref().is_some_and(|c| matches!(c.state, ContinuationState::Committed { ticket: committed, .. } if committed == ticket)) {
+                if pending.as_ref().is_some_and(|c| matches!(c.state, ContinuationState::Ready { ticket: committed, .. } if committed == ticket)) {
                     pending.take()
                 } else { None }
             };
             let Some(PendingContinuation {
-                state: ContinuationState::Committed { visit, .. },
+                state: ContinuationState::Ready { visit, .. },
                 action,
             }) = continuation
             else {
@@ -236,7 +290,7 @@ impl Pages {
     }
 
     pub fn cancel_continuation(&self) {
-        self.continuation.borrow_mut().take();
+        self.advance_continuation(ContinuationEvent::Discard);
     }
 
     pub fn go(&self, go: Go) -> Result<()> {
@@ -470,15 +524,74 @@ mod continuation_tests {
     }
 
     #[test]
-    fn committed_continuation_survives_completion_but_not_replacement() {
+    fn committed_and_ready_transitions() {
         let mut navigation = Navigation::default();
         let url = Url::parse("https://example.org/").unwrap();
         let ticket = navigation.native_request(url.clone());
+        let replacement = navigation.native_request(url.clone());
         let directory = tempfile::tempdir().unwrap();
         let mut browser = Browser::open(&directory.path().join("forest.sqlite3")).unwrap();
-        let visit = browser.add_roots(std::slice::from_ref(&url)).unwrap()[0];
-        let state = ContinuationState::Committed { ticket, visit };
+        let visit = browser.add_roots(&[url]).unwrap()[0];
+        let mut state = ContinuationState::Waiting(ticket);
+        assert!(state.finished().is_none());
+        assert!(!state.committed(replacement, visit, false));
+        assert!(state.committed(ticket, visit, false));
         assert!(!state.invalidated_by(None));
-        assert!(state.invalidated_by(Some(navigation.native_request(url))));
+        assert!(!state.invalidated_by(Some(ticket)));
+        assert!(state.invalidated_by(Some(replacement)));
+        assert!(!state.committed(ticket, visit, false));
+        assert_eq!(state.finished(), Some(ticket));
+        assert!(matches!(state, ContinuationState::Ready { visit: v, .. } if v == visit));
+        assert!(!state.invalidated_by(Some(replacement)));
+        assert!(!state.invalidated_by(None));
+        assert!(state.finished().is_none());
+        assert!(!state.committed(replacement, visit, false));
+        let mut same_document = ContinuationState::Waiting(ticket);
+        assert!(same_document.committed(ticket, visit, true));
+        assert!(matches!(same_document, ContinuationState::Ready { .. }));
+    }
+    #[test]
+    fn every_state_handles_failure_and_explicit_discard() {
+        let mut navigation = Navigation::default();
+        let url = Url::parse("https://example.org/").unwrap();
+        let ticket = navigation.native_request(url.clone());
+        let other = navigation.native_request(url.clone());
+        let directory = tempfile::tempdir().unwrap();
+        let mut browser = Browser::open(&directory.path().join("forest.sqlite3")).unwrap();
+        let visit = browser.add_roots(&[url]).unwrap()[0];
+        for state in [
+            ContinuationState::Waiting(ticket),
+            ContinuationState::Committed { ticket, visit },
+            ContinuationState::Ready { ticket, visit },
+        ] {
+            for _cause in ["cancel", "blank", "settle"] {
+                assert!(state.transition(ContinuationEvent::Discard).is_none());
+            }
+            let ready = matches!(state, ContinuationState::Ready { .. });
+            assert_eq!(state.transition(ContinuationEvent::Failed).is_some(), ready);
+            assert_eq!(
+                state
+                    .transition(ContinuationEvent::Pending(Some(other)))
+                    .is_some(),
+                ready
+            );
+            assert!(state
+                .transition(ContinuationEvent::Pending(Some(ticket)))
+                .is_some());
+            assert_eq!(
+                state.transition(ContinuationEvent::Pending(None)).is_some(),
+                !matches!(state, ContinuationState::Waiting(_))
+            );
+            assert_eq!(
+                state
+                    .transition(ContinuationEvent::Commit {
+                        ticket: other,
+                        visit,
+                        same_document: false
+                    })
+                    .is_some(),
+                ready
+            );
+        }
     }
 }
