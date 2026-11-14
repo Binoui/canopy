@@ -153,12 +153,13 @@
     };
     // Session load completion can precede the web process receiving GTK's viewport.
     if (viewport) {
-      let matchingFrame = false;
+      let previousSize = null;
+      let frames = 0;
       const ready = () => {
         if (stopped) return;
-        const matches = innerWidth === viewport[0] && innerHeight === viewport[1];
-        if (matches && matchingFrame) return begin();
-        matchingFrame = matches;
+        const size = [innerWidth, innerHeight];
+        if (++frames >= 30 || (previousSize && size[0] === previousSize[0] && size[1] === previousSize[1])) return begin();
+        previousSize = size;
         requestAnimationFrame(ready);
       };
       requestAnimationFrame(ready);
