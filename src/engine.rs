@@ -467,16 +467,14 @@ impl Engine {
                 let removed: glib::Pointer = values[2].get().unwrap_or(std::ptr::null_mut());
                 // WebKit keeps removed objects readable while our bindings retain them.
                 unsafe {
-                    use glib::translate::FromGlibPtrNone;
+                    use glib::object::ObjectType;
                     let mut node = removed as *mut glib::ffi::GList;
                     while !node.is_null() {
-                        let item = BackForwardListItem::from_glib_none(
-                            (*node).data as *mut webkit2gtk::ffi::WebKitBackForwardListItem,
-                        );
+                        let item = (*node).data as *mut webkit2gtk::ffi::WebKitBackForwardListItem;
                         state
                             .history
                             .borrow_mut()
-                            .retain(|entry| entry.item != item);
+                            .retain(|entry| entry.item.as_ptr() != item);
                         node = (*node).next;
                     }
                 }
