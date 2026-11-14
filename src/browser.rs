@@ -2006,7 +2006,9 @@ mod tests {
                 .title_changed(&url("a"), "Rust documentation")
                 .unwrap();
             follow(&mut browser, "b", NavigationTarget::Root);
-            browser.title_changed(&url("b"), "A café page at 100%").unwrap();
+            browser
+                .title_changed(&url("b"), "A café page at 100%")
+                .unwrap();
             assert_eq!(browser.search("Rust").unwrap().len(), 1);
             assert_eq!(browser.search("%").unwrap().len(), 1);
             assert!(browser
