@@ -1613,6 +1613,18 @@ mod tests {
         let other = b.pending_ticket().unwrap();
         a.started(first, url("same"));
         b.started(other, url("same"));
+        a.failed(first);
+        assert_eq!(b.pending_ticket(), Some(other));
+        assert!(!browser
+            .commit_load(&mut a, first, url("same"), Visibility::Selected)
+            .unwrap());
+        browser
+            .navigate(&mut a, url("same"), NavigationTarget::Root)
+            .unwrap();
+        let cancelled = first;
+        let first = a.pending_ticket().unwrap();
+        a.started(first, url("same"));
+        a.failed(cancelled);
         a.failed(other);
         b.redirected(first, url("wrong"));
         a.redirected(first, url("final"));
