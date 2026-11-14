@@ -477,15 +477,19 @@ mod tests {
 
     #[test]
     fn tabs_list_only_open_trees_and_none_is_active_while_the_current_tree_is_settled() {
-        use crate::browser::{Browser, NavigationTarget};
+        use crate::browser::{Browser, Navigation, NavigationTarget, Visibility};
         let dir = tempfile::tempdir().unwrap();
         let mut browser = Browser::open(&dir.path().join("forest.db")).unwrap();
         let url = url::Url::parse("https://example.org/a").unwrap();
+        let mut navigation = Navigation::default();
         browser
-            .navigate(url.clone(), NavigationTarget::Root)
+            .navigate(&mut navigation, url.clone(), NavigationTarget::Root)
             .unwrap();
-        browser.started(url.clone()).unwrap();
-        browser.committed(url).unwrap();
+        let ticket = navigation.pending_ticket().unwrap();
+        navigation.started(ticket);
+        browser
+            .commit_load(&mut navigation, ticket, url, Visibility::Selected)
+            .unwrap();
         let current = browser.tree_states().unwrap()[0].root;
         browser
             .add_roots(&[url::Url::parse("https://example.org/b").unwrap()])

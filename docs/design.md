@@ -6,7 +6,7 @@ After A then B, going back to A and following C gives A two children. Visit B st
 
 ## SQLite owns the forest and the cursor
 
-The database holds the visits and the current position. Inserting a visit and moving the cursor share one transaction. What the chrome shows is a projection of this database.
+The database holds the visits and the foreground cursor. Browser stays the only writer of SQLite. A foreground commit writes the visit, the cursor, the tree's target and the arrival log in one transaction. A hidden commit writes the visit without moving the other three.
 
 Two structures were compared before implementation. The first gave ownership of the state to SQLite. The second also kept a forest in memory. The first was chosen to avoid a second write path and keeping the cursor in sync.
 
@@ -14,19 +14,23 @@ The alternative brought two things to the chosen design. The navigation intent s
 
 ## An intent comes before a visit
 
-A new navigation records its parent before loading. A restore records the id of the visit to reuse. The engine then confirms the URL when the main document loads.
+Each view owns its Navigation, its pending load and its current Document. Browser owns no global load. A LoadTicket ties one incarnation of a view to an attempt number. Title, capture, context and scroll callbacks carry the Document they came from and check its epoch before writing. A failed transaction keeps the load and the Document until Finished. Finished abandons an attempt whose commit did not succeed. A same-document completion abandons a rejected commit immediately, because WebKit sends no Finished for it. The engine does not retry commits.
+
+A new navigation records its parent before loading. A restore records the id of the visit to reuse. The engine accepts Started for an issued attempt only after WebKit accepts policy for its requested URL or history item. Earlier Started signals cannot adopt a replacement request. The engine then confirms the URL when the main document loads.
+
+The engine distinguishes an issued request from a started load. Only a started load is stopped and drained before its replacement is issued. The queued replacement retains its own ticket. A same-document request needs no Finished signal. A page-started load cannot adopt a request the engine has not issued.
 
 Server redirects belong to a single navigation. A reload or a restore does not create a visit. A failure keeps the last recorded position and shows an error.
 
-Persistent ids are ULIDs. URLs are not visit ids. Subresources and embedded frames do not become children.
+Persistent ids are ULIDs. URLs are not visit ids. Subresources and embedded frames do not become children. A native Reload is a candidate only when its request URL equals the current document URL. It becomes a restore only at main-frame Started, so an iframe reload cannot suspend document writes. A title updates the visit only while the document URL equals its stored URL.
 
 ## GTK and WebKit stay on their thread
 
-wry builds the webview inside a GTK container. Its Unix extension gives access to the native WebKitGTK signals. These signals tell apart the start, the commit and the failure of a load.
+WebKitGTK builds the page view inside a GTK container. wry still builds the chrome view. The native signals tell apart the start, the commit and the failure of a load.
 
 Borrows of the state are released before calls that can trigger another callback. A single webview loads the active page. The other visits stay in SQLite.
 
-The browser's back follows the parent in the forest. The tree list lets you pick another branch. Resuming a visit reloads its URL. It does not restore a snapshot of the DOM, the scroll position or forms.
+Back uses an entry still present in WebKit's history only when its visit belongs to the current open tree, otherwise the parent in the forest. Page-script and mouse Back cannot reopen a settled tree or cross into another open tree. Back from the blank start page does nothing. The list's changed signals drop the bindings of removed entries and bind same-document entries to their visit. Each entry also keeps its native document group, because a return can move the list before Started. This group tells a return within the same document from a full load, even at an identical URL. A full commit gets a fresh group unless it is a back or forward traversal. A traversal onto an unbound entry falls back to the forest parent. The native cursor is read at changed or Committed, never at notify::uri. A restore only traverses an entry from another native document. On a pushState route, F5 and a visit-node click load the stored visit URL, so neither leaves an attempt waiting for load signals that a same-document traversal never sends. A cold resume reloads the URL and restores the recorded scroll. WebKit's page cache can keep the DOM and the forms of an entry still present.
 
 ## The chrome is an HTML view above the page
 

@@ -7,7 +7,7 @@ use std::{
 use anyhow::Result;
 use canopy::{
     address::web_url,
-    browser::{Browser, Landing, NavigationTarget},
+    browser::{Browser, Landing, Navigation, NavigationTarget, Visibility},
     ui::Ui,
 };
 use gtk::prelude::*;
@@ -177,13 +177,16 @@ fn main() -> Result<()> {
         let restart_dir = tempfile::tempdir()?;
         let mut browser = Browser::open(&restart_dir.path().join("forest.sqlite3"))?;
         let mut roots = Vec::new();
+        let mut navigation = Navigation::default();
         for name in ["Alpha", "Beta"] {
             let url = browser.navigate(
+                &mut navigation,
                 web_url(&format!("http://{address}/{name}"))?,
                 NavigationTarget::Root,
             )?;
-            browser.started(url.clone())?;
-            browser.committed(url)?;
+            let ticket = navigation.pending_ticket().unwrap();
+            navigation.started(ticket);
+            browser.commit_load(&mut navigation, ticket, url, Visibility::Selected)?;
             roots.push(browser.snapshot()?.current.unwrap());
         }
         assert_eq!(
