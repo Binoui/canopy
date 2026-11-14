@@ -375,6 +375,22 @@ impl Engine {
         Ok(())
     }
 
+    pub fn blank(&self) {
+        let state = &self.state;
+        state
+            .load_generation
+            .set(state.load_generation.get().wrapping_add(1));
+        state
+            .foreground_generation
+            .set(state.foreground_generation.get().wrapping_add(1));
+        state.same_document_request.borrow_mut().take();
+        state.traversal.borrow_mut().take();
+        state.issued.borrow_mut().take();
+        state.pending_scroll.set(None);
+        state.invalidate();
+        self.native.load_html(HOME, None);
+    }
+
     pub fn restore(&self, id: VisitId) -> Result<()> {
         let url = self.state.browser.borrow_mut().restore(id)?;
         self.state.load(url);

@@ -270,3 +270,11 @@ kbd { font: 500 10.5px "Inter", sans-serif; color: var(--faint); border: 1px sol
 }
 #toast.error { background: var(--danger); color: #fff; }
 #toast.leaving { opacity: 0; }
+
+.tab-settle { display: flex; align-items: center; opacity: 0; border-radius: 4px; }
+.tab:hover .tab-settle, .tab.on .tab-settle { opacity: 1; }
+.tab-settle:hover { background: var(--hover); }
+.forest-head.settled, .forest-node.settled { opacity: .55; }
+.forest-node.settled:hover { opacity: 1; }
+.forest-divider { position: absolute; left: 34px; display: flex; gap: 12px; align-items: baseline; color: var(--muted); font-size: 12px; }
+.forest-divider b { font-weight: 500; }
