@@ -7,7 +7,7 @@ use canopy::{
 };
 use gtk::prelude::*;
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     io::{Read, Write},
     net::TcpListener,
@@ -239,6 +239,53 @@ fn main() -> Result<()> {
         println!("PASS {case}");
         ui.window.close();
         pump(100);
+    }
+    for case in ["remount_reentrant_destroy", "released_page_idle"] {
+        if std::env::var("CONTINUATION_CASE").is_ok_and(|only| only != case) {
+            continue;
+        }
+        let directory = tempfile::tempdir()?;
+        let window = gtk::Window::new(gtk::WindowType::Toplevel);
+        let fixed = gtk::Fixed::new();
+        window.add(&fixed);
+        let browser = Browser::open(&directory.path().join("forest.sqlite3"))?;
+        let pages = Pages::mount(&fixed, browser, &directory.path().join("profile"))?;
+        window.show_all();
+        let observed = Rc::new(Cell::new(false));
+        let seen = observed.clone();
+        let weak = Rc::downgrade(&pages);
+        if case == "remount_reentrant_destroy" {
+            pages.selected_page().native.connect_destroy(move |_| {
+                let pages = weak.upgrade().unwrap();
+                let _replacement = pages.selected_page();
+                seen.set(true);
+            });
+            pages.mount_selected_page(&fixed)?;
+            assert!(observed.get(), "destroy can reenter the page owner");
+        } else {
+            pages.observe(move |event| {
+                assert!(
+                    !matches!(event, PageEvent::OpenBranchPalette { .. }),
+                    "released page must not run its continuation"
+                );
+                if matches!(event, PageEvent::Loading(false)) {
+                    if let Some(pages) = weak.upgrade() {
+                        pages.release_selected_page();
+                        seen.set(true);
+                    }
+                }
+            });
+            pages.open_path(
+                format!("http://{address}/released/first").parse()?,
+                format!("http://{address}/released/second").parse()?,
+            )?;
+            wait("ready page released before idle", || observed.get())?;
+            pump(200);
+            assert!(!hits.lock().unwrap().contains_key("/released/second"));
+        }
+        window.close();
+        pump(100);
+        println!("PASS {case}");
     }
     if std::env::var("CONTINUATION_CASE")
         .map_or(true, |case| case == "owner_survives_reentrant_observer")

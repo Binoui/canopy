@@ -451,7 +451,8 @@ impl Pages {
     #[cfg(feature = "gui-smoke")]
     pub fn mount_selected_page(self: &Rc<Self>, container: &gtk::Fixed) -> Result<()> {
         let page = LivePage::new(container, Rc::downgrade(self), &self.context)?;
-        *self.live.borrow_mut() = Some(Rc::new(page));
+        let old = self.live.borrow_mut().replace(Rc::new(page));
+        drop(old);
         Ok(())
     }
     #[cfg(feature = "gui-smoke")]
