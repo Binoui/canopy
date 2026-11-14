@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn keeps_an_ordinary_name() {
         assert_eq!(file_name("report.pdf"), "report.pdf");
-        assert_eq!(file_name("Relevé de compte.pdf"), "Relevé de compte.pdf");
+        assert_eq!(file_name("Café résumé.pdf"), "Café résumé.pdf");
     }
 
     #[test]

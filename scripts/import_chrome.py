@@ -279,7 +279,7 @@ def extract(profile, output, zone_name="Europe/Paris"):
             "`dataset.sqlite3` contains the normalized records and SQL views for habits. "
             "`summary.json` contains counts, top domains, frequent pages, local-hour and weekday distributions, "
             "and recorded referrer pairs. Weekdays run from Monday=0 to Sunday=6.\n\n"
-            "The capture is separate from Branche's live browsing database. No imported URL was opened or fetched. "
+            "The capture is separate from Canopy's live browsing database. No imported URL was opened or fetched. "
             "The input consisted only of Chrome's History database and Bookmarks file. "
             "No cookies, credentials, saved form data, or page bodies were imported.\n\n"
             "The snapshot method and interpretation limits are recorded in summary.json. "
