@@ -676,6 +676,30 @@ impl Browser {
         Ok(url)
     }
 
+    /// Plants each URL as a new tree before its page loads, all of them or none.
+    /// Restoring a root loads it.
+    pub fn add_roots(&mut self, urls: &[Url]) -> Result<Vec<VisitId>> {
+        for url in urls {
+            web_url(url.as_str())?;
+        }
+        let transaction = self.connection.transaction()?;
+        let mut roots = Vec::with_capacity(urls.len());
+        for url in urls {
+            let id = VisitId(Ulid::new());
+            transaction.execute(
+                "INSERT INTO visits(id, parent_id, url, title, created_at, opened_at) VALUES (?1, NULL, ?2, '', ?3, ?3)",
+                params![id.to_string(), url.as_str(), now_ms()?],
+            )?;
+            transaction.execute(
+                "INSERT INTO tree_state(root_id, last_visit_id) VALUES (?1, ?1)",
+                [id.to_string()],
+            )?;
+            roots.push(id);
+        }
+        transaction.commit()?;
+        Ok(roots)
+    }
+
     pub fn restore(&mut self, id: VisitId) -> Result<Url> {
         let visit = self.visit(id)?;
         self.navigation = Navigation::Requested {
@@ -1199,6 +1223,46 @@ mod tests {
     fn follow_child(browser: &mut Browser, path: &str) -> VisitId {
         let parent = browser.current_id().unwrap().unwrap();
         follow(browser, path, NavigationTarget::ChildOf(parent))
+    }
+
+    #[test]
+    fn added_roots_are_trees_in_order_and_load_when_restored() {
+        let mut b = memory();
+        let earlier = follow(&mut b, "earlier", NavigationTarget::Root);
+        let planted = b.add_roots(&[url("first"), url("last")]).unwrap();
+        let (first, last) = (planted[0], planted[1]);
+        let roots: Vec<_> = b
+            .tree_states()
+            .unwrap()
+            .iter()
+            .map(|t| t.root.root())
+            .collect();
+        assert_eq!(roots, [earlier, first, last]);
+        let forest = crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(forest.trees().len(), 3);
+        assert_eq!(forest.current(), Some(earlier));
+        let loading = b.restore(last).unwrap();
+        b.started(loading.clone()).unwrap();
+        assert!(b.committed(url("last-redirected")).unwrap());
+        let snapshot = b.snapshot().unwrap();
+        assert_eq!(snapshot.current, Some(last));
+        assert_eq!(
+            snapshot.current_visit().unwrap().url,
+            url("last-redirected")
+        );
+        assert_eq!(b.tree_states().unwrap().len(), 3);
+        assert!(b
+            .add_roots(&[url("valid"), Url::parse("file:///etc/passwd").unwrap()])
+            .is_err());
+        assert_eq!(
+            b.tree_states().unwrap().len(),
+            3,
+            "a refused batch plants nothing"
+        );
     }
 
     #[test]
