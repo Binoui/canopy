@@ -77,5 +77,11 @@ path = "tests/shortcut_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
 
+[[test]]
+name = "history_smoke"
+path = "tests/history_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]
+
 [profile.dev]
 debug = 1

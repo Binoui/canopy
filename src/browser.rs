@@ -267,7 +267,7 @@ impl Browser {
              INSERT OR IGNORE INTO session(singleton, current_id) VALUES(1, NULL);",
         )?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version > 6 {
+        if version > 7 {
             bail!("This database comes from a newer version of Canopy.");
         }
         if version == 0 {
@@ -418,6 +418,16 @@ impl Browser {
                     SELECT id, parent_id, 'new', opened_at FROM visits
                     WHERE opened_at IS NOT NULL ORDER BY opened_at, id;
                  PRAGMA user_version = 6;",
+            )?;
+            transaction.commit()?;
+        }
+        if version < 7 {
+            // Where the user left each page, in CSS pixels from the top, so a page reloaded
+            // from the tree opens where they stopped reading. NULL until the page is scrolled.
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(
+                "ALTER TABLE visits ADD COLUMN scroll_y INTEGER;
+                 PRAGMA user_version = 7;",
             )?;
             transaction.commit()?;
         }
@@ -769,6 +779,33 @@ impl Browser {
             return Ok(None);
         };
         self.restore(parent).map(Some)
+    }
+
+    /// The visit a requested navigation returns to, before its load starts.
+    pub fn requested_restore(&self) -> Option<VisitId> {
+        match &self.navigation {
+            Navigation::Requested {
+                intent: Intent::Restore { visit },
+                ..
+            } => Some(*visit),
+            _ => None,
+        }
+    }
+
+    pub fn set_scroll(&mut self, visit: VisitId, y: i64) -> Result<()> {
+        self.connection.execute(
+            "UPDATE visits SET scroll_y = ?1 WHERE id = ?2",
+            params![y, visit.to_string()],
+        )?;
+        Ok(())
+    }
+
+    pub fn scroll(&self, visit: VisitId) -> Result<Option<i64>> {
+        Ok(self.connection.query_row(
+            "SELECT scroll_y FROM visits WHERE id = ?1",
+            [visit.to_string()],
+            |row| row.get(0),
+        )?)
     }
 
     pub fn reload(&mut self) -> Result<Option<Url>> {
@@ -1563,6 +1600,34 @@ mod tests {
         };
         let browser = Browser::open(&db).unwrap();
         assert_eq!(browser.snapshot().unwrap(), expected);
+    }
+
+    #[test]
+    fn scroll_positions_survive_reopening_and_only_restores_report_a_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join("forest.sqlite3");
+        let (a, b) = {
+            let mut browser = Browser::open(&db).unwrap();
+            let a = follow(&mut browser, "a", NavigationTarget::Root);
+            let b = follow(&mut browser, "b", NavigationTarget::ChildOf(a));
+            assert_eq!(browser.scroll(a).unwrap(), None);
+            browser.set_scroll(a, 1800).unwrap();
+            browser.set_scroll(b, 0).unwrap();
+            (a, b)
+        };
+        let mut browser = Browser::open(&db).unwrap();
+        assert_eq!(browser.scroll(a).unwrap(), Some(1800));
+        assert_eq!(browser.scroll(b).unwrap(), Some(0));
+
+        assert_eq!(browser.requested_restore(), None);
+        browser
+            .navigate(url("c"), NavigationTarget::ChildOf(b))
+            .unwrap();
+        assert_eq!(browser.requested_restore(), None);
+        let target = browser.back().unwrap().unwrap();
+        assert_eq!(browser.requested_restore(), Some(a));
+        browser.started(target).unwrap();
+        assert_eq!(browser.requested_restore(), None);
     }
 
     #[test]
