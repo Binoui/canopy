@@ -1095,10 +1095,15 @@ impl NativeState {
                 self.accept_issue();
                 return false;
             }
-            if self.current_entry_document() == Some(self.history_document.get()) {
+            let returning = self
+                .current_entry_visit()
+                .filter(|visit| self.native_history_allowed(*visit));
+            if returning.is_some()
+                && self.current_entry_document() == Some(self.history_document.get())
+            {
                 return false;
             }
-            if let Some(visit) = self.current_entry_visit() {
+            if let Some(visit) = returning {
                 let result = self
                     .browser
                     .borrow_mut()
@@ -1164,6 +1169,21 @@ impl NativeState {
         false
     }
 
+    fn native_history_allowed(&self, visit: VisitId) -> bool {
+        let browser = self.browser.borrow();
+        let projection = (|| -> Result<_> {
+            crate::forest::ForestProjection::from_snapshot(
+                browser.snapshot()?,
+                browser.tree_states()?,
+            )
+        })();
+        let Ok(forest) = projection else { return false };
+        let Some(tree) = forest.current().and_then(|id| forest.tree_of(id)) else {
+            return false;
+        };
+        forest.tree_of(visit) == Some(tree) && forest.open().iter().any(|open| open.id == tree)
+    }
+
     fn current_entry_visit(&self) -> Option<VisitId> {
         let current = self.history_cursor.borrow().clone()?;
         self.history
@@ -1198,6 +1218,9 @@ impl NativeState {
             return;
         };
         if let Some(visit) = self.current_entry_visit() {
+            if !self.native_history_allowed(visit) {
+                return;
+            }
             let different = self
                 .navigation
                 .borrow()
