@@ -141,14 +141,10 @@ fn main() -> Result<()> {
             });
         }
         if case.ends_with("replaced") {
-            // This bypasses chrome dispatch, as a native page navigation can.
-            if case == "branch_replaced" {
-                ui.pages.selected_page().restore(root)?;
-            } else {
-                ui.pages
-                    .selected_page()
-                    .navigate(url("replacement"), NavigationTarget::Root)?;
-            }
+            ui.pages
+                .selected_page()
+                .native
+                .load_uri(url("replacement").as_str());
         }
         if case == "branch_back_root" {
             key("alt+Left")?;
