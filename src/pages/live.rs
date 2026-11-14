@@ -770,17 +770,14 @@ impl LivePage {
         let session = webkit2gtk::WebViewSessionState::new(&saved.bytes);
         page.native.restore_session_state(&session);
         let binding = (|| -> Result<Vec<HistoryEntry>> {
-            anyhow::ensure!(
-                saved
-                    .entries
-                    .iter()
-                    .any(|e| e.visit == visit && e.uri == e.stored_url && !e.post),
-                "Visit has no traversable entry in checkpoint."
-            );
-            anyhow::ensure!(
-                !saved.entries.iter().any(|e| e.visit == visit && e.post),
-                "POST target requires GET."
-            );
+            let shows_target = |e: &&CheckpointEntry| e.visit == visit && e.uri == e.stored_url;
+            let target = saved
+                .entries
+                .get(saved.current)
+                .filter(shows_target)
+                .or_else(|| saved.entries.iter().rev().find(shows_target))
+                .context("Visit has no traversable entry in checkpoint.")?;
+            anyhow::ensure!(!target.post, "POST target requires GET.");
             let (items, current) =
                 ordered_entries(&page.native.back_forward_list().context("No history.")?)?;
             let urls = items
