@@ -646,6 +646,10 @@ impl LivePage {
     pub(super) fn capture_checkpoint_scroll(&self, done: impl FnOnce() + 'static) {
         let ticket = self.state.ticket();
         self.state.lifecycle.set(Lifecycle::CapturingScroll);
+        if ticket.is_none() {
+            done();
+            return;
+        }
         let completion = Rc::new(RefCell::new(Some(done)));
         let timeout_completion = completion.clone();
         let cancel = gio::Cancellable::new();
