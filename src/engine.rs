@@ -584,6 +584,8 @@ impl Engine {
         state.traversal.borrow_mut().take();
         state.issued.borrow_mut().take();
         state.pending_scroll.set(None);
+        state.reload_candidate.borrow_mut().take();
+        state.back_forward_commit.set(false);
         *state.issue.borrow_mut() = Issue::Idle;
         state.navigation.borrow_mut().clear();
         self.native.load_html(HOME, None);
@@ -778,10 +780,15 @@ impl NativeState {
     }
 
     fn load(self: &Rc<Self>, url: Url) {
+        // Every caller registers its intent first; an address with no attempt has no visit to
+        // commit to.
+        let Some(requested) = self.navigation.borrow().pending_ticket() else {
+            return;
+        };
         {
             let mut issue = self.issue.borrow_mut();
             if let Issue::Retiring { next, .. } = &mut *issue {
-                *next = (self.navigation.borrow().pending_ticket().unwrap(), url);
+                *next = (requested, url);
                 return;
             }
         }
@@ -792,17 +799,16 @@ impl NativeState {
         self.same_document_request.borrow_mut().take();
         self.traversal.borrow_mut().take();
         self.pending_scroll.set(None);
-        let requested = self.navigation.borrow().pending_ticket();
         let weak = Rc::downgrade(self);
         glib::idle_add_local_once(move || {
             if let Some(state) = weak.upgrade() {
                 if state.load_generation.get() == generation
-                    && state.navigation.borrow().pending_ticket() == requested
+                    && state.navigation.borrow().pending_ticket() == Some(requested)
                 {
                     {
                         let mut issue = state.issue.borrow_mut();
                         if let Issue::Retiring { next, .. } = &mut *issue {
-                            *next = (requested.unwrap(), url);
+                            *next = (requested, url);
                             return;
                         }
                     }
@@ -813,14 +819,12 @@ impl NativeState {
                     if let Some(ticket) = retiring {
                         *state.issue.borrow_mut() = Issue::Retiring {
                             ticket,
-                            next: (requested.unwrap(), url),
+                            next: (requested, url),
                         };
                         state.native.stop_loading();
                         return;
                     }
-                    if let Some(ticket) = requested {
-                        *state.issue.borrow_mut() = Issue::Issued(ticket);
-                    }
+                    *state.issue.borrow_mut() = Issue::Issued(requested);
                     let current = state.native.uri().and_then(|uri| web_url(&uri).ok());
                     let same_document = state.navigation.borrow().current.is_some()
                         && !state.native.is_loading()
@@ -836,9 +840,7 @@ impl NativeState {
                         .borrow()
                         .requested_restore(&state.navigation.borrow());
                     if let Some(entry) = returning.and_then(|visit| state.entry(visit, &url)) {
-                        if let Some(ticket) = requested {
-                            *state.traversal.borrow_mut() = Some((ticket, entry.clone()));
-                        }
+                        *state.traversal.borrow_mut() = Some((requested, entry.clone()));
                         state.native.go_to_back_forward_list_item(&entry);
                     } else {
                         if let Some(visit) = returning.filter(|_| !same_document) {
