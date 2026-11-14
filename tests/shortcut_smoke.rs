@@ -36,14 +36,16 @@ fn main() -> Result<()> {
     let ui = Ui::new(directory.path())?;
     ui.window.show_all();
     ready(&ui)?;
-    ui.engine.navigate(url, NavigationTarget::Root)?;
+    ui.pages
+        .selected_page()
+        .navigate(url, NavigationTarget::Root)?;
     wait("fixture page", || {
-        ui.snapshot().unwrap().current.is_some() && !ui.engine.native.is_loading()
+        ui.snapshot().unwrap().current.is_some() && !ui.pages.selected_page().native.is_loading()
     })?;
     wait("reading surface", || {
         chrome(&ui, "canopy.state().surface").is_ok_and(|surface| surface == "reading")
     })?;
-    ui.engine.focus();
+    ui.pages.selected_page().focus();
     key("ctrl+shift+t")?;
     pump(250);
     assert_eq!(
@@ -66,14 +68,14 @@ fn main() -> Result<()> {
         ("F5", "Shortcut fixture 2"),
         ("ctrl+shift+r", "Shortcut fixture 3"),
     ] {
-        ui.engine.focus();
+        ui.pages.selected_page().focus();
         key(combo)?;
         wait(&format!("{combo} reloads the page"), || {
             ui.snapshot()
                 .unwrap()
                 .current_visit()
                 .is_some_and(|visit| visit.title == title)
-                && !ui.engine.native.is_loading()
+                && !ui.pages.selected_page().native.is_loading()
         })?;
         assert_eq!(ui.snapshot()?.current, before.current);
         assert_eq!(ui.snapshot()?.visits.len(), before.visits.len());

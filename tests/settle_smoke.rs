@@ -24,7 +24,7 @@ fn tabs(ui: &Ui) -> usize {
 }
 
 fn shown(ui: &Ui, id: canopy::browser::VisitId) -> bool {
-    ui.snapshot().unwrap().current == Some(id) && !ui.engine.native.is_loading()
+    ui.snapshot().unwrap().current == Some(id) && !ui.pages.selected_page().native.is_loading()
 }
 
 fn main() -> Result<()> {
@@ -52,7 +52,7 @@ fn main() -> Result<()> {
     ready(&ui)?;
     let mut ids = Vec::new();
     for name in ["Alpha", "Beta", "Gamma"] {
-        ui.engine.navigate(
+        ui.pages.selected_page().navigate(
             web_url(&format!("http://{address}/{name}"))?,
             NavigationTarget::Root,
         )?;
@@ -61,12 +61,12 @@ fn main() -> Result<()> {
                 .unwrap()
                 .current_visit()
                 .is_some_and(|v| v.title == format!("Settling /{name}"))
-                && !ui.engine.native.is_loading()
+                && !ui.pages.selected_page().native.is_loading()
         })?;
         ids.push(ui.snapshot()?.current.unwrap());
     }
     wait("three tabs", || tabs(&ui) == 3)?;
-    ui.engine.focus();
+    ui.pages.selected_page().focus();
     key("ctrl+t")?;
     wait("start surface", || {
         chrome(&ui, "canopy.state().surface").is_ok_and(|s| s == "start")
@@ -102,13 +102,16 @@ fn main() -> Result<()> {
 
     key("ctrl+w")?;
     wait("last tree clears the cursor", || {
-        ui.snapshot().unwrap().current.is_none() && tabs(&ui) == 0 && !ui.engine.native.is_loading()
+        ui.snapshot().unwrap().current.is_none()
+            && tabs(&ui) == 0
+            && !ui.pages.selected_page().native.is_loading()
     })?;
     wait("blank home page and start surface", || {
         chrome(&ui, "canopy.state().surface").is_ok_and(|s| s == "start")
     })?;
     assert!(
-        !ui.engine
+        !ui.pages
+            .selected_page()
             .native
             .uri()
             .is_some_and(|uri| uri.starts_with("http")),
@@ -209,7 +212,8 @@ fn main() -> Result<()> {
                 resumed.snapshot().unwrap().current.is_none() && tabs(&resumed) == 0
             })?;
             assert!(!resumed
-                .engine
+                .pages
+                .selected_page()
                 .native
                 .uri()
                 .is_some_and(|uri| uri.starts_with("http")));

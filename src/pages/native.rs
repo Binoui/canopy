@@ -4,23 +4,15 @@ use std::{
     rc::Rc,
 };
 
-use crate::{
-    address::web_url,
-    browser::{Browser, VisitId},
-    chrome::Favicons,
-};
+use crate::{address::web_url, browser::VisitId, chrome::Favicons};
 use anyhow::{Context, Result};
 use gtk::prelude::*;
 use url::Url;
 use webkit2gtk::{DownloadExt, URIRequestExt, WebContextExt};
 
-pub enum ContextEvent {
-    Changed,
-    Error(String),
-    Download(DownloadEvent),
-}
-
-type Observer = RefCell<Option<Box<dyn Fn(ContextEvent)>>>;
+use super::PageEvent;
+type Observer = RefCell<Option<Rc<dyn Fn(PageEvent)>>>;
+type RecordDownload = dyn Fn(VisitId, &Path, u64, Option<&Url>) -> Result<()>;
 type PageLookup = Box<dyn Fn(Option<&Url>) -> Option<VisitId>>;
 
 struct DownloadSource {
@@ -31,13 +23,13 @@ struct DownloadSource {
 pub struct PageContext {
     pub(crate) native: webkit2gtk::WebContext,
     pub favicons: Rc<Favicons>,
-    browser: Rc<RefCell<Browser>>,
+    record: RefCell<Option<Rc<RecordDownload>>>,
     observer: Observer,
     sources: RefCell<Vec<DownloadSource>>,
 }
 
 impl PageContext {
-    pub fn new(profile: &Path, browser: Rc<RefCell<Browser>>) -> Result<Rc<Self>> {
+    pub fn new(profile: &Path) -> Result<Rc<Self>> {
         std::fs::create_dir_all(profile)?;
         use webkit2gtk::{
             CookieManagerExt, CookiePersistentStorage, WebsiteDataManager, WebsiteDataManagerExt,
@@ -66,7 +58,7 @@ impl PageContext {
         let state = Rc::new(Self {
             native: context,
             favicons: Favicons::new(&database),
-            browser,
+            record: RefCell::new(None),
             observer: RefCell::new(None),
             sources: RefCell::new(Vec::new()),
         });
@@ -114,23 +106,32 @@ impl PageContext {
         self.favicons.observe_page(view);
     }
 
-    pub fn observe(&self, callback: impl Fn(ContextEvent) + 'static) {
-        *self.observer.borrow_mut() = Some(Box::new(callback));
+    pub fn observe(&self, callback: impl Fn(PageEvent) + 'static) {
+        *self.observer.borrow_mut() = Some(Rc::new(callback));
     }
 
-    fn emit(&self, event: ContextEvent) {
-        if let Some(observer) = self.observer.borrow().as_ref() {
+    fn emit(&self, event: PageEvent) {
+        let observer = self.observer.borrow().clone();
+        if let Some(observer) = observer {
             observer(event);
         }
     }
 
-    /// Notes on `page` that the file at `path` was saved from it.
+    pub(super) fn record_downloads(
+        &self,
+        record: impl Fn(VisitId, &Path, u64, Option<&Url>) -> Result<()> + 'static,
+    ) {
+        *self.record.borrow_mut() = Some(Rc::new(record));
+    }
+
     fn remember_download(&self, page: VisitId, path: &Path, source: Option<&Url>) -> Result<()> {
         let size = std::fs::metadata(path)?.len();
-        self.browser
-            .borrow_mut()
-            .record_download(page, path, size, source)?;
-        Ok(())
+        let record = self
+            .record
+            .borrow()
+            .clone()
+            .context("Download writer is unavailable.")?;
+        record(page, path, size, source)
     }
 }
 
@@ -170,7 +171,7 @@ fn save(download: &webkit2gtk::Download, state: Rc<PageContext>, page: Option<Vi
         let transfer = transfer.clone();
         let state = state.clone();
         let emit = move |event| {
-            state.emit(ContextEvent::Download(event));
+            state.emit(PageEvent::Download(event));
         };
         download.connect_decide_destination(move |download, suggested| {
             let name = crate::download::file_name(suggested);
@@ -226,13 +227,13 @@ fn save(download: &webkit2gtk::Download, state: Rc<PageContext>, page: Option<Vi
         };
         if let (DownloadEvent::Saved(path), Some(page)) = (&event, page) {
             match state.remember_download(page, path, source.as_ref()) {
-                Ok(()) => state.emit(ContextEvent::Changed),
-                Err(error) => state.emit(ContextEvent::Error(format!(
+                Ok(()) => state.emit(PageEvent::Changed),
+                Err(error) => state.emit(PageEvent::Error(format!(
                     "The file was saved, but could not be added to its page. {error}"
                 ))),
             }
         }
-        state.emit(ContextEvent::Download(event));
+        state.emit(PageEvent::Download(event));
     });
 }
 

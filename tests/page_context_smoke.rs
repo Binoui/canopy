@@ -1,8 +1,7 @@
 use anyhow::{bail, Result};
 use canopy::{
     browser::{Browser, NavigationTarget},
-    engine::Engine,
-    pages::native::{ContextEvent, DownloadEvent, PageContext},
+    pages::{DownloadEvent, Go, PageEvent, Pages},
 };
 use gtk::prelude::*;
 use std::{
@@ -34,15 +33,12 @@ fn main() -> Result<()> {
     std::env::set_var("XDG_DATA_HOME", directory.path().join("xdg-data"));
     std::env::set_var("XDG_CACHE_HOME", directory.path().join("xdg-cache"));
     canopy::init_desktop()?;
-    let browser = Rc::new(RefCell::new(Browser::open(
-        &directory.path().join("forest.sqlite3"),
-    )?));
-    let context = PageContext::new(&directory.path().join("profile"), browser.clone())?;
+    let browser = Browser::open(&directory.path().join("forest.sqlite3"))?;
     let fixed = gtk::Fixed::new();
-    let engine = Engine::new(&fixed, browser.clone(), &context)?;
-    let weak = engine.native.downgrade();
-    let favicons = context.favicons.clone();
-    drop(engine);
+    let pages = Pages::mount(&fixed, browser, &directory.path().join("profile"))?;
+    let weak = pages.selected_page().native.downgrade();
+    let favicons = pages.favicons();
+    pages.release_selected_page();
     wait("favicons_release_page", || weak.upgrade().is_none())?;
     drop(favicons);
     println!("PASS favicons_release_page while the cache and context are alive.");
@@ -73,23 +69,25 @@ fn main() -> Result<()> {
             write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
         }
     });
-    let engine = Engine::new(&fixed, browser.clone(), &context)?;
-    engine.navigate(
-        format!("http://{address}/page").parse()?,
-        NavigationTarget::Root,
-    )?;
-    wait("source committed", || {
-        engine.native.title().as_deref() == Some("Source") && !engine.native.is_loading()
+    pages.mount_selected_page(&fixed)?;
+    pages.go(Go::Address {
+        url: format!("http://{address}/page").parse()?,
+        target: NavigationTarget::Root,
     })?;
-    let page = browser.borrow().snapshot()?.current.unwrap();
+    wait("source committed", || {
+        pages.selected_page().native.title().as_deref() == Some("Source")
+            && !pages.selected_page().native.is_loading()
+    })?;
+    let page = pages.read(|b| b.snapshot())?.current.unwrap();
     let events = Rc::new(RefCell::new(Vec::new()));
     let received = events.clone();
-    context.observe(move |event| {
-        if let ContextEvent::Download(event) = event {
+    pages.observe(move |event| {
+        if let PageEvent::Download(event) = event {
             received.borrow_mut().push(event);
         }
     });
-    engine
+    pages
+        .selected_page()
         .native
         .download_uri(&format!("http://{address}/file"));
     wait("download started", || {
@@ -98,8 +96,8 @@ fn main() -> Result<()> {
             .iter()
             .any(|e| matches!(e, DownloadEvent::Started(_)))
     })?;
-    let weak = engine.native.downgrade();
-    drop(engine);
+    let weak = pages.selected_page().native.downgrade();
+    pages.release_selected_page();
     wait("download_outlives_source_view", || weak.upgrade().is_none())?;
     release.store(true, Ordering::Relaxed);
     wait("download saved", || {
@@ -116,7 +114,7 @@ fn main() -> Result<()> {
         panic!("expected saved")
     };
     assert_eq!(std::fs::read(path)?, vec![42; 131072]);
-    let downloads = browser.borrow().downloads()?;
+    let downloads = pages.read(|b| b.downloads())?;
     assert_eq!(downloads.len(), 1);
     assert_eq!(downloads[0].visit, page);
     assert_eq!(downloads[0].path, *path);

@@ -67,7 +67,8 @@ fn main() -> Result<()> {
             inbox.collect().is_ok_and(|b| b.is_empty())
         })?;
         let manager = ui
-            .engine
+            .pages
+            .selected_page()
             .native
             .context()
             .unwrap()
@@ -130,7 +131,7 @@ fn main() -> Result<()> {
         vec![b, c]
     );
     wait("page focus after a strip click", || {
-        ui.engine.native.has_focus()
+        ui.pages.selected_page().native.has_focus()
     })?;
     println!(
         "PASS hovering opens the strip, clicking node A restores it and gives the page the keyboard, and C becomes B's sibling."
@@ -150,7 +151,7 @@ fn main() -> Result<()> {
         "PASS F6 focuses the current node, Left walks the trunk and Enter restores the parent."
     );
 
-    ui.engine.native.grab_focus();
+    ui.pages.selected_page().native.grab_focus();
     pump(100);
     key("ctrl+l")?;
     wait("Ctrl+L from the focused web view", || {
@@ -165,7 +166,7 @@ fn main() -> Result<()> {
     assert_eq!(field[2], fixture.url("/c").chars().count());
     key("Escape")?;
     wait("palette closed", || !visible(&ui, "#palette"))?;
-    wait("page focus", || ui.engine.native.has_focus())?;
+    wait("page focus", || ui.pages.selected_page().native.has_focus())?;
     println!("PASS Ctrl+L opens the palette on the current address from the focused web view; Escape returns to the page.");
 
     let (x, y) = element_point(&ui, "q")?;
@@ -177,7 +178,7 @@ fn main() -> Result<()> {
     })?;
     type_text("zzz")?;
     key("Escape")?;
-    wait("page focus", || ui.engine.native.has_focus())?;
+    wait("page focus", || ui.pages.selected_page().native.has_focus())?;
     type_text("omega")?;
     assert_eq!(
         eval(&ui, "JSON.stringify(document.getElementById('q').value)")?,
@@ -266,13 +267,15 @@ fn main() -> Result<()> {
 
     save_window(&ui, "/tmp/canopy-chrome-webkit.png")?;
 
-    ui.engine.reload()?;
-    wait("reload start", || ui.engine.native.is_loading())?;
+    ui.pages.selected_page().reload()?;
+    wait("reload start", || {
+        ui.pages.selected_page().native.is_loading()
+    })?;
     loaded(&ui, "/c", 4)?;
     assert_eq!(ui.snapshot()?.current, Some(c));
     println!("PASS reloading adds no node.");
 
-    ui.engine.navigate(
+    ui.pages.selected_page().navigate(
         web_url(&fixture.url("/redirect"))?,
         NavigationTarget::ChildOf(ui.snapshot()?.current.unwrap()),
     )?;
@@ -285,13 +288,13 @@ fn main() -> Result<()> {
     let port = unused_port.local_addr()?.port();
     drop(unused_port);
     let failed_url = format!("http://127.0.0.1:{port}/unreachable");
-    ui.engine.navigate(
+    ui.pages.selected_page().navigate(
         web_url(&failed_url)?,
         NavigationTarget::ChildOf(ui.snapshot()?.current.unwrap()),
     )?;
     wait("connection failure", || {
         toast_text(&ui).is_some_and(|text| text.contains("Could not load"))
-            && !ui.engine.native.is_loading()
+            && !ui.pages.selected_page().native.is_loading()
     })?;
     pump(150);
     assert_eq!(ui.snapshot()?, before_failure);
@@ -301,7 +304,7 @@ fn main() -> Result<()> {
     wait("Memory menu closed", || !visible(&ui, "#popover"))?;
     println!("PASS a network failure shows a toast, stays listed in the Memory menu, and changes nothing.");
 
-    ui.engine.restore(a)?;
+    ui.pages.selected_page().restore(a)?;
     loaded(&ui, "/a", 5)?;
     trusted_click(&ui, "blank")?;
     wait("target=_blank queued", || {
@@ -331,11 +334,12 @@ fn main() -> Result<()> {
     key("Escape")?;
     println!("PASS a target=_blank link waits in the tree; New branch here activates it without a duplicate, then anchors the palette on it.");
 
-    ui.engine.navigate(
+    ui.pages.selected_page().navigate(
         web_url(&fixture.url("/b"))?,
         NavigationTarget::ChildOf(ui.snapshot()?.current.unwrap()),
     )?;
-    ui.engine
+    ui.pages
+        .selected_page()
         .navigate(web_url(&fixture.url("/c"))?, NavigationTarget::Root)?;
     loaded(&ui, "/c", 7)?;
     assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
@@ -366,7 +370,7 @@ fn main() -> Result<()> {
     println!("PASS a right click on a tab names its tree; an empty name is automatic again.");
 
     for n in 1..=8 {
-        ui.engine.navigate(
+        ui.pages.selected_page().navigate(
             web_url(&fixture.url(&format!("/topic-{n}")))?,
             NavigationTarget::Root,
         )?;
@@ -408,7 +412,8 @@ fn main() -> Result<()> {
         .unwrap()
         .id;
     wait("hidden tree selected", || {
-        ui.snapshot().unwrap().current == Some(hidden_root) && !ui.engine.native.is_loading()
+        ui.snapshot().unwrap().current == Some(hidden_root)
+            && !ui.pages.selected_page().native.is_loading()
     })?;
     println!(
         "PASS the overflow arrow lists exactly the hidden trees, in creation order, and opens one."
@@ -462,7 +467,7 @@ fn main() -> Result<()> {
         || {
             !visible(&ui, "#forest")
                 && ui.snapshot().unwrap().current == Some(other.id)
-                && !ui.engine.native.is_loading()
+                && !ui.pages.selected_page().native.is_loading()
         },
     )?;
     let first = other.id;
@@ -488,14 +493,16 @@ fn main() -> Result<()> {
     wait("palette closed", || !visible(&ui, "#palette"))?;
     click_chrome(&ui, "[data-shortcut='0']")?;
     wait("shortcut plants a root", || {
-        ui.snapshot().unwrap().visits.len() == count + 1 && !ui.engine.native.is_loading()
+        ui.snapshot().unwrap().visits.len() == count + 1
+            && !ui.pages.selected_page().native.is_loading()
     })?;
     assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
     key("ctrl+t")?;
     wait("new-tree page", || visible(&ui, "[data-path='0']"))?;
     click_chrome(&ui, "[data-path='0']")?;
     wait("usual path loads two pages", || {
-        ui.snapshot().unwrap().visits.len() == count + 3 && !ui.engine.native.is_loading()
+        ui.snapshot().unwrap().visits.len() == count + 3
+            && !ui.pages.selected_page().native.is_loading()
     })?;
     let snapshot = ui.snapshot()?;
     let second = snapshot.current_visit().unwrap();
@@ -601,9 +608,10 @@ fn main() -> Result<()> {
     assert_eq!(reopened.snapshot()?, expected);
     reopened.resume(&[])?;
     wait("restart reload", || {
-        !reopened.engine.native.is_loading()
+        !reopened.pages.selected_page().native.is_loading()
             && reopened
-                .engine
+                .pages
+                .selected_page()
                 .native
                 .uri()
                 .is_some_and(|uri| uri.starts_with("http"))
@@ -621,13 +629,13 @@ fn loaded(ui: &Ui, path: &str, count: usize) -> Result<()> {
             && snapshot
                 .current_visit()
                 .is_some_and(|visit| visit.url.path() == path && !visit.title.is_empty())
-            && !ui.engine.native.is_loading()
+            && !ui.pages.selected_page().native.is_loading()
     })
     .with_context(|| {
         format!(
             "observed {:?}, native URI {:?}",
             ui.snapshot(),
-            ui.engine.native.uri()
+            ui.pages.selected_page().native.uri()
         )
     })
 }

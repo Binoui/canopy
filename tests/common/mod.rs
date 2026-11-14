@@ -303,7 +303,7 @@ pub fn icon_is_blue(ui: &Ui, selector: &str) -> bool {
 pub fn eval(ui: &Ui, script: &str) -> Result<Value> {
     let output = Rc::new(RefCell::new(None));
     let result = output.clone();
-    ui.engine.native.evaluate_javascript(
+    ui.pages.selected_page().native.evaluate_javascript(
         script,
         None,
         None,
@@ -323,7 +323,7 @@ pub fn element_point(ui: &Ui, id: &str) -> Result<(i32, i32)> {
     let point = eval(ui, &script)?;
     screen_point(
         ui,
-        &ui.engine.native,
+        &ui.pages.selected_page().native,
         point["x"].as_f64().unwrap() as i32,
         point["y"].as_f64().unwrap() as i32,
     )

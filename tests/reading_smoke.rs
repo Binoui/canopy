@@ -30,7 +30,7 @@ fn main() -> Result<()> {
     let ui = Ui::new(directory.path())?;
     ui.window.show_all();
     ready(&ui)?;
-    ui.engine.navigate(
+    ui.pages.selected_page().navigate(
         web_url(&fixture.url("/discussion"))?,
         NavigationTarget::Root,
     )?;
@@ -77,7 +77,7 @@ fn main() -> Result<()> {
         0
     );
     assert_eq!(
-        ui.engine.native.uri().unwrap().as_str(),
+        ui.pages.selected_page().native.uri().unwrap().as_str(),
         original_url.as_str()
     );
     println!("PASS Ctrl-click, middle-click and target=_blank queue three contextual siblings without fetching or moving.");
@@ -88,7 +88,7 @@ fn main() -> Result<()> {
         .find(|v| v.url.path() == "/article-a")
         .unwrap()
         .id;
-    ui.engine.restore(article)?;
+    ui.pages.selected_page().restore(article)?;
     loaded(&ui, "/article-a")?;
     wait("automatic text capture", || {
         !ui.search_hits("amber otter cache").unwrap().is_empty()
@@ -128,10 +128,11 @@ fn main() -> Result<()> {
     pump(150);
     click_chrome(&ui, "#card [data-act=source]")?;
     wait("Back to source from the card", || {
-        ui.snapshot().unwrap().current == Some(source_id) && !ui.engine.native.is_loading()
+        ui.snapshot().unwrap().current == Some(source_id)
+            && !ui.pages.selected_page().native.is_loading()
     })?;
     assert_eq!(queued(&ui), 2);
-    ui.engine.restore(article)?;
+    ui.pages.selected_page().restore(article)?;
     loaded(&ui, "/article-a")?;
     println!("PASS the current page's card shows its source excerpt and Back to source restores the parent.");
     save_window(&ui, "/tmp/canopy-chrome-reading.png")?;
@@ -170,31 +171,35 @@ fn main() -> Result<()> {
         })
         .unwrap()
         .id;
-    ui.engine.restore(fragment)?;
+    ui.pages.selected_page().restore(fragment)?;
     wait("fragment activation", || {
-        ui.snapshot().unwrap().current == Some(fragment) && !ui.engine.native.is_loading()
+        ui.snapshot().unwrap().current == Some(fragment)
+            && !ui.pages.selected_page().native.is_loading()
     })?;
     assert_eq!(queued(&ui), 2);
-    ui.engine.restore(source_id)?;
+    ui.pages.selected_page().restore(source_id)?;
     wait("back to the parent after the fragment", || {
-        ui.snapshot().unwrap().current == Some(source_id) && !ui.engine.native.is_loading()
+        ui.snapshot().unwrap().current == Some(source_id)
+            && !ui.pages.selected_page().native.is_loading()
     })?;
-    ui.engine.open_citation(article)?;
+    ui.pages.selected_page().open_citation(article)?;
     wait("comment opened by the native action", || {
         ui.snapshot().unwrap().current_visit().is_some_and(|visit| {
             visit.parent == Some(source_id) && visit.url.fragment() == Some("comment-1")
-        }) && !ui.engine.native.is_loading()
+        }) && !ui.pages.selected_page().native.is_loading()
     })?;
-    ui.engine.restore(source_id)?;
+    ui.pages.selected_page().restore(source_id)?;
     wait("source unchanged after the citation", || {
-        ui.snapshot().unwrap().current == Some(source_id) && !ui.engine.native.is_loading()
+        ui.snapshot().unwrap().current == Some(source_id)
+            && !ui.pages.selected_page().native.is_loading()
     })?;
     assert_eq!(ui.snapshot()?.current_visit().unwrap().url, original_url);
     println!("PASS queued fragments and native citation actions complete without changing the parent feed URL.");
     let before_anchor = ui.snapshot()?.visits.len();
     page_click(&ui, "hash", 1, false)?;
     wait("same-document navigation", || {
-        ui.engine
+        ui.pages
+            .selected_page()
             .native
             .uri()
             .is_some_and(|uri| uri.ends_with("#comment-1"))
@@ -210,8 +215,8 @@ fn main() -> Result<()> {
     println!("PASS a same-document anchor does not poison the following navigation.");
 
     set_remember_pages(&ui, false)?;
-    assert!(!ui.engine.capture_enabled()?);
-    ui.engine.restore(source_id)?;
+    assert!(!ui.pages.selected_page().capture_enabled()?);
+    ui.pages.selected_page().restore(source_id)?;
     loaded(&ui, "/discussion")?;
     eval(&ui, "(() => {document.getElementById('remember').textContent='luminous notebook memory saved while automatic capture is off';const r=document.createRange();r.selectNodeContents(document.getElementById('remember'));const s=getSelection();s.removeAllRanges();s.addRange(r);return JSON.stringify(true)})()")?;
     remember_selection(&ui)?;
@@ -239,7 +244,7 @@ fn main() -> Result<()> {
     assert!(ui.search_hits("SOURCE_EDIT_SECRET")?.is_empty());
     println!("PASS explicit selections work with automatic capture disabled; mixed and editable ranges do not leak controls.");
 
-    ui.engine.navigate(
+    ui.pages.selected_page().navigate(
         web_url(&fixture.url("/no-capture"))?,
         NavigationTarget::Root,
     )?;
@@ -250,7 +255,8 @@ fn main() -> Result<()> {
     wait("capture turned back on", || {
         !ui.search_hits("automatic off sentinel").unwrap().is_empty()
     })?;
-    ui.engine
+    ui.pages
+        .selected_page()
         .navigate(web_url(&fixture.url("/login"))?, NavigationTarget::Root)?;
     loaded(&ui, "/login")?;
     pump(150);
@@ -267,7 +273,7 @@ fn main() -> Result<()> {
     reopened.window.show_all();
     ready(&reopened)?;
     assert_eq!(reopened.snapshot()?, expected);
-    assert!(!reopened.engine.capture_enabled()?);
+    assert!(!reopened.pages.selected_page().capture_enabled()?);
     let hits = reopened.search_hits("amber otter cache")?;
     assert!(hits.iter().any(|hit| hit.capture_id == saved.capture_id));
     search_saved_text(&reopened, "amber otter cache")?;
@@ -308,7 +314,7 @@ fn loaded(ui: &Ui, path: &str) -> Result<()> {
             .unwrap()
             .current_visit()
             .is_some_and(|v| v.url.path() == path && !v.title.is_empty())
-            && !ui.engine.native.is_loading()
+            && !ui.pages.selected_page().native.is_loading()
     })
 }
 
@@ -333,7 +339,7 @@ fn set_remember_pages(ui: &Ui, on: bool) -> Result<()> {
     if shown != on {
         click_chrome(ui, "#automatic-capture")?;
         wait("Remember pages toggled", || {
-            ui.engine.capture_enabled().unwrap() == on
+            ui.pages.selected_page().capture_enabled().unwrap() == on
         })?;
     }
     key("Escape")?;

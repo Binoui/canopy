@@ -17,7 +17,7 @@ use anyhow::{Context, Result};
 use canopy::{
     address::web_url,
     browser::NavigationTarget,
-    engine::{DownloadEvent, EngineEvent},
+    pages::{DownloadEvent, PageEvent},
     ui::Ui,
 };
 use gtk::prelude::*;
@@ -66,10 +66,12 @@ fn main() -> Result<()> {
     let ui = Ui::new(&data)?;
     ui.window.show_all();
     ready(&ui)?;
-    ui.engine
+    ui.pages
+        .selected_page()
         .navigate(web_url(&fixture.url("/read"))?, NavigationTarget::Root)?;
     wait("old localStorage in native page", || {
-        ui.engine.native.title().as_deref() == Some("old-storage") && !ui.engine.native.is_loading()
+        ui.pages.selected_page().native.title().as_deref() == Some("old-storage")
+            && !ui.pages.selected_page().native.is_loading()
     })?;
     assert!(fixture.cookie_received.load(Ordering::Relaxed));
     assert_eq!(
@@ -82,9 +84,9 @@ fn main() -> Result<()> {
     println!("PASS a persistent HTTP cookie written by the old wry construction reaches the server through the real native Ui.");
     println!("PASS localStorage written by the old wry construction survives process exit and is read by the real native Ui. Only old-to-new compatibility is required.");
 
-    ui.engine.native.set_zoom_level(1.5);
+    ui.pages.selected_page().native.set_zoom_level(1.5);
     eval(&ui, "JSON.stringify((window.mouseEvents = [], ['mousedown', 'mouseup'].forEach(kind => document.addEventListener(kind, event => { window.mouseEvents.push([event.type, event.button, event.buttons, event.clientX, event.clientY]); event.preventDefault(); })), true))")?;
-    let (x, y) = screen_point(&ui, &ui.engine.native, 90, 90)?;
+    let (x, y) = screen_point(&ui, &ui.pages.selected_page().native, 90, 90)?;
     focus_window()?;
     move_to(x, y)?;
     xdo(&["click", "8"])?;
@@ -102,20 +104,24 @@ fn main() -> Result<()> {
         ])
     );
     assert_eq!(
-        ui.engine.native.uri().as_deref(),
+        ui.pages.selected_page().native.uri().as_deref(),
         Some(fixture.url("/read").as_str())
     );
-    ui.engine.native.set_zoom_level(1.);
+    ui.pages.selected_page().native.set_zoom_level(1.);
     println!("PASS back and forward mouse buttons reach page JavaScript at zoomed CSS coordinates and respect preventDefault.");
 
     let events = Rc::new(RefCell::new(Vec::new()));
     let received = events.clone();
-    ui.engine.observe(move |event| {
-        if let EngineEvent::Download(event) = event {
+    ui.pages.observe(move |event| {
+        if let PageEvent::Download(event) = event {
             received.borrow_mut().push(event);
         }
     });
-    let download = ui.engine.native.download_uri(&fixture.url("/file"));
+    let download = ui
+        .pages
+        .selected_page()
+        .native
+        .download_uri(&fixture.url("/file"));
     wait("one completed download", || {
         events
             .borrow()
