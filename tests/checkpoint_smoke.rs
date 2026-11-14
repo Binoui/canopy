@@ -742,6 +742,51 @@ fn revived_form_back() -> Result<()> {
     );
     Ok(())
 }
+fn revived_post_with_iframe_history() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.navigate("/a")?;
+    f.eval("const form=document.createElement('form');form.method='post';form.action='/post';document.body.append(form);form.submit();return true;")?;
+    wait("POST committed", || {
+        f.pages.read(|b| b.snapshot()).unwrap().current != Some(a)
+            && !f.pages.selected_page().native.is_loading()
+    })?;
+    let post = f.pages.read(|b| b.snapshot())?.current.unwrap();
+    f.eval("const i=document.createElement('iframe');i.src='/inner';document.body.append(i);return true;")?;
+    wait("iframe ready", || {
+        f.eval("return frames[0]?.location.pathname==='/inner' && frames[0].document.readyState==='complete';").ok()==Some(json!(true))
+    })?;
+    f.eval("frames[0].location.href='/inner2';return true;")?;
+    wait("iframe moved", || {
+        f.eval("return frames[0]?.location.pathname==='/inner2' && frames[0].document.readyState==='complete';").ok()==Some(json!(true))
+    })?;
+    assert!(
+        f.pages
+            .selected_page()
+            .native
+            .back_forward_list()
+            .unwrap()
+            .length()
+            >= 3
+    );
+    f.release()?;
+    assert!(
+        f.revive(post)?,
+        "a POST document remains a cold target after iframe navigation"
+    );
+    assert_eq!(f.server.hits("POST /post"), 1);
+    assert_eq!(f.server.hits("GET /post"), 1);
+    assert_eq!(
+        f.pages
+            .selected_page()
+            .native
+            .back_forward_list()
+            .unwrap()
+            .length(),
+        1
+    );
+    assert_eq!(f.pages.revival_refusals(), 0);
+    Ok(())
+}
 fn resize_during_restore() -> Result<()> {
     let f = Fixture::new()?;
     let a = f.navigate("/a")?;
@@ -920,6 +965,10 @@ fn main() -> Result<()> {
     let cases: &[Case] = &[
         ("release_refuses_navigation", release_refuses_navigation),
         ("revived_form_back", revived_form_back),
+        (
+            "revived_post_with_iframe_history",
+            revived_post_with_iframe_history,
+        ),
         ("resize_during_restore", resize_during_restore),
         ("commands_during_release", commands_during_release),
         ("scroll_checkpoint_current", scroll_checkpoint_current),

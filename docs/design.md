@@ -110,7 +110,9 @@ loaded again in this view. Native Back or Forward to one of those entries is ref
 once and replaced by a GET of its stored visit address. The replacement excludes
 that native entry, so it cannot select the same refused entry again. A main-frame
 request supplies one method value, refreshed on redirects and consumed when its entry is bound. A GET reload
-refreshes an existing item's method. Iframe decisions retain WebKit's behavior.
+refreshes an existing item's method. New same-document entries inherit the main
+document's method, including entries added by iframe navigation. Iframe decisions
+retain WebKit's behavior.
 Ordinary views retain WebKit's existing form navigation, including cached state and
 POST resubmission when the page cache has evicted a result. Pages ignore
 window.close() so page script cannot destroy the browser's page view.

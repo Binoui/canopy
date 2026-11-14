@@ -1703,10 +1703,18 @@ impl NativeState {
         };
         let live = live_entries(&list);
         let mut history = self.history.borrow_mut();
-        let previous = history.iter().find(|entry| entry.item == current);
-        let response = self.main_frame_post.take();
-        let post = response.unwrap_or_else(|| previous.is_some_and(|entry| entry.post));
-        let needs_get = response.is_none() && previous.is_some_and(|entry| entry.needs_get);
+        let previous = history
+            .iter()
+            .find(|entry| entry.item == current)
+            .or_else(|| {
+                history
+                    .iter()
+                    .rev()
+                    .find(|entry| entry.document == self.history_document.get())
+            });
+        let method = self.main_frame_post.take();
+        let post = method.unwrap_or_else(|| previous.is_some_and(|entry| entry.post));
+        let needs_get = method.is_none() && previous.is_some_and(|entry| entry.needs_get);
         history.retain(|entry| entry.item != current && live.contains(&entry.item));
         history.push(HistoryEntry {
             item: current,
