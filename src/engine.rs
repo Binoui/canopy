@@ -543,11 +543,14 @@ impl NativeState {
         let mut navigation = self.navigation.borrow_mut();
         let ticket = match self.active_ticket() {
             Some(ticket) => ticket,
-            None => navigation
-                .pending_ticket()
-                .unwrap_or_else(|| navigation.native_request(url.clone())),
+            None => {
+                let ticket = navigation
+                    .pending_ticket()
+                    .unwrap_or_else(|| navigation.native_request(url.clone()));
+                *self.issue.borrow_mut() = Issue::Active(ticket);
+                ticket
+            }
         };
-        *self.issue.borrow_mut() = Issue::Active(ticket);
         navigation.started(ticket, url);
     }
 
@@ -602,6 +605,13 @@ impl NativeState {
     }
 
     fn load(self: &Rc<Self>, url: Url) {
+        {
+            let mut issue = self.issue.borrow_mut();
+            if let Issue::Retiring { next, .. } = &mut *issue {
+                *next = url;
+                return;
+            }
+        }
         let generation = self.load_generation.get().wrapping_add(1);
         self.load_generation.set(generation);
         self.foreground_generation
