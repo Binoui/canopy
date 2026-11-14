@@ -97,13 +97,32 @@ target takes the cold path. Alias-only targets reload their stored URL cold.
 The saved current entry wins over another entry showing the same visit and URL.
 SQLite scroll applies only when reviving the entry current at checkpoint time.
 Revived views follow their container allocation. Their scroll helper waits for
-two rendered frames matching that viewport before applying SQLite scroll, because
-WebKit can finish loading before receiving GTK's final viewport. Normal live-view
+two consecutive rendered frames with the same size before applying SQLite scroll, because
+WebKit can finish loading before receiving GTK's final viewport. The wait ends after
+30 frames even if the size keeps changing. Normal live-view
 restoration keeps its existing timing. Other entries retain WebKit's scroll,
 captured when the document was left.
 Native back and forward retain the open-tree restriction.
 
-Canopy never automatically repeats a POST through back or forward navigation.
-The policy handler refuses that request and restores the visit's stored address
-with GET. A POST target in a checkpoint takes the cold path with GET. Pages ignore
+A revival never resends a form. A POST target in a checkpoint takes the cold path
+with GET. Other restored POST entries remain ineligible for native traversal until
+loaded again in this view. Native Back or Forward to one of those entries is refused
+once and replaced by a GET of its stored visit address. The replacement excludes
+that native entry, so it cannot select the same refused entry again. A main-frame
+response supplies one method value, consumed when its entry is bound. A GET reload
+refreshes an existing item's method. Iframe decisions retain WebKit's behavior.
+Ordinary views retain WebKit's existing form navigation, including cached state and
+POST resubmission when the page cache has evicted a result. Pages ignore
 window.close() so page script cannot destroy the browser's page view.
+
+Commands that need a selected page check the slot before changing the forest.
+Startup can queue a landing without a page. Resume preserves that landing until a
+page is available. Policy decisions during release are refused while the final
+scroll query checks both the URL and the isolated world's document epoch.
+
+### Next PR
+
+A hidden revived view restores scroll only after it is shown. Its first visible
+frames can show the top. Revival refuses while a release is pending, so the old
+page cannot yet remain on screen until the revived page commits. Release can take
+500 ms, during which commands requiring a selected page fail.

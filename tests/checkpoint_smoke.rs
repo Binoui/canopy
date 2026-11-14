@@ -19,7 +19,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use webkit2gtk::{BackForwardListExt, WebViewExt};
+use webkit2gtk::{BackForwardListExt, BackForwardListItemExt, UserContentManagerExt, WebViewExt};
 
 fn pump() {
     while gtk::events_pending() {
@@ -75,7 +75,13 @@ impl Server {
                         return;
                     };
                     let text = String::from_utf8_lossy(&request[..n]);
+                    let method = text.split_whitespace().next().unwrap_or("GET");
                     let path = text.split_whitespace().nth(1).unwrap_or("/").to_string();
+                    *count
+                        .lock()
+                        .unwrap()
+                        .entry(format!("{method} {path}"))
+                        .or_default() += 1;
                     *count.lock().unwrap().entry(path.clone()).or_default() += 1;
                     if refuse.load(Ordering::Relaxed) {
                         return;
@@ -659,10 +665,174 @@ fn scroll_checkpoint_back() -> Result<()> {
     f.eval("scrollTo(0,2500); return true;")?;
     f.navigate("/b")?;
     f.release()?;
+    let pages = Rc::downgrade(&f.pages);
+    f.pages.before_revival_traversal(move || {
+        let native = pages.upgrade().unwrap().selected_page().native.clone();
+        native.user_content_manager().unwrap().add_script(&webkit2gtk::UserScript::for_world(
+            "let pending=0;const timeout=setTimeout;globalThis.setTimeout=(fn,delay,...args)=>{if(![300,1000,2500].includes(delay))return timeout(fn,delay,...args);pending++;return timeout(()=>{try{fn(...args)}finally{document.documentElement.dataset.restorePending=String(--pending)}},delay)};addEventListener('load',()=>requestAnimationFrame(()=>requestAnimationFrame(()=>{document.documentElement.dataset.restoreFrames='ready';document.documentElement.dataset.restorePending=String(pending)})));",
+            webkit2gtk::UserContentInjectedFrames::TopFrame,
+            webkit2gtk::UserScriptInjectionTime::Start,
+            "canopy-reading-memory", &[], &[]));
+    });
     assert!(!f.revive(a)?);
+    wait("restoration callbacks drained", || {
+        f.eval("return document.documentElement.dataset.restoreFrames === 'ready' && document.documentElement.dataset.restorePending === '0';").unwrap() == json!(true)
+    })?;
     wait("WebKit history scroll", || {
         f.eval("return scrollY;").unwrap() == json!(2500)
     })?;
+    Ok(())
+}
+fn revived_form_back() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.navigate("/a")?;
+    f.eval("const form=document.createElement('form');form.method='post';form.action='/post';document.body.append(form);form.submit();return true;")?;
+    wait("POST committed", || {
+        f.pages.read(|b| b.snapshot()).unwrap().current != Some(a)
+            && !f.pages.selected_page().native.is_loading()
+    })?;
+    let post = f.pages.read(|b| b.snapshot())?.current.unwrap();
+    let next = f.navigate("/next")?;
+    f.release()?;
+    assert!(!f.revive(next)?);
+    f.pages.selected_page().native.go_back();
+    f.arrived(post)?;
+    assert_eq!(
+        f.server.hits("POST /post"),
+        1,
+        "revival must not resend a form"
+    );
+    assert_eq!(
+        f.server.hits("GET /post"),
+        1,
+        "replacement must issue exactly one GET"
+    );
+    assert_eq!(
+        f.pages.revival_refusals(),
+        1,
+        "replacement must not traverse the refused item again"
+    );
+    let list = f.pages.selected_page().native.back_forward_list().unwrap();
+    let mut paths: Vec<_> = list
+        .back_list()
+        .iter()
+        .map(|i| {
+            url::Url::parse(&i.uri().unwrap())
+                .unwrap()
+                .path()
+                .to_owned()
+        })
+        .collect();
+    paths.reverse();
+    paths.push(
+        url::Url::parse(&list.current_item().unwrap().uri().unwrap())
+            .unwrap()
+            .path()
+            .to_owned(),
+    );
+    assert_eq!(paths, ["/a", "/post", "/next", "/post"]);
+    f.pages.reload()?;
+    f.arrived(post)?;
+    f.release()?;
+    assert!(
+        !f.revive(post)?,
+        "GET reload clears POST metadata on the existing item"
+    );
+    Ok(())
+}
+fn resize_during_restore() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.navigate("/a")?;
+    f.eval("scrollTo(0,1700); return true;")?;
+    wait("saved scroll", || {
+        f.pages.read(|b| b.scroll(a)).unwrap() == Some(1700)
+    })?;
+    f.release()?;
+    f.pages.corrupt_checkpoint("length");
+    let pages = Rc::downgrade(&f.pages);
+    let window = f.window.clone();
+    let fixed = f.fixed.clone();
+    f.pages.before_revival_traversal(move || {
+        let pages = pages.clone();
+        let window = window.clone();
+        let fixed = fixed.clone();
+        pages
+            .upgrade()
+            .unwrap()
+            .selected_page()
+            .native
+            .connect_load_changed(move |_, event| {
+                if event == webkit2gtk::LoadEvent::Finished {
+                    window.resize(900, 700);
+                    fixed.size_allocate(&gtk::Allocation::new(0, 0, 900, 700));
+                    pages.upgrade().unwrap().resize(900., 700.);
+                }
+            });
+    });
+    assert!(f.pages.revive_selected_page(&f.fixed, a)?);
+    wait("scroll after viewport changed", || {
+        f.eval("return scrollY;").unwrap() == json!(1700)
+    })?;
+    Ok(())
+}
+fn release_refuses_navigation() -> Result<()> {
+    let f = Fixture::new()?;
+    let native = f.pages.selected_page().native.clone();
+    let policy = Rc::new(RefCell::new(None));
+    let observed = policy.clone();
+    let count = Rc::new(std::cell::Cell::new(0));
+    let seen = count.clone();
+    native.connect_decide_policy(move |_, decision, kind| {
+        seen.set(seen.get() + 1);
+        if kind == webkit2gtk::PolicyDecisionType::NavigationAction {
+            *observed.borrow_mut() = Some(decision.clone());
+        }
+        false
+    });
+    f.navigate("/a")?;
+    let decision = policy
+        .borrow_mut()
+        .take()
+        .expect("navigation policy observed");
+    f.pages.release_selected_page();
+    let before = count.get();
+    let handled = native.emit_by_name::<bool>(
+        "decide-policy",
+        &[&decision, &webkit2gtk::PolicyDecisionType::NavigationAction],
+    );
+    assert!(
+        handled,
+        "release must refuse policy before WebKit's default"
+    );
+    assert_eq!(
+        count.get(),
+        before,
+        "release policy must not reach later handlers"
+    );
+    wait("release completed", || f.pages.checkpoint_size().is_some())?;
+    Ok(())
+}
+fn commands_during_release() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.navigate("/a")?;
+    let forest = f.pages.read(|b| {
+        canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)
+    })?;
+    let tree = forest.tree_of(a).unwrap();
+    let before = f.pages.read(|b| b.snapshot())?;
+    f.pages.release_selected_page();
+    assert!(f.pages.open_roots(&[f.server.url("/root")]).is_err());
+    assert_eq!(
+        f.pages.read(|b| b.snapshot()).unwrap().visits.len(),
+        before.visits.len(),
+        "open_roots must reject before adding visits"
+    );
+    assert!(
+        f.pages.settle_tree(tree).is_err(),
+        "settle must reject before changing the forest"
+    );
+    assert_eq!(f.pages.read(|b| b.snapshot()).unwrap().current, Some(a));
+    wait("checkpoint", || f.pages.checkpoint_size().is_some())?;
     Ok(())
 }
 fn duplicate_entry() -> Result<()> {
@@ -746,6 +916,10 @@ fn main() -> Result<()> {
     let selected = std::env::args().nth(1);
     type Case = (&'static str, fn() -> Result<()>);
     let cases: &[Case] = &[
+        ("release_refuses_navigation", release_refuses_navigation),
+        ("revived_form_back", revived_form_back),
+        ("resize_during_restore", resize_during_restore),
+        ("commands_during_release", commands_during_release),
         ("scroll_checkpoint_current", scroll_checkpoint_current),
         ("scroll_checkpoint_back", scroll_checkpoint_back),
         ("duplicate_entry", duplicate_entry),
