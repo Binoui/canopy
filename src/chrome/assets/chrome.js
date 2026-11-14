@@ -5,6 +5,8 @@
 
 const HEADER = 42, REST = 52, OPEN = 120, TRUNK_Y = 26, CARD_WIDTH = 304, ACCESSORY = 22;
 const MOVE = 300, RESIZE = 220;
+/// A page with more files than this shows one leaf and their count.
+const LEAVES = 3;
 const MONOGRAM = ['#d95c42', '#3b7ad6', '#2e9e5e', '#9c6bde', '#d9962e', '#3b99ad', '#d1547a', '#6b7380'];
 const ICONS = {
   plus: '<path d="M12 5v14M5 12h14" stroke-width="1.9"/>',
@@ -14,6 +16,8 @@ const ICONS = {
   chevron: '<path d="M7 10l5 5 5-5" stroke-width="2"/>',
   globe: '<circle cx="12" cy="12" r="8.5" stroke-width="1.7"/><path d="M3.5 12h17M12 3.5c2.6 2.6 2.6 14.4 0 17M12 3.5c-2.6 2.6-2.6 14.4 0 17" stroke-width="1.7"/>',
   close: '<path d="M6 6l12 12M18 6L6 18" stroke-width="1.9"/>',
+  file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" stroke-width="1.7"/><path d="M14 3v5h5" stroke-width="1.7"/>',
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" stroke-width="1.7"/>',
   settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" stroke-width="1.6"/><circle cx="12" cy="12" r="3" stroke-width="1.6"/>',
 };
 
@@ -55,6 +59,8 @@ const S = {
 
 const visit = (id) => S.frame?.visits[id];
 const current = () => S.frame?.current ?? null;
+/// The files downloaded from a page of the current tree, oldest first.
+const filesOf = (id) => S.frame?.files?.[id] ?? [];
 
 // ---------- favicons ----------
 
@@ -226,6 +232,7 @@ const strip = {
   elements: new Map(),
   dots: new Map(),
   badges: new Map(),
+  leaves: new Map(),
 };
 
 const targetLayout = () => S.strip?.[S.open ? 'open' : 'rest'] ?? null;
@@ -270,6 +277,8 @@ function tick(now) {
         strip.dots.delete(id);
         strip.badges.get(id)?.remove();
         strip.badges.delete(id);
+        strip.leaves.get(id)?.remove();
+        strip.leaves.delete(id);
       }
     }
     syncLayer();
@@ -345,6 +354,38 @@ function buildStrip(layout) {
       badge.remove();
       strip.badges.delete(n.id);
     }
+    // A bud is too small to carry leaves; they show once the strip opens.
+    const files = n.kind === 'bud' ? [] : filesOf(n.id);
+    let leaves = strip.leaves.get(n.id);
+    if (files.length) {
+      if (!leaves) {
+        leaves = document.createElement('button');
+        leaves.dataset.id = n.id;
+        leaves.addEventListener('click', (event) => {
+          event.stopPropagation();
+          const id = leaves.dataset.id;
+          if (S.popover?.kind === 'files' && S.popover.data === id) closePopover();
+          else openPopover('files', leaves, id, strip.elements.get(id));
+        });
+        canvas.appendChild(leaves);
+        strip.leaves.set(n.id, leaves);
+      }
+      leaves.className = `leaves${n.kind === 'pill' ? ' on-pill' : ''}`;
+      const few = files.length <= LEAVES;
+      const html = few
+        ? files.map((f) => `<i class="leaf${f.missing ? ' missing' : ''}"></i>`).join('')
+        : `<i class="leaf${files.every((f) => f.missing) ? ' missing' : ''}"></i><b>${files.length}</b>`;
+      if (leaves.dataset.html !== html) {
+        leaves.innerHTML = html;
+        leaves.dataset.html = html;
+      }
+      const label = files.length === 1 ? `Downloaded here: ${files[0].name}` : `${files.length} files downloaded here`;
+      leaves.title = label;
+      leaves.setAttribute('aria-label', `${label}, from ${v.label}`);
+    } else if (leaves) {
+      leaves.remove();
+      strip.leaves.delete(n.id);
+    }
   }
   const dot = $('memory-dot');
   dot.classList.toggle('on', !!S.frame?.captureEnabled);
@@ -410,6 +451,14 @@ function drawStrip() {
       badge.style.left = `${r.x + r.w / 2 + 7 - badge.offsetWidth}px`;
       badge.style.top = `${r.y + r.s / 2 + 6 - 14}px`;
       badge.style.opacity = r.o;
+    }
+    const leaves = strip.leaves.get(id);
+    if (leaves) {
+      // Leaves stand on the node's top edge, clear of its rounded corner.
+      leaves.style.left = `${r.x - r.w / 2 + (leaves.classList.contains('on-pill') ? 5 : 0)}px`;
+      leaves.style.top = `${r.y - r.s / 2 + 1 - leaves.offsetHeight}px`;
+      leaves.style.opacity = r.o;
+      leaves.style.visibility = r.w < 1 ? 'hidden' : '';
     }
   }
   const pill = strip.target?.nodes.find((n) => n.kind === 'pill');
@@ -524,7 +573,9 @@ function renderCard(preview) {
 
 // ---------- popovers: Memory menu, hidden pages, trees that do not fit, a tree's name ----------
 
-function openPopover(kind, anchor, data) {
+/// Opens a menu under `anchor`, or under `below` when the anchor sits on top of something
+/// the menu should not cover.
+function openPopover(kind, anchor, data, below = anchor) {
   const popover = $('popover');
   S.popover = { kind, anchor, data };
   renderPopover();
@@ -532,7 +583,7 @@ function openPopover(kind, anchor, data) {
   const a = anchor.getBoundingClientRect();
   const width = popover.offsetWidth;
   popover.style.left = `${clamp(a.left, 8, window.innerWidth - width - 8)}px`;
-  popover.style.top = `${a.bottom + 6}px`;
+  popover.style.top = `${below.getBoundingClientRect().bottom + 6}px`;
   if (S.layer !== 'palette') setLayer('menu');
   syncLayer();
 }
@@ -586,6 +637,26 @@ function renderPopover() {
       if (field.value.trim() !== title) intent('rename-tree', { id: data, name: field.value });
       closePopover();
     });
+  } else if (kind === 'files') {
+    const files = filesOf(data);
+    if (!files.length) {
+      closePopover(false);
+      return;
+    }
+    popover.innerHTML = `<div class="menu-heading">${files.length === 1 ? 'Downloaded from this page' : `${files.length} files downloaded from this page`}</div>`
+      + files.map((f) => `<div class="file-row${f.missing ? ' missing' : ''}">`
+        + `<button class="menu-row" data-file="${f.id}" title="${esc(f.missing ? `${f.name} was moved or deleted` : `Open ${f.name}`)}">`
+        + `${icon('file')}<span class="grow">${esc(f.name)}</span><span class="menu-detail">${esc(f.detail)}</span></button>`
+        + `<button class="icon-button" data-folder="${f.id}" title="${esc(`Open ${f.folder}`)}" aria-label="${esc(`Open ${f.folder}, where ${f.name} was saved`)}">${icon('folder')}</button>`
+        + '</div>').join('');
+    popover.querySelectorAll('[data-file]').forEach((row) => row.addEventListener('click', () => {
+      closePopover();
+      intent('open-file', { file: Number(row.dataset.file) });
+    }));
+    popover.querySelectorAll('[data-folder]').forEach((button) => button.addEventListener('click', () => {
+      closePopover();
+      intent('open-file-folder', { file: Number(button.dataset.folder) });
+    }));
   } else if (kind === 'memory') {
     popover.innerHTML = '<div class="menu-heading">Memory</div>'
       + captureRow()

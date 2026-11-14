@@ -90,6 +90,10 @@ struct NativeState {
     traversal: RefCell<Option<Url>>,
     /// Where to scroll once a visit reloaded from the network finishes loading.
     pending_scroll: Cell<Option<(VisitId, i64)>>,
+    /// The address of the main frame's last response that has not become a page, and the
+    /// page its file belongs to if it becomes a download instead. WebKit may report that
+    /// load as failed before it reports the download, and the navigation is forgotten then.
+    response_page: RefCell<Option<(Url, Option<VisitId>)>>,
 }
 
 pub struct Engine {
@@ -142,6 +146,7 @@ impl Engine {
             history: RefCell::new(Vec::new()),
             traversal: RefCell::new(None),
             pending_scroll: Cell::new(None),
+            response_page: RefCell::new(None),
         });
         manager.register_script_message_handler_in_world(SCROLLED, WORLD);
         {
@@ -175,6 +180,7 @@ impl Engine {
                         }
                     }
                     LoadEvent::Committed => {
+                        state.response_page.borrow_mut().take();
                         if let Some(url) = url {
                             let result = state.browser.borrow_mut().committed(url.clone());
                             match result {
@@ -590,10 +596,22 @@ impl NativeState {
             let Some(response) = decision.downcast_ref::<ResponsePolicyDecision>() else {
                 return false;
             };
+            let main = response.is_main_frame_main_resource();
+            if main {
+                let url = response
+                    .request()
+                    .and_then(|request| request.uri())
+                    .and_then(|uri| web_url(&uri).ok());
+                let noted = url.map(|url| {
+                    let page = self.browser.borrow().download_page(Some(&url));
+                    (url, page.ok().flatten())
+                });
+                self.response_page.replace(noted);
+            }
             if response.is_mime_type_supported() {
                 return false;
             }
-            if response.is_main_frame_main_resource() {
+            if main {
                 decision.download();
             } else {
                 decision.ignore();
@@ -792,6 +810,30 @@ impl NativeState {
         }
     }
 
+    /// The page a download from `source` that starts now belongs to.
+    fn download_page(&self, source: Option<&Url>) -> Option<VisitId> {
+        let noted = self
+            .response_page
+            .borrow_mut()
+            .take_if(|(url, _)| Some(&*url) == source);
+        match noted {
+            Some((_, page)) => page,
+            None => {
+                let page = self.browser.borrow().download_page(source);
+                page.ok().flatten()
+            }
+        }
+    }
+
+    /// Notes on `page` that the file at `path` was saved from it.
+    fn remember_download(&self, page: VisitId, path: &Path, source: Option<&Url>) -> Result<()> {
+        let size = std::fs::metadata(path)?.len();
+        self.browser
+            .borrow_mut()
+            .record_download(page, path, size, source)?;
+        Ok(())
+    }
+
     fn update_title(&self) {
         if let (Some(uri), Some(title)) = (self.native.uri(), self.native.title()) {
             if let Ok(url) = web_url(&uri) {
@@ -860,18 +902,26 @@ impl NativeState {
     }
 }
 
-/// Saves `download` in the user's download folder and reports it. WebKit's default would
-/// trust the server's file name.
+/// Saves `download` in the user's download folder, notes it on the page it came from and
+/// reports it. WebKit's default would trust the server's file name.
 fn save(download: &webkit2gtk::Download, state: std::rc::Weak<NativeState>) {
     let transfer = Rc::new(RefCell::new(Transfer::Deciding));
-    let emit = Rc::new(move |event| {
-        if let Some(state) = state.upgrade() {
-            state.emit(EngineEvent::Download(event));
-        }
-    });
+    let source = download
+        .request()
+        .and_then(|request| request.uri())
+        .and_then(|uri| web_url(&uri).ok());
+    // Decided now: once the file has arrived, another page may be on screen.
+    let page = state
+        .upgrade()
+        .and_then(|state| state.download_page(source.as_ref()));
     {
         let transfer = transfer.clone();
-        let emit = emit.clone();
+        let state = state.clone();
+        let emit = move |event| {
+            if let Some(state) = state.upgrade() {
+                state.emit(EngineEvent::Download(event));
+            }
+        };
         download.connect_decide_destination(move |download, suggested| {
             let name = crate::download::file_name(suggested);
             match crate::download::Staging::new(&download_directory()) {
@@ -909,7 +959,7 @@ fn save(download: &webkit2gtk::Download, state: std::rc::Weak<NativeState>) {
         });
     }
     download.connect_finished(move |download| {
-        emit(match transfer.replace(Transfer::Over) {
+        let event = match transfer.replace(Transfer::Over) {
             Transfer::Saving { name, .. } if truncated(download) => DownloadEvent::Failed {
                 name: Some(name),
                 reason: "The connection closed before the whole file arrived.".into(),
@@ -923,7 +973,17 @@ fn save(download: &webkit2gtk::Download, state: std::rc::Weak<NativeState>) {
             },
             Transfer::Failed { name, reason } => DownloadEvent::Failed { name, reason },
             Transfer::Deciding | Transfer::Over => return,
-        });
+        };
+        let Some(state) = state.upgrade() else { return };
+        if let (DownloadEvent::Saved(path), Some(page)) = (&event, page) {
+            match state.remember_download(page, path, source.as_ref()) {
+                Ok(()) => state.emit(EngineEvent::Changed),
+                Err(error) => state.emit(EngineEvent::Error(format!(
+                    "The file was saved, but could not be added to its page. {error}"
+                ))),
+            }
+        }
+        state.emit(EngineEvent::Download(event));
     });
 }
 

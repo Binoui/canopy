@@ -11,11 +11,12 @@ use webkit2gtk::WebViewExt;
 
 use crate::{
     browser::{
-        Browser, ImportedPage, NavigationTarget, SearchHit, Snapshot, VisitId, VisitPreview,
+        Browser, Download, ImportedPage, NavigationTarget, SearchHit, Snapshot, VisitId,
+        VisitPreview,
     },
     chrome::{
-        ChromeFrame, ChromeHost, ChromeIntent, Favicons, HtmlChrome, PaletteScope, PaletteSeed,
-        Toast, CHROME_HEIGHT,
+        ChromeFrame, ChromeHost, ChromeIntent, Favicons, HtmlChrome, PageFile, PaletteScope,
+        PaletteSeed, Toast, CHROME_HEIGHT,
     },
     engine::{DownloadEvent, Engine, EngineEvent},
     forest::ForestProjection,
@@ -176,6 +177,10 @@ impl Ui {
         self.browser.borrow().search(query)
     }
 
+    pub fn downloads(&self) -> Result<Vec<Download>> {
+        self.browser.borrow().downloads()
+    }
+
     /// Restores the forest, then opens `urls` as new trees in place of reloading the last page.
     pub fn resume(&self, urls: &[Url]) -> Result<()> {
         self.after_cookies.set(Some(StartPage::Reload));
@@ -264,11 +269,24 @@ impl Ui {
 
     fn read_frame(&self) -> Result<ChromeFrame> {
         let browser = self.browser.borrow();
+        let forest = ForestProjection::from_snapshot(browser.snapshot()?, browser.tree_states()?)?;
+        // Only the current tree is drawn with its files, so only those are looked for on disk.
+        let tree = forest.current().and_then(|id| forest.tree_of(id));
+        let files = browser
+            .downloads()?
+            .into_iter()
+            .filter(|download| tree.is_some() && forest.tree_of(download.visit) == tree)
+            .map(|download| PageFile {
+                missing: !download.path.exists(),
+                download,
+            })
+            .collect();
         Ok(ChromeFrame {
-            forest: ForestProjection::from_snapshot(browser.snapshot()?, browser.tree_states()?)?,
+            forest,
             capture_enabled: browser.capture_enabled()?,
             theme: browser.theme_mode()?,
             suggestions: browser.start_suggestions()?,
+            files,
         })
     }
 
@@ -522,6 +540,8 @@ impl ChromeHost for Ui {
                 result
             }
             ChromeIntent::RememberSelection => self.engine.remember_selection(),
+            ChromeIntent::OpenFile(id) => ui.open_file(id, false),
+            ChromeIntent::OpenFileFolder(id) => ui.open_file(id, true),
         };
         self.report(result);
     }
@@ -566,6 +586,33 @@ impl Ui {
                 Ok(())
             }
         }
+    }
+}
+
+impl Ui {
+    /// Hands a downloaded file, or the folder it was saved in, to the desktop's usual app.
+    fn open_file(&self, id: i64, folder: bool) -> Result<()> {
+        let download = self.browser.borrow().download(id)?;
+        let name = download.name();
+        let directory = download.path.parent().unwrap_or(Path::new("/"));
+        let directory_name = directory
+            .file_name()
+            .map_or_else(|| "its folder".into(), |name| name.to_string_lossy());
+        let target = if folder { directory } else { &download.path };
+        if !target.exists() {
+            // The strip may still draw the file as present.
+            self.schedule_refresh();
+            if folder {
+                anyhow::bail!("{directory_name}, where {name} was saved, no longer exists.");
+            }
+            anyhow::bail!("{name} is no longer in {directory_name}. It was moved or deleted.");
+        }
+        let launch = self.window.display().app_launch_context();
+        gio::AppInfo::launch_default_for_uri(&gio::File::for_path(target).uri(), launch.as_ref())
+            .map_err(|error| {
+                let shown = if folder { &*directory_name } else { &*name };
+                anyhow::anyhow!("Could not open {shown}. {}", error.message())
+            })
     }
 }
 

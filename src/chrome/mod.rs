@@ -33,8 +33,8 @@ use palette::{Group, PaletteItem};
 
 use crate::{
     browser::{
-        Capture, ImportedPage, NavigationTarget, SearchHit, StartSuggestions, ThemeMode, TreeId,
-        UsualPath, Visit, VisitId, VisitPreview,
+        Capture, Download, ImportedPage, NavigationTarget, SearchHit, StartSuggestions, ThemeMode,
+        TreeId, UsualPath, Visit, VisitId, VisitPreview,
     },
     forest::ForestProjection,
 };
@@ -62,6 +62,14 @@ pub struct ChromeFrame {
     pub capture_enabled: bool,
     pub theme: ThemeMode,
     pub suggestions: StartSuggestions,
+    /// The files downloaded from the current tree's pages, oldest first.
+    pub files: Vec<PageFile>,
+}
+
+/// A file downloaded from a page, and whether it is still where it was saved.
+pub struct PageFile {
+    pub download: Download,
+    pub missing: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -99,6 +107,10 @@ pub enum ChromeIntent {
     OpenSaved(i64),
     SetCaptureEnabled(bool),
     RememberSelection,
+    /// Open a downloaded file with the app the desktop uses for it.
+    OpenFile(i64),
+    /// Open the folder a downloaded file was saved in.
+    OpenFileFolder(i64),
 }
 
 pub enum Toast {
@@ -500,6 +512,8 @@ impl Inner {
             }),
             "capture" => ChromeIntent::SetCaptureEnabled(message["on"].as_bool()?),
             "remember" => ChromeIntent::RememberSelection,
+            "open-file" => ChromeIntent::OpenFile(message["file"].as_i64()?),
+            "open-file-folder" => ChromeIntent::OpenFileFolder(message["file"].as_i64()?),
             "cancel" => ChromeIntent::CancelContinuation,
             "path" => ChromeIntent::OpenPath(suggestions.paths.get(index()?)?.clone()),
             "shortcut" => ChromeIntent::Navigate {
