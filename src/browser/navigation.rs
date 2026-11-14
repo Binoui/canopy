@@ -11,6 +11,12 @@ pub struct LoadTicket {
     sequence: u64,
 }
 
+impl LoadTicket {
+    pub fn belongs_to(self, navigation: &Navigation) -> bool {
+        self.view == navigation.view
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Document {
     pub view: ViewId,

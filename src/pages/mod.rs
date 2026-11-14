@@ -64,6 +64,15 @@ enum ContinuationEvent {
 }
 
 impl ContinuationState {
+    fn ticket(self) -> LoadTicket {
+        match self {
+            Self::Waiting(ticket) | Self::Committed { ticket, .. } | Self::Ready { ticket, .. } => {
+                ticket
+            }
+        }
+    }
+
+
     fn transition(mut self, event: ContinuationEvent) -> Option<Self> {
         match event {
             ContinuationEvent::Commit {
@@ -454,13 +463,23 @@ impl Pages {
     // The per-branch PR calls the checkpoint lifecycle.
     #[cfg_attr(not(feature = "gui-smoke"), allow(dead_code))]
     fn checkpoint_and_release(&self) -> Result<live::Checkpoint> {
-        self.cancel_continuation();
         let page = self
             .live
             .borrow_mut()
             .take()
             .ok_or_else(|| anyhow::anyhow!("No live page."))?;
+        self.discard_view_continuation(&page.navigation());
         Self::release_page(page)
+    }
+
+    fn discard_view_continuation(&self, navigation: &crate::browser::Navigation) {
+        let mut pending = self.continuation.borrow_mut();
+        if pending
+            .as_ref()
+            .is_some_and(|c| c.state.ticket().belongs_to(navigation))
+        {
+            pending.take();
+        }
     }
 
     fn release_page(page: Rc<LivePage>) -> Result<live::Checkpoint> {
@@ -605,6 +624,29 @@ impl SelectedPage<'_> {
 mod continuation_tests {
     use super::*;
     use crate::browser::Navigation;
+    #[test]
+    fn checkpoint_discards_only_the_owning_views_continuation() {
+        let mut source = Navigation::default();
+        let mut target = Navigation::default();
+        let url = Url::parse("https://example.org/").unwrap();
+        let source_ticket = source.native_request(url.clone());
+        let target_ticket = target.native_request(url.clone());
+        let directory = tempfile::tempdir().unwrap();
+        let mut browser = Browser::open(&directory.path().join("forest.sqlite3")).unwrap();
+        let visit = browser.add_roots(&[url]).unwrap()[0];
+        for ticket in [source_ticket, target_ticket] {
+            for state in [
+                ContinuationState::Waiting(ticket),
+                ContinuationState::Committed { ticket, visit },
+                ContinuationState::Ready { ticket, visit },
+            ] {
+                assert_eq!(state.ticket().belongs_to(&source), ticket == source_ticket);
+                assert_eq!(state.ticket().belongs_to(&target), ticket == target_ticket);
+            }
+        }
+    }
+
+
 
     #[test]
     fn waiting_continuation_requires_its_own_attempt() {

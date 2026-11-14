@@ -184,6 +184,10 @@ impl Drop for LivePage {
 }
 
 impl LivePage {
+    pub(super) fn navigation(&self) -> std::cell::Ref<'_, Navigation> {
+        self.state.navigation.borrow()
+    }
+
     pub(super) fn pending_ticket(&self) -> Option<LoadTicket> {
         self.state.navigation.borrow().pending_ticket()
     }
@@ -648,7 +652,7 @@ impl LivePage {
         let state = &self.state;
         state.lifecycle.set(Lifecycle::Checkpointing);
         let owner = state.owner();
-        owner.cancel_continuation();
+        owner.discard_view_continuation(&state.navigation.borrow());
         let pending = state.navigation.borrow().pending_ticket();
         if let Some(ticket) = pending {
             state.navigation.borrow_mut().failed(ticket);
