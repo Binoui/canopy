@@ -604,7 +604,13 @@ impl LivePage {
         }
         let signals = self.signals.take();
         for (object, id) in signals {
-            object.disconnect(id);
+            // GTK can destroy the widget before its owner releases the page.
+            let connected = unsafe {
+                glib::gobject_ffi::g_signal_handler_is_connected(object.as_ptr(), id.as_raw()) != 0
+            };
+            if connected {
+                object.disconnect(id);
+            }
         }
         self.state.history.borrow_mut().clear();
         self.state.history_cursor.borrow_mut().take();
@@ -812,6 +818,21 @@ impl LivePage {
             .borrow_mut()
             .restore(&mut self.state.navigation.borrow_mut(), id)?;
         self.state.load(url);
+        Ok(())
+    }
+
+    pub(super) fn restore_revived(&self, id: VisitId) -> Result<()> {
+        self.restore(id)?;
+        // A fresh incarnation uses the persisted visit scroll, as a cold restore does.
+        let saved = self
+            .state
+            .owner()
+            .browser
+            .borrow()
+            .scroll(id)
+            .ok()
+            .flatten();
+        self.state.pending_scroll.set(saved.map(|y| (id, y)));
         Ok(())
     }
 

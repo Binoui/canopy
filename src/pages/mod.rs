@@ -460,6 +460,10 @@ impl Pages {
             .borrow_mut()
             .take()
             .ok_or_else(|| anyhow::anyhow!("No live page."))?;
+        Self::release_page(page)
+    }
+
+    fn release_page(page: Rc<LivePage>) -> Result<live::Checkpoint> {
         let saved = page.checkpoint();
         drop(page);
         saved
@@ -473,9 +477,11 @@ impl Pages {
     #[cfg(feature = "gui-smoke")]
     pub fn mount_selected_page(self: &Rc<Self>, container: &gtk::Fixed) -> Result<()> {
         let page = LivePage::new(container, Rc::downgrade(self), &self.context)?;
-        self.checkpoint.borrow_mut().take();
         let old = self.live.borrow_mut().replace(Rc::new(page));
-        drop(old);
+        if let Some(old) = old {
+            let _ = Self::release_page(old);
+        }
+        self.checkpoint.borrow_mut().take();
         Ok(())
     }
     // The per-branch PR calls the checkpoint lifecycle.
@@ -504,7 +510,7 @@ impl Pages {
                 observer();
             }
         }
-        self.page().restore(visit)?;
+        self.page().restore_revived(visit)?;
         Ok(cold)
     }
 

@@ -90,3 +90,9 @@ If only aliased native URLs remain for the requested visit, revival falls back
 to that visit's stored URL. This preserves the existing rule that selecting a
 visit reloads its stored address. Checkpoint failure also releases the source;
 the caller can cold-restore from SQLite without a checkpoint.
+
+A revived incarnation applies the visit's persisted scroll through the existing
+scroll-restoration helper after loading, including when it traversed native
+history. Normal traversal in an already loaded view still uses native history's
+scroll. The mount probe installs its replacement before releasing the old page through
+the shared checkpoint/release helper, so destroy callbacks can reenter Pages.
