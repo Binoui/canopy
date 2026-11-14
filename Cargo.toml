@@ -59,5 +59,17 @@ path = "tests/open_url_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
 
+[[test]]
+name = "download_smoke"
+path = "tests/download_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]
+
+[[test]]
+name = "shortcut_smoke"
+path = "tests/shortcut_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]
+
 [profile.dev]
 debug = 1
