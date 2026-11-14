@@ -95,7 +95,7 @@ struct NativeState {
     next_history_document: Cell<u64>,
     history_cursor: RefCell<Option<BackForwardListItem>>,
     /// The history entry this engine asked WebKit for, which the policy check lets through.
-    traversal: RefCell<Option<Url>>,
+    traversal: RefCell<Option<(LoadTicket, BackForwardListItem)>>,
     /// Where to scroll once a visit reloaded from the network finishes loading.
     pending_scroll: Cell<Option<(VisitId, i64)>>,
     /// The address of the main frame's last response that has not become a page, and the
@@ -312,7 +312,7 @@ impl Engine {
                     return true;
                 };
                 let ticket = state.active_ticket();
-                if ticket != state.navigation.borrow().pending_ticket() {
+                if ticket.is_none() || ticket != state.navigation.borrow().pending_ticket() {
                     return true;
                 }
                 let cancelled = error.matches(NetworkError::Cancelled);
@@ -338,7 +338,7 @@ impl Engine {
             native.connect_load_failed_with_tls_errors(move |_, _uri, _, _| {
                 if let Some(state) = weak.upgrade() {
                     let ticket = state.active_ticket();
-                    if ticket != state.navigation.borrow().pending_ticket() {
+                    if ticket.is_none() || ticket != state.navigation.borrow().pending_ticket() {
                         return true;
                     }
                     if let Some(ticket) = ticket {
@@ -704,7 +704,9 @@ impl NativeState {
                         .borrow()
                         .requested_restore(&state.navigation.borrow());
                     if let Some(entry) = returning.and_then(|visit| state.entry(visit, &url)) {
-                        *state.traversal.borrow_mut() = Some(url.clone());
+                        if let Some(ticket) = requested {
+                            *state.traversal.borrow_mut() = Some((ticket, entry.clone()));
+                        }
                         state.native.go_to_back_forward_list_item(&entry);
                     } else {
                         if let Some(visit) = returning.filter(|_| !same_document) {
@@ -904,7 +906,15 @@ impl NativeState {
                 .map(|_| ());
             self.report(result);
         } else if action.navigation_type() == NavigationType::BackForward {
-            if self.traversal.borrow().as_ref() == Some(&url) {
+            if self
+                .traversal
+                .borrow()
+                .as_ref()
+                .is_some_and(|(ticket, item)| {
+                    Some(*ticket) == self.active_ticket()
+                        && self.history_cursor.borrow().as_ref() == Some(item)
+                })
+            {
                 return false;
             }
             if self.current_entry_document() == Some(self.history_document.get()) {
