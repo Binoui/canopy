@@ -471,7 +471,42 @@ mod tests {
     }
 
     #[test]
-    fn tabs_list_only_open_trees_and_settled_pages_stay_in_the_visits_map() {
+    fn tabs_list_only_open_trees_and_none_is_active_while_the_current_tree_is_settled() {
+        use crate::browser::{Browser, NavigationTarget};
+        let dir = tempfile::tempdir().unwrap();
+        let mut browser = Browser::open(&dir.path().join("forest.db")).unwrap();
+        let url = url::Url::parse("https://example.org/a").unwrap();
+        browser
+            .navigate(url.clone(), NavigationTarget::Root)
+            .unwrap();
+        browser.started(url.clone()).unwrap();
+        browser.committed(url).unwrap();
+        let current = browser.tree_states().unwrap()[0].root;
+        browser
+            .add_roots(&[url::Url::parse("https://example.org/b").unwrap()])
+            .unwrap();
+        browser.settle_tree(current).unwrap();
+        let forest = ForestProjection::from_snapshot(
+            browser.snapshot().unwrap(),
+            browser.tree_states().unwrap(),
+        )
+        .unwrap();
+        let frame = ChromeFrame {
+            forest,
+            capture_enabled: true,
+            theme: ThemeMode::Dark,
+            suggestions: StartSuggestions::default(),
+            files: Vec::new(),
+        };
+        let value = super::frame(&frame, 1240.);
+        let tabs = value["tabs"].as_array().unwrap();
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(tabs[0]["active"], false);
+        assert_ne!(tabs[0]["id"], current.root().to_string());
+    }
+
+    #[test]
+    fn settled_pages_stay_in_the_visits_map_so_search_and_the_forest_can_open_them() {
         let (forest, ids) = chain_with_lifecycle(Lifecycle::Settled { since: 1 });
         let frame = ChromeFrame {
             forest,

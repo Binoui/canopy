@@ -217,6 +217,29 @@ mod tests {
     }
 
     #[test]
+    fn a_current_page_inside_a_settled_tree_is_a_valid_forest() {
+        let root = visit(None, 1, VisitState::Opened);
+        let id = root.id;
+        let forest = ForestProjection::from_snapshot(
+            Snapshot {
+                visits: vec![root],
+                current: Some(id),
+            },
+            vec![TreeState {
+                root: TreeId(id),
+                last_visit: id,
+                name: None,
+                lifecycle: Lifecycle::Settled { since: 2 },
+            }],
+        )
+        .unwrap();
+        assert_eq!(forest.current(), Some(id));
+        assert_eq!(forest.tree_of(id), Some(TreeId(id)));
+        assert!(forest.open().is_empty());
+        assert_eq!(forest.settled().len(), 1);
+    }
+
+    #[test]
     fn open_trees_keep_creation_order_and_settled_trees_list_newest_first() {
         let visits: Vec<_> = (0..5)
             .map(|time| visit(None, time, VisitState::Opened))
