@@ -122,7 +122,7 @@
   let scrollTimer = 0;
   function reportScroll() {
     try {
-      webkit.messageHandlers.canopyScrolled.postMessage(JSON.stringify({ url: location.href, y: Math.round(scrollY) }));
+      webkit.messageHandlers.canopyScrolled.postMessage(JSON.stringify({ url: location.href, y: Math.round(scrollY), epoch: globalThis.__canopyDocumentEpoch }));
     } catch (_) {}
   }
   addEventListener('scroll', event => {

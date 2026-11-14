@@ -6,13 +6,15 @@ After A then B, going back to A and following C gives A two children. Visit B st
 
 ## SQLite owns the forest and the cursor
 
-The database holds the visits and the current position. Inserting a visit and moving the cursor share one transaction. What the chrome shows is a projection of this database.
+The database holds the visits and the foreground cursor. Browser stays the only writer of SQLite. A foreground commit writes the visit, the cursor, the tree's target and the arrival log in one transaction. A hidden commit writes the visit without moving the other three.
 
 Two structures were compared before implementation. The first gave ownership of the state to SQLite. The second also kept a forest in memory. The first was chosen to avoid a second write path and keeping the cursor in sync.
 
 The alternative brought two things to the chosen design. The navigation intent stays explicit until the load actually happens. The tests check the behaviour with WebKit and compare the forest before and after reopening the database.
 
 ## An intent comes before a visit
+
+Each view owns its Navigation, its pending load and its current Document. Browser owns no global load. A LoadTicket ties one incarnation of a view to an attempt number. Title, capture, context and scroll callbacks carry the Document they came from and check its epoch before writing. A failed transaction keeps the load and the Document so the commit can be retried.
 
 A new navigation records its parent before loading. A restore records the id of the visit to reuse. The engine then confirms the URL when the main document loads.
 
@@ -22,11 +24,11 @@ Persistent ids are ULIDs. URLs are not visit ids. Subresources and embedded fram
 
 ## GTK and WebKit stay on their thread
 
-wry builds the webview inside a GTK container. Its Unix extension gives access to the native WebKitGTK signals. These signals tell apart the start, the commit and the failure of a load.
+WebKitGTK builds the page view inside a GTK container. wry still builds the chrome view. The native signals tell apart the start, the commit and the failure of a load.
 
 Borrows of the state are released before calls that can trigger another callback. A single webview loads the active page. The other visits stay in SQLite.
 
-The browser's back follows the parent in the forest. The tree list lets you pick another branch. Resuming a visit reloads its URL. It does not restore a snapshot of the DOM, the scroll position or forms.
+Back uses an entry still present in WebKit's history, otherwise the parent in the forest. The list's changed signals drop the bindings of removed entries and bind same-document entries to their visit. The native cursor is read at changed or Committed, never at notify::uri. A cold resume reloads the URL and restores the recorded scroll. WebKit's page cache can keep the DOM and the forms of an entry still present.
 
 ## The chrome is an HTML view above the page
 

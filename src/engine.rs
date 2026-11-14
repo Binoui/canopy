@@ -21,7 +21,8 @@ mod mouse;
 use crate::{
     address::web_url,
     browser::{
-        Browser, Capture, CaptureKind, CapturePayload, NavigationTarget, SourceContext, VisitId,
+        Browser, Capture, CaptureKind, CapturePayload, Document, LoadTicket, Navigation,
+        NavigationTarget, SourceContext, Visibility, VisitId,
     },
 };
 
@@ -63,20 +64,18 @@ enum Transfer {
     Over,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct Document {
-    visit: VisitId,
-    stored_url: Url,
-    page_url: Url,
-    epoch: u64,
+enum Issue {
+    Idle,
+    Active(LoadTicket),
+    Retiring { ticket: LoadTicket, next: Url },
 }
 
 struct NativeState {
     native: webkit2gtk::WebView,
     browser: Rc<RefCell<Browser>>,
     observer: Observer,
-    document: RefCell<Option<Document>>,
-    epoch: Cell<u64>,
+    navigation: RefCell<Navigation>,
+    issue: RefCell<Issue>,
     load_generation: Cell<u64>,
     foreground_generation: Cell<u64>,
     same_document_request: RefCell<Option<Url>>,
@@ -86,6 +85,7 @@ struct NativeState {
     /// visit that still has an entry goes through WebKit's history, which keeps the page's
     /// scroll and, from its page cache, its live state.
     history: RefCell<Vec<(BackForwardListItem, VisitId)>>,
+    history_cursor: RefCell<Option<BackForwardListItem>>,
     /// The history entry this engine asked WebKit for, which the policy check lets through.
     traversal: RefCell<Option<Url>>,
     /// Where to scroll once a visit reloaded from the network finishes loading.
@@ -179,13 +179,14 @@ impl Engine {
             native: native.clone(),
             browser,
             observer: RefCell::new(None),
-            document: RefCell::new(None),
-            epoch: Cell::new(0),
+            navigation: RefCell::new(Navigation::default()),
+            issue: RefCell::new(Issue::Idle),
             load_generation: Cell::new(0),
             foreground_generation: Cell::new(0),
             same_document_request: RefCell::new(None),
             issued: RefCell::new(None),
             history: RefCell::new(Vec::new()),
+            history_cursor: RefCell::new(None),
             traversal: RefCell::new(None),
             pending_scroll: Cell::new(None),
             response_page: RefCell::new(None),
@@ -208,26 +209,29 @@ impl Engine {
                     LoadEvent::Started => {
                         state.same_document_request.borrow_mut().take();
                         state.traversal.borrow_mut().take();
-                        state.invalidate();
                         let issued = state.issued.borrow_mut().take();
-                        if let Some(url) = url.or(issued) {
-                            let result = state.browser.borrow_mut().started(url);
-                            state.report(result);
+                        if let Some(url) = issued.or(url) {
+                            state.start_attempt(url);
                             state.emit(EngineEvent::Loading(true));
                         }
                     }
                     LoadEvent::Redirected => {
                         if let Some(url) = url {
-                            state.browser.borrow_mut().redirected(url);
+                            if let Some(ticket) = state.active_ticket() {
+                                state.navigation.borrow_mut().redirected(ticket, url);
+                            }
                         }
                     }
                     LoadEvent::Committed => {
+                        *state.history_cursor.borrow_mut() = native
+                            .back_forward_list()
+                            .and_then(|list| list.current_item());
                         state.response_page.borrow_mut().take();
                         if let Some(url) = url {
-                            let result = state.browser.borrow_mut().committed(url.clone());
+                            let result = state.commit_attempt(url.clone());
                             match result {
                                 Ok(true) => {
-                                    state.bind_document(url);
+                                    state.bind_document();
                                     state.emit(EngineEvent::Changed);
                                 }
                                 Ok(false) => {}
@@ -236,6 +240,12 @@ impl Engine {
                         }
                     }
                     LoadEvent::Finished => {
+                        let issue = std::mem::replace(&mut *state.issue.borrow_mut(), Issue::Idle);
+                        if let Issue::Retiring { next, .. } = issue {
+                            state.load(next);
+                            return;
+                        }
+
                         state.complete_same_document();
                         state.update_title();
                         state.restore_scroll();
@@ -273,21 +283,23 @@ impl Engine {
         }
         {
             let weak = Rc::downgrade(&state);
-            native.connect_load_failed(move |_, _, uri, error| {
+            native.connect_load_failed(move |_, _, _uri, error| {
                 let Some(state) = weak.upgrade() else {
                     return true;
                 };
+                let ticket = state.active_ticket();
+                if ticket != state.navigation.borrow().pending_ticket() {
+                    return true;
+                }
                 let cancelled = error.matches(NetworkError::Cancelled);
-                if let Ok(url) = web_url(uri) {
-                    state.browser.borrow_mut().failed(&url, cancelled);
+                if let Some(ticket) = ticket {
+                    state.navigation.borrow_mut().failed(ticket);
                 }
                 // A response turned into a download ends the page load this way; the page
                 // the user was reading stays.
                 if error.matches(PolicyError::FrameLoadInterruptedByPolicyChange) {
-                    state.recover_document();
                     state.emit(EngineEvent::Loading(false));
                 } else if !cancelled {
-                    state.recover_document();
                     state.emit(EngineEvent::Error(format!(
                         "Could not load this page. {}",
                         error.message()
@@ -299,12 +311,15 @@ impl Engine {
         }
         {
             let weak = Rc::downgrade(&state);
-            native.connect_load_failed_with_tls_errors(move |_, uri, _, _| {
+            native.connect_load_failed_with_tls_errors(move |_, _uri, _, _| {
                 if let Some(state) = weak.upgrade() {
-                    if let Ok(url) = web_url(uri) {
-                        state.browser.borrow_mut().failed(&url, false);
+                    let ticket = state.active_ticket();
+                    if ticket != state.navigation.borrow().pending_ticket() {
+                        return true;
                     }
-                    state.recover_document();
+                    if let Some(ticket) = ticket {
+                        state.navigation.borrow_mut().failed(ticket);
+                    }
                     state.emit(EngineEvent::Error(
                         "HTTPS certificate rejected. The connection was not opened.".into(),
                     ));
@@ -321,11 +336,49 @@ impl Engine {
                 }
             });
         }
+        if let Some(list) = native.back_forward_list() {
+            let weak = Rc::downgrade(&state);
+            list.connect_local("changed", false, move |values| {
+                let state = weak.upgrade()?;
+                let list: webkit2gtk::BackForwardList = values[0].get().unwrap();
+                let current = list.current_item();
+                *state.history_cursor.borrow_mut() = current.clone();
+                let removed: glib::Pointer = values[2].get().unwrap_or(std::ptr::null_mut());
+                // WebKit keeps removed objects readable while our bindings retain them.
+                unsafe {
+                    use glib::translate::FromGlibPtrNone;
+                    let mut node = removed as *mut glib::ffi::GList;
+                    while !node.is_null() {
+                        let item = BackForwardListItem::from_glib_none(
+                            (*node).data as *mut webkit2gtk::ffi::WebKitBackForwardListItem,
+                        );
+                        state
+                            .history
+                            .borrow_mut()
+                            .retain(|(bound, _)| *bound != item);
+                        node = (*node).next;
+                    }
+                }
+                let attempt = state.navigation.borrow().pending_ticket();
+                let weak = Rc::downgrade(&state);
+                glib::idle_add_local_once(move || {
+                    if let Some(state) = weak.upgrade().filter(|state| {
+                        state.navigation.borrow().pending_ticket() == attempt
+                            && *state.history_cursor.borrow() == current
+                    }) {
+                        state.history_changed();
+                    }
+                });
+                None
+            });
+        }
         {
             let weak = Rc::downgrade(&state);
-            native.connect_uri_notify(move |_| {
+            native.connect_uri_notify(move |native| {
                 if let Some(state) = weak.upgrade() {
-                    state.complete_same_document();
+                    if let Some(url) = native.uri().and_then(|uri| web_url(&uri).ok()) {
+                        state.navigation.borrow_mut().same_document(url);
+                    }
                 }
             });
         }
@@ -370,19 +423,31 @@ impl Engine {
     }
 
     pub fn navigate(&self, url: Url, target: NavigationTarget) -> Result<()> {
-        let url = self.state.browser.borrow_mut().navigate(url, target)?;
+        let url = self.state.browser.borrow_mut().navigate(
+            &mut self.state.navigation.borrow_mut(),
+            url,
+            target,
+        )?;
         self.state.load(url);
         Ok(())
     }
 
     pub fn restore(&self, id: VisitId) -> Result<()> {
-        let url = self.state.browser.borrow_mut().restore(id)?;
+        let url = self
+            .state
+            .browser
+            .borrow_mut()
+            .restore(&mut self.state.navigation.borrow_mut(), id)?;
         self.state.load(url);
         Ok(())
     }
 
     pub fn back(&self) -> Result<()> {
-        let request = self.state.browser.borrow_mut().back()?;
+        let request = self
+            .state
+            .browser
+            .borrow_mut()
+            .back(&mut self.state.navigation.borrow_mut())?;
         if let Some(url) = request {
             self.state.load(url);
         }
@@ -390,7 +455,11 @@ impl Engine {
     }
 
     pub fn reload(&self) -> Result<()> {
-        let request = self.state.browser.borrow_mut().reload()?;
+        let request = self
+            .state
+            .browser
+            .borrow_mut()
+            .reload(&mut self.state.navigation.borrow_mut())?;
         if let Some(url) = request {
             self.state.load(url);
         }
@@ -398,7 +467,11 @@ impl Engine {
     }
 
     pub fn open_citation(&self, child: VisitId) -> Result<()> {
-        let request = self.state.browser.borrow_mut().open_citation(child)?;
+        let request = self
+            .state
+            .browser
+            .borrow_mut()
+            .open_citation(&mut self.state.navigation.borrow_mut(), child)?;
         if let Some(url) = request {
             self.state.load(url);
         }
@@ -412,7 +485,10 @@ impl Engine {
             .unwrap_or_else(|| capture.document_url.clone());
         let visit = self.state.browser.borrow().visit(capture.visit)?;
         let url = if target == visit.url {
-            self.state.browser.borrow_mut().restore(visit.id)?
+            self.state
+                .browser
+                .borrow_mut()
+                .restore(&mut self.state.navigation.borrow_mut(), visit.id)?
         } else {
             let source = SourceContext {
                 page_url: capture.document_url.clone(),
@@ -420,10 +496,12 @@ impl Engine {
                 link_text: capture.title.clone(),
                 excerpt: capture.text.chars().take(1000).collect(),
             };
-            self.state
-                .browser
-                .borrow_mut()
-                .follow_link(visit.id, target, source)?
+            self.state.browser.borrow_mut().follow_link(
+                &mut self.state.navigation.borrow_mut(),
+                visit.id,
+                target,
+                source,
+            )?
         };
         self.state.load(url);
         Ok(())
@@ -454,6 +532,37 @@ impl Engine {
 }
 
 impl NativeState {
+    fn active_ticket(&self) -> Option<LoadTicket> {
+        match *self.issue.borrow() {
+            Issue::Idle => None,
+            Issue::Active(ticket) | Issue::Retiring { ticket, .. } => Some(ticket),
+        }
+    }
+
+    fn start_attempt(&self, url: Url) {
+        let mut navigation = self.navigation.borrow_mut();
+        let ticket = match self.active_ticket() {
+            Some(ticket) => ticket,
+            None => navigation
+                .pending_ticket()
+                .unwrap_or_else(|| navigation.native_request(url.clone())),
+        };
+        *self.issue.borrow_mut() = Issue::Active(ticket);
+        navigation.started(ticket, url);
+    }
+
+    fn commit_attempt(&self, url: Url) -> Result<bool> {
+        let Some(ticket) = self.active_ticket() else {
+            return Ok(false);
+        };
+        self.browser.borrow_mut().commit_load(
+            &mut self.navigation.borrow_mut(),
+            ticket,
+            url,
+            Visibility::Selected,
+        )
+    }
+
     fn emit(&self, event: EngineEvent) {
         if let Some(callback) = self.observer.borrow().as_ref() {
             callback(event);
@@ -466,51 +575,26 @@ impl NativeState {
         }
     }
 
-    fn invalidate(&self) {
-        self.epoch.set(self.epoch.get().wrapping_add(1));
-        self.document.borrow_mut().take();
-    }
-
-    fn bind_document(&self, page_url: Url) {
-        let current = self
-            .browser
-            .borrow()
-            .snapshot()
-            .ok()
-            .and_then(|snapshot| snapshot.current_visit().cloned());
-        if let Some(visit) = current {
-            self.remember_entry(visit.id);
-            *self.document.borrow_mut() = Some(Document {
-                visit: visit.id,
-                stored_url: visit.url,
-                page_url,
-                epoch: self.epoch.get(),
-            });
-        }
-    }
-
-    fn recover_document(&self) {
-        if let Some(url) = self.native.uri().and_then(|uri| web_url(&uri).ok()) {
-            let current = self
-                .browser
-                .borrow()
-                .snapshot()
-                .ok()
-                .and_then(|snapshot| snapshot.current_visit().cloned());
-            if current.is_some_and(|visit| visit.url == url) {
-                self.bind_document(url);
-            }
+    fn bind_document(&self) {
+        if let Some(document) = self.navigation.borrow().current.as_ref() {
+            self.remember_entry(document.visit);
+            self.native.evaluate_javascript(
+                &format!("globalThis.__canopyDocumentEpoch = {}", document.epoch),
+                Some(WORLD),
+                None,
+                None::<&gio::Cancellable>,
+                |_| {},
+            );
         }
     }
 
     fn ticket(&self) -> Option<Document> {
-        let mut ticket = self.document.borrow().clone()?;
-        let actual = self.native.uri().and_then(|uri| web_url(&uri).ok())?;
-        if ticket.epoch != self.epoch.get() || actual.origin() != ticket.stored_url.origin() {
+        let navigation = self.navigation.borrow();
+        let document = navigation.current.as_ref()?;
+        if !navigation.valid(document) {
             return None;
         }
-        ticket.page_url = actual;
-        Some(ticket)
+        Some(document.clone())
     }
 
     fn valid(&self, ticket: &Document) -> bool {
@@ -525,12 +609,30 @@ impl NativeState {
         self.same_document_request.borrow_mut().take();
         self.traversal.borrow_mut().take();
         self.pending_scroll.set(None);
+        let requested = self.navigation.borrow().pending_ticket();
         let weak = Rc::downgrade(self);
         glib::idle_add_local_once(move || {
             if let Some(state) = weak.upgrade() {
                 if state.load_generation.get() == generation {
+                    {
+                        let mut issue = state.issue.borrow_mut();
+                        if let Issue::Retiring { next, .. } = &mut *issue {
+                            *next = url;
+                            return;
+                        }
+                    }
+                    if state.native.is_loading() {
+                        if let Some(ticket) = state.active_ticket() {
+                            *state.issue.borrow_mut() = Issue::Retiring { ticket, next: url };
+                            state.native.stop_loading();
+                            return;
+                        }
+                    }
+                    if let Some(ticket) = requested {
+                        *state.issue.borrow_mut() = Issue::Active(ticket);
+                    }
                     let current = state.native.uri().and_then(|uri| web_url(&uri).ok());
-                    let same_document = state.ticket().is_some()
+                    let same_document = state.navigation.borrow().current.is_some()
                         && !state.native.is_loading()
                         && current
                             .is_some_and(|current| current != url && same_resource(&current, &url));
@@ -539,7 +641,10 @@ impl NativeState {
                     } else {
                         *state.issued.borrow_mut() = Some(url.clone());
                     }
-                    let returning = state.browser.borrow().requested_restore();
+                    let returning = state
+                        .browser
+                        .borrow()
+                        .requested_restore(&state.navigation.borrow());
                     if let Some(entry) = returning.and_then(|visit| state.entry(visit, &url)) {
                         *state.traversal.borrow_mut() = Some(url.clone());
                         state.native.go_to_back_forward_list_item(&entry);
@@ -570,16 +675,12 @@ impl NativeState {
         }
         self.same_document_request.borrow_mut().take();
         self.traversal.borrow_mut().take();
-        self.invalidate();
-        let started = self.browser.borrow_mut().started(target.clone());
-        if let Err(error) = started {
-            self.emit(EngineEvent::Error(error.to_string()));
-            return;
-        }
-        let committed = self.browser.borrow_mut().committed(target.clone());
+        self.start_attempt(target.clone());
+        let committed = self.commit_attempt(target.clone());
         match committed {
             Ok(true) => {
-                self.bind_document(target);
+                *self.issue.borrow_mut() = Issue::Idle;
+                self.bind_document();
                 self.update_title();
                 self.emit(EngineEvent::Changed);
                 if self.browser.borrow().capture_enabled().unwrap_or(false) {
@@ -638,7 +739,10 @@ impl NativeState {
                     .and_then(|request| request.uri())
                     .and_then(|uri| web_url(&uri).ok());
                 let noted = url.map(|url| {
-                    let page = self.browser.borrow().download_page(Some(&url));
+                    let page = self
+                        .browser
+                        .borrow()
+                        .download_page(&self.navigation.borrow(), Some(&url));
                     (url, page.ok().flatten())
                 });
                 self.response_page.replace(noted);
@@ -714,9 +818,10 @@ impl NativeState {
                         if let Some(source) =
                             context.filter(|source| source.page_url == ticket.page_url)
                         {
-                            let result = state.browser.borrow_mut().set_source_context(
+                            let result = state.browser.borrow_mut().source_for_document(
+                                &state.navigation.borrow(),
+                                &ticket,
                                 child,
-                                ticket.visit,
                                 source,
                             );
                             match result {
@@ -731,21 +836,35 @@ impl NativeState {
             }
             return true;
         }
-        if action.navigation_type() == NavigationType::Reload {
-            let result = self.browser.borrow_mut().reload().map(|_| ());
+        if action.navigation_type() == NavigationType::Reload
+            && self.navigation.borrow().pending_ticket().is_none()
+        {
+            let result = self
+                .browser
+                .borrow_mut()
+                .reload(&mut self.navigation.borrow_mut())
+                .map(|_| ());
             self.report(result);
         } else if action.navigation_type() == NavigationType::BackForward {
             if self.traversal.borrow().as_ref() == Some(&url) {
                 return false;
             }
-            decision.ignore();
-            let result = self.browser.borrow_mut().back();
-            match result {
-                Ok(Some(url)) => self.load(url),
-                Ok(None) => {}
-                Err(error) => self.emit(EngineEvent::Error(error.to_string())),
+            if self
+                .navigation
+                .borrow()
+                .current
+                .as_ref()
+                .is_some_and(|document| same_resource(&document.stored_url, &url))
+            {
+                return false;
             }
-            return true;
+            if let Some(visit) = self.current_entry_visit() {
+                let result = self
+                    .browser
+                    .borrow_mut()
+                    .restore(&mut self.navigation.borrow_mut(), visit);
+                self.report(result.map(|_| ()));
+            }
         } else if action.navigation_type() == NavigationType::LinkClicked
             && action.is_user_gesture()
         {
@@ -765,10 +884,12 @@ impl NativeState {
                 }
                 if let Some(source) = context.filter(|source| source.page_url == ticket.page_url) {
                     decision.ignore();
-                    let request = state
-                        .browser
-                        .borrow_mut()
-                        .follow_link(ticket.visit, url, source);
+                    let request = state.browser.borrow_mut().follow_link(
+                        &mut state.navigation.borrow_mut(),
+                        ticket.visit,
+                        url,
+                        source,
+                    );
                     match request {
                         Ok(url) => state.load(url),
                         Err(error) => state.emit(EngineEvent::Error(error.to_string())),
@@ -782,12 +903,58 @@ impl NativeState {
         false
     }
 
+    fn current_entry_visit(&self) -> Option<VisitId> {
+        let current = self.history_cursor.borrow().clone()?;
+        self.history
+            .borrow()
+            .iter()
+            .find(|(item, _)| *item == current)
+            .map(|(_, visit)| *visit)
+    }
+
+    fn history_changed(self: &Rc<Self>) {
+        if self.native.is_loading() && self.navigation.borrow().pending_ticket().is_some() {
+            return;
+        }
+        self.complete_same_document();
+        if self.navigation.borrow().pending_ticket().is_some() {
+            return;
+        }
+        let Some(url) = self.native.uri().and_then(|uri| web_url(&uri).ok()) else {
+            return;
+        };
+        if let Some(visit) = self.current_entry_visit() {
+            let different = self
+                .navigation
+                .borrow()
+                .current
+                .as_ref()
+                .is_some_and(|d| d.visit != visit);
+            if different {
+                let Ok(stored) = self.browser.borrow().visit(visit) else {
+                    return;
+                };
+                self.navigation.borrow_mut().publish(visit, stored.url);
+            }
+        }
+        self.navigation.borrow_mut().same_document(url);
+        if let Some(document) = self.ticket() {
+            self.bind_document();
+            let result = self
+                .browser
+                .borrow_mut()
+                .select_document(&self.navigation.borrow(), &document);
+            self.report(result);
+            self.emit(EngineEvent::Changed);
+        }
+    }
+
     /// Records which visit WebKit's current history entry shows.
     fn remember_entry(&self, visit: VisitId) {
         let Some(list) = self.native.back_forward_list() else {
             return;
         };
-        let Some(current) = list.current_item() else {
+        let Some(current) = self.history_cursor.borrow().clone() else {
             return;
         };
         let live = live_entries(&list);
@@ -822,14 +989,18 @@ impl NativeState {
             return;
         };
         let Some(ticket) = self.ticket() else { return };
-        if ticket.page_url.as_str() != page || !y.is_finite() {
+        if value["epoch"].as_u64() != Some(ticket.epoch)
+            || ticket.page_url.as_str() != page
+            || !y.is_finite()
+        {
             return;
         }
         // Best effort: a failed write only loses where this page was left.
-        let _ = self
-            .browser
-            .borrow_mut()
-            .set_scroll(ticket.visit, y.clamp(0., 1e8) as i64);
+        let _ = self.browser.borrow_mut().scroll_for_document(
+            &self.navigation.borrow(),
+            &ticket,
+            y.clamp(0., 1e8) as i64,
+        );
     }
 
     fn restore_scroll(self: &Rc<Self>) {
@@ -854,7 +1025,10 @@ impl NativeState {
         match noted {
             Some((_, page)) => page,
             None => {
-                let page = self.browser.borrow().download_page(source);
+                let page = self
+                    .browser
+                    .borrow()
+                    .download_page(&self.navigation.borrow(), source);
                 page.ok().flatten()
             }
         }
@@ -870,12 +1044,14 @@ impl NativeState {
     }
 
     fn update_title(&self) {
-        if let (Some(uri), Some(title)) = (self.native.uri(), self.native.title()) {
-            if let Ok(url) = web_url(&uri) {
-                let result = self.browser.borrow_mut().title_changed(&url, &title);
-                self.report(result);
-                self.emit(EngineEvent::Changed);
-            }
+        if let (Some(document), Some(title)) = (self.ticket(), self.native.title()) {
+            let result = self.browser.borrow_mut().title_for_document(
+                &self.navigation.borrow(),
+                &document,
+                &title,
+            );
+            self.report(result);
+            self.emit(EngineEvent::Changed);
         }
     }
 
@@ -918,11 +1094,11 @@ impl NativeState {
                 }
                 return;
             }
-            let result =
-                state
-                    .browser
-                    .borrow_mut()
-                    .save_capture(ticket.visit, &ticket.stored_url, payload);
+            let result = state.browser.borrow_mut().capture_for_document(
+                &state.navigation.borrow(),
+                &ticket,
+                payload,
+            );
             match result {
                 Ok(Some(id)) => {
                     state.emit(EngineEvent::Changed);

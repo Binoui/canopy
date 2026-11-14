@@ -231,36 +231,14 @@ impl Snapshot {
     }
 }
 
-#[derive(Clone, Debug)]
-enum Intent {
-    New {
-        parent: Option<VisitId>,
-        source: Option<Box<SourceContext>>,
-    },
-    Restore {
-        visit: VisitId,
-    },
-}
-
-#[derive(Clone, Debug, Default)]
-enum Navigation {
-    #[default]
-    Idle,
-    Requested {
-        intent: Intent,
-        url: Url,
-    },
-    Loading {
-        intent: Intent,
-        url: Url,
-    },
-}
+mod navigation;
+pub use navigation::{Document, LoadTicket, Navigation, ViewId, Visibility};
+use navigation::{Intent, Pending};
 
 const MAX_TREE_NAME: usize = 80;
 
 pub struct Browser {
     connection: Connection,
-    navigation: Navigation,
 }
 
 impl Browser {
@@ -466,10 +444,7 @@ impl Browser {
             )?;
             transaction.commit()?;
         }
-        Ok(Self {
-            connection,
-            navigation: Navigation::Idle,
-        })
+        Ok(Self { connection })
     }
 
     /// Replaces everything imported from `source` with `pages`, in one transaction.
@@ -744,7 +719,12 @@ impl Browser {
             .context("This visit no longer exists.")
     }
 
-    pub fn navigate(&mut self, url: Url, target: NavigationTarget) -> Result<Url> {
+    pub fn navigate(
+        &mut self,
+        navigation: &mut Navigation,
+        url: Url,
+        target: NavigationTarget,
+    ) -> Result<Url> {
         web_url(url.as_str())?;
         let parent = match target {
             NavigationTarget::Root => None,
@@ -763,13 +743,13 @@ impl Browser {
                 Some(parent)
             }
         };
-        self.navigation = Navigation::Requested {
-            intent: Intent::New {
+        navigation.request(
+            Intent::New {
                 parent,
                 source: None,
             },
-            url: url.clone(),
-        };
+            url.clone(),
+        );
         Ok(url)
     }
 
@@ -797,29 +777,31 @@ impl Browser {
         Ok(roots)
     }
 
-    pub fn restore(&mut self, id: VisitId) -> Result<Url> {
+    pub fn restore(&mut self, navigation: &mut Navigation, id: VisitId) -> Result<Url> {
         let visit = self.visit(id)?;
-        self.navigation = Navigation::Requested {
-            intent: Intent::Restore { visit: id },
-            url: visit.url.clone(),
-        };
+        navigation.request(Intent::Restore { visit: id }, visit.url.clone());
         Ok(visit.url)
     }
 
-    pub fn back(&mut self) -> Result<Option<Url>> {
-        let Some(current) = self.current_id()? else {
+    pub fn back(&mut self, navigation: &mut Navigation) -> Result<Option<Url>> {
+        let Some(current) = navigation
+            .current
+            .as_ref()
+            .map(|d| d.visit)
+            .or(self.current_id()?)
+        else {
             return Ok(None);
         };
         let Some(parent) = self.visit(current)?.parent else {
             return Ok(None);
         };
-        self.restore(parent).map(Some)
+        self.restore(navigation, parent).map(Some)
     }
 
     /// The visit a requested navigation returns to, before its load starts.
-    pub fn requested_restore(&self) -> Option<VisitId> {
-        match &self.navigation {
-            Navigation::Requested {
+    pub fn requested_restore(&self, navigation: &Navigation) -> Option<VisitId> {
+        match &navigation.pending {
+            Pending::Requested {
                 intent: Intent::Restore { visit },
                 ..
             } => Some(*visit),
@@ -827,7 +809,7 @@ impl Browser {
         }
     }
 
-    pub fn set_scroll(&mut self, visit: VisitId, y: i64) -> Result<()> {
+    fn set_scroll(&mut self, visit: VisitId, y: i64) -> Result<()> {
         self.connection.execute(
             "UPDATE visits SET scroll_y = ?1 WHERE id = ?2",
             params![y, visit.to_string()],
@@ -843,39 +825,35 @@ impl Browser {
         )?)
     }
 
-    pub fn reload(&mut self) -> Result<Option<Url>> {
-        self.current_id()?.map(|id| self.restore(id)).transpose()
+    pub fn reload(&mut self, navigation: &mut Navigation) -> Result<Option<Url>> {
+        navigation
+            .current
+            .as_ref()
+            .map(|d| d.visit)
+            .or(self.current_id()?)
+            .map(|id| self.restore(navigation, id))
+            .transpose()
     }
 
-    pub fn started(&mut self, url: Url) -> Result<()> {
-        if let Navigation::Requested { url: expected, .. } = &self.navigation {
-            if expected != &url {
-                return Ok(());
-            }
-        }
-        let previous = std::mem::take(&mut self.navigation);
-        let intent = match previous {
-            Navigation::Requested { intent, .. } => intent,
-            Navigation::Idle | Navigation::Loading { .. } => Intent::New {
-                parent: self.current_id()?,
-                source: None,
-            },
-        };
-        self.navigation = Navigation::Loading { intent, url };
-        Ok(())
-    }
-
-    pub fn redirected(&mut self, url: Url) {
-        if let Navigation::Loading { url: pending, .. } = &mut self.navigation {
-            *pending = url;
-        }
-    }
-
-    pub fn committed(&mut self, url: Url) -> Result<bool> {
-        web_url(url.as_str())?;
-        let Navigation::Loading { intent, .. } = &self.navigation else {
+    pub fn commit_load(
+        &mut self,
+        navigation: &mut Navigation,
+        ticket: LoadTicket,
+        url: Url,
+        visibility: Visibility,
+    ) -> Result<bool> {
+        let Pending::Loading {
+            ticket: active,
+            intent,
+            ..
+        } = &navigation.pending
+        else {
             return Ok(false);
         };
+        if *active != ticket {
+            return Ok(false);
+        }
+        web_url(url.as_str())?;
         let intent = intent.clone();
         let previous = self.current_id()?;
         let kind = match &intent {
@@ -908,52 +886,78 @@ impl Browser {
                 visit
             }
         };
-        transaction.execute(
-            "INSERT INTO visit_events(visit_id, from_visit_id, kind, at) VALUES (?1, ?2, ?3, ?4)",
-            params![id.to_string(), previous.map(|id| id.to_string()), kind, now],
-        )?;
-        transaction.execute(
-            "UPDATE session SET current_id = ?1 WHERE singleton = 1",
-            [id.to_string()],
-        )?;
-        transaction.execute(
-            "WITH RECURSIVE ancestry(id, parent_id) AS (
-                SELECT id, parent_id FROM visits WHERE id=?1
-                UNION
-                SELECT v.id, v.parent_id FROM visits v JOIN ancestry a ON v.id=a.parent_id
-             )
-             INSERT INTO tree_state(root_id, last_visit_id)
-                SELECT id, ?1 FROM ancestry WHERE parent_id IS NULL
-             ON CONFLICT(root_id) DO UPDATE SET last_visit_id=excluded.last_visit_id",
-            [id.to_string()],
-        )?;
+        if visibility == Visibility::Selected {
+            record_selection(&transaction, id, previous, kind, now)?;
+        }
         transaction.commit()?;
-        self.navigation = Navigation::Idle;
+        navigation.publish(id, url);
         Ok(true)
     }
 
-    pub fn failed(&mut self, url: &Url, cancelled: bool) {
-        if cancelled {
-            return;
+    pub fn select_document(&mut self, navigation: &Navigation, document: &Document) -> Result<()> {
+        if !navigation.valid(document) {
+            return Ok(());
         }
-        let applies = match &self.navigation {
-            Navigation::Requested { url: pending, .. }
-            | Navigation::Loading { url: pending, .. } => pending == url,
-            Navigation::Idle => false,
-        };
-        if applies {
-            self.navigation = Navigation::Idle;
+        let previous = self.current_id()?;
+        if previous == Some(document.visit) {
+            return Ok(());
         }
+        let transaction = self.connection.transaction()?;
+        record_selection(&transaction, document.visit, previous, "return", now_ms()?)?;
+        transaction.commit()?;
+        Ok(())
     }
 
-    pub fn title_changed(&mut self, url: &Url, title: &str) -> Result<()> {
-        if !matches!(self.navigation, Navigation::Idle) || title.trim().is_empty() {
+    pub fn title_for_document(
+        &mut self,
+        navigation: &Navigation,
+        document: &Document,
+        title: &str,
+    ) -> Result<()> {
+        if !navigation.valid(document) || title.trim().is_empty() {
             return Ok(());
         }
         self.connection.execute(
-            "UPDATE visits SET title = ?1 WHERE id = (SELECT current_id FROM session WHERE singleton = 1) AND url = ?2",
-            params![title, url.as_str()],
+            "UPDATE visits SET title=?1 WHERE id=?2",
+            params![title, document.visit.to_string()],
         )?;
+        Ok(())
+    }
+
+    pub fn source_for_document(
+        &mut self,
+        navigation: &Navigation,
+        document: &Document,
+        child: VisitId,
+        source: SourceContext,
+    ) -> Result<bool> {
+        if !navigation.valid(document) {
+            return Ok(false);
+        }
+        self.set_source_context(child, document.visit, source)
+    }
+
+    pub fn capture_for_document(
+        &mut self,
+        navigation: &Navigation,
+        document: &Document,
+        payload: CapturePayload,
+    ) -> Result<Option<i64>> {
+        if !navigation.valid(document) {
+            return Ok(None);
+        }
+        self.save_capture(document.visit, &document.stored_url, payload)
+    }
+
+    pub fn scroll_for_document(
+        &mut self,
+        navigation: &Navigation,
+        document: &Document,
+        y: i64,
+    ) -> Result<()> {
+        if navigation.valid(document) {
+            self.set_scroll(document.visit, y)?;
+        }
         Ok(())
     }
 
@@ -977,7 +981,7 @@ impl Browser {
         Ok(id)
     }
 
-    pub fn set_source_context(
+    fn set_source_context(
         &mut self,
         child: VisitId,
         parent: VisitId,
@@ -1005,20 +1009,30 @@ impl Browser {
         Ok(true)
     }
 
-    pub fn follow_link(&mut self, parent: VisitId, url: Url, source: SourceContext) -> Result<Url> {
+    pub fn follow_link(
+        &mut self,
+        navigation: &mut Navigation,
+        parent: VisitId,
+        url: Url,
+        source: SourceContext,
+    ) -> Result<Url> {
         web_url(url.as_str())?;
         let source = self.checked_source(parent, source)?;
-        self.navigation = Navigation::Requested {
-            intent: Intent::New {
+        navigation.request(
+            Intent::New {
                 parent: Some(parent),
                 source: Some(Box::new(source)),
             },
-            url: url.clone(),
-        };
+            url.clone(),
+        );
         Ok(url)
     }
 
-    pub fn open_citation(&mut self, child: VisitId) -> Result<Option<Url>> {
+    pub fn open_citation(
+        &mut self,
+        navigation: &mut Navigation,
+        child: VisitId,
+    ) -> Result<Option<Url>> {
         let visit = self.visit(child)?;
         let Some(parent) = visit.parent else {
             return Ok(None);
@@ -1029,7 +1043,8 @@ impl Browser {
         let Some(citation) = source.citation_url.clone() else {
             return Ok(None);
         };
-        self.follow_link(parent, citation, source).map(Some)
+        self.follow_link(navigation, parent, citation, source)
+            .map(Some)
     }
 
     fn checked_source(&self, parent: VisitId, mut source: SourceContext) -> Result<SourceContext> {
@@ -1047,7 +1062,7 @@ impl Browser {
         Ok(source)
     }
 
-    pub fn save_capture(
+    fn save_capture(
         &mut self,
         visit: VisitId,
         expected_visit_url: &Url,
@@ -1137,8 +1152,12 @@ impl Browser {
     /// leaves no page of its own, so its file goes to the page that navigation came from: the
     /// parent it was given, or the parent of the pending page it tried to open. Any other
     /// download, and a navigation that came from no page, belongs to the page on screen.
-    pub fn download_page(&self, request: Option<&Url>) -> Result<Option<VisitId>> {
-        if let Navigation::Loading { intent, url } = &self.navigation {
+    pub fn download_page(
+        &self,
+        navigation: &Navigation,
+        request: Option<&Url>,
+    ) -> Result<Option<VisitId>> {
+        if let Pending::Loading { intent, url, .. } = &navigation.pending {
             if request == Some(url) {
                 let from = match intent {
                     Intent::New { parent, .. } => *parent,
@@ -1434,26 +1453,282 @@ fn imported_row(row: &Row) -> rusqlite::Result<Option<ImportedPage>> {
     }))
 }
 
+fn record_selection(
+    transaction: &rusqlite::Transaction<'_>,
+    id: VisitId,
+    previous: Option<VisitId>,
+    kind: &str,
+    now: i64,
+) -> Result<()> {
+    transaction.execute(
+        "INSERT INTO visit_events(visit_id, from_visit_id, kind, at) VALUES (?1, ?2, ?3, ?4)",
+        params![id.to_string(), previous.map(|id| id.to_string()), kind, now],
+    )?;
+    transaction.execute(
+        "UPDATE session SET current_id = ?1 WHERE singleton = 1",
+        [id.to_string()],
+    )?;
+    transaction.execute(
+        "WITH RECURSIVE ancestry(id, parent_id) AS (
+                SELECT id, parent_id FROM visits WHERE id=?1
+                UNION
+                SELECT v.id, v.parent_id FROM visits v JOIN ancestry a ON v.id=a.parent_id
+             )
+             INSERT INTO tree_state(root_id, last_visit_id)
+                SELECT id, ?1 FROM ancestry WHERE parent_id IS NULL
+             ON CONFLICT(root_id) DO UPDATE SET last_visit_id=excluded.last_visit_id",
+        [id.to_string()],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    struct TestBrowser {
+        browser: Browser,
+        navigation: Navigation,
+    }
+    impl std::ops::Deref for TestBrowser {
+        type Target = Browser;
+        fn deref(&self) -> &Browser {
+            &self.browser
+        }
+    }
+    impl std::ops::DerefMut for TestBrowser {
+        fn deref_mut(&mut self) -> &mut Browser {
+            &mut self.browser
+        }
+    }
+    impl TestBrowser {
+        fn open(path: &Path) -> Result<Self> {
+            Ok(Self {
+                browser: Browser::open(path)?,
+                navigation: Navigation::default(),
+            })
+        }
+        fn with_connection(connection: Connection) -> Result<Self> {
+            Ok(Self {
+                browser: Browser::with_connection(connection)?,
+                navigation: Navigation::default(),
+            })
+        }
+        fn navigate(&mut self, url: Url, target: NavigationTarget) -> Result<Url> {
+            self.browser.navigate(&mut self.navigation, url, target)
+        }
+        fn restore(&mut self, id: VisitId) -> Result<Url> {
+            self.browser.restore(&mut self.navigation, id)
+        }
+        fn back(&mut self) -> Result<Option<Url>> {
+            self.browser.back(&mut self.navigation)
+        }
+        fn reload(&mut self) -> Result<Option<Url>> {
+            self.browser.reload(&mut self.navigation)
+        }
+        fn follow_link(&mut self, parent: VisitId, url: Url, source: SourceContext) -> Result<Url> {
+            self.browser
+                .follow_link(&mut self.navigation, parent, url, source)
+        }
+        fn open_citation(&mut self, child: VisitId) -> Result<Option<Url>> {
+            self.browser.open_citation(&mut self.navigation, child)
+        }
+        fn started(&mut self, url: Url) -> Result<()> {
+            let ticket = self
+                .navigation
+                .pending_ticket()
+                .unwrap_or_else(|| self.navigation.native_request(url.clone()));
+            self.navigation.started(ticket, url);
+            Ok(())
+        }
+        fn committed(&mut self, url: Url) -> Result<bool> {
+            let Some(ticket) = self.navigation.pending_ticket() else {
+                return Ok(false);
+            };
+            self.browser
+                .commit_load(&mut self.navigation, ticket, url, Visibility::Selected)
+        }
+        fn failed(&mut self, _url: &Url, cancelled: bool) {
+            if !cancelled {
+                if let Some(ticket) = self.navigation.pending_ticket() {
+                    self.navigation.failed(ticket);
+                }
+            }
+        }
+        fn redirected(&mut self, url: Url) {
+            if let Some(ticket) = self.navigation.pending_ticket() {
+                self.navigation.redirected(ticket, url);
+            }
+        }
+        fn title_changed(&mut self, url: &Url, title: &str) -> Result<()> {
+            if let Some(document) = self
+                .navigation
+                .current
+                .as_ref()
+                .filter(|d| &d.page_url == url)
+            {
+                self.browser
+                    .title_for_document(&self.navigation, document, title)?;
+            }
+            Ok(())
+        }
+        fn requested_restore(&self) -> Option<VisitId> {
+            self.browser.requested_restore(&self.navigation)
+        }
+        fn download_page(&self, url: Option<&Url>) -> Result<Option<VisitId>> {
+            self.browser.download_page(&self.navigation, url)
+        }
+    }
+
     fn url(path: &str) -> Url {
         Url::parse(&format!("https://example.org/{path}")).unwrap()
     }
-    fn memory() -> Browser {
-        Browser::with_connection(Connection::open_in_memory().unwrap()).unwrap()
+    fn memory() -> TestBrowser {
+        TestBrowser::with_connection(Connection::open_in_memory().unwrap()).unwrap()
     }
-    fn follow(browser: &mut Browser, path: &str, target: NavigationTarget) -> VisitId {
+    fn follow(browser: &mut TestBrowser, path: &str, target: NavigationTarget) -> VisitId {
         let url = browser.navigate(url(path), target).unwrap();
         browser.started(url.clone()).unwrap();
         assert!(browser.committed(url).unwrap());
         browser.snapshot().unwrap().current.unwrap()
     }
 
-    fn follow_child(browser: &mut Browser, path: &str) -> VisitId {
+    fn follow_child(browser: &mut TestBrowser, path: &str) -> VisitId {
         let parent = browser.current_id().unwrap().unwrap();
         follow(browser, path, NavigationTarget::ChildOf(parent))
+    }
+
+    #[test]
+    fn interleaved_views_ticket_cancellation_redirect_and_hidden_commit() {
+        let mut browser = Browser::with_connection(Connection::open_in_memory().unwrap()).unwrap();
+        let mut a = Navigation::default();
+        let mut b = Navigation::default();
+        browser
+            .navigate(&mut a, url("same"), NavigationTarget::Root)
+            .unwrap();
+        browser
+            .navigate(&mut b, url("same"), NavigationTarget::Root)
+            .unwrap();
+        let first = a.pending_ticket().unwrap();
+        let other = b.pending_ticket().unwrap();
+        a.started(first, url("same"));
+        b.started(other, url("same"));
+        a.failed(other);
+        b.redirected(first, url("wrong"));
+        a.redirected(first, url("final"));
+        assert!(browser
+            .commit_load(&mut a, first, url("final"), Visibility::Selected)
+            .unwrap());
+        let before = browser.snapshot().unwrap();
+        let targets = browser.tree_states().unwrap();
+        let arrivals = events(&browser);
+        assert!(browser
+            .commit_load(&mut b, other, url("same"), Visibility::Hidden)
+            .unwrap());
+        assert_eq!(browser.snapshot().unwrap().current, before.current);
+        assert_eq!(browser.tree_states().unwrap(), targets);
+        assert_eq!(events(&browser), arrivals);
+        let document = b.current.clone().unwrap();
+        browser
+            .title_for_document(&b, &document, "hidden title")
+            .unwrap();
+        assert_eq!(browser.visit(document.visit).unwrap().title, "hidden title");
+        assert!(!browser
+            .commit_load(&mut b, other, url("same"), Visibility::Selected)
+            .unwrap());
+        browser
+            .navigate(&mut a, url("same"), NavigationTarget::Root)
+            .unwrap();
+        let replacement = a.pending_ticket().unwrap();
+        a.started(first, url("same"));
+        a.failed(first);
+        assert!(!browser
+            .commit_load(&mut a, first, url("same"), Visibility::Selected)
+            .unwrap());
+        assert_eq!(a.pending_ticket(), Some(replacement));
+        a.failed(replacement);
+        browser.select_document(&b, &document).unwrap();
+        assert_eq!(browser.snapshot().unwrap().current, Some(document.visit));
+    }
+
+    #[test]
+    fn replaced_document_capture_and_scroll_are_dropped() {
+        let mut browser = memory();
+        follow(&mut browser, "same", NavigationTarget::Root);
+        let old = browser.navigation.current.clone().unwrap();
+        let source = SourceContext {
+            page_url: old.page_url.clone(),
+            citation_url: None,
+            link_text: "initial".into(),
+            excerpt: "initial excerpt".into(),
+        };
+        let queued = browser
+            .queue_link(old.visit, url("queued"), source.clone())
+            .unwrap();
+        let replacement = follow(&mut browser, "same", NavigationTarget::Root);
+        let mut late_source = source.clone();
+        late_source.excerpt = "late enrichment".into();
+        assert!(!browser
+            .browser
+            .source_for_document(&browser.navigation, &old, queued, late_source)
+            .unwrap());
+        assert_eq!(browser.visit(queued).unwrap().source, Some(source));
+        assert_eq!(
+            browser
+                .browser
+                .capture_for_document(
+                    &browser.navigation,
+                    &old,
+                    payload("same", "late capture", CaptureKind::Page)
+                )
+                .unwrap(),
+            None
+        );
+        browser
+            .browser
+            .scroll_for_document(&browser.navigation, &old, 900)
+            .unwrap();
+        assert_eq!(browser.scroll(replacement).unwrap(), None);
+        assert!(browser.search("late capture").unwrap().is_empty());
+    }
+
+    #[test]
+    fn failed_commit_preserves_document_and_ticket_for_retry() {
+        let mut browser = memory();
+        let root = follow(&mut browser, "root", NavigationTarget::Root);
+        let old = browser.navigation.current.clone();
+        let request = browser
+            .navigate(url("child"), NavigationTarget::ChildOf(root))
+            .unwrap();
+        browser.started(request.clone()).unwrap();
+        let ticket = browser.navigation.pending_ticket();
+        let before = browser.snapshot().unwrap();
+        let arrivals = events(&browser);
+        browser.connection.execute_batch("CREATE TRIGGER reject_commit BEFORE UPDATE ON tree_state BEGIN SELECT RAISE(ABORT, 'rollback'); END;").unwrap();
+        assert!(browser.committed(request.clone()).is_err());
+        assert_eq!(browser.navigation.current, old);
+        assert_eq!(browser.navigation.pending_ticket(), ticket);
+        assert_eq!(browser.snapshot().unwrap(), before);
+        assert_eq!(events(&browser), arrivals);
+        browser
+            .connection
+            .execute_batch("DROP TRIGGER reject_commit")
+            .unwrap();
+        assert!(browser.committed(request).unwrap());
+    }
+
+    #[test]
+    fn replaced_document_title_cannot_retitle_equal_url() {
+        let mut browser = memory();
+        let first = follow(&mut browser, "same", NavigationTarget::Root);
+        let old_document = browser.navigation.current.clone().unwrap();
+        assert_eq!(old_document.visit, first);
+        let replacement = follow(&mut browser, "same", NavigationTarget::Root);
+        browser
+            .browser
+            .title_for_document(&browser.navigation, &old_document, "late old title")
+            .unwrap();
+        assert_eq!(browser.visit(replacement).unwrap().title, "");
     }
 
     #[test]
@@ -1713,7 +1988,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let db = directory.path().join("forest.sqlite3");
         let expected = {
-            let mut browser = Browser::open(&db).unwrap();
+            let mut browser = TestBrowser::open(&db).unwrap();
             follow(&mut browser, "a", NavigationTarget::Root);
             browser
                 .title_changed(&url("a"), "Rust documentation")
@@ -1730,7 +2005,7 @@ mod tests {
                 .all(|v| v.parent.is_none()));
             browser.snapshot().unwrap()
         };
-        let browser = Browser::open(&db).unwrap();
+        let browser = TestBrowser::open(&db).unwrap();
         assert_eq!(browser.snapshot().unwrap(), expected);
     }
 
@@ -1739,7 +2014,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let db = directory.path().join("forest.sqlite3");
         let (a, b) = {
-            let mut browser = Browser::open(&db).unwrap();
+            let mut browser = TestBrowser::open(&db).unwrap();
             let a = follow(&mut browser, "a", NavigationTarget::Root);
             let b = follow(&mut browser, "b", NavigationTarget::ChildOf(a));
             assert_eq!(browser.scroll(a).unwrap(), None);
@@ -1747,7 +2022,7 @@ mod tests {
             browser.set_scroll(b, 0).unwrap();
             (a, b)
         };
-        let mut browser = Browser::open(&db).unwrap();
+        let mut browser = TestBrowser::open(&db).unwrap();
         assert_eq!(browser.scroll(a).unwrap(), Some(1800));
         assert_eq!(browser.scroll(b).unwrap(), Some(0));
 
@@ -2045,7 +2320,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("reading.sqlite3");
         let (snapshot, saved, parent) = {
-            let mut browser = Browser::open(&path).unwrap();
+            let mut browser = TestBrowser::open(&path).unwrap();
             let parent = follow(&mut browser, "thread", NavigationTarget::Root);
             browser
                 .queue_link(parent, url("first"), source("one"))
@@ -2072,7 +2347,7 @@ mod tests {
                 parent,
             )
         };
-        let browser = Browser::open(&path).unwrap();
+        let browser = TestBrowser::open(&path).unwrap();
         assert_eq!(browser.snapshot().unwrap(), snapshot);
         assert!(!browser.capture_enabled().unwrap());
         assert_eq!(browser.capture(saved.id).unwrap(), saved);
@@ -2128,7 +2403,7 @@ mod tests {
                 .unwrap();
         }
         let expected = {
-            let browser = Browser::open(&path).unwrap();
+            let browser = TestBrowser::open(&path).unwrap();
             let snapshot = browser.snapshot().unwrap();
             assert_eq!(snapshot.current, Some(second));
             assert_eq!(snapshot.visits.len(), 2);
@@ -2150,7 +2425,10 @@ mod tests {
             );
             snapshot
         };
-        assert_eq!(Browser::open(&path).unwrap().snapshot().unwrap(), expected);
+        assert_eq!(
+            TestBrowser::open(&path).unwrap().snapshot().unwrap(),
+            expected
+        );
     }
 
     #[test]
@@ -2158,7 +2436,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("exploration.sqlite3");
         let (parent, opened, queued) = {
-            let mut browser = Browser::open(&path).unwrap();
+            let mut browser = TestBrowser::open(&path).unwrap();
             let parent = follow(&mut browser, "thread", NavigationTarget::Root);
             let links: Vec<_> = (0..3)
                 .map(|i| {
@@ -2183,7 +2461,7 @@ mod tests {
                 .unwrap();
             (parent, links[0], links[1..].to_vec())
         };
-        let browser = Browser::open(&path).unwrap();
+        let browser = TestBrowser::open(&path).unwrap();
         let hits = browser.search("violet lighthouse").unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].visit, opened);
@@ -2203,7 +2481,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("forest.db");
         let (a, child) = {
-            let mut browser = Browser::open(&path).unwrap();
+            let mut browser = TestBrowser::open(&path).unwrap();
             let a = follow(&mut browser, "thread", NavigationTarget::Root);
             let child = follow_child(&mut browser, "child");
             let b = follow(&mut browser, "b", NavigationTarget::Root);
@@ -2224,7 +2502,7 @@ mod tests {
             assert_eq!(browser.snapshot().unwrap().current, Some(child));
             (a, child)
         };
-        let browser = Browser::open(&path).unwrap();
+        let browser = TestBrowser::open(&path).unwrap();
         assert_eq!(browser.tree_target(TreeId(a)).unwrap(), child);
         assert_eq!(browser.snapshot().unwrap().current, Some(child));
     }
@@ -2257,7 +2535,7 @@ mod tests {
                 .unwrap();
         }
         let expected = {
-            let browser = Browser::open(&path).unwrap();
+            let browser = TestBrowser::open(&path).unwrap();
             assert_eq!(browser.tree_target(TreeId(a)).unwrap(), child);
             assert_eq!(browser.tree_target(TreeId(b)).unwrap(), b);
             assert_eq!(browser.theme_mode().unwrap(), ThemeMode::Dark);
@@ -2285,7 +2563,7 @@ mod tests {
                 .is_err());
             browser.tree_states().unwrap()
         };
-        let browser = Browser::open(&path).unwrap();
+        let browser = TestBrowser::open(&path).unwrap();
         assert_eq!(browser.tree_states().unwrap(), expected);
         assert_eq!(
             browser.theme_mode().unwrap(),
@@ -2401,7 +2679,7 @@ mod tests {
     #[test]
     fn imported_pages_are_searchable_replaceable_and_fill_the_shortcuts() {
         let dir = tempfile::tempdir().unwrap();
-        let mut browser = Browser::open(&dir.path().join("forest.sqlite3")).unwrap();
+        let mut browser = TestBrowser::open(&dir.path().join("forest.sqlite3")).unwrap();
         let page = |url: &str, title: &str, visits, folder: Option<&str>| ImportedPage {
             url: Url::parse(url).unwrap(),
             title: title.into(),
@@ -2515,7 +2793,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let db = directory.path().join("forest.sqlite3");
         let (root, page, expected) = {
-            let mut b = Browser::open(&db).unwrap();
+            let mut b = TestBrowser::open(&db).unwrap();
             let root = follow(&mut b, "a", NavigationTarget::Root);
             let page = follow_child(&mut b, "b");
             let before = b.snapshot().unwrap();
@@ -2566,7 +2844,7 @@ mod tests {
             assert_eq!(b.download(again).unwrap(), downloads[2]);
             (root, page, downloads)
         };
-        let mut b = Browser::open(&db).unwrap();
+        let mut b = TestBrowser::open(&db).unwrap();
         assert_eq!(b.downloads().unwrap(), expected);
 
         let unknown: VisitId = Ulid::new().to_string().parse().unwrap();
@@ -2604,12 +2882,12 @@ mod tests {
                 .unwrap()
         };
         let (page, before) = {
-            let mut b = Browser::open(&db).unwrap();
+            let mut b = TestBrowser::open(&db).unwrap();
             let page = follow(&mut b, "a", NavigationTarget::Root);
             b.connection.execute_batch("DROP TABLE downloads").unwrap();
             (page, version(&b.connection))
         };
-        let mut b = Browser::open(&db).unwrap();
+        let mut b = TestBrowser::open(&db).unwrap();
         assert_eq!(version(&b.connection), before);
         assert!(b.downloads().unwrap().is_empty());
         b.record_download(page, Path::new("/tmp/report.pdf"), 1, None)
