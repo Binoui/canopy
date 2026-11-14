@@ -841,8 +841,18 @@ impl LivePage {
     }
 
     pub(super) fn restore_revived(&self, id: VisitId) -> Result<()> {
+        let url = self.state.owner().browser.borrow().visit(id)?.url;
+        let target = self.state.entry(id, &url);
+        let was_current = target.is_some()
+            && target
+                == self
+                    .native
+                    .back_forward_list()
+                    .and_then(|l| l.current_item());
         self.restore(id)?;
-        // A fresh incarnation uses the persisted visit scroll, as a cold restore does.
+        if !was_current {
+            return Ok(());
+        }
         let saved = self
             .state
             .owner()

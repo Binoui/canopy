@@ -575,6 +575,22 @@ fn duplicate_entry() -> Result<()> {
     );
     Ok(())
 }
+fn scroll_checkpoint_back() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.navigate("/a")?;
+    f.eval("scrollTo(0,1000); return true;")?;
+    wait("saved old scroll", || {
+        f.pages.read(|b| b.scroll(a)).unwrap() == Some(1000)
+    })?;
+    f.eval("scrollTo(0,2500); return true;")?;
+    f.navigate("/b")?;
+    f.release()?;
+    assert!(!f.revive(a)?);
+    wait("WebKit history scroll", || {
+        f.eval("return scrollY;").unwrap() == json!(2500)
+    })?;
+    Ok(())
+}
 fn main() -> Result<()> {
     let environment = tempfile::tempdir()?;
     let home = environment.path().join("home");
@@ -594,6 +610,7 @@ fn main() -> Result<()> {
     type Case = (&'static str, fn() -> Result<()>);
     let cases: &[Case] = &[
         ("duplicate_entry", duplicate_entry),
+        ("scroll_checkpoint_back", scroll_checkpoint_back),
         ("history_release", history_release),
         ("download_release", download_release),
         ("late_callbacks", late_callbacks),
