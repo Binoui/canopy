@@ -768,8 +768,6 @@ impl LivePage {
                 page.state
                     .next_history_document
                     .set(saved.entries.iter().map(|e| e.document).max().unwrap_or(0));
-                // No document has loaded in this incarnation, even if the saved cursor matches.
-                page.state.history_document.set(0);
                 Ok((page, Revival::History))
             }
             Err(_) => {
@@ -1742,7 +1740,7 @@ fn valid_binding(saved: &Checkpoint, urls: &[Url], current: usize, stored: &[Url
             .iter()
             .zip(urls)
             .zip(stored)
-            .all(|((e, uri), stored)| e.document != 0 && e.uri == *uri && e.stored_url == *stored)
+            .all(|((e, uri), stored)| e.uri == *uri && e.stored_url == *stored)
 }
 
 fn live_entries(list: &webkit2gtk::BackForwardList) -> Vec<BackForwardListItem> {
