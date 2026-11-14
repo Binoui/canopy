@@ -267,7 +267,7 @@ impl Browser {
              INSERT OR IGNORE INTO session(singleton, current_id) VALUES(1, NULL);",
         )?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version > 5 {
+        if version > 6 {
             bail!("This database comes from a newer version of Canopy.");
         }
         if version == 0 {
@@ -395,6 +395,29 @@ impl Browser {
             transaction.execute_batch(
                 "ALTER TABLE tree_state ADD COLUMN name TEXT;
                  PRAGMA user_version = 5;",
+            )?;
+            transaction.commit()?;
+        }
+        if version < 6 {
+            // One row each time a page becomes the current page: a new visit, a return to an
+            // earlier one, or a reload. `from_visit_id` is the page that was current before, so
+            // the log keeps revisits, tree switches and time between pages, which the forest
+            // alone cannot. Opened visits from before the log count as one arrival each.
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(
+                "CREATE TABLE visit_events (
+                    id INTEGER PRIMARY KEY,
+                    visit_id TEXT NOT NULL REFERENCES visits(id) ON DELETE CASCADE,
+                    from_visit_id TEXT REFERENCES visits(id) ON DELETE SET NULL,
+                    kind TEXT NOT NULL CHECK(kind IN ('new', 'return', 'reload')),
+                    at INTEGER NOT NULL
+                 );
+                 CREATE INDEX visit_events_visit ON visit_events(visit_id, at);
+                 CREATE INDEX visit_events_at ON visit_events(at);
+                 INSERT INTO visit_events(visit_id, from_visit_id, kind, at)
+                    SELECT id, parent_id, 'new', opened_at FROM visits
+                    WHERE opened_at IS NOT NULL ORDER BY opened_at, id;
+                 PRAGMA user_version = 6;",
             )?;
             transaction.commit()?;
         }
@@ -782,11 +805,17 @@ impl Browser {
             return Ok(false);
         };
         let intent = intent.clone();
+        let previous = self.current_id()?;
+        let kind = match &intent {
+            Intent::New { .. } => "new",
+            Intent::Restore { visit } if previous == Some(*visit) => "reload",
+            Intent::Restore { .. } => "return",
+        };
         let transaction = self.connection.transaction()?;
+        let now = now_ms()?;
         let id = match intent {
             Intent::New { parent, source } => {
                 let id = VisitId(Ulid::new());
-                let now = now_ms()?;
                 transaction.execute(
                     "INSERT INTO visits(id, parent_id, url, title, created_at, opened_at) VALUES (?1, ?2, ?3, '', ?4, ?4)",
                     params![id.to_string(), parent.map(|id| id.to_string()), url.as_str(), now],
@@ -799,7 +828,7 @@ impl Browser {
             Intent::Restore { visit } => {
                 let changed = transaction.execute(
                     "UPDATE visits SET url = ?1, opened_at=COALESCE(opened_at, ?3) WHERE id = ?2",
-                    params![url.as_str(), visit.to_string(), now_ms()?],
+                    params![url.as_str(), visit.to_string(), now],
                 )?;
                 if changed != 1 {
                     bail!("This visit no longer exists.")
@@ -807,6 +836,10 @@ impl Browser {
                 visit
             }
         };
+        transaction.execute(
+            "INSERT INTO visit_events(visit_id, from_visit_id, kind, at) VALUES (?1, ?2, ?3, ?4)",
+            params![id.to_string(), previous.map(|id| id.to_string()), kind, now],
+        )?;
         transaction.execute(
             "UPDATE session SET current_id = ?1 WHERE singleton = 1",
             [id.to_string()],
@@ -1437,6 +1470,54 @@ mod tests {
         assert_eq!(snapshot.visits[0].url, url("final"));
     }
 
+    fn events(browser: &Browser) -> Vec<(VisitId, Option<VisitId>, String)> {
+        let mut statement = browser
+            .connection
+            .prepare("SELECT visit_id, from_visit_id, kind FROM visit_events ORDER BY id")
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?.parse().unwrap(),
+                    row.get::<_, Option<String>>(1)?
+                        .map(|id| id.parse().unwrap()),
+                    row.get(2)?,
+                ))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    #[test]
+    fn every_arrival_on_a_page_is_logged_with_the_page_before_it() {
+        let mut browser = memory();
+        let a = follow(&mut browser, "a", NavigationTarget::Root);
+        let b = follow_child(&mut browser, "b");
+        let back = browser.back().unwrap().unwrap();
+        browser.started(back.clone()).unwrap();
+        assert!(browser.committed(back.clone()).unwrap());
+        assert!(!browser.committed(back).unwrap());
+        let reload = browser.reload().unwrap().unwrap();
+        browser.started(reload.clone()).unwrap();
+        browser.committed(reload).unwrap();
+        let other = follow(&mut browser, "other", NavigationTarget::Root);
+        let failed = browser.restore(b).unwrap();
+        browser.started(failed.clone()).unwrap();
+        browser.failed(&failed, false);
+        let event = |visit, from, kind: &str| (visit, from, kind.to_owned());
+        assert_eq!(
+            events(&browser),
+            [
+                event(a, None, "new"),
+                event(b, Some(a), "new"),
+                event(a, Some(b), "return"),
+                event(a, Some(a), "reload"),
+                event(other, Some(a), "new"),
+            ]
+        );
+    }
+
     #[test]
     fn failed_and_cancelled_navigation_preserve_committed_state() {
         let mut browser = memory();
@@ -1863,6 +1944,13 @@ mod tests {
             assert_eq!(browser.visit(second).unwrap().parent, Some(first));
             assert!(browser.capture_enabled().unwrap());
             assert_eq!(browser.search("Old child").unwrap().len(), 1);
+            assert_eq!(
+                events(&browser),
+                [
+                    (first, None, "new".to_owned()),
+                    (second, Some(first), "new".to_owned())
+                ]
+            );
             snapshot
         };
         assert_eq!(Browser::open(&path).unwrap().snapshot().unwrap(), expected);
