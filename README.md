@@ -47,6 +47,26 @@ The `rust-toolchain.toml` file selects stable Rust for this project. It does not
 
 Canopy ships the Inter typeface in `assets/fonts/`, under the SIL Open Font License in `assets/fonts/LICENSE.txt`.
 
+## Open links from other apps
+
+Pass one or more addresses to open each one as a new tree. The last one is shown, and the others load when you open their tree:
+
+```sh
+canopy https://example.org https://www.rust-lang.org
+```
+
+When Canopy is already open on the same data folder, a second launch hands its addresses to that window, brings it forward and exits. Without addresses it only brings the window forward. A different `--data-dir` is a separate browser with its own window. Canopy opens only HTTP and HTTPS addresses and refuses anything else with an error.
+
+The installed `canopy.desktop` declares Canopy as a handler for `http` and `https` links. To make Canopy your default browser, run this command after installing it:
+
+```sh
+xdg-settings set default-web-browser canopy.desktop
+```
+
+`xdg-settings get default-web-browser` shows the current choice. Links clicked in other apps then open in Canopy.
+
+The running window holds a lock on `instance.lock` in its data folder and listens on `instance.sock` next to it. The system releases the lock when Canopy quits or crashes, so a crash never blocks the next start. If the window cannot open the addresses, the second launch prints the reason and exits with an error.
+
 ## Bring your Chrome history
 
 To bring your Chrome history, bookmarks, cookies, and saved passwords into Canopy, run:
@@ -59,7 +79,7 @@ It reads `~/.config/google-chrome/Default`. Pass another profile folder after th
 
 **Ctrl+K** then shows **Bookmarks** and **From Chrome** results next to your forest. Opening one loads it like a typed address. Until Canopy has habits of its own, the new-tree page offers your busiest Chrome sites. Imported pages plant no trees and add no tabs.
 
-Cookies reach Canopy while it runs, or at its next start before it reloads your page. This keeps sites signed in when their sessions still work. Chrome's cookies replace matching Canopy cookies. Session cookies last until Canopy quits. Partitioned and expired cookies are skipped.
+Cookies reach Canopy while it runs, or at its next start before it reloads your page or opens the addresses it was given. This keeps sites signed in when their sessions still work. Chrome's cookies replace matching Canopy cookies. Session cookies last until Canopy quits. Partitioned and expired cookies are skipped.
 
 Passwords go into an encrypted vault. Its key stays in your system keyring. The import may ask you to unlock the keyring. Canopy does not fill password fields yet.
 
@@ -69,13 +89,16 @@ Running the command again refreshes imported pages and updates matching password
 
 The top row has one tab per tree, in the order you started them. Trees that do not fit wait behind the arrow at the end of the row. Under the tabs, a strip shows the current tree: the path to the current page, with small buds for the other branches. Rest the pointer on the strip and it opens over the page with every branch. Rest it on a page in the strip to see a card with its title, site and a preview.
 
+Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not affect them.
+
 - **Ctrl+K** or the **Search or go…** pill opens the palette. Type to search your forest and your saved text, or to go to an address. **Enter** opens the selected result. **Alt+Enter** opens it in a new tree. **Escape** closes the palette and gives the focus back to the page.
 - **Ctrl+L** opens the same palette with the current address selected.
 - **Ctrl+E** or the forest button opens every tree. Drag or scroll to pan, Ctrl+scroll to zoom, and use **Titles** to switch between pills and icons. Click a page to restore it.
 - **Ctrl+T** or **+** opens the new-tree page with frequent pages and usual paths from your history. A usual path loads its first page as a root, then its second page as a child. **Escape** returns to your page.
-- **Ctrl+1** to **Ctrl+9** switch to a tree.
+- **Ctrl+1** to **Ctrl+9** switch to a tree. Shift is also accepted for layouts such as AZERTY.
 - **F6** moves the keyboard focus between the page and the current page in the strip. **Left** and **Right** walk the path, and **Enter** opens the focused page.
-- **Alt+Left** goes back to the parent page and **Ctrl+R** reloads the current page.
+- **Alt+Left** goes back to the parent page.
+- **Ctrl+R**, **F5**, and **Ctrl+Shift+R** reload the current page. Canopy has no hard reload, so all three perform a plain reload.
 
 ## Try a fork
 
@@ -109,6 +132,16 @@ For a post that appears later in a dynamic feed, select the passage and press **
 
 Without `--data-dir`, Canopy keeps its database and WebKit profile in `$XDG_DATA_HOME/canopy`, or in `~/.local/share/canopy`. Canopy starts dark. The gear at the end of the tab row opens **Settings**, where **Theme** offers **Dark**, **Light** or **System**, and **Remember pages** turns automatic capture on or off. The theme persists in the `theme_mode` session setting and applies immediately. With **System**, it follows the desktop's dark preference.
 
+## Download files
+
+A link to a file Canopy cannot show, such as an archive or a file the site marks as an attachment, is saved instead of opened. **Download Linked File** and **Save Image As** in the page's context menu save too. Canopy does not ask where to save. Files go to your download folder, the XDG download directory or `~/Downloads`, which Canopy creates when it is missing.
+
+Canopy keeps only the last part of the name the site suggests, so a file always lands directly in that folder. It never replaces a file. A second `report.pdf` is saved as `report (1).pdf`. While a download runs, its data sits in a hidden `.canopy-download-…` folder there, and the file appears under its name once it is complete.
+
+A message under the tab row says when a download starts, when it is saved, with its file name, and when it fails, with the reason. A failed download leaves no partial file behind. A download adds no page to your forest and keeps the page you are reading.
+
+Canopy has no downloads list yet, and it cannot pause, resume or open a download.
+
 ## Check the project
 
 Check the formatting, the core tests and the compiler diagnostics:
@@ -124,6 +157,14 @@ The GUI tests load locally served pages and drive the window with real pointer a
 ```sh
 env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test webkit_smoke
 env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test reading_smoke
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test download_smoke
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test open_url_smoke
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test shortcut_smoke
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test sandbox_smoke
 ```
+
+`open_url_smoke` starts the `canopy` binary on temporary data folders and launches it again with addresses, so it checks the hand-off between real processes. It needs no session bus.
+
+The download test points `HOME` and `XDG_CONFIG_HOME` at a temporary folder, so it never writes to your real download folder.
 
 The design choices are described, in French, in [Une forêt de visites](docs/design.md) and [La mémoire d'une exploration](docs/reading-memory.md).

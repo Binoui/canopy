@@ -581,7 +581,7 @@ fn main() -> Result<()> {
     let reopened = Ui::new(directory.path())?;
     reopened.window.show_all();
     assert_eq!(reopened.snapshot()?, expected);
-    reopened.resume()?;
+    reopened.resume(&[])?;
     wait("restart reload", || {
         !reopened.engine.native.is_loading()
             && reopened

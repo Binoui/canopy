@@ -1,7 +1,9 @@
 pub mod address;
 pub mod browser;
+pub mod download;
 pub mod forest;
 pub mod import;
+pub mod instance;
 
 #[cfg(feature = "desktop")]
 pub mod chrome;

@@ -6,6 +6,7 @@ use std::{
 
 use anyhow::Result;
 use gtk::prelude::*;
+use url::Url;
 use webkit2gtk::WebViewExt;
 
 use crate::{
@@ -16,7 +17,7 @@ use crate::{
         ChromeFrame, ChromeHost, ChromeIntent, Favicons, HtmlChrome, PaletteScope, PaletteSeed,
         Toast, CHROME_HEIGHT,
     },
-    engine::{Engine, EngineEvent},
+    engine::{DownloadEvent, Engine, EngineEvent},
     forest::ForestProjection,
 };
 
@@ -34,7 +35,14 @@ pub struct Ui {
     cookie_monitor: gio::FileMonitor,
     draining_cookies: Cell<bool>,
     cookies_pending: Cell<bool>,
-    reload_after_cookies: Cell<bool>,
+    /// Set from start until the first cookie drain ends, so no page loads without them.
+    after_cookies: Cell<Option<StartPage>>,
+}
+
+#[derive(Clone, Copy)]
+enum StartPage {
+    Reload,
+    Show(VisitId),
 }
 
 struct PathContinuation {
@@ -94,7 +102,7 @@ impl Ui {
                 cookie_monitor,
                 draining_cookies: Cell::new(false),
                 cookies_pending: Cell::new(false),
-                reload_after_cookies: Cell::new(false),
+                after_cookies: Cell::new(None),
             }
         });
         let weak = Rc::downgrade(&ui);
@@ -131,6 +139,7 @@ impl Ui {
                 EngineEvent::Remembered(_) => ui
                     .chrome
                     .toast(Toast::Info("Selection remembered on this computer.".into())),
+                EngineEvent::Download(event) => ui.chrome.toast(download_toast(event)),
             }
         });
         let weak = Rc::downgrade(&ui);
@@ -167,10 +176,55 @@ impl Ui {
         self.browser.borrow().search(query)
     }
 
-    pub fn resume(&self) -> Result<()> {
-        self.reload_after_cookies.set(true);
+    /// Restores the forest, then opens `urls` as new trees in place of reloading the last page.
+    pub fn resume(&self, urls: &[Url]) -> Result<()> {
+        self.after_cookies.set(Some(StartPage::Reload));
+        // A failed open is already on screen as an error, and the window still starts.
+        let _ = self.open(urls);
         self.drain_cookies();
         Ok(())
+    }
+
+    /// Plants each URL as a new tree and shows the last one. A failure is shown in the
+    /// window and returned, so the launch that sent the URLs can fail too.
+    pub fn open(&self, urls: &[Url]) -> Result<()> {
+        let shown = self.plant(urls);
+        if let Err(error) = &shown {
+            self.report_error(&error.to_string());
+        }
+        shown
+    }
+
+    fn plant(&self, urls: &[Url]) -> Result<()> {
+        let roots = self.browser.borrow_mut().add_roots(urls)?;
+        let Some(last) = roots.last().copied() else {
+            return Ok(());
+        };
+        self.schedule_refresh();
+        self.branch_after_commit.set(None);
+        self.path_after_commit.borrow_mut().take();
+        if self.after_cookies.get().is_some() {
+            self.after_cookies.set(Some(StartPage::Show(last)));
+            return Ok(());
+        }
+        self.engine.restore(last)
+    }
+
+    /// Raises the window, using the launching app's activation token when it passed one.
+    pub fn bring_forward(&self, activation: Option<&str>) {
+        if let Some(token) = activation {
+            self.window.set_startup_id(token);
+        }
+        self.window.present();
+    }
+
+    fn show_start_page(&self) {
+        let result = match self.after_cookies.take() {
+            None => Ok(()),
+            Some(StartPage::Reload) => self.engine.reload(),
+            Some(StartPage::Show(visit)) => self.engine.restore(visit),
+        };
+        self.report(result);
     }
 
     fn drain_cookies(&self) {
@@ -183,9 +237,7 @@ impl Ui {
             Err(_) => {
                 self.draining_cookies.set(false);
                 self.report_error("Could not read imported cookies.");
-                if self.reload_after_cookies.replace(false) {
-                    self.report(self.engine.reload());
-                }
+                self.show_start_page();
                 return;
             }
         };
@@ -204,8 +256,8 @@ impl Ui {
             }
             if ui.cookies_pending.replace(false) {
                 ui.drain_cookies();
-            } else if ui.reload_after_cookies.replace(false) {
-                ui.report(ui.engine.reload());
+            } else {
+                ui.show_start_page();
             }
         });
     }
@@ -328,6 +380,7 @@ impl Ui {
 }
 
 /// Window-level keys, handled before the focused web view sees them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Shortcut {
     Palette(PaletteSeed),
     NewTree,
@@ -341,27 +394,77 @@ enum Shortcut {
     Escape,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Modifiers(gdk::ModifierType);
+
+impl Modifiers {
+    const NONE: Self = Self(gdk::ModifierType::empty());
+    const CONTROL: Self = Self(gdk::ModifierType::CONTROL_MASK);
+    const ALT: Self = Self(gdk::ModifierType::MOD1_MASK);
+    const CONTROL_SHIFT: Self =
+        Self(gdk::ModifierType::CONTROL_MASK.union(gdk::ModifierType::SHIFT_MASK));
+
+    fn held(state: gdk::ModifierType) -> Self {
+        use gdk::ModifierType as M;
+        Self(
+            state
+                & (M::CONTROL_MASK
+                    | M::MOD1_MASK
+                    | M::SHIFT_MASK
+                    | M::MOD3_MASK
+                    | M::MOD4_MASK
+                    | M::MOD5_MASK
+                    | M::SUPER_MASK
+                    | M::HYPER_MASK
+                    | M::META_MASK),
+        )
+    }
+}
+
 impl Shortcut {
     fn of(event: &gdk::EventKey) -> Option<Self> {
+        Self::matching(Modifiers::held(event.state()), event.keyval())
+    }
+
+    fn matching(modifiers: Modifiers, keyval: gdk::keys::Key) -> Option<Self> {
         use gdk::keys::constants as key;
-        let keyval = event.keyval().to_lower();
-        let control = event.state().contains(gdk::ModifierType::CONTROL_MASK);
-        let alt = event.state().contains(gdk::ModifierType::MOD1_MASK);
-        let digit = keyval.to_unicode().and_then(|c| c.to_digit(10));
-        Some(match (control, alt) {
-            (true, _) if keyval == key::k => Shortcut::Palette(PaletteSeed::Empty),
-            (true, _) if keyval == key::l => Shortcut::Palette(PaletteSeed::CurrentAddress),
-            (true, _) if keyval == key::t => Shortcut::NewTree,
-            (true, _) if keyval == key::e => Shortcut::Forest,
-            (true, _) if keyval == key::r => Shortcut::Reload,
-            (true, _) if keyval == key::s => Shortcut::RememberSelection,
-            (true, _) if keyval == key::q => Shortcut::Quit,
-            (true, _) if digit.is_some_and(|d| d > 0) => Shortcut::Tree(digit? as usize - 1),
-            (_, true) if keyval == key::Left => Shortcut::Back,
-            _ if keyval == key::F6 => Shortcut::ToggleFocus,
-            _ if keyval == key::Escape => Shortcut::Escape,
-            _ => return None,
-        })
+        let keyval = keyval.to_lower();
+        let bindings = [
+            (
+                Modifiers::CONTROL,
+                key::k,
+                Self::Palette(PaletteSeed::Empty),
+            ),
+            (
+                Modifiers::CONTROL,
+                key::l,
+                Self::Palette(PaletteSeed::CurrentAddress),
+            ),
+            (Modifiers::CONTROL, key::t, Self::NewTree),
+            (Modifiers::CONTROL, key::e, Self::Forest),
+            (Modifiers::CONTROL, key::r, Self::Reload),
+            (Modifiers::CONTROL_SHIFT, key::r, Self::Reload),
+            (Modifiers::NONE, key::F5, Self::Reload),
+            (Modifiers::CONTROL, key::s, Self::RememberSelection),
+            (Modifiers::CONTROL, key::q, Self::Quit),
+            (Modifiers::ALT, key::Left, Self::Back),
+            (Modifiers::NONE, key::F6, Self::ToggleFocus),
+            (Modifiers::NONE, key::Escape, Self::Escape),
+        ];
+        if let Some((_, _, action)) = bindings
+            .into_iter()
+            .find(|(held, key, _)| *held == modifiers && *key == keyval)
+        {
+            return Some(action);
+        }
+        // AZERTY produces digit keyvals with Shift held.
+        if matches!(modifiers, Modifiers::CONTROL | Modifiers::CONTROL_SHIFT) {
+            let digit = keyval.to_unicode()?.to_digit(10)?;
+            if (1..=9).contains(&digit) {
+                return Some(Self::Tree(digit as usize - 1));
+            }
+        }
+        None
     }
 }
 
@@ -468,4 +571,151 @@ fn prefers_dark() -> bool {
             || s.gtk_theme_name()
                 .is_some_and(|name| name.to_lowercase().contains("dark"))
     })
+}
+
+fn download_toast(event: DownloadEvent) -> Toast {
+    let name = |path: &Path| {
+        path.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    };
+    match event {
+        DownloadEvent::Started(name) => Toast::Info(format!("Downloading {name}…")),
+        DownloadEvent::Saved(path) => Toast::Info(format!(
+            "Saved {} in {}.",
+            name(&path),
+            path.parent().map(name).unwrap_or_default()
+        )),
+        DownloadEvent::Failed { name, reason } => Toast::Error(format!(
+            "Could not download {}. {reason}",
+            name.as_deref().unwrap_or("the file")
+        )),
+    }
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+    use gdk::{keys::constants as key, ModifierType as M};
+
+    #[test]
+    fn window_shortcuts_require_exact_modifiers() {
+        let bindings = [
+            (
+                key::k,
+                Modifiers::CONTROL,
+                Shortcut::Palette(PaletteSeed::Empty),
+            ),
+            (
+                key::l,
+                Modifiers::CONTROL,
+                Shortcut::Palette(PaletteSeed::CurrentAddress),
+            ),
+            (key::t, Modifiers::CONTROL, Shortcut::NewTree),
+            (key::e, Modifiers::CONTROL, Shortcut::Forest),
+            (key::r, Modifiers::CONTROL, Shortcut::Reload),
+            (key::r, Modifiers::CONTROL_SHIFT, Shortcut::Reload),
+            (key::F5, Modifiers::NONE, Shortcut::Reload),
+            (key::s, Modifiers::CONTROL, Shortcut::RememberSelection),
+            (key::q, Modifiers::CONTROL, Shortcut::Quit),
+            (key::Left, Modifiers::ALT, Shortcut::Back),
+            (key::F6, Modifiers::NONE, Shortcut::ToggleFocus),
+            (key::Escape, Modifiers::NONE, Shortcut::Escape),
+        ];
+        for (key, required, _) in bindings.iter().copied() {
+            for bits in 0..8 {
+                let state = if bits & 1 != 0 {
+                    M::SHIFT_MASK
+                } else {
+                    M::empty()
+                } | if bits & 2 != 0 {
+                    M::CONTROL_MASK
+                } else {
+                    M::empty()
+                } | if bits & 4 != 0 {
+                    M::MOD1_MASK
+                } else {
+                    M::empty()
+                };
+                let held = Modifiers::held(state);
+                let expected = bindings.iter().find_map(|(bound_key, modifiers, action)| {
+                    (*bound_key == key && *modifiers == held).then_some(*action)
+                });
+                assert_eq!(Shortcut::matching(held, key), expected, "{state:?} {key:?}");
+                assert_eq!(Shortcut::matching(held, key.to_upper()), expected);
+                assert_eq!(
+                    Shortcut::matching(Modifiers::held(state | M::LOCK_MASK | M::MOD2_MASK), key),
+                    expected,
+                    "lock modifiers must not affect {state:?} {key:?}"
+                );
+            }
+            for extra in [
+                M::MOD3_MASK,
+                M::MOD4_MASK,
+                M::MOD5_MASK,
+                M::SUPER_MASK,
+                M::HYPER_MASK,
+                M::META_MASK,
+            ] {
+                assert_eq!(
+                    Shortcut::matching(Modifiers::held(required.0 | extra), key),
+                    None
+                );
+            }
+        }
+        assert_eq!(
+            Shortcut::matching(Modifiers::CONTROL, key::K),
+            Some(Shortcut::Palette(PaletteSeed::Empty))
+        );
+    }
+
+    #[test]
+    fn digit_tree_shortcuts_accept_shifted_azerty_keyvals() {
+        let digits = [
+            key::_1,
+            key::_2,
+            key::_3,
+            key::_4,
+            key::_5,
+            key::_6,
+            key::_7,
+            key::_8,
+            key::_9,
+        ];
+        for (index, key) in digits.into_iter().enumerate() {
+            for modifiers in [Modifiers::CONTROL, Modifiers::CONTROL_SHIFT] {
+                assert_eq!(
+                    Shortcut::matching(modifiers, key),
+                    Some(Shortcut::Tree(index))
+                );
+            }
+            for state in [
+                M::empty(),
+                M::SHIFT_MASK,
+                M::CONTROL_MASK | M::MOD1_MASK,
+                M::CONTROL_MASK | M::SHIFT_MASK | M::MOD1_MASK,
+            ] {
+                assert_eq!(Shortcut::matching(Modifiers::held(state), key), None);
+            }
+        }
+        for key in [
+            key::_0,
+            key::ampersand,
+            key::eacute,
+            key::quotedbl,
+            key::apostrophe,
+            key::parenleft,
+            key::minus,
+            key::egrave,
+            key::underscore,
+            key::ccedilla,
+            key::F5,
+            key::F11,
+            key::f,
+            key::w,
+        ] {
+            assert_eq!(Shortcut::matching(Modifiers::CONTROL, key), None);
+        }
+    }
 }
