@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::{bail, Context, Result};
 
 use crate::{
-    browser::{Snapshot, TreeId, TreeState, Visit, VisitId, VisitState},
+    browser::{Lifecycle, Snapshot, TreeId, TreeState, Visit, VisitId, VisitState},
     naming::tree_name,
 };
 
@@ -15,6 +15,7 @@ pub struct TreeSummary {
     pub page_count: usize,
     pub pending_count: usize,
     pub last_visit: VisitId,
+    pub lifecycle: Lifecycle,
 }
 
 #[derive(Debug)]
@@ -30,6 +31,7 @@ struct Node {
 pub struct ForestProjection {
     nodes: HashMap<VisitId, Node>,
     trees: Vec<TreeSummary>,
+    open: usize,
     current: Option<VisitId>,
 }
 
@@ -94,7 +96,7 @@ impl ForestProjection {
         let mut states = HashMap::with_capacity(tree_states.len());
         for state in tree_states {
             if states
-                .insert(state.root, (state.last_visit, state.name))
+                .insert(state.root, (state.last_visit, state.name, state.lifecycle))
                 .is_some()
             {
                 bail!("Duplicate tree state.");
@@ -103,7 +105,8 @@ impl ForestProjection {
         let mut trees = Vec::with_capacity(roots.len());
         for root in roots {
             let node = &nodes[&root];
-            let (last_visit, name) = states.remove(&node.tree).context("Missing tree state.")?;
+            let (last_visit, name, lifecycle) =
+                states.remove(&node.tree).context("Missing tree state.")?;
             let last = nodes.get(&last_visit).context("Missing tree target.")?;
             if last.tree != node.tree || last.visit.state != VisitState::Opened {
                 bail!("Tree target must be an opened page in its tree.");
@@ -121,6 +124,7 @@ impl ForestProjection {
                 pending_count: node.pending_below
                     + usize::from(node.visit.state == VisitState::Queued),
                 last_visit,
+                lifecycle,
             });
         }
         if !states.is_empty() {
@@ -132,7 +136,13 @@ impl ForestProjection {
                 bail!("Current page has not been opened.");
             }
         }
+        trees.sort_by_key(|tree| match tree.lifecycle {
+            Lifecycle::Open => (0, 0),
+            Lifecycle::Settled { since } => (1, -since),
+        });
+        let open = trees.partition_point(|tree| tree.lifecycle.is_open());
         Ok(Self {
+            open,
             nodes,
             trees,
             current: snapshot.current,
@@ -141,6 +151,14 @@ impl ForestProjection {
 
     pub fn trees(&self) -> &[TreeSummary] {
         &self.trees
+    }
+
+    pub fn open(&self) -> &[TreeSummary] {
+        &self.trees[..self.open]
+    }
+
+    pub fn settled(&self) -> &[TreeSummary] {
+        &self.trees[self.open..]
     }
 
     pub fn current(&self) -> Option<VisitId> {
@@ -196,6 +214,49 @@ mod tests {
             state,
             source: None,
         }
+    }
+
+    #[test]
+    fn open_trees_keep_creation_order_and_settled_trees_list_newest_first() {
+        let visits: Vec<_> = (0..5)
+            .map(|time| visit(None, time, VisitState::Opened))
+            .collect();
+        let ids: Vec<_> = visits.iter().map(|v| v.id).collect();
+        let states = ids
+            .iter()
+            .enumerate()
+            .map(|(i, &id)| TreeState {
+                root: TreeId(id),
+                last_visit: id,
+                name: None,
+                lifecycle: match i {
+                    1 => Lifecycle::Settled { since: 10 },
+                    3 => Lifecycle::Settled { since: 20 },
+                    _ => Lifecycle::Open,
+                },
+            })
+            .collect();
+        let f = ForestProjection::from_snapshot(
+            Snapshot {
+                visits,
+                current: Some(ids[1]),
+            },
+            states,
+        )
+        .unwrap();
+        assert_eq!(
+            f.open().iter().map(|t| t.id.root()).collect::<Vec<_>>(),
+            vec![ids[0], ids[2], ids[4]]
+        );
+        assert_eq!(
+            f.settled().iter().map(|t| t.id.root()).collect::<Vec<_>>(),
+            vec![ids[3], ids[1]]
+        );
+        assert_eq!(
+            f.current(),
+            Some(ids[1]),
+            "A current page inside a settled tree remains valid"
+        );
     }
 
     #[test]

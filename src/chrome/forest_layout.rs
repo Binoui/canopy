@@ -10,6 +10,7 @@ pub(crate) struct ForestLayout {
     pub nodes: Vec<(VisitId, Rect)>,
     pub heads: Vec<(usize, f64)>,
     pub current_width: f64,
+    pub divider: Option<f64>,
 }
 
 pub(crate) fn layout(
@@ -19,10 +20,18 @@ pub(crate) fn layout(
 ) -> ForestLayout {
     let mut result = ForestLayout::default();
     let current = forest.current().and_then(|id| forest.tree_of(id));
-    let mut order: Vec<_> = (0..forest.trees().len()).collect();
+    let mut order: Vec<_> = (0..forest.open().len()).collect();
     order.sort_by_key(|&i| Some(forest.trees()[i].id) != current);
+    order.extend(forest.open().len()..forest.trees().len());
     let mut y = 34.;
     for index in order {
+        if index == forest.open().len() {
+            if !forest.open().is_empty() {
+                y += 24.;
+            }
+            result.divider = Some(y);
+            y += 44.;
+        }
         let tree = &forest.trees()[index];
         result.heads.push((index, y));
         y += 78.;
@@ -75,10 +84,13 @@ mod tests {
     use super::*;
     use crate::browser::{Snapshot, TreeId, TreeState, Visit, VisitState};
     fn fixture(trees: usize, depth: usize) -> ForestProjection {
+        fixture_with_settled(trees, depth, 0)
+    }
+    fn fixture_with_settled(trees: usize, depth: usize, settled: usize) -> ForestProjection {
         let mut visits = Vec::new();
         let mut states = Vec::new();
         let mut current = None;
-        for _ in 0..trees {
+        for index in 0..trees {
             let root: VisitId = ulid::Ulid::new().to_string().parse().unwrap();
             let mut parent = None;
             for d in 0..depth {
@@ -101,13 +113,33 @@ mod tests {
             }
             current = parent;
             states.push(TreeState {
-                lifecycle: crate::browser::Lifecycle::Open,
+                lifecycle: if index < settled {
+                    crate::browser::Lifecycle::Settled { since: 1 }
+                } else {
+                    crate::browser::Lifecycle::Open
+                },
                 root: TreeId(root),
                 last_visit: parent.unwrap(),
                 name: None,
             });
         }
         ForestProjection::from_snapshot(Snapshot { visits, current }, states).unwrap()
+    }
+
+    #[test]
+    fn settled_trees_sit_below_a_divider_after_every_open_tree() {
+        let f = fixture_with_settled(4, 2, 2);
+        let l = layout(&f, true, |_| 50.);
+        let divider = l.divider.unwrap();
+        assert!(l.heads[..2].iter().all(|&(i, y)| i < 2 && y < divider));
+        assert!(l.heads[2..].iter().all(|&(i, y)| i >= 2 && y > divider));
+    }
+    #[test]
+    fn no_divider_when_nothing_is_settled_and_no_gap_when_nothing_is_open() {
+        assert!(layout(&fixture(2, 2), true, |_| 50.).divider.is_none());
+        let l = layout(&fixture_with_settled(2, 2, 2), true, |_| 50.);
+        assert_eq!(l.divider, Some(34.));
+        assert_eq!(l.heads[0].1, 78.);
     }
     #[test]
     fn deep_layout_is_iterative_and_keeps_every_node() {
