@@ -598,8 +598,13 @@ impl LivePage {
                     let weak = Rc::downgrade(&state);
                     // The typed binding treats the absent redirect response as non-null.
                     resource.connect_local("sent-request", false, move |values| {
-                        let resource = values[0].get::<webkit2gtk::WebResource>().unwrap();
-                        let request = values[1].get::<webkit2gtk::URIRequest>().unwrap();
+                        // A panic here would cross the signal boundary and abort the browser.
+                        let (Some(Ok(resource)), Some(Ok(request))) = (
+                            values.first().map(|v| v.get::<webkit2gtk::WebResource>()),
+                            values.get(1).map(|v| v.get::<webkit2gtk::URIRequest>()),
+                        ) else {
+                            return None;
+                        };
                         if let Some(state) = Pages::enter_native(&weak) {
                             if state.native.main_resource().as_ref() == Some(&resource) {
                                 state
