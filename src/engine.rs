@@ -1068,6 +1068,12 @@ impl NativeState {
             self.back_forward_commit.set(false);
         }
         if action.navigation_type() == NavigationType::Reload
+            && self
+                .navigation
+                .borrow()
+                .current
+                .as_ref()
+                .is_some_and(|document| document.page_url == url)
             && self.navigation.borrow().pending_ticket().is_none()
         {
             *self.reload_candidate.borrow_mut() = Some(url.clone());

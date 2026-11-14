@@ -22,7 +22,7 @@ The engine distinguishes an issued request from a started load. Only a started l
 
 Server redirects belong to a single navigation. A reload or a restore does not create a visit. A failure keeps the last recorded position and shows an error.
 
-Persistent ids are ULIDs. URLs are not visit ids. Subresources and embedded frames do not become children. A native reload becomes a restore only at main-frame Started, so an iframe reload cannot suspend document writes. A title updates the visit only while the document URL equals its stored URL.
+Persistent ids are ULIDs. URLs are not visit ids. Subresources and embedded frames do not become children. A native Reload is a candidate only when its request URL equals the current document URL. It becomes a restore only at main-frame Started, so an iframe reload cannot suspend document writes. A title updates the visit only while the document URL equals its stored URL.
 
 ## GTK and WebKit stay on their thread
 
