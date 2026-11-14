@@ -682,7 +682,7 @@ impl LivePage {
         let state = Rc::downgrade(&self.state);
         let owner = self.state.pages.clone();
         self.native.evaluate_javascript(
-            "JSON.stringify({url:location.href,y:scrollY})",
+            "JSON.stringify({url:location.href,y:scrollY,epoch:globalThis.__canopyDocumentEpoch})",
             Some(WORLD),
             None,
             Some(&cancel),
@@ -695,7 +695,7 @@ impl LivePage {
                     (state.upgrade(), owner.upgrade(), ticket, value)
                 {
                     if let Ok(value) = serde_json::from_str::<Value>(&value.to_str()) {
-                        if value["url"].as_str() == Some(ticket.page_url.as_str()) {
+                        if checkpoint_document_matches(&value, &ticket) {
                             if let Some(y) = value["y"].as_f64().filter(|y| y.is_finite()) {
                                 if y != 0.
                                     || owner
@@ -1871,6 +1871,11 @@ fn valid_binding(saved: &Checkpoint, urls: &[Url], current: usize, stored: &[Url
             .all(|((e, uri), stored)| e.uri == *uri && e.stored_url == *stored)
 }
 
+fn checkpoint_document_matches(value: &Value, document: &Document) -> bool {
+    value["url"].as_str() == Some(document.page_url.as_str())
+        && value["epoch"].as_u64() == Some(document.epoch)
+}
+
 fn live_entries(list: &webkit2gtk::BackForwardList) -> Vec<BackForwardListItem> {
     let mut entries = list.back_list();
     entries.extend(list.forward_list());
@@ -1982,6 +1987,26 @@ mod attempt_tests {
 
 #[cfg(test)]
 mod checkpoint_tests {
+    #[test]
+    fn same_url_checkpoint_scroll_requires_the_document_epoch() {
+        let mut navigation = Navigation::default();
+        let directory = tempfile::tempdir().unwrap();
+        let mut browser =
+            crate::browser::Browser::open(&directory.path().join("forest.sqlite3")).unwrap();
+        let visit = browser
+            .add_roots(&[Url::parse("https://example.org/").unwrap()])
+            .unwrap()[0];
+        let url = Url::parse("https://example.org/").unwrap();
+        navigation.publish(visit, url.clone());
+        let old = navigation.current.clone().unwrap();
+        navigation.publish(visit, url.clone());
+        let new = navigation.current.clone().unwrap();
+        let value = serde_json::json!({"url": url.as_str(), "y": 0, "epoch": new.epoch});
+        assert!(!checkpoint_document_matches(&value, &old));
+        assert!(checkpoint_document_matches(&value, &new));
+    }
+    use super::*;
+
     use super::*;
 
     #[test]
