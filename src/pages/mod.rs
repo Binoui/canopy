@@ -317,14 +317,14 @@ impl Pages {
     }
 
     pub fn go(&self, go: Go) -> Result<()> {
-        if matches!(go, Go::Parent) {
-            self.cancel_path_continuation();
-        }
         let page = self
             .live
             .borrow()
             .clone()
             .ok_or_else(|| anyhow::anyhow!("No selected page."))?;
+        if matches!(go, Go::Parent) {
+            self.cancel_path_continuation();
+        }
         let before = page.pending_ticket();
         let result = match go {
             Go::Visit(visit) => page.restore(visit),
@@ -450,12 +450,12 @@ impl Pages {
         }
     }
     pub fn reload(&self) -> Result<()> {
-        self.cancel_path_continuation();
         let page = self
             .live
             .borrow()
             .clone()
             .ok_or_else(|| anyhow::anyhow!("No selected page."))?;
+        self.cancel_path_continuation();
         let before = page.pending_ticket();
         let result = page.reload();
         if page.pending_ticket().is_some() && page.pending_ticket() != before {
@@ -517,7 +517,6 @@ impl Pages {
             .ok_or_else(|| anyhow::anyhow!("No live page."))?;
         self.releasing.set(true);
         let weak = self.me.clone();
-        self.discard_view_continuation(&page.navigation());
         let finish = move |result| {
             if let Some(pages) = weak.upgrade() {
                 pages.releasing.set(false);

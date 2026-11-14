@@ -182,10 +182,6 @@ impl Drop for LivePage {
 }
 
 impl LivePage {
-    pub(super) fn navigation(&self) -> std::cell::Ref<'_, Navigation> {
-        self.state.navigation.borrow()
-    }
-
     pub(super) fn pending_ticket(&self) -> Option<LoadTicket> {
         self.state.navigation.borrow().pending_ticket()
     }
@@ -680,6 +676,9 @@ impl LivePage {
 
     pub(super) fn capture_checkpoint_scroll(&self, done: impl FnOnce() + 'static) {
         let state = &self.state;
+        if let Some(owner) = state.pages.upgrade() {
+            owner.discard_view_continuation(&state.navigation.borrow());
+        }
         let ticket = state.navigation.borrow().current.clone();
         state.lifecycle.set(Lifecycle::CapturingScroll);
         let pending = state.navigation.borrow().pending_ticket();
