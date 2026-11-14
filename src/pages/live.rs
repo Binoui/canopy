@@ -223,7 +223,7 @@ impl LivePage {
         let mut signals = Vec::new();
         signals.push((
             native.clone().upcast(),
-            native.connect_close(|view| unsafe { view.destroy() }),
+            native.connect_close(|_| {}),
         ));
         signals.extend(
             mouse::setup(&native)

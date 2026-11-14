@@ -179,6 +179,7 @@ fn main() -> Result<()> {
     }
     ui.window.close();
     for case in [
+        "close_request",
         "samedoc_fail",
         "failed_commit",
         "spa_reload",
@@ -459,6 +460,7 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
 
 fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -> Result<()> {
     if ![
+        "close_request",
         "samedoc_fail",
         "failed_commit",
         "spa_reload",
@@ -479,6 +481,18 @@ fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -
         .navigate(server.url("/long")?, NavigationTarget::Root)?;
     let a = arrived(ui, "/long")?;
     match case {
+        "close_request" => {
+            eval(ui, "window.close(); JSON.stringify(true)")?;
+            assert!(
+                ui.pages.selected_page().native.parent().is_some(),
+                "window.close cannot destroy the page"
+            );
+            ui.pages.go(canopy::pages::Go::Address {
+                url: server.url("/next")?,
+                target: NavigationTarget::ChildOf(a),
+            })?;
+            arrived(ui, "/next")?;
+        }
         "failed_commit" => {
             let finished = Rc::new(Cell::new(false));
             let seen = finished.clone();

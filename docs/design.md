@@ -96,3 +96,5 @@ scroll-restoration helper after loading, including when it traversed native
 history. Normal traversal in an already loaded view still uses native history's
 scroll. The mount probe installs its replacement before releasing the old page through
 the shared checkpoint/release helper, so destroy callbacks can reenter Pages.
+
+Pages ignore window.close() so a page cannot destroy its browser view.
