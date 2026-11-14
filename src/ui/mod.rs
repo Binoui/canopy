@@ -62,6 +62,17 @@ impl Ui {
         window.add(&scroller);
         let engine = Engine::new(&fixed, browser.clone(), &data_dir.join("profile"))?;
         let chrome = HtmlChrome::mount(&fixed, Favicons::new(&engine.native))?;
+        {
+            use webkit2gtk::{WebContextExt, WebViewExt};
+            let confined = [engine.native.context(), chrome.native().context()]
+                .into_iter()
+                .all(|context| context.is_some_and(|context| context.is_sandbox_enabled()));
+            if !confined {
+                eprintln!(
+                    "Canopy: WebKit's sandbox is off. Pages run with your full user permissions."
+                );
+            }
+        }
         use gio::prelude::FileExt;
         let inbox = crate::cookies::Inbox::new(data_dir);
         inbox.prepare()?;
