@@ -276,5 +276,5 @@ kbd { font: 500 10.5px "Inter", sans-serif; color: var(--faint); border: 1px sol
 .tab-settle:hover { background: var(--hover); }
 .forest-head.settled, .forest-node.settled { opacity: .55; }
 .forest-head.settled:hover, .forest-node.settled:hover { opacity: 1; }
-.forest-divider { position: absolute; left: 34px; display: flex; gap: 12px; align-items: baseline; color: var(--muted); font-size: 12px; }
+.forest-divider { position: absolute; left: 34px; white-space: nowrap; display: flex; gap: 12px; align-items: baseline; color: var(--muted); font-size: 12px; }
 .forest-divider b { font-weight: 500; }

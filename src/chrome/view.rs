@@ -1,7 +1,10 @@
 //! What the chrome view draws, as JSON. Rust decides every position and every string; the
 //! HTML view only paints them and reports input back.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashSet,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use serde_json::{json, Value};
 
@@ -208,13 +211,14 @@ fn size_text(bytes: u64) -> String {
 fn forest_value(forest: &ForestProjection, labels: bool) -> Value {
     let layout = forest_layout::layout(forest, labels, |text| text_width(text, 12.5, 0.55));
     let current_tree = forest.current().and_then(|id| forest.tree_of(id));
+    let settled: HashSet<_> = forest.settled().iter().map(|tree| tree.id).collect();
     json!({
         "width": layout.current_width,
         "divider": layout.divider.map(|y| json!({
             "y": y, "title": "Settled", "detail": plural(forest.settled().len(), "tree"),
         })),
         "nodes": layout.nodes.iter().map(|(id, r)| json!({
-            "settled": forest.tree_of(*id).and_then(|id| forest.trees().iter().find(|t| t.id == id)).is_some_and(|t| !t.lifecycle.is_open()),
+            "settled": forest.tree_of(*id).is_some_and(|tree| settled.contains(&tree)),
             "id": id.to_string(), "x": r.x, "y": r.y, "w": r.w, "s": r.s,
         })).collect::<Vec<_>>(),
         "heads": layout.heads.iter().map(|&(index, y)| {

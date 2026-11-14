@@ -189,7 +189,7 @@ function renderTabs() {
       + (root ? visitFav(root, 14) : '')
       + `<span class="tab-title">${esc(tree.title)}</span>`
       + (tree.pending ? `<span class="count">${tree.pending}</span>` : '')
-      + `<span class="tab-settle" data-settle="${tree.id}" title="Settle · Ctrl+W" aria-hidden="true">${icon('close')}</span>`
+      + `<span class="tab-settle" data-settle="${tree.id}" title="Settle${tree.active ? ' · Ctrl+W' : ''}" aria-hidden="true">${icon('close')}</span>`
       + '</button>';
   }).join('');
   fitTabs();
