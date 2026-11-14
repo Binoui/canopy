@@ -45,6 +45,26 @@ The `rust-toolchain.toml` file selects stable Rust for this project. It does not
 
 Canopy ships the Inter typeface in `assets/fonts/`, under the SIL Open Font License in `assets/fonts/LICENSE.txt`.
 
+## Open links from other apps
+
+Pass one or more addresses to open each one as a new tree. The last one is shown:
+
+```sh
+canopy https://example.org https://www.rust-lang.org
+```
+
+When Canopy is already open on the same data folder, a second launch hands its addresses to that window, brings it forward and exits. Without addresses it only brings the window forward. A different `--data-dir` is a separate browser with its own window. Canopy opens only HTTP and HTTPS addresses and refuses anything else with an error.
+
+The installed `canopy.desktop` declares Canopy as a handler for `http` and `https` links. To make Canopy your default browser, run this command after installing it:
+
+```sh
+xdg-settings set default-web-browser canopy.desktop
+```
+
+`xdg-settings get default-web-browser` shows the current choice. Links clicked in other apps then open in Canopy.
+
+The running window holds a lock on `instance.lock` in its data folder and listens on `instance.sock` next to it. The system releases the lock when Canopy quits or crashes, so a crash never blocks the next start. The data folder path must stay shorter than about 100 characters for the socket to fit.
+
 ## Bring your Chrome history
 
 To bring your Chrome history, bookmarks, cookies, and saved passwords into Canopy, run:
@@ -57,7 +77,7 @@ It reads `~/.config/google-chrome/Default`. Pass another profile folder after th
 
 **Ctrl+K** then shows **Bookmarks** and **From Chrome** results next to your forest. Opening one loads it like a typed address. Until Canopy has habits of its own, the new-tree page offers your busiest Chrome sites. Imported pages plant no trees and add no tabs.
 
-Cookies reach Canopy while it runs, or at its next start before it reloads your page. This keeps sites signed in when their sessions still work. Chrome's cookies replace matching Canopy cookies. Session cookies last until Canopy quits. Partitioned and expired cookies are skipped.
+Cookies reach Canopy while it runs, or at its next start before it reloads your page or opens the addresses it was given. This keeps sites signed in when their sessions still work. Chrome's cookies replace matching Canopy cookies. Session cookies last until Canopy quits. Partitioned and expired cookies are skipped.
 
 Passwords go into an encrypted vault. Its key stays in your system keyring. The import may ask you to unlock the keyring. Canopy does not fill password fields yet.
 
@@ -122,6 +142,9 @@ The GUI tests load locally served pages and drive the window with real pointer a
 ```sh
 env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test webkit_smoke
 env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test reading_smoke
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test open_url_smoke
 ```
+
+`open_url_smoke` starts the `canopy` binary on temporary data folders and launches it again with addresses, so it checks the hand-off between real processes. It needs no session bus.
 
 The design choices are described, in French, in [Une forêt de visites](docs/design.md) and [La mémoire d'une exploration](docs/reading-memory.md).
