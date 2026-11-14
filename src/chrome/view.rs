@@ -9,7 +9,7 @@ use super::{
     forest_layout,
     graph::{self, EdgeKind, NodeKind, StripLayout},
     palette::{Group, PaletteItem},
-    ChromeFrame,
+    ChromeFrame, PageFile,
 };
 use crate::{
     browser::{Capture, CaptureKind, ThemeMode, Visit, VisitId, VisitPreview, VisitState},
@@ -52,6 +52,7 @@ pub(crate) fn frame(frame: &ChromeFrame, width: f64) -> Value {
         "trees": trees,
         "visits": visits,
         "strip": strip(forest, width),
+        "files": files_value(&frame.files),
         "forest": {
             "count": format!("{} · {}", plural(forest.trees().len(), "tree"), plural(pages, "page")),
             "labels": forest_value(forest, true),
@@ -145,6 +146,57 @@ fn strip_value(layout: &StripLayout, width: f64) -> Value {
         "nodes": nodes,
         "edges": edges,
     })
+}
+
+/// Downloaded files by the page they hang off, oldest first.
+fn files_value(files: &[PageFile]) -> Value {
+    let mut pages = serde_json::Map::new();
+    for file in files {
+        let download = &file.download;
+        let folder = download
+            .path
+            .parent()
+            .and_then(|folder| folder.file_name())
+            .map_or_else(|| "the folder".into(), |name| name.to_string_lossy());
+        let detail = if file.missing {
+            "Moved or deleted".to_owned()
+        } else {
+            format!("{} · {}", size_text(download.size), ago(download.saved_at))
+        };
+        let entry = json!({
+            "id": download.id,
+            "name": download.name(),
+            "detail": detail,
+            "folder": folder,
+            "missing": file.missing,
+        });
+        if let Value::Array(entries) = pages
+            .entry(download.visit.to_string())
+            .or_insert_with(|| json!([]))
+        {
+            entries.push(entry);
+        }
+    }
+    Value::Object(pages)
+}
+
+/// A file size the way file managers write it, in decimal units.
+fn size_text(bytes: u64) -> String {
+    const UNITS: [&str; 4] = ["kB", "MB", "GB", "TB"];
+    if bytes < 1000 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64 / 1000.;
+    let mut unit = 0;
+    while value >= 999.5 && unit + 1 < UNITS.len() {
+        value /= 1000.;
+        unit += 1;
+    }
+    if value < 9.95 {
+        format!("{value:.1} {}", UNITS[unit])
+    } else {
+        format!("{value:.0} {}", UNITS[unit])
+    }
 }
 
 fn forest_value(forest: &ForestProjection, labels: bool) -> Value {
@@ -361,7 +413,7 @@ pub(crate) fn ago(timestamp_ms: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browser::{Snapshot, StartSuggestions, TreeId, TreeState};
+    use crate::browser::{Download, Snapshot, StartSuggestions, TreeId, TreeState};
 
     fn chain() -> (ForestProjection, Vec<VisitId>) {
         let ids: Vec<VisitId> = (0..3)
@@ -408,6 +460,7 @@ mod tests {
             capture_enabled: true,
             theme: ThemeMode::Dark,
             suggestions: StartSuggestions::default(),
+            files: Vec::new(),
         };
         let value = super::frame(&frame, 1240.);
         assert_eq!(value["current"], ids[1].to_string());
@@ -429,6 +482,75 @@ mod tests {
         assert_eq!(pill["id"], ids[1].to_string());
         assert_eq!(value["theme"], "dark");
         assert_eq!(value["forest"]["count"], "1 tree · 3 pages");
+    }
+
+    #[test]
+    fn files_are_listed_under_their_page_oldest_first() {
+        let (forest, ids) = chain();
+        let file = |id, visit, path: &str, size, missing| PageFile {
+            download: Download {
+                id,
+                visit,
+                path: path.into(),
+                size,
+                source: None,
+                saved_at: 0,
+            },
+            missing,
+        };
+        let frame = ChromeFrame {
+            forest,
+            capture_enabled: true,
+            theme: ThemeMode::Dark,
+            suggestions: StartSuggestions::default(),
+            files: vec![
+                file(
+                    1,
+                    ids[1],
+                    "/home/me/Saved files/report.pdf",
+                    1_234_567,
+                    false,
+                ),
+                file(2, ids[0], "/home/me/Saved files/data", 0, true),
+                file(3, ids[1], "/home/me/Saved files/report (1).pdf", 812, false),
+            ],
+        };
+        let value = super::frame(&frame, 1240.);
+        let files = value["files"].as_object().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(
+            files[&ids[1].to_string()],
+            json!([
+                { "id": 1, "name": "report.pdf", "detail": format!("1.2 MB · {}", ago(0)),
+                  "folder": "Saved files", "missing": false },
+                { "id": 3, "name": "report (1).pdf", "detail": format!("812 B · {}", ago(0)),
+                  "folder": "Saved files", "missing": false },
+            ])
+        );
+        assert_eq!(
+            files[&ids[0].to_string()],
+            json!([{ "id": 2, "name": "data", "detail": "Moved or deleted",
+                     "folder": "Saved files", "missing": true }])
+        );
+    }
+
+    #[test]
+    fn sizes_read_like_a_file_manager() {
+        for (bytes, text) in [
+            (0, "0 B"),
+            (999, "999 B"),
+            (1000, "1.0 kB"),
+            (9_949, "9.9 kB"),
+            (9_950, "10 kB"),
+            (200_000, "200 kB"),
+            (999_499, "999 kB"),
+            (999_500, "1.0 MB"),
+            (1_234_567, "1.2 MB"),
+            (48_000_000_000, "48 GB"),
+            (u64::MAX, "18446744 TB"),
+        ] {
+            assert_eq!(size_text(bytes), text, "{bytes}");
+        }
     }
 
     #[test]

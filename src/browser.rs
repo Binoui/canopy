@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    path::Path,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -147,6 +147,30 @@ pub struct Capture {
     pub source: Option<SourceContext>,
 }
 
+/// A file saved from a page. The file stays where it was saved; Canopy only remembers
+/// where that is, so it can be moved or deleted behind its back.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Download {
+    pub id: i64,
+    pub visit: VisitId,
+    pub path: PathBuf,
+    /// Bytes on disk when the file was saved.
+    pub size: u64,
+    /// Where the file came from, when that is a web address.
+    pub source: Option<Url>,
+    pub saved_at: i64,
+}
+
+impl Download {
+    pub fn name(&self) -> String {
+        self.path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchHit {
     pub visit: VisitId,
@@ -249,6 +273,8 @@ impl Browser {
 
     fn with_connection(mut connection: Connection) -> Result<Self> {
         connection.busy_timeout(std::time::Duration::from_secs(2))?;
+        // `downloads` is created here and not in a numbered step below: it changes no
+        // existing table, and a Canopy from before it simply never reads it.
         connection.execute_batch(
             "PRAGMA foreign_keys = ON;
              PRAGMA journal_mode = WAL;
@@ -260,6 +286,15 @@ impl Browser {
                  created_at INTEGER NOT NULL
              );
              CREATE INDEX IF NOT EXISTS visits_parent ON visits(parent_id);
+             CREATE TABLE IF NOT EXISTS downloads (
+                 id INTEGER PRIMARY KEY,
+                 visit_id TEXT NOT NULL REFERENCES visits(id) ON DELETE CASCADE,
+                 path TEXT NOT NULL,
+                 size INTEGER NOT NULL,
+                 source_url TEXT,
+                 saved_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS downloads_visit ON downloads(visit_id, id);
              CREATE TABLE IF NOT EXISTS session (
                  singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
                  current_id TEXT REFERENCES visits(id)
@@ -1098,6 +1133,89 @@ impl Browser {
         Ok(captures)
     }
 
+    /// The page a download starting now belongs to. A navigation that turns into a download
+    /// leaves no page of its own, so its file goes to the page that navigation came from: the
+    /// parent it was given, or the parent of the pending page it tried to open. Any other
+    /// download, and a navigation that came from no page, belongs to the page on screen.
+    pub fn download_page(&self, request: Option<&Url>) -> Result<Option<VisitId>> {
+        if let Navigation::Loading { intent, url } = &self.navigation {
+            if request == Some(url) {
+                let from = match intent {
+                    Intent::New { parent, .. } => *parent,
+                    Intent::Restore { visit } => self
+                        .connection
+                        .query_row(
+                            "SELECT parent_id FROM visits WHERE id=?1",
+                            [visit.to_string()],
+                            |row| row.get::<_, Option<String>>(0),
+                        )
+                        .optional()?
+                        .flatten()
+                        .map(|id| id.parse())
+                        .transpose()?,
+                };
+                if from.is_some() {
+                    return Ok(from);
+                }
+            }
+        }
+        self.current_id()
+    }
+
+    /// Attaches a saved file to the page it was downloaded from.
+    pub fn record_download(
+        &mut self,
+        visit: VisitId,
+        path: &Path,
+        size: u64,
+        source: Option<&Url>,
+    ) -> Result<i64> {
+        let path = path
+            .to_str()
+            .context("The saved file's path is not valid UTF-8.")?;
+        let known: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM visits WHERE id=?1)",
+            [visit.to_string()],
+            |row| row.get(0),
+        )?;
+        if !known {
+            bail!("This visit no longer exists.");
+        }
+        self.connection.execute(
+            "INSERT INTO downloads(visit_id, path, size, source_url, saved_at)
+             VALUES(?1, ?2, ?3, ?4, ?5)",
+            params![
+                visit.to_string(),
+                path,
+                i64::try_from(size)?,
+                source.map(Url::as_str),
+                now_ms()?
+            ],
+        )?;
+        Ok(self.connection.last_insert_rowid())
+    }
+
+    pub fn download(&self, id: i64) -> Result<Download> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, visit_id, path, size, source_url, saved_at FROM downloads WHERE id=?1",
+        )?;
+        let mut rows = statement.query([id])?;
+        download_from_row(rows.next()?.context("This download is no longer known.")?)
+    }
+
+    /// Every recorded download, oldest first.
+    pub fn downloads(&self) -> Result<Vec<Download>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, visit_id, path, size, source_url, saved_at FROM downloads ORDER BY id",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut downloads = Vec::new();
+        while let Some(row) = rows.next()? {
+            downloads.push(download_from_row(row)?);
+        }
+        Ok(downloads)
+    }
+
     pub fn start_suggestions(&self) -> Result<StartSuggestions> {
         let mut statement = self.connection.prepare(
             "SELECT url, MAX(title), COUNT(*) FROM visits WHERE opened_at IS NOT NULL
@@ -1283,6 +1401,20 @@ fn capture_from_row(row: &Row<'_>) -> Result<Capture> {
         captured_at: row.get(6)?,
         kind,
         source: source_from_row(row, 8)?,
+    })
+}
+
+fn download_from_row(row: &Row<'_>) -> Result<Download> {
+    Ok(Download {
+        id: row.get(0)?,
+        visit: row.get::<_, String>(1)?.parse()?,
+        path: row.get::<_, String>(2)?.into(),
+        size: row.get::<_, i64>(3)?.max(0) as u64,
+        source: row
+            .get::<_, Option<String>>(4)?
+            .map(|s| web_url(&s))
+            .transpose()?,
+        saved_at: row.get(5)?,
     })
 }
 
@@ -2324,5 +2456,164 @@ mod tests {
             browser.search_imported("docs", 10).unwrap().is_empty(),
             "a re-import replaces its source"
         );
+    }
+
+    #[test]
+    fn a_download_belongs_to_the_page_it_started_from() {
+        let mut b = memory();
+        assert_eq!(b.download_page(Some(&url("file"))).unwrap(), None);
+        // A file address typed with no page open has no page to belong to.
+        let file = b.navigate(url("file"), NavigationTarget::Root).unwrap();
+        b.started(file.clone()).unwrap();
+        assert_eq!(b.download_page(Some(&file)).unwrap(), None);
+        b.failed(&file, false);
+
+        let root = follow(&mut b, "a", NavigationTarget::Root);
+        let page = follow_child(&mut b, "b");
+        // Saved from the page on screen: a context menu, a script, a link marked `download`.
+        assert_eq!(b.download_page(Some(&url("pic.png"))).unwrap(), Some(page));
+        assert_eq!(b.download_page(None).unwrap(), Some(page));
+
+        // A link followed from another page than the one on screen, which turns out to be
+        // a file: the file belongs to the page the link was followed from.
+        let file = b
+            .navigate(url("file"), NavigationTarget::ChildOf(root))
+            .unwrap();
+        assert_eq!(b.download_page(Some(&file)).unwrap(), Some(page));
+        b.started(file.clone()).unwrap();
+        assert_eq!(b.download_page(Some(&file)).unwrap(), Some(root));
+        // Meanwhile the page on screen still owns what it saves itself.
+        assert_eq!(b.download_page(Some(&url("pic.png"))).unwrap(), Some(page));
+        b.redirected(url("cdn/file"));
+        assert_eq!(b.download_page(Some(&url("cdn/file"))).unwrap(), Some(root));
+        b.failed(&url("cdn/file"), false);
+        assert_eq!(b.download_page(Some(&url("cdn/file"))).unwrap(), Some(page));
+
+        // A pending link that turns out to be a file: the file goes to the page the link
+        // is on, whichever page is on screen when it is opened.
+        let queued = b.queue_link(root, url("paper.pdf"), source("one")).unwrap();
+        let request = b.restore(queued).unwrap();
+        b.started(request.clone()).unwrap();
+        assert_eq!(b.download_page(Some(&request)).unwrap(), Some(root));
+        b.failed(&request, false);
+
+        // A file address opened as a tree of its own came from no page, typed or handed
+        // over by another app: its file falls back to the page on screen.
+        let file = b.navigate(url("file"), NavigationTarget::Root).unwrap();
+        b.started(file.clone()).unwrap();
+        assert_eq!(b.download_page(Some(&file)).unwrap(), Some(page));
+        b.failed(&file, false);
+        let planted = b.add_roots(&[url("file")]).unwrap()[0];
+        let request = b.restore(planted).unwrap();
+        b.started(request.clone()).unwrap();
+        assert_eq!(b.download_page(Some(&request)).unwrap(), Some(page));
+        assert_eq!(b.snapshot().unwrap().current, Some(page));
+    }
+
+    #[test]
+    fn downloads_stay_on_their_page_in_order_and_survive_reopening() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join("forest.sqlite3");
+        let (root, page, expected) = {
+            let mut b = Browser::open(&db).unwrap();
+            let root = follow(&mut b, "a", NavigationTarget::Root);
+            let page = follow_child(&mut b, "b");
+            let before = b.snapshot().unwrap();
+            let report = b
+                .record_download(
+                    page,
+                    Path::new("/home/me/Downloads/report.pdf"),
+                    1_234_567,
+                    Some(&url("files/report.pdf")),
+                )
+                .unwrap();
+            // A file a script built in the page has no web address.
+            let export = b
+                .record_download(
+                    root,
+                    Path::new("/home/me/Downloads/Relevé (1).csv"),
+                    0,
+                    None,
+                )
+                .unwrap();
+            let again = b
+                .record_download(
+                    page,
+                    Path::new("/home/me/Downloads/report (1).pdf"),
+                    12,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(
+                b.snapshot().unwrap(),
+                before,
+                "a download is no page and moves no cursor"
+            );
+            let downloads = b.downloads().unwrap();
+            assert_eq!(
+                downloads.iter().map(|d| d.id).collect::<Vec<_>>(),
+                [report, export, again]
+            );
+            assert_eq!(
+                downloads.iter().map(Download::name).collect::<Vec<_>>(),
+                ["report.pdf", "Relevé (1).csv", "report (1).pdf"]
+            );
+            assert_eq!(downloads[0].visit, page);
+            assert_eq!(downloads[0].size, 1_234_567);
+            assert_eq!(downloads[0].source, Some(url("files/report.pdf")));
+            assert_eq!(downloads[1].visit, root);
+            assert_eq!(downloads[1].source, None);
+            assert_eq!(b.download(again).unwrap(), downloads[2]);
+            (root, page, downloads)
+        };
+        let mut b = Browser::open(&db).unwrap();
+        assert_eq!(b.downloads().unwrap(), expected);
+
+        let unknown: VisitId = Ulid::new().to_string().parse().unwrap();
+        assert!(b
+            .record_download(unknown, Path::new("/tmp/x"), 1, None)
+            .is_err());
+        assert!(b.download(expected[2].id + 1).is_err());
+        use std::os::unix::ffi::OsStrExt;
+        let odd = Path::new(std::ffi::OsStr::from_bytes(b"/tmp/\xff"));
+        assert!(b.record_download(page, odd, 1, None).is_err());
+        assert_eq!(b.downloads().unwrap(), expected);
+
+        // A page that goes takes its downloads' records with it, never the files.
+        b.connection
+            .execute("DELETE FROM visits WHERE id=?1", [page.to_string()])
+            .unwrap_err();
+        b.connection
+            .execute_batch("DELETE FROM tree_state; UPDATE session SET current_id=NULL;")
+            .unwrap();
+        b.connection
+            .execute("DELETE FROM visits WHERE id=?1", [page.to_string()])
+            .unwrap();
+        let left = b.downloads().unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].visit, root);
+    }
+
+    #[test]
+    fn a_forest_from_before_downloads_gains_the_table_and_keeps_its_version() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join("forest.sqlite3");
+        let version = |connection: &Connection| -> i64 {
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .unwrap()
+        };
+        let (page, before) = {
+            let mut b = Browser::open(&db).unwrap();
+            let page = follow(&mut b, "a", NavigationTarget::Root);
+            b.connection.execute_batch("DROP TABLE downloads").unwrap();
+            (page, version(&b.connection))
+        };
+        let mut b = Browser::open(&db).unwrap();
+        assert_eq!(version(&b.connection), before);
+        assert!(b.downloads().unwrap().is_empty());
+        b.record_download(page, Path::new("/tmp/report.pdf"), 1, None)
+            .unwrap();
+        assert_eq!(b.downloads().unwrap().len(), 1);
     }
 }

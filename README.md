@@ -140,7 +140,13 @@ Canopy keeps only the last part of the name the site suggests, so a file always 
 
 A message under the tab row says when a download starts, when it is saved, with its file name, and when it fails, with the reason. A failed download leaves no partial file behind. A download adds no page to your forest and keeps the page you are reading.
 
-Canopy has no downloads list yet, and it cannot pause, resume or open a download.
+A saved file stays attached to the page it was downloaded from. In the tree strip it shows as a small green leaf on top of that page's node. A page with up to three files shows one leaf for each. A page with more shows one leaf and their count. At rest only the current page and its ancestors carry leaves. Hover the strip to see them on side branches too.
+
+Click a leaf to list that page's files, with their size and when they were saved. Click a file to open it with your desktop's app for that kind of file. The folder button beside it opens the folder it was saved in.
+
+Canopy records where the file was saved and leaves the file there. If you move or delete it, its leaf turns hollow and the list says **Moved or deleted**. Canopy notices this the next time it redraws the strip or when you try to open the file. A file whose address you type, or that another app hands to Canopy, attaches to the page on screen. A file saved with no page open is not attached to any page.
+
+Canopy has no list of all downloads yet, and it cannot pause or resume one.
 
 ## Check the project
 
@@ -165,6 +171,6 @@ env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' c
 
 `open_url_smoke` starts the `canopy` binary on temporary data folders and launches it again with addresses, so it checks the hand-off between real processes. It needs no session bus.
 
-The download test points `HOME` and `XDG_CONFIG_HOME` at a temporary folder, so it never writes to your real download folder.
+The download test points `HOME`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` at a temporary folder, so it never writes to your real download folder and opens files with a stand-in app instead of yours. Set `CANOPY_DOWNLOAD_SHOTS` to a folder to keep screenshots of the leaves and their list.
 
 The design choices are described, in French, in [Une forêt de visites](docs/design.md) and [La mémoire d'une exploration](docs/reading-memory.md).

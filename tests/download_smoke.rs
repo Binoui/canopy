@@ -14,6 +14,7 @@ use std::{
 use anyhow::Result;
 use canopy::{address::web_url, browser::NavigationTarget, ui::Ui};
 use gtk::prelude::*;
+use serde_json::{json, Value};
 use webkit2gtk::WebViewExt;
 
 mod common;
@@ -29,8 +30,36 @@ fn main() -> Result<()> {
         config.join("user-dirs.dirs"),
         "XDG_DOWNLOAD_DIR=\"$HOME/Saved files\"\n",
     )?;
+    // Text files and folders open with a script that only notes what it was given.
+    let data = home.join("share");
+    let opened = home.join("opened");
+    let opener = home.join("opener.sh");
+    std::fs::create_dir_all(data.join("applications"))?;
+    std::fs::write(
+        &opener,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\n",
+            opened.display()
+        ),
+    )?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o755))?;
+    }
+    std::fs::write(
+        data.join("applications/canopy-opener.desktop"),
+        format!(
+            "[Desktop Entry]\nType=Application\nName=Opener\nExec=\"{}\" %f\nMimeType=text/plain;inode/directory;\nNoDisplay=true\n",
+            opener.display()
+        ),
+    )?;
+    std::fs::write(
+        config.join("mimeapps.list"),
+        "[Default Applications]\ntext/plain=canopy-opener.desktop\ninode/directory=canopy-opener.desktop\n",
+    )?;
     std::env::set_var("HOME", &home);
     std::env::set_var("XDG_CONFIG_HOME", &config);
+    std::env::set_var("XDG_DATA_HOME", &data);
     let downloads = home.join("Saved files");
     start(directory.path())?;
     let fixture = Fixture::start()?;
@@ -63,6 +92,36 @@ fn main() -> Result<()> {
     unchanged()?;
     println!("PASS clicking an attachment saves its bytes under a sanitized name in the XDG download folder, created on demand, and leaves the cursor alone.");
 
+    let origin = page.current.unwrap();
+    wait("one leaf on the page", || {
+        leaves(&ui, origin) == json!([1, 0, null])
+    })?;
+    let recorded = ui.downloads()?;
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].visit, origin);
+    assert_eq!(recorded[0].path, downloads.join("report.txt"));
+    assert_eq!(recorded[0].size, payload().len() as u64);
+    assert_eq!(
+        recorded[0].source.as_ref().map(|url| url.as_str()),
+        Some(fixture.url("/report").as_str())
+    );
+    settle(&ui)?;
+    let (_, leaf_y, _, leaf_height) = rect(&ui, &leaf_button(origin))?;
+    let (_, node_y, _, _) = rect(&ui, &node(origin))?;
+    assert!(
+        leaf_y >= 42. && (leaf_y + leaf_height - node_y).abs() <= 2.,
+        "the leaf stands on its page's top edge, inside the strip: {leaf_y} {leaf_height} {node_y}"
+    );
+    assert_eq!(
+        chrome(
+            &ui,
+            &format!("document.querySelector({:?}).title", leaf_button(origin))
+        )?,
+        "Downloaded here: report.txt"
+    );
+    shot(&ui, "one-leaf")?;
+    println!("PASS a saved file is recorded on the page it was clicked from, with its path, size and address, and shows as a leaf on that page's node.");
+
     page_click(&ui, "report")?;
     wait("Saved report (1).txt toast", || {
         toast_text(&ui).as_deref() == Some("Saved report (1).txt in Saved files.")
@@ -80,6 +139,10 @@ fn main() -> Result<()> {
     })?;
     assert_eq!(std::fs::read(downloads.join("data"))?, payload());
     unchanged()?;
+    wait("three leaves", || {
+        leaves(&ui, origin) == json!([3, 0, null])
+    })?;
+    shot(&ui, "three-leaves")?;
     println!("PASS a link to a type WebKit cannot show is saved instead of refused.");
 
     right_click(&ui, "report")?;
@@ -101,6 +164,11 @@ fn main() -> Result<()> {
     assert_eq!(std::fs::read(downloads.join("pic.png"))?, png());
     unchanged()?;
     println!("PASS the page context menu's Save Image As saves the image.");
+    wait("leaves collapsed to a count", || {
+        leaves(&ui, origin) == json!([1, 0, "5"])
+    })?;
+    assert!(ui.downloads()?.iter().all(|file| file.visit == origin));
+    println!("PASS up to three files show a leaf each, and more collapse to one leaf with their count; files saved from the context menu land on the page too.");
 
     let before = files(&downloads);
     page_click(&ui, "broken")?;
@@ -130,7 +198,55 @@ fn main() -> Result<()> {
     );
     key("Escape")?;
     wait("Memory menu closed", || !visible(&ui, "#popover"))?;
-    println!("PASS the user is told when a download starts and when it fails, a failed download leaves no partial file, and the only error recorded is that failure.");
+    assert_eq!(leaves(&ui, origin), json!([1, 0, "5"]));
+    assert_eq!(ui.downloads()?.len(), 5);
+    println!("PASS the user is told when a download starts and when it fails, a failed download leaves no partial file and no leaf, and the only error recorded is that failure.");
+
+    open_files(&ui, origin)?;
+    assert_eq!(
+        text(&ui, "#popover .menu-heading"),
+        "5 files downloaded from this page"
+    );
+    assert_eq!(
+        chrome(
+            &ui,
+            "[...document.querySelectorAll('#popover .file-row')].map((r) => [r.querySelector('.grow').innerText, r.querySelector('.menu-detail').innerText.split(' · ')[0], r.classList.contains('missing')])"
+        )?,
+        json!([
+            ["report.txt", "200 kB", false],
+            ["report (1).txt", "200 kB", false],
+            ["data", "200 kB", false],
+            ["report (2).txt", "200 kB", false],
+            ["pic.png", format!("{} B", png().len()), false],
+        ])
+    );
+    shot(&ui, "files-menu")?;
+    let recorded = ui.downloads()?;
+    click_chrome(&ui, &format!("#popover [data-file='{}']", recorded[0].id))?;
+    let opened_lines = || -> Vec<String> {
+        std::fs::read_to_string(&opened)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    };
+    wait("the file handed to its app", || opened_lines().len() == 1)?;
+    assert_eq!(
+        opened_lines(),
+        [downloads.join("report.txt").display().to_string()]
+    );
+    assert!(!visible(&ui, "#popover"));
+    open_files(&ui, origin)?;
+    click_chrome(&ui, &format!("#popover [data-folder='{}']", recorded[4].id))?;
+    wait("the folder handed to its app", || opened_lines().len() == 2)?;
+    assert_eq!(opened_lines()[1], downloads.display().to_string());
+    unchanged()?;
+    println!("PASS the leaf lists the page's files with their size and age; a row opens the file with the desktop's app for it, and its folder button opens the download folder.");
+
+    page_click(&ui, "slow")?;
+    wait("Downloading slow.bin toast", || {
+        toast_text(&ui).as_deref() == Some("Downloading slow.bin…")
+    })?;
 
     page_click(&ui, "next")?;
     loaded(&ui, "/next")?;
@@ -147,6 +263,140 @@ fn main() -> Result<()> {
         visit.source
     );
     println!("PASS after downloads the page keeps working: its next link becomes a child with its source context.");
+
+    let after = visit.id;
+    assert_eq!(ui.downloads()?.len(), 5);
+    fixture.finish.store(true, Ordering::Relaxed);
+    wait("slow.bin saved", || {
+        toast_text(&ui).as_deref() == Some("Saved slow.bin in Saved files.")
+    })?;
+    assert_eq!(std::fs::read(downloads.join("slow.bin"))?, payload());
+    wait("six files on the first page", || {
+        leaves(&ui, origin) == json!([1, 0, "6"])
+    })?;
+    assert_eq!(ui.downloads()?[5].visit, origin);
+    assert_eq!(leaves(&ui, after), Value::Null);
+    println!("PASS a download that ends after the user moved on still lands on the page it started from, now an ancestor in the strip.");
+
+    // A link followed from another page than the one on screen, which redirects to a file.
+    ui.engine.navigate(
+        web_url(&fixture.url("/moved"))?,
+        NavigationTarget::ChildOf(origin),
+    )?;
+    wait("report (3).txt saved", || {
+        toast_text(&ui).as_deref() == Some("Saved report (3).txt in Saved files.")
+    })?;
+    wait("seven files on the first page", || {
+        leaves(&ui, origin) == json!([1, 0, "7"])
+    })?;
+    assert_eq!(ui.downloads()?[6].visit, origin);
+    assert_eq!(ui.snapshot()?, next, "the file made no page");
+    shot(&ui, "ancestor-count")?;
+    println!("PASS a navigation that turns into a download puts its file on the page it started from, not on the page on screen.");
+
+    page_click(&ui, "again")?;
+    wait("report (4).txt saved", || {
+        toast_text(&ui).as_deref() == Some("Saved report (4).txt in Saved files.")
+    })?;
+    wait("a leaf on the second page", || {
+        leaves(&ui, after) == json!([1, 0, null])
+    })?;
+    let last = ui.downloads()?.pop().unwrap();
+    assert_eq!(last.visit, after);
+    assert_eq!(leaves(&ui, origin), json!([1, 0, "7"]));
+    std::fs::remove_file(&last.path)?;
+    open_files(&ui, after)?;
+    assert_eq!(
+        text(&ui, "#popover .menu-heading"),
+        "Downloaded from this page"
+    );
+    click_chrome(&ui, &format!("#popover [data-file='{}']", last.id))?;
+    wait("missing file toast", || {
+        toast_text(&ui).as_deref()
+            == Some("report (4).txt is no longer in Saved files. It was moved or deleted.")
+    })?;
+    wait("the leaf drawn as missing", || {
+        leaves(&ui, after) == json!([1, 1, null])
+    })?;
+    assert_eq!(opened_lines().len(), 2, "nothing was opened");
+    open_files(&ui, after)?;
+    assert_eq!(
+        chrome(
+            &ui,
+            "[...document.querySelectorAll('#popover .file-row')].map((r) => [r.querySelector('.grow').innerText, r.querySelector('.menu-detail').innerText, r.classList.contains('missing')])"
+        )?,
+        json!([["report (4).txt", "Moved or deleted", true]])
+    );
+    shot(&ui, "missing")?;
+    key("Escape")?;
+    wait("files menu closed", || !visible(&ui, "#popover"))?;
+    assert_eq!(
+        ui.downloads()?.len(),
+        8,
+        "the record of a missing file stays"
+    );
+    println!("PASS a file deleted behind Canopy's back is said to be gone when opened, then drawn as a hollow leaf and listed as moved or deleted.");
+
+    // The pointer leaves the strip before the forest changes under it.
+    leave_strip(&ui)?;
+    ui.engine.restore(origin)?;
+    loaded(&ui, "/page")?;
+    wait("the side branch drawn as a bud", || {
+        chrome(
+            &ui,
+            &format!(
+                "document.querySelector({:?})?.classList.contains('bud')",
+                node(after)
+            ),
+        )
+        .is_ok_and(|bud| bud == true)
+    })?;
+    assert_eq!(leaves(&ui, after), Value::Null, "a bud carries no leaf");
+    assert_eq!(leaves(&ui, origin), json!([1, 0, "7"]));
+    shot(&ui, "branch-rest")?;
+    open_strip(&ui)?;
+    assert_eq!(leaves(&ui, after), json!([1, 1, null]));
+    let (leaf_x, leaf_y, _, leaf_height) = rect(&ui, &leaf_button(after))?;
+    let (node_x, node_y, _, _) = rect(&ui, &node(after))?;
+    assert!(
+        (leaf_x - node_x).abs() <= 1. && (leaf_y + leaf_height - node_y).abs() <= 2.,
+        "the leaf follows its node into the open strip"
+    );
+    shot(&ui, "branch-open")?;
+    leave_strip(&ui)?;
+    println!("PASS at rest only the trunk carries leaves; opening the strip shows them on side branches too.");
+    Ok(())
+}
+
+/// What the strip draws for the files of `visit`: its leaves, how many of them are drawn as
+/// missing, and the count beside them when they are collapsed. Null without any leaf.
+fn leaves(ui: &Ui, visit: impl std::fmt::Display) -> Value {
+    chrome(
+        ui,
+        &format!(
+            "(() => {{ const b = document.querySelector({:?}); return b && [b.querySelectorAll('.leaf').length, b.querySelectorAll('.leaf.missing').length, b.querySelector('b')?.innerText ?? null]; }})()",
+            leaf_button(visit)
+        ),
+    )
+    .unwrap_or_default()
+}
+
+/// Saves the window as `name`.png in the folder `CANOPY_DOWNLOAD_SHOTS` names, if it is set.
+fn shot(ui: &Ui, name: &str) -> Result<()> {
+    match std::env::var("CANOPY_DOWNLOAD_SHOTS") {
+        Ok(folder) => save_window(ui, &format!("{folder}/{name}.png")),
+        Err(_) => Ok(()),
+    }
+}
+
+fn leaf_button(visit: impl std::fmt::Display) -> String {
+    format!(".leaves[data-id='{visit}']")
+}
+
+fn open_files(ui: &Ui, visit: impl std::fmt::Display) -> Result<()> {
+    click_chrome(ui, &leaf_button(visit))?;
+    wait("files menu", || visible(ui, "#popover .file-row"))?;
+    pump(100);
     Ok(())
 }
 
@@ -202,6 +452,7 @@ struct Fixture {
     address: std::net::SocketAddr,
     stopped: Arc<AtomicBool>,
     release: Arc<AtomicBool>,
+    finish: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
@@ -212,20 +463,24 @@ impl Fixture {
         listener.set_nonblocking(true)?;
         let stopped = Arc::new(AtomicBool::new(false));
         let release = Arc::new(AtomicBool::new(false));
-        let (stop, released) = (stopped.clone(), release.clone());
+        let finish = Arc::new(AtomicBool::new(false));
+        let (stop, released, finished) = (stopped.clone(), release.clone(), finish.clone());
         let worker = thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
                 let Ok((mut stream, _)) = listener.accept() else {
                     thread::sleep(Duration::from_millis(5));
                     continue;
                 };
-                let _ = stream.set_nonblocking(false);
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                let mut bytes = [0; 8192];
-                let n = stream.read(&mut bytes).unwrap_or(0);
-                let request = String::from_utf8_lossy(&bytes[..n]);
-                let path = request.split_whitespace().nth(1).unwrap_or("/");
-                match path {
+                // One thread per connection: a held download must not block the next page.
+                let (stop, released, finished) = (stop.clone(), released.clone(), finished.clone());
+                thread::spawn(move || {
+                    let _ = stream.set_nonblocking(false);
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                    let mut bytes = [0; 8192];
+                    let n = stream.read(&mut bytes).unwrap_or(0);
+                    let request = String::from_utf8_lossy(&bytes[..n]);
+                    let path = request.split_whitespace().nth(1).unwrap_or("/");
+                    match path {
                     "/report" => respond(
                         &mut stream,
                         "text/plain\r\nContent-Disposition: attachment; filename=\"../../report.txt\"",
@@ -242,14 +497,30 @@ impl Fixture {
                             thread::sleep(Duration::from_millis(5));
                         }
                     }
+                    "/moved" => {
+                        let _ = stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: /report\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    }
+                    "/slow" => {
+                        let body = payload();
+                        let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"slow.bin\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                        let _ = stream.write_all(head.as_bytes());
+                        let _ = stream.write_all(&body[..65_536]);
+                        let _ = stream.flush();
+                        while !finished.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed) {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        let _ = stream.write_all(&body[65_536..]);
+                    }
                     _ => respond(&mut stream, "text/html; charset=utf-8", page(path).as_bytes()),
                 }
+                });
             }
         });
         Ok(Self {
             address,
             stopped,
             release,
+            finish,
             worker: Some(worker),
         })
     }
@@ -281,11 +552,11 @@ fn page(path: &str) -> String {
     let (title, content) = match path {
         "/page" => (
             "Release notes",
-            r#"<article id="notes" data-permalink="/page#notes"><p>The files for this release.</p><a id="report" href="/report">Download the report</a><a id="blob" href="/data">Raw data</a><a id="broken" href="/broken">A file that breaks halfway</a><a id="next" href="/next">Next chapter</a><img id="pic" src="/pic.png" width="64" height="64" alt="Cover"></article>"#,
+            r#"<article id="notes" data-permalink="/page#notes"><p>The files for this release.</p><a id="report" href="/report">Download the report</a><a id="blob" href="/data">Raw data</a><a id="broken" href="/broken">A file that breaks halfway</a><a id="slow" href="/slow">A file that takes its time</a><a id="next" href="/next">Next chapter</a><img id="pic" src="/pic.png" width="64" height="64" alt="Cover"></article>"#,
         ),
         "/next" => (
             "Next chapter",
-            "<main><p>The page after the downloads.</p></main>",
+            r#"<main><p>The page after the downloads.</p><a id="again" href="/report">The report again</a></main>"#,
         ),
         _ => ("Fixture", "<main></main>"),
     };
