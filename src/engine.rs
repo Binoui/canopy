@@ -1,6 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
-    path::Path,
+    path::{Path, PathBuf},
     rc::Rc,
 };
 
@@ -10,10 +10,10 @@ use javascriptcore::ValueExt;
 use serde_json::Value;
 use url::Url;
 use webkit2gtk::{
-    LoadEvent, NavigationPolicyDecision, NavigationPolicyDecisionExt, NavigationType, NetworkError,
-    PolicyDecision, PolicyDecisionExt, PolicyDecisionType, ResponsePolicyDecision,
-    ResponsePolicyDecisionExt, URIRequestExt, UserContentInjectedFrames, UserContentManagerExt,
-    UserScript, UserScriptInjectionTime, WebContextExt, WebViewExt,
+    DownloadExt, LoadEvent, NavigationPolicyDecision, NavigationPolicyDecisionExt, NavigationType,
+    NetworkError, PolicyDecision, PolicyDecisionExt, PolicyDecisionType, PolicyError,
+    ResponsePolicyDecision, ResponsePolicyDecisionExt, URIRequestExt, UserContentInjectedFrames,
+    UserContentManagerExt, UserScript, UserScriptInjectionTime, WebContextExt, WebViewExt,
 };
 use wry::{WebViewBuilderExtUnix, WebViewExtUnix};
 
@@ -33,6 +33,27 @@ pub enum EngineEvent {
     Loading(bool),
     Error(String),
     Remembered(i64),
+    Download(DownloadEvent),
+}
+
+pub enum DownloadEvent {
+    Started(PathBuf),
+    Saved(PathBuf),
+    Failed {
+        name: Option<String>,
+        reason: String,
+    },
+}
+
+/// One download's progress through WebKit's signals, which end with `finished` either way.
+enum Transfer {
+    Deciding,
+    Saving(PathBuf),
+    Failed {
+        path: Option<PathBuf>,
+        reason: String,
+    },
+    Over,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -179,7 +200,12 @@ impl Engine {
                 if let Ok(url) = web_url(uri) {
                     state.browser.borrow_mut().failed(&url, cancelled);
                 }
-                if !cancelled {
+                // A response turned into a download ends the page load this way; the page
+                // the user was reading stays.
+                if error.matches(PolicyError::FrameLoadInterruptedByPolicyChange) {
+                    state.recover_document();
+                    state.emit(EngineEvent::Loading(false));
+                } else if !cancelled {
                     state.recover_document();
                     state.emit(EngineEvent::Error(format!(
                         "Could not load this page. {}",
@@ -238,15 +264,12 @@ impl Engine {
             });
         }
         if let Some(context) = native.context() {
+            // wry always connects a download handler that saves under the server's name and
+            // claims the destination before any later handler runs.
+            disconnect_all(&context, "download-started");
             let weak = Rc::downgrade(&state);
             context.connect_download_started(move |_, download| {
-                use webkit2gtk::DownloadExt;
-                download.cancel();
-                if let Some(state) = weak.upgrade() {
-                    state.emit(EngineEvent::Error(
-                        "Downloads are not supported yet.".into(),
-                    ));
-                }
+                save(download, weak.clone());
             });
         }
         Ok(Self {
@@ -513,17 +536,18 @@ impl NativeState {
 
     fn decide(self: &Rc<Self>, decision: &PolicyDecision, kind: PolicyDecisionType) -> bool {
         if kind == PolicyDecisionType::Response {
-            if decision
-                .downcast_ref::<ResponsePolicyDecision>()
-                .is_some_and(|response| !response.is_mime_type_supported())
-            {
-                decision.ignore();
-                self.emit(EngineEvent::Error(
-                    "Downloads are not supported yet.".into(),
-                ));
-                return true;
+            let Some(response) = decision.downcast_ref::<ResponsePolicyDecision>() else {
+                return false;
+            };
+            if response.is_mime_type_supported() {
+                return false;
             }
-            return false;
+            if response.is_main_frame_main_resource() {
+                decision.download();
+            } else {
+                decision.ignore();
+            }
+            return true;
         }
         let Some(navigation) = decision.downcast_ref::<NavigationPolicyDecision>() else {
             return false;
@@ -717,6 +741,116 @@ impl NativeState {
             }
         });
     }
+}
+
+/// Saves `download` in the user's download folder and reports it. WebKit's default would
+/// trust the server's file name.
+fn save(download: &webkit2gtk::Download, state: std::rc::Weak<NativeState>) {
+    let transfer = Rc::new(RefCell::new(Transfer::Deciding));
+    let emit = Rc::new(move |event| {
+        if let Some(state) = state.upgrade() {
+            state.emit(EngineEvent::Download(event));
+        }
+    });
+    {
+        let transfer = transfer.clone();
+        let emit = emit.clone();
+        download.connect_decide_destination(move |download, suggested| {
+            match crate::download::reserve(&download_directory(), suggested) {
+                Ok(path) => {
+                    download.set_allow_overwrite(true);
+                    download.set_destination(&path.to_string_lossy());
+                    transfer.replace(Transfer::Saving(path.clone()));
+                    emit(DownloadEvent::Started(path));
+                }
+                Err(error) => {
+                    transfer.replace(Transfer::Over);
+                    download.cancel();
+                    emit(DownloadEvent::Failed {
+                        name: Some(crate::download::file_name(suggested)),
+                        reason: error.to_string(),
+                    });
+                }
+            }
+            true
+        });
+    }
+    {
+        let transfer = transfer.clone();
+        download.connect_failed(move |_, error| {
+            let reason = error.message().to_owned();
+            let next = match transfer.replace(Transfer::Over) {
+                Transfer::Deciding => Transfer::Failed { path: None, reason },
+                Transfer::Saving(path) => Transfer::Failed {
+                    path: Some(path),
+                    reason,
+                },
+                done => done,
+            };
+            transfer.replace(next);
+        });
+    }
+    download.connect_finished(move |download| {
+        let outcome = match transfer.replace(Transfer::Over) {
+            Transfer::Saving(path) if truncated(download) => Transfer::Failed {
+                path: Some(path),
+                reason: "The connection closed before the whole file arrived.".into(),
+            },
+            outcome => outcome,
+        };
+        match outcome {
+            Transfer::Saving(path) => emit(DownloadEvent::Saved(path)),
+            Transfer::Failed { path, reason } => {
+                if let Some(path) = &path {
+                    let _ = std::fs::remove_file(path);
+                }
+                emit(DownloadEvent::Failed {
+                    name: path
+                        .and_then(|path| Some(path.file_name()?.to_string_lossy().into_owned())),
+                    reason,
+                });
+            }
+            Transfer::Deciding | Transfer::Over => {}
+        }
+    });
+}
+
+/// WebKit reports a transfer cut short after its headers as finished. A compressed body's
+/// length counts encoded bytes, so only an unencoded one can be checked.
+fn truncated(download: &webkit2gtk::Download) -> bool {
+    use webkit2gtk::URIResponseExt;
+    let Some(response) = download.response() else {
+        return false;
+    };
+    let encoded = response
+        .http_headers()
+        .and_then(|headers| headers.one("Content-Encoding"))
+        .is_some_and(|encoding| !encoding.eq_ignore_ascii_case("identity"));
+    !encoded && download.received_data_length() < response.content_length()
+}
+
+fn disconnect_all(object: &impl IsA<glib::Object>, signal: &str) {
+    use glib::translate::{IntoGlib, ToGlibPtr};
+    let Some(id) = glib::subclass::signal::SignalId::lookup(signal, object.type_()) else {
+        return;
+    };
+    let object: &glib::Object = object.upcast_ref();
+    unsafe {
+        glib::gobject_ffi::g_signal_handlers_disconnect_matched(
+            object.to_glib_none().0,
+            glib::gobject_ffi::G_SIGNAL_MATCH_ID,
+            id.into_glib(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
+    }
+}
+
+fn download_directory() -> PathBuf {
+    glib::user_special_dir(glib::UserDirectory::Downloads)
+        .unwrap_or_else(|| glib::home_dir().join("Downloads"))
 }
 
 fn same_resource(left: &Url, right: &Url) -> bool {

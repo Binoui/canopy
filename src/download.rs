@@ -40,8 +40,15 @@ pub fn candidates(name: &str) -> impl Iterator<Item = String> + '_ {
 }
 
 /// Creates an empty file under the first free candidate name in `directory`, so no other
-/// download or program can take that name before the transfer writes it.
+/// download or program can take that name before the transfer writes it. The path is valid
+/// UTF-8, as WebKit expects.
 pub fn reserve(directory: &Path, suggested: &str) -> io::Result<PathBuf> {
+    if directory.to_str().is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "The download folder's path is not valid UTF-8.",
+        ));
+    }
     fs::create_dir_all(directory)?;
     for name in candidates(&file_name(suggested)).take(10_000) {
         let path = directory.join(name);

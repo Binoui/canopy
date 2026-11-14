@@ -16,7 +16,7 @@ use crate::{
         ChromeFrame, ChromeHost, ChromeIntent, Favicons, HtmlChrome, PaletteScope, PaletteSeed,
         Toast, CHROME_HEIGHT,
     },
-    engine::{Engine, EngineEvent},
+    engine::{DownloadEvent, Engine, EngineEvent},
     forest::ForestProjection,
 };
 
@@ -120,6 +120,7 @@ impl Ui {
                 EngineEvent::Remembered(_) => ui
                     .chrome
                     .toast(Toast::Info("Selection remembered on this computer.".into())),
+                EngineEvent::Download(event) => ui.chrome.toast(download_toast(event)),
             }
         });
         let weak = Rc::downgrade(&ui);
@@ -457,4 +458,25 @@ fn prefers_dark() -> bool {
             || s.gtk_theme_name()
                 .is_some_and(|name| name.to_lowercase().contains("dark"))
     })
+}
+
+fn download_toast(event: DownloadEvent) -> Toast {
+    let name = |path: &Path| {
+        path.file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    };
+    match event {
+        DownloadEvent::Started(path) => Toast::Info(format!("Downloading {}…", name(&path))),
+        DownloadEvent::Saved(path) => Toast::Info(format!(
+            "Saved {} in {}.",
+            name(&path),
+            path.parent().map(name).unwrap_or_default()
+        )),
+        DownloadEvent::Failed { name, reason } => Toast::Error(format!(
+            "Could not download {}. {reason}",
+            name.as_deref().unwrap_or("the file")
+        )),
+    }
 }
