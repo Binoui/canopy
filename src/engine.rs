@@ -16,7 +16,7 @@ use webkit2gtk::{
     ResponsePolicyDecisionExt, URIRequestExt, UserContentInjectedFrames, UserContentManagerExt,
     UserScript, UserScriptInjectionTime, WebContextExt, WebViewExt,
 };
-use wry::{WebViewBuilderExtUnix, WebViewExtUnix};
+mod mouse;
 
 use crate::{
     address::web_url,
@@ -97,9 +97,15 @@ struct NativeState {
 }
 
 pub struct Engine {
-    view: wry::WebView,
     pub native: webkit2gtk::WebView,
     state: Rc<NativeState>,
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        // GTK's parent retains the widget after the engine releases its handles.
+        unsafe { self.native.destroy() };
+    }
 }
 
 impl Engine {
@@ -109,19 +115,55 @@ impl Engine {
         profile: &Path,
     ) -> Result<Self> {
         std::fs::create_dir_all(profile)?;
-        let mut context = wry::WebContext::new(Some(profile.to_owned()));
-        let view = wry::WebViewBuilder::new_with_web_context(&mut context)
-            .with_back_forward_navigation_gestures(false)
-            .with_html(HOME)
-            .build_gtk(container)?;
-        let native = view.webview();
-        if let Some(web_context) = native.context() {
-            // WebKitGTK 2.54 loads icons for this view only through the context's database;
-            // enabling favicons on the data manager alone leaves them unrequested.
-            #[allow(deprecated)]
-            web_context
-                .set_favicon_database_directory(Some(&profile.join("favicons").to_string_lossy()));
+        use webkit2gtk::{
+            CookieManagerExt, CookiePersistentStorage, InputMethodContextExt, SettingsExt,
+            WebsiteDataManager, WebsiteDataManagerExt,
+        };
+        let data = WebsiteDataManager::builder()
+            .base_data_directory(profile.to_string_lossy())
+            .base_cache_directory(profile.to_string_lossy())
+            .build();
+        data.cookie_manager()
+            .context("The cookie manager is unavailable.")?
+            .set_persistent_storage(
+                &profile.join("cookies").to_string_lossy(),
+                CookiePersistentStorage::Text,
+            );
+        let context = webkit2gtk::WebContext::builder()
+            .website_data_manager(&data)
+            .build();
+        context.set_automation_allowed(false);
+        context.set_use_system_appearance_for_scrollbars(false);
+        // WebKitGTK 2.54 requests icons only through the context's database.
+        #[allow(deprecated)]
+        context.set_favicon_database_directory(Some(&profile.join("favicons").to_string_lossy()));
+        let native = webkit2gtk::WebView::builder()
+            .web_context(&context)
+            .user_content_manager(&webkit2gtk::UserContentManager::new())
+            .is_controlled_by_automation(false)
+            .website_policies(
+                &webkit2gtk::WebsitePolicies::builder()
+                    .autoplay(webkit2gtk::AutoplayPolicy::Allow)
+                    .build(),
+            )
+            .build();
+        if let Some(input) = native.input_method_context() {
+            input.set_enable_preedit(false);
         }
+        let settings = WebViewExt::settings(&native).context("Page settings are unavailable.")?;
+        settings.set_enable_webgl(true);
+        settings.set_enable_webaudio(true);
+        settings.set_enable_back_forward_navigation_gestures(false);
+        settings.set_enable_page_cache(true);
+        settings.set_user_agent(None);
+        settings.set_enable_developer_extras(cfg!(debug_assertions));
+        native.connect_close(|view| unsafe { view.destroy() });
+        mouse::setup(&native);
+        native.set_size_request(200, 200);
+        container.put(&native, 0, 0);
+        native.load_html(HOME, None);
+        native.show_all();
+        native.grab_focus();
         let manager = native
             .user_content_manager()
             .context("The JavaScript context is unavailable.")?;
@@ -302,32 +344,25 @@ impl Engine {
                     .is_some_and(|state| state.decide(decision, kind))
             });
         }
-        if let Some(context) = native.context() {
-            // wry always connects a download handler that saves under the server's name and
-            // claims the destination before any later handler runs.
-            disconnect_all(&context, "download-started");
-            let weak = Rc::downgrade(&state);
-            context.connect_download_started(move |_, download| {
-                save(download, weak.clone());
-            });
-        }
-        Ok(Self {
-            view,
-            native,
-            state,
-        })
+        let weak = Rc::downgrade(&state);
+        context.connect_download_started(move |_, download| {
+            save(download, weak.clone());
+        });
+        Ok(Self { native, state })
     }
 
     /// Places the page in its container, in logical pixels.
     pub fn set_bounds(&self, x: f64, y: f64, width: f64, height: f64) {
-        let _ = self.view.set_bounds(wry::Rect {
-            position: wry::dpi::LogicalPosition::new(x, y).into(),
-            size: wry::dpi::LogicalSize::new(width.max(1.), height.max(1.)).into(),
-        });
+        self.native.size_allocate(&gtk::Allocation::new(
+            x.round() as i32,
+            y.round() as i32,
+            width.max(1.).round() as i32,
+            height.max(1.).round() as i32,
+        ));
     }
 
     pub fn focus(&self) {
-        let _ = self.view.focus();
+        self.native.grab_focus();
     }
 
     pub fn observe(&self, callback: impl Fn(EngineEvent) + 'static) {
@@ -999,25 +1034,6 @@ fn truncated(download: &webkit2gtk::Download) -> bool {
         .and_then(|headers| headers.one("Content-Encoding"))
         .is_some_and(|encoding| !encoding.eq_ignore_ascii_case("identity"));
     !encoded && download.received_data_length() < response.content_length()
-}
-
-fn disconnect_all(object: &impl IsA<glib::Object>, signal: &str) {
-    use glib::translate::{IntoGlib, ToGlibPtr};
-    let Some(id) = glib::subclass::signal::SignalId::lookup(signal, object.type_()) else {
-        return;
-    };
-    let object: &glib::Object = object.upcast_ref();
-    unsafe {
-        glib::gobject_ffi::g_signal_handlers_disconnect_matched(
-            object.to_glib_none().0,
-            glib::gobject_ffi::G_SIGNAL_MATCH_ID,
-            id.into_glib(),
-            0,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        );
-    }
 }
 
 fn download_directory() -> PathBuf {
