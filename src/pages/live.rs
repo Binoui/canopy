@@ -136,7 +136,7 @@ struct NativeState {
     /// load as failed before it reports the download, and the navigation is forgotten then.
     response_page: RefCell<Option<(Url, Option<VisitId>)>>,
     reload_candidate: RefCell<Option<Url>>,
-    response_post: Cell<Option<bool>>,
+    main_frame_post: Cell<Option<bool>>,
     #[cfg(feature = "gui-smoke")]
     revival_refusals: Cell<usize>,
 }
@@ -270,7 +270,7 @@ impl LivePage {
             restoration_viewport: Cell::new(None),
             response_page: RefCell::new(None),
             reload_candidate: RefCell::new(None),
-            response_post: Cell::new(None),
+            main_frame_post: Cell::new(None),
             #[cfg(feature = "gui-smoke")]
             revival_refusals: Cell::new(0),
         });
@@ -299,7 +299,7 @@ impl LivePage {
                     let url = native.uri().and_then(|uri| web_url(&uri).ok());
                     match event {
                         LoadEvent::Started => {
-                            state.response_post.set(None);
+                            state.main_frame_post.set(None);
                             if matches!(*state.issue.borrow(), Issue::Issued { decided: false, .. })
                             {
                                 return;
@@ -581,16 +581,38 @@ impl LivePage {
                         decision.ignore();
                         return true;
                     }
-                    Pages::enter_native(&weak).is_some_and(|state| {
-                        if let Some(response) = decision.downcast_ref::<ResponsePolicyDecision>() {
-                            if response.is_main_frame_main_resource() {
-                                state.response_post.set(response.request().map(|request| {
-                                    request.http_method().as_deref() == Some("POST")
-                                }));
+                    Pages::enter_native(&weak).is_some_and(|state| state.decide(decision, kind))
+                }),
+            ));
+        }
+        {
+            let weak = Rc::downgrade(&state);
+            signals.push((
+                native.clone().upcast(),
+                native.connect_resource_load_started(move |native, resource, request| {
+                    if native.main_resource().as_ref() != Some(resource) {
+                        return;
+                    }
+                    let Some(state) = Pages::enter_native(&weak) else {
+                        return;
+                    };
+                    state
+                        .main_frame_post
+                        .set(Some(request.http_method().as_deref() == Some("POST")));
+                    let weak = Rc::downgrade(&state);
+                    // The typed binding treats the absent redirect response as non-null.
+                    resource.connect_local("sent-request", false, move |values| {
+                        let resource = values[0].get::<webkit2gtk::WebResource>().unwrap();
+                        let request = values[1].get::<webkit2gtk::URIRequest>().unwrap();
+                        if let Some(state) = Pages::enter_native(&weak) {
+                            if state.native.main_resource().as_ref() == Some(&resource) {
+                                state
+                                    .main_frame_post
+                                    .set(Some(request.http_method().as_deref() == Some("POST")));
                             }
                         }
-                        state.decide(decision, kind)
-                    })
+                        None
+                    });
                 }),
             ));
         }
@@ -1683,7 +1705,7 @@ impl NativeState {
         let live = live_entries(&list);
         let mut history = self.history.borrow_mut();
         let previous = history.iter().find(|entry| entry.item == current);
-        let response = self.response_post.take();
+        let response = self.main_frame_post.take();
         let post = response.unwrap_or_else(|| previous.is_some_and(|entry| entry.post));
         let needs_get = response.is_none() && previous.is_some_and(|entry| entry.needs_get);
         history.retain(|entry| entry.item != current && live.contains(&entry.item));

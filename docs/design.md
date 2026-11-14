@@ -109,7 +109,7 @@ with GET. Other restored POST entries remain ineligible for native traversal unt
 loaded again in this view. Native Back or Forward to one of those entries is refused
 once and replaced by a GET of its stored visit address. The replacement excludes
 that native entry, so it cannot select the same refused entry again. A main-frame
-response supplies one method value, consumed when its entry is bound. A GET reload
+request supplies one method value, refreshed on redirects and consumed when its entry is bound. A GET reload
 refreshes an existing item's method. Iframe decisions retain WebKit's behavior.
 Ordinary views retain WebKit's existing form navigation, including cached state and
 POST resubmission when the page cache has evicted a result. Pages ignore
