@@ -516,8 +516,18 @@ impl Pages {
     }
 
     #[cfg(feature = "gui-smoke")]
+    pub fn has_pending_continuation(&self) -> bool {
+        self.continuation.borrow().is_some()
+    }
+
+    #[cfg(feature = "gui-smoke")]
     pub fn before_revival_traversal(&self, observer: impl Fn() + 'static) {
         *self.before_revival.borrow_mut() = Some(Rc::new(observer));
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn forget_history_visit(&self, visit: VisitId) {
+        self.page().forget_history_visit(visit);
     }
 
     #[cfg(feature = "gui-smoke")]

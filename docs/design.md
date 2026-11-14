@@ -79,3 +79,14 @@ restore. A requested visit outside the checkpoint also takes the cold path.
 Traversal uses the existing restore intent, Issue state, policy handler, and
 commit path. Form and script state do not survive. Per-visit scroll remains in
 SQLite, and native back and forward retain the open-tree restriction.
+
+Checkpointing disables native callbacks before stopping the load. Released state
+also blocks event emission from a callback that was already running when an
+observer released the page. Pages releases its live-page lease before any widget
+destruction. The callback guard, native traversal, session restore, and observer
+calls run without a Pages, Browser, or navigation RefCell borrow.
+
+If only aliased native URLs remain for the requested visit, revival falls back
+to that visit's stored URL. This preserves the existing rule that selecting a
+visit reloads its stored address. Checkpoint failure also releases the source;
+the caller can cold-restore from SQLite without a checkpoint.

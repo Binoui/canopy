@@ -97,9 +97,22 @@ impl Issue {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Lifecycle {
+    Live,
+    Checkpointing,
+    Released,
+}
+
+impl Lifecycle {
+    fn accepts_callbacks(self) -> bool {
+        self == Self::Live
+    }
+}
+
 struct NativeState {
     native: webkit2gtk::WebView,
-    attached: Cell<bool>,
+    lifecycle: Cell<Lifecycle>,
     pages: Weak<Pages>,
     navigation: RefCell<Navigation>,
     issue: RefCell<Issue>,
@@ -143,7 +156,7 @@ impl std::ops::Deref for NativeCallback {
 impl Pages {
     fn enter_native(weak: &Weak<NativeState>) -> Option<NativeCallback> {
         let state = weak.upgrade()?;
-        if !state.attached.get() {
+        if !state.lifecycle.get().accepts_callbacks() {
             return None;
         }
         let owner = state.pages.upgrade()?;
@@ -237,7 +250,7 @@ impl LivePage {
         ));
         let state = Rc::new(NativeState {
             native: native.clone(),
-            attached: Cell::new(true),
+            lifecycle: Cell::new(Lifecycle::Live),
             pages,
             navigation: RefCell::new(Navigation::default()),
             issue: RefCell::new(Issue::Idle),
@@ -580,8 +593,13 @@ impl LivePage {
             .collect()
     }
 
+    #[cfg(feature = "gui-smoke")]
+    pub(super) fn forget_history_visit(&self, visit: VisitId) {
+        self.state.history.borrow_mut().retain(|e| e.visit != visit);
+    }
+
     fn detach(&self) {
-        if !self.state.attached.replace(false) {
+        if self.state.lifecycle.replace(Lifecycle::Released) == Lifecycle::Released {
             return;
         }
         let signals = self.signals.take();
@@ -608,6 +626,7 @@ impl LivePage {
     #[cfg_attr(not(feature = "gui-smoke"), allow(dead_code))]
     pub(super) fn checkpoint(&self) -> Result<Checkpoint> {
         let state = &self.state;
+        state.lifecycle.set(Lifecycle::Checkpointing);
         let owner = state.owner();
         owner.cancel_continuation();
         let pending = state.navigation.borrow().pending_ticket();
@@ -677,8 +696,11 @@ impl LivePage {
         page.native.restore_session_state(&session);
         let binding = (|| -> Result<Vec<HistoryEntry>> {
             anyhow::ensure!(
-                saved.entries.iter().any(|e| e.visit == visit),
-                "Visit absent from checkpoint."
+                saved
+                    .entries
+                    .iter()
+                    .any(|e| e.visit == visit && e.uri == e.stored_url),
+                "Visit has no traversable entry in checkpoint."
             );
             let (items, current) =
                 ordered_entries(&page.native.back_forward_list().context("No history.")?)?;
@@ -958,7 +980,9 @@ impl NativeState {
     }
 
     fn emit(&self, event: PageEvent) {
-        self.owner().receive(event);
+        if self.lifecycle.get().accepts_callbacks() {
+            self.owner().receive(event);
+        }
     }
 
     fn report(&self, result: Result<()>) {
@@ -1775,6 +1799,13 @@ mod attempt_tests {
 #[cfg(test)]
 mod checkpoint_tests {
     use super::*;
+
+    #[test]
+    fn checkpointing_and_released_states_reject_callbacks() {
+        assert!(Lifecycle::Live.accepts_callbacks());
+        assert!(!Lifecycle::Checkpointing.accepts_callbacks());
+        assert!(!Lifecycle::Released.accepts_callbacks());
+    }
 
     #[test]
     fn binding_requires_every_position_cursor_and_stored_visit_url() {
