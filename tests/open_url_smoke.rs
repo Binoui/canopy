@@ -73,6 +73,25 @@ fn main() -> Result<()> {
     ensure!(forest(one.path())?.roots == expected, "nothing opened");
     println!("PASS an unsupported address fails with a message and opens nothing.");
 
+    let writer = Connection::open(one.path().join("forest.sqlite3"))?;
+    writer.execute_batch("BEGIN IMMEDIATE")?;
+    let unopened = Command::new(CANOPY)
+        .args([
+            "--data-dir",
+            &one.path().display().to_string(),
+            &server.url("/unopened"),
+        ])
+        .output()?;
+    writer.execute_batch("ROLLBACK")?;
+    drop(writer);
+    ensure!(
+        !unopened.status.success(),
+        "a launch whose address the window could not open fails"
+    );
+    ensure!(forest(one.path())?.roots == expected, "nothing opened");
+    first.ensure_running()?;
+    println!("PASS when the window cannot open an address, the launch fails instead of exiting 0.");
+
     let import = Command::new(CANOPY)
         .args([
             "--data-dir",
