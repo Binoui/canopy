@@ -914,7 +914,10 @@ impl Browser {
         document: &Document,
         title: &str,
     ) -> Result<()> {
-        if !navigation.valid(document) || title.trim().is_empty() {
+        if !navigation.valid(document)
+            || document.page_url != document.stored_url
+            || title.trim().is_empty()
+        {
             return Ok(());
         }
         self.connection.execute(
