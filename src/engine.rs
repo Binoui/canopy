@@ -10,10 +10,11 @@ use javascriptcore::ValueExt;
 use serde_json::Value;
 use url::Url;
 use webkit2gtk::{
-    DownloadExt, LoadEvent, NavigationPolicyDecision, NavigationPolicyDecisionExt, NavigationType,
-    NetworkError, PolicyDecision, PolicyDecisionExt, PolicyDecisionType, PolicyError,
-    ResponsePolicyDecision, ResponsePolicyDecisionExt, URIRequestExt, UserContentInjectedFrames,
-    UserContentManagerExt, UserScript, UserScriptInjectionTime, WebContextExt, WebViewExt,
+    BackForwardListExt, BackForwardListItem, BackForwardListItemExt, DownloadExt, LoadEvent,
+    NavigationPolicyDecision, NavigationPolicyDecisionExt, NavigationType, NetworkError,
+    PolicyDecision, PolicyDecisionExt, PolicyDecisionType, PolicyError, ResponsePolicyDecision,
+    ResponsePolicyDecisionExt, URIRequestExt, UserContentInjectedFrames, UserContentManagerExt,
+    UserScript, UserScriptInjectionTime, WebContextExt, WebViewExt,
 };
 use wry::{WebViewBuilderExtUnix, WebViewExtUnix};
 
@@ -26,6 +27,8 @@ use crate::{
 
 const WORLD: &str = "canopy-reading-memory";
 const HELPER: &str = include_str!("capture.js");
+/// Script message the helper posts, debounced, when the page scrolls.
+const SCROLLED: &str = "canopyScrolled";
 type Observer = RefCell<Option<Box<dyn Fn(EngineEvent)>>>;
 
 pub enum EngineEvent {
@@ -79,6 +82,14 @@ struct NativeState {
     same_document_request: RefCell<Option<Url>>,
     /// The URL last handed to WebKit. A fresh view reports no URI when that load starts.
     issued: RefCell<Option<Url>>,
+    /// WebKit history entries and the visit each one showed, oldest first. Returning to a
+    /// visit that still has an entry goes through WebKit's history, which keeps the page's
+    /// scroll and, from its page cache, its live state.
+    history: RefCell<Vec<(BackForwardListItem, VisitId)>>,
+    /// The history entry this engine asked WebKit for, which the policy check lets through.
+    traversal: RefCell<Option<Url>>,
+    /// Where to scroll once a visit reloaded from the network finishes loading.
+    pending_scroll: Cell<Option<(VisitId, i64)>>,
 }
 
 pub struct Engine {
@@ -128,7 +139,19 @@ impl Engine {
             foreground_generation: Cell::new(0),
             same_document_request: RefCell::new(None),
             issued: RefCell::new(None),
+            history: RefCell::new(Vec::new()),
+            traversal: RefCell::new(None),
+            pending_scroll: Cell::new(None),
         });
+        manager.register_script_message_handler_in_world(SCROLLED, WORLD);
+        {
+            let weak = Rc::downgrade(&state);
+            manager.connect_script_message_received(Some(SCROLLED), move |_, message| {
+                if let (Some(state), Some(value)) = (weak.upgrade(), message.js_value()) {
+                    state.scrolled(&value.to_str());
+                }
+            });
+        }
         {
             let weak = Rc::downgrade(&state);
             native.connect_load_changed(move |native, event| {
@@ -137,6 +160,7 @@ impl Engine {
                 match event {
                     LoadEvent::Started => {
                         state.same_document_request.borrow_mut().take();
+                        state.traversal.borrow_mut().take();
                         state.invalidate();
                         let issued = state.issued.borrow_mut().take();
                         if let Some(url) = url.or(issued) {
@@ -166,6 +190,7 @@ impl Engine {
                     LoadEvent::Finished => {
                         state.complete_same_document();
                         state.update_title();
+                        state.restore_scroll();
                         state.emit(EngineEvent::Loading(false));
                         let enabled = state.browser.borrow().capture_enabled().unwrap_or(false);
                         if enabled {
@@ -413,6 +438,7 @@ impl NativeState {
             .ok()
             .and_then(|snapshot| snapshot.current_visit().cloned());
         if let Some(visit) = current {
+            self.remember_entry(visit.id);
             *self.document.borrow_mut() = Some(Document {
                 visit: visit.id,
                 stored_url: visit.url,
@@ -456,21 +482,35 @@ impl NativeState {
         self.foreground_generation
             .set(self.foreground_generation.get().wrapping_add(1));
         self.same_document_request.borrow_mut().take();
+        self.traversal.borrow_mut().take();
+        self.pending_scroll.set(None);
         let weak = Rc::downgrade(self);
         glib::idle_add_local_once(move || {
             if let Some(state) = weak.upgrade() {
                 if state.load_generation.get() == generation {
                     let current = state.native.uri().and_then(|uri| web_url(&uri).ok());
-                    if state.ticket().is_some()
+                    let same_document = state.ticket().is_some()
                         && !state.native.is_loading()
                         && current
-                            .is_some_and(|current| current != url && same_resource(&current, &url))
-                    {
+                            .is_some_and(|current| current != url && same_resource(&current, &url));
+                    if same_document {
                         *state.same_document_request.borrow_mut() = Some(url.clone());
                     } else {
                         *state.issued.borrow_mut() = Some(url.clone());
                     }
-                    state.native.load_uri(url.as_str());
+                    let returning = state.browser.borrow().requested_restore();
+                    if let Some(entry) = returning.and_then(|visit| state.entry(visit, &url)) {
+                        *state.traversal.borrow_mut() = Some(url.clone());
+                        state.native.go_to_back_forward_list_item(&entry);
+                    } else {
+                        if let Some(visit) = returning.filter(|_| !same_document) {
+                            let saved = state.browser.borrow().scroll(visit).ok().flatten();
+                            state
+                                .pending_scroll
+                                .set(saved.filter(|&y| y > 0).map(|y| (visit, y)));
+                        }
+                        state.native.load_uri(url.as_str());
+                    }
                     state.complete_same_document();
                 }
             }
@@ -488,6 +528,7 @@ impl NativeState {
             return;
         }
         self.same_document_request.borrow_mut().take();
+        self.traversal.borrow_mut().take();
         self.invalidate();
         let started = self.browser.borrow_mut().started(target.clone());
         if let Err(error) = started {
@@ -641,6 +682,9 @@ impl NativeState {
             let result = self.browser.borrow_mut().reload().map(|_| ());
             self.report(result);
         } else if action.navigation_type() == NavigationType::BackForward {
+            if self.traversal.borrow().as_ref() == Some(&url) {
+                return false;
+            }
             decision.ignore();
             let result = self.browser.borrow_mut().back();
             match result {
@@ -683,6 +727,69 @@ impl NativeState {
             return true;
         }
         false
+    }
+
+    /// Records which visit WebKit's current history entry shows.
+    fn remember_entry(&self, visit: VisitId) {
+        let Some(list) = self.native.back_forward_list() else {
+            return;
+        };
+        let Some(current) = list.current_item() else {
+            return;
+        };
+        let live = live_entries(&list);
+        let mut history = self.history.borrow_mut();
+        history.retain(|(item, _)| *item != current && live.contains(item));
+        history.push((current, visit));
+    }
+
+    /// A history entry other than the current one that still shows `visit` at `url`.
+    fn entry(&self, visit: VisitId, url: &Url) -> Option<BackForwardListItem> {
+        let list = self.native.back_forward_list()?;
+        let current = list.current_item();
+        let live = live_entries(&list);
+        self.history
+            .borrow()
+            .iter()
+            .rev()
+            .find(|(item, shown)| {
+                *shown == visit
+                    && Some(item) != current.as_ref()
+                    && live.contains(item)
+                    && item.uri().as_deref() == Some(url.as_str())
+            })
+            .map(|(item, _)| item.clone())
+    }
+
+    fn scrolled(&self, message: &str) {
+        let Ok(value) = serde_json::from_str::<Value>(message) else {
+            return;
+        };
+        let (Some(page), Some(y)) = (value["url"].as_str(), value["y"].as_f64()) else {
+            return;
+        };
+        let Some(ticket) = self.ticket() else { return };
+        if ticket.page_url.as_str() != page || !y.is_finite() {
+            return;
+        }
+        // Best effort: a failed write only loses where this page was left.
+        let _ = self
+            .browser
+            .borrow_mut()
+            .set_scroll(ticket.visit, y.clamp(0., 1e8) as i64);
+    }
+
+    fn restore_scroll(self: &Rc<Self>) {
+        // A cancelled earlier load can finish first; keep the target for the visit it names.
+        let Some((visit, y)) = self.pending_scroll.get() else {
+            return;
+        };
+        if self.ticket().is_some_and(|ticket| ticket.visit == visit) {
+            self.pending_scroll.set(None);
+            let script =
+                format!("JSON.stringify(globalThis.__canopyMemory?.restoreScroll({y}) ?? null)");
+            self.evaluate(&script, |_, _| {});
+        }
     }
 
     fn update_title(&self) {
@@ -856,6 +963,13 @@ fn disconnect_all(object: &impl IsA<glib::Object>, signal: &str) {
 fn download_directory() -> PathBuf {
     glib::user_special_dir(glib::UserDirectory::Downloads)
         .unwrap_or_else(|| glib::home_dir().join("Downloads"))
+}
+
+fn live_entries(list: &webkit2gtk::BackForwardList) -> Vec<BackForwardListItem> {
+    let mut entries = list.back_list();
+    entries.extend(list.forward_list());
+    entries.extend(list.current_item());
+    entries
 }
 
 fn same_resource(left: &Url, right: &Url) -> bool {
