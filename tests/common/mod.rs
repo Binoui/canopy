@@ -16,7 +16,7 @@ use serde_json::Value;
 use webkit2gtk::WebViewExt;
 
 pub fn start(_directory: &std::path::Path) -> Result<()> {
-    gtk::init().context("This test needs a display. Run it under xvfb-run -a.")?;
+    canopy::init_desktop().context("This test needs a display. Run it under xvfb-run -a.")?;
     Ok(())
 }
 

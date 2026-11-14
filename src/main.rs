@@ -133,8 +133,7 @@ fn run() -> Result<()> {
         Launch::Primary(instance) => instance,
         Launch::Forwarded => return Ok(()),
     };
-    gtk::init()
-        .context("Could not open a window. Start Canopy from your Linux desktop session.")?;
+    canopy::init_desktop()?;
     let ui = canopy::ui::Ui::new(&data_dir)?;
     ui.window.connect_delete_event(|_, _| {
         gtk::main_quit();

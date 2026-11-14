@@ -287,7 +287,7 @@ impl HtmlChrome {
         Ok(())
     }
 
-    /// The chrome's WebKit view. For tests.
+    /// The chrome's WebKit view.
     pub fn native(&self) -> webkit2gtk::WebView {
         use wry::WebViewExtUnix;
         self.inner.view.webview()

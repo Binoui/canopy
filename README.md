@@ -9,13 +9,13 @@ Install stable Rust, GTK 3, WebKitGTK 4.1 and the SQLite development files.
 On Debian or Ubuntu, install the native dependencies with this command:
 
 ```sh
-sudo apt install build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libsqlite3-dev
+sudo apt install build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libsqlite3-dev bubblewrap xdg-dbus-proxy
 ```
 
 On Arch Linux, use this command:
 
 ```sh
-sudo pacman -S --needed base-devel pkgconf gtk3 webkit2gtk sqlite
+sudo pacman -S --needed base-devel pkgconf gtk3 webkit2gtk sqlite bubblewrap xdg-dbus-proxy
 ```
 
 From the project folder, run this command:
@@ -29,6 +29,8 @@ To keep the data in a separate folder, pass its path:
 ```sh
 cargo run --locked -- --data-dir .data
 ```
+
+Canopy runs page and chrome processes inside WebKit's Linux sandbox, which needs `bubblewrap` and `xdg-dbus-proxy`. If the sandbox cannot start, WebKit stops with a fatal error. Setting `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1` starts Canopy without it, and Canopy then prints a warning.
 
 ## Install for your launcher
 
@@ -157,6 +159,8 @@ env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' c
 env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test reading_smoke
 env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test download_smoke
 env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test open_url_smoke
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test shortcut_smoke
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test sandbox_smoke
 ```
 
 `open_url_smoke` starts the `canopy` binary on temporary data folders and launches it again with addresses, so it checks the hand-off between real processes. It needs no session bus.

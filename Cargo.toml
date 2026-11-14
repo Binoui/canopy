@@ -54,6 +54,12 @@ harness = false
 required-features = ["gui-smoke"]
 
 [[test]]
+name = "sandbox_smoke"
+path = "tests/sandbox_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]
+
+[[test]]
 name = "open_url_smoke"
 path = "tests/open_url_smoke.rs"
 harness = false
