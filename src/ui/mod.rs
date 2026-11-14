@@ -35,6 +35,8 @@ impl Ui {
         let browser = Browser::open(&data_dir.join("forest.sqlite3"))?;
         let window = gtk::Window::new(gtk::WindowType::Toplevel);
         window.set_title("Canopy");
+        // Found in the icon theme once installed; Wayland takes the icon from the desktop entry.
+        window.set_icon_name(Some("canopy"));
         window.set_default_size(1240, 800);
         window.set_widget_name("canopy");
         // wry sizes its views with size requests; inside this wrapper they cannot pin the
