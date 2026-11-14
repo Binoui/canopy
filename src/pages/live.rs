@@ -658,6 +658,7 @@ impl LivePage {
                 }
             });
         let state = Rc::downgrade(&self.state);
+        let owner = self.state.pages.clone();
         self.native.evaluate_javascript(
             "JSON.stringify({url:location.href,y:scrollY})",
             Some(WORLD),
@@ -668,11 +669,12 @@ impl LivePage {
                     return;
                 };
                 timeout.remove();
-                if let (Some(state), Some(ticket), Ok(value)) = (state.upgrade(), ticket, value) {
+                if let (Some(state), Some(owner), Some(ticket), Ok(value)) =
+                    (state.upgrade(), owner.upgrade(), ticket, value)
+                {
                     if let Ok(value) = serde_json::from_str::<Value>(&value.to_str()) {
                         if value["url"].as_str() == Some(ticket.page_url.as_str()) {
                             if let Some(y) = value["y"].as_f64().filter(|y| y.is_finite()) {
-                                let owner = state.owner();
                                 if y != 0.
                                     || owner
                                         .browser
@@ -701,7 +703,7 @@ impl LivePage {
     #[cfg_attr(not(feature = "gui-smoke"), allow(dead_code))]
     pub(super) fn checkpoint(&self) -> Result<Checkpoint> {
         let state = &self.state;
-        let owner = state.owner();
+        let owner = state.pages.upgrade().context("Page owner was closed.")?;
         owner.discard_view_continuation(&state.navigation.borrow());
         let pending = state.navigation.borrow().pending_ticket();
         if let Some(ticket) = pending {
