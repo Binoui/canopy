@@ -372,6 +372,7 @@ impl Pages {
     }
 
     pub fn settle_tree(&self, tree: TreeId) -> Result<()> {
+        anyhow::ensure!(self.live.borrow().is_some(), "No selected page.");
         self.cancel_continuation();
         let landing = self.browser.borrow_mut().settle_tree(tree)?;
         self.receive(PageEvent::Changed);
@@ -414,6 +415,9 @@ impl Pages {
         Ok(())
     }
     pub fn resume(&self) -> Result<()> {
+        if self.start.get().is_some() {
+            anyhow::ensure!(self.live.borrow().is_some(), "No selected page.");
+        }
         match self.start.take() {
             Some(StartPage::Reload) => self.reload(),
             Some(StartPage::Show(visit)) => self.go(Go::Visit(visit)),
@@ -429,6 +433,9 @@ impl Pages {
         }
     }
     pub fn open_roots(&self, urls: &[Url]) -> Result<()> {
+        if !urls.is_empty() && self.start.get().is_none() {
+            anyhow::ensure!(self.live.borrow().is_some(), "No selected page.");
+        }
         let roots = self.browser.borrow_mut().add_roots(urls)?;
         let Some(last) = roots.last().copied() else {
             return Ok(());
@@ -529,13 +536,7 @@ impl Pages {
     }
 
     fn discard_view_continuation(&self, navigation: &crate::browser::Navigation) {
-        let mut pending = self.continuation.borrow_mut();
-        if pending
-            .as_ref()
-            .is_some_and(|c| c.state.ticket().belongs_to(navigation))
-        {
-            pending.take();
-        }
+        discard_continuation(&mut self.continuation.borrow_mut(), navigation);
     }
 
     #[cfg(feature = "gui-smoke")]
@@ -580,7 +581,8 @@ impl Pages {
             ),
         };
         page.follow_container_bounds(container);
-        *self.live.borrow_mut() = Some(Rc::new(page));
+        let page = Rc::new(page);
+        *self.live.borrow_mut() = Some(page.clone());
         #[cfg(feature = "gui-smoke")]
         {
             let observer = self.before_revival.borrow().clone();
@@ -588,11 +590,6 @@ impl Pages {
                 observer();
             }
         }
-        let page = self
-            .live
-            .borrow()
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("No selected page."))?;
         page.restore_revived(visit)?;
         Ok(cold)
     }
@@ -617,6 +614,11 @@ impl Pages {
     #[cfg(feature = "gui-smoke")]
     pub fn forget_history_visit(&self, visit: VisitId) {
         self.page().forget_history_visit(visit);
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn revival_refusals(&self) -> usize {
+        self.page().revival_refusals()
     }
 
     #[cfg(feature = "gui-smoke")]
@@ -684,6 +686,18 @@ impl SelectedPage<'_> {
     }
 }
 
+fn discard_continuation(
+    pending: &mut Option<PendingContinuation>,
+    navigation: &crate::browser::Navigation,
+) {
+    if pending
+        .as_ref()
+        .is_some_and(|c| c.state.ticket().belongs_to(navigation))
+    {
+        pending.take();
+    }
+}
+
 #[cfg(test)]
 mod continuation_tests {
     use super::*;
@@ -705,8 +719,12 @@ mod continuation_tests {
                 ContinuationState::Committed { ticket, visit },
                 ContinuationState::Ready { ticket, visit },
             ] {
-                assert_eq!(state.ticket().belongs_to(&source), ticket == source_ticket);
-                assert_eq!(state.ticket().belongs_to(&target), ticket == target_ticket);
+                let mut pending = Some(PendingContinuation {
+                    state,
+                    action: Continuation::BranchPalette,
+                });
+                discard_continuation(&mut pending, &source);
+                assert_eq!(pending.is_none(), ticket == source_ticket);
             }
         }
     }
