@@ -104,9 +104,11 @@ impl Ui {
                     .chrome
                     .toast(Toast::Info("Selection remembered on this computer.".into())),
                 PageEvent::Download(event) => ui.chrome.toast(download_toast(event)),
-                PageEvent::OpenBranchPalette { visit } => ui
-                    .chrome
-                    .open_palette(PaletteScope::From(visit), PaletteSeed::Empty),
+                PageEvent::OpenBranchPalette { visit } => {
+                    ui.refresh();
+                    ui.chrome
+                        .open_palette(PaletteScope::From(visit), PaletteSeed::Empty);
+                }
             }
         });
         let weak = Rc::downgrade(&ui);
