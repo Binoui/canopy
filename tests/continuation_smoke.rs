@@ -53,6 +53,8 @@ fn main() -> Result<()> {
     });
     let cases = [
         "branch_own",
+        "branch_back_root",
+        "branch_reload_empty",
         "branch_replaced",
         "path_own",
         "path_failed",
@@ -90,6 +92,13 @@ fn main() -> Result<()> {
         )?;
         let tree = browser.tree_states()?[0].root;
         drop(browser);
+        let root = if case == "branch_reload_empty" {
+            std::fs::remove_file(directory.path().join("forest.sqlite3"))?;
+            let mut browser = Browser::open(&directory.path().join("forest.sqlite3"))?;
+            browser.add_roots(&[url("slow")])?[0]
+        } else {
+            root
+        };
         let ui = Ui::new(directory.path())?;
         ui.window.show_all();
         ready(&ui)?;
@@ -121,10 +130,16 @@ fn main() -> Result<()> {
                     .navigate(url("replacement"), NavigationTarget::Root)?;
             }
         }
+        if case == "branch_back_root" {
+            key("alt+Left")?;
+        }
+        if case == "branch_reload_empty" {
+            key("F5")?;
+        }
         if case.starts_with("settle_pending") {
             ui.dispatch(ChromeIntent::SettleTree(tree));
         }
-        if case == "branch_own" {
+        if case.starts_with("branch") && !case.ends_with("replaced") {
             wait("own attempt opens branch palette", || {
                 visible(&ui, "#palette")
             })?;
@@ -156,7 +171,7 @@ fn main() -> Result<()> {
             assert!(parent.url.path().ends_with("/slow"));
         }
         pump(1600);
-        if case != "branch_own" {
+        if !case.starts_with("branch") || case.ends_with("replaced") {
             assert!(
                 !visible(&ui, "#palette"),
                 "{case} must not open the branch palette"

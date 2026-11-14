@@ -240,8 +240,12 @@ impl Pages {
     }
 
     pub fn go(&self, go: Go) -> Result<()> {
-        self.cancel_continuation();
-        match go {
+        if matches!(go, Go::Parent) {
+            self.cancel_path_continuation();
+        }
+        let page = self.page();
+        let before = page.pending_ticket();
+        let result = match go {
             Go::Visit(visit) => self.page().restore(visit),
             Go::Parent => self.page().back(),
             Go::Tree(tree) => {
@@ -254,7 +258,11 @@ impl Pages {
                 let capture = self.read(|b| b.capture(id))?;
                 self.page().open_saved(&capture)
             }
+        };
+        if page.pending_ticket().is_some() && page.pending_ticket() != before {
+            self.cancel_continuation();
         }
+        result
     }
 
     pub fn branch_from_queued(&self, visit: VisitId) -> Result<()> {
@@ -346,8 +354,14 @@ impl Pages {
         }
     }
     pub fn reload(&self) -> Result<()> {
-        self.cancel_continuation();
-        self.page().reload()
+        self.cancel_path_continuation();
+        let page = self.page();
+        let before = page.pending_ticket();
+        let result = page.reload();
+        if page.pending_ticket().is_some() && page.pending_ticket() != before {
+            self.cancel_continuation();
+        }
+        result
     }
     pub fn remember_selection(&self) -> Result<()> {
         self.page().remember_selection()
