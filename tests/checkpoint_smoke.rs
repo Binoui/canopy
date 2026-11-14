@@ -669,7 +669,7 @@ fn scroll_checkpoint_back() -> Result<()> {
     f.pages.before_revival_traversal(move || {
         let native = pages.upgrade().unwrap().selected_page().native.clone();
         native.user_content_manager().unwrap().add_script(&webkit2gtk::UserScript::for_world(
-            "let pending=0;const timeout=setTimeout;globalThis.setTimeout=(fn,delay,...args)=>{if(![300,1000,2500].includes(delay))return timeout(fn,delay,...args);pending++;return timeout(()=>{try{fn(...args)}finally{document.documentElement.dataset.restorePending=String(--pending)}},delay)};addEventListener('load',()=>requestAnimationFrame(()=>requestAnimationFrame(()=>{document.documentElement.dataset.restoreFrames='ready';document.documentElement.dataset.restorePending=String(pending)})));",
+            "let pending=0;const timeout=setTimeout;globalThis.setTimeout=(fn,delay,...args)=>{if(![300,1000,2500].includes(delay))return timeout(fn,delay,...args);pending++;return timeout(()=>{try{fn(...args)}finally{document.documentElement.dataset.restorePending=String(--pending)}},delay)};addEventListener('load',()=>{let frames=0;const barrier=()=>{if(++frames<32)return requestAnimationFrame(barrier);document.documentElement.dataset.restoreFrames='ready';document.documentElement.dataset.restorePending=String(pending)};requestAnimationFrame(barrier)});",
             webkit2gtk::UserContentInjectedFrames::TopFrame,
             webkit2gtk::UserScriptInjectionTime::Start,
             "canopy-reading-memory", &[], &[]));
@@ -678,9 +678,11 @@ fn scroll_checkpoint_back() -> Result<()> {
     wait("restoration callbacks drained", || {
         f.eval("return document.documentElement.dataset.restoreFrames === 'ready' && document.documentElement.dataset.restorePending === '0';").unwrap() == json!(true)
     })?;
-    wait("WebKit history scroll", || {
-        f.eval("return scrollY;").unwrap() == json!(2500)
-    })?;
+    assert_eq!(
+        f.eval("return scrollY;")?,
+        json!(2500),
+        "history scroll must hold after restoration callbacks finish"
+    );
     Ok(())
 }
 fn revived_form_back() -> Result<()> {
