@@ -261,10 +261,15 @@ fn history_release() -> Result<()> {
     f.eval("document.getElementById('form').value='lost'; window.marker='lost'; scrollTo(0,1800); return true;")?;
     settle();
     wait("source scroll saved", || {
-        f.pages
+        if f.pages
             .read(|browser| browser.scroll(b))
             .is_ok_and(|y| y == Some(1800))
             && f.eval("return scrollY;").is_ok_and(|y| y == json!(1800))
+        {
+            return true;
+        }
+        f.eval("scrollTo(0,1800); return true;").unwrap();
+        false
     })?;
     let before = f.server.hits("/b");
     let live = web_process_count();
