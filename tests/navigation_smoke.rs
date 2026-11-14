@@ -30,6 +30,11 @@ fn main() -> Result<()> {
     let ui = Ui::new(directory.path())?;
     ui.window.show_all();
     ready(&ui)?;
+    if let Ok(case) = std::env::var("NAVIGATION_CASE") {
+        regression(&case, &ui, &server)?;
+        ui.window.close();
+        return Ok(());
+    }
     ui.engine
         .navigate(server.url("/long")?, NavigationTarget::Root)?;
     let a = arrived(&ui, "/long")?;
@@ -48,11 +53,6 @@ fn main() -> Result<()> {
     println!(
         "PASS native Back and Forward select their actual item, including page-cache restores."
     );
-    if let Ok(case) = std::env::var("NAVIGATION_CASE") {
-        regression(&case, &ui, &server)?;
-        ui.window.close();
-        return Ok(());
-    }
     let count = ui.snapshot()?.visits.len();
     ui.engine
         .navigate(server.url("/third")?, NavigationTarget::ChildOf(a))?;
@@ -167,6 +167,29 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
         .navigate(server.url("/long")?, NavigationTarget::Root)?;
     let a = arrived(ui, "/long")?;
     match case {
+        "fork" => {
+            ui.engine
+                .navigate(server.url("/next")?, NavigationTarget::ChildOf(a))?;
+            let b = arrived(ui, "/next")?;
+            ui.engine.restore(a)?;
+            arrived(ui, "/long")?;
+            ui.engine
+                .navigate(server.url("/third")?, NavigationTarget::ChildOf(a))?;
+            arrived(ui, "/third")?;
+            let list = ui.engine.native.back_forward_list().unwrap();
+            let fork_item = list.current_item().unwrap();
+            ui.engine.restore(b)?;
+            arrived(ui, "/next")?;
+            assert_eq!(
+                list.back_item(),
+                Some(fork_item),
+                "stored restore must append after the fork"
+            );
+            assert_eq!(
+                list.current_item().unwrap().uri().as_deref(),
+                Some(server.url("/next")?.as_str())
+            );
+        }
         "fragment" => {
             ui.engine
                 .navigate(server.url("/long#section")?, NavigationTarget::ChildOf(a))?;
@@ -209,8 +232,15 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
             assert!(!started.get(), "replacement must precede Started");
             ui.engine
                 .navigate(server.url("/third")?, NavigationTarget::Root)?;
-            arrived(ui, "/third")?;
-            assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
+            wait("replacement fetched and loaded", || {
+                server.hits("/third") > 0
+                    && ui
+                        .engine
+                        .native
+                        .uri()
+                        .is_some_and(|u| u.ends_with("/third"))
+                    && !ui.engine.native.is_loading()
+            })?;
             ui.engine.native.disconnect(handler);
             ui.engine
                 .navigate(server.url("/next")?, NavigationTarget::Root)?;
@@ -329,6 +359,12 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
             ui.engine
                 .navigate(server.url("/frame")?, NavigationTarget::Root)?;
             let visit = arrived(ui, "/frame")?;
+            let main_hits = server.hits("/frame");
+            eval(ui, "location.reload(); JSON.stringify(true)")?;
+            wait("main frame reload fetched", || {
+                server.hits("/frame") > main_hits
+            })?;
+            assert_eq!(arrived(ui, "/frame")?, visit);
             let before = server.hits("/inner");
             assert!(before > 0);
             eval(ui, "document.querySelector('iframe').contentWindow.location.reload(); JSON.stringify(true)")?;

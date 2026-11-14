@@ -295,6 +295,7 @@ impl Engine {
                 let url = native.uri().and_then(|uri| web_url(&uri).ok());
                 match event {
                     LoadEvent::Started => {
+                        // Policy also reports iframe reloads; Started belongs to the main frame.
                         let reload = state.reload_candidate.borrow_mut().take();
                         if reload.is_some() && state.navigation.borrow().pending_ticket().is_none()
                         {
