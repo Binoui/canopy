@@ -318,6 +318,7 @@ impl Ui {
 }
 
 /// Window-level keys, handled before the focused web view sees them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Shortcut {
     Palette(PaletteSeed),
     NewTree,
@@ -331,27 +332,77 @@ enum Shortcut {
     Escape,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Modifiers(gdk::ModifierType);
+
+impl Modifiers {
+    const NONE: Self = Self(gdk::ModifierType::empty());
+    const CONTROL: Self = Self(gdk::ModifierType::CONTROL_MASK);
+    const ALT: Self = Self(gdk::ModifierType::MOD1_MASK);
+    const CONTROL_SHIFT: Self =
+        Self(gdk::ModifierType::CONTROL_MASK.union(gdk::ModifierType::SHIFT_MASK));
+
+    fn held(state: gdk::ModifierType) -> Self {
+        use gdk::ModifierType as M;
+        Self(
+            state
+                & (M::CONTROL_MASK
+                    | M::MOD1_MASK
+                    | M::SHIFT_MASK
+                    | M::MOD3_MASK
+                    | M::MOD4_MASK
+                    | M::MOD5_MASK
+                    | M::SUPER_MASK
+                    | M::HYPER_MASK
+                    | M::META_MASK),
+        )
+    }
+}
+
 impl Shortcut {
     fn of(event: &gdk::EventKey) -> Option<Self> {
+        Self::matching(Modifiers::held(event.state()), event.keyval())
+    }
+
+    fn matching(modifiers: Modifiers, keyval: gdk::keys::Key) -> Option<Self> {
         use gdk::keys::constants as key;
-        let keyval = event.keyval().to_lower();
-        let control = event.state().contains(gdk::ModifierType::CONTROL_MASK);
-        let alt = event.state().contains(gdk::ModifierType::MOD1_MASK);
-        let digit = keyval.to_unicode().and_then(|c| c.to_digit(10));
-        Some(match (control, alt) {
-            (true, _) if keyval == key::k => Shortcut::Palette(PaletteSeed::Empty),
-            (true, _) if keyval == key::l => Shortcut::Palette(PaletteSeed::CurrentAddress),
-            (true, _) if keyval == key::t => Shortcut::NewTree,
-            (true, _) if keyval == key::e => Shortcut::Forest,
-            (true, _) if keyval == key::r => Shortcut::Reload,
-            (true, _) if keyval == key::s => Shortcut::RememberSelection,
-            (true, _) if keyval == key::q => Shortcut::Quit,
-            (true, _) if digit.is_some_and(|d| d > 0) => Shortcut::Tree(digit? as usize - 1),
-            (_, true) if keyval == key::Left => Shortcut::Back,
-            _ if keyval == key::F6 => Shortcut::ToggleFocus,
-            _ if keyval == key::Escape => Shortcut::Escape,
-            _ => return None,
-        })
+        let keyval = keyval.to_lower();
+        let bindings = [
+            (
+                Modifiers::CONTROL,
+                key::k,
+                Self::Palette(PaletteSeed::Empty),
+            ),
+            (
+                Modifiers::CONTROL,
+                key::l,
+                Self::Palette(PaletteSeed::CurrentAddress),
+            ),
+            (Modifiers::CONTROL, key::t, Self::NewTree),
+            (Modifiers::CONTROL, key::e, Self::Forest),
+            (Modifiers::CONTROL, key::r, Self::Reload),
+            (Modifiers::CONTROL_SHIFT, key::r, Self::Reload),
+            (Modifiers::NONE, key::F5, Self::Reload),
+            (Modifiers::CONTROL, key::s, Self::RememberSelection),
+            (Modifiers::CONTROL, key::q, Self::Quit),
+            (Modifiers::ALT, key::Left, Self::Back),
+            (Modifiers::NONE, key::F6, Self::ToggleFocus),
+            (Modifiers::NONE, key::Escape, Self::Escape),
+        ];
+        if let Some((_, _, action)) = bindings
+            .into_iter()
+            .find(|(held, key, _)| *held == modifiers && *key == keyval)
+        {
+            return Some(action);
+        }
+        // AZERTY produces digit keyvals with Shift held.
+        if matches!(modifiers, Modifiers::CONTROL | Modifiers::CONTROL_SHIFT) {
+            let digit = keyval.to_unicode()?.to_digit(10)?;
+            if (1..=9).contains(&digit) {
+                return Some(Self::Tree(digit as usize - 1));
+            }
+        }
+        None
     }
 }
 
@@ -478,5 +529,131 @@ fn download_toast(event: DownloadEvent) -> Toast {
             "Could not download {}. {reason}",
             name.as_deref().unwrap_or("the file")
         )),
+    }
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+    use gdk::{keys::constants as key, ModifierType as M};
+
+    #[test]
+    fn window_shortcuts_require_exact_modifiers() {
+        let bindings = [
+            (
+                key::k,
+                Modifiers::CONTROL,
+                Shortcut::Palette(PaletteSeed::Empty),
+            ),
+            (
+                key::l,
+                Modifiers::CONTROL,
+                Shortcut::Palette(PaletteSeed::CurrentAddress),
+            ),
+            (key::t, Modifiers::CONTROL, Shortcut::NewTree),
+            (key::e, Modifiers::CONTROL, Shortcut::Forest),
+            (key::r, Modifiers::CONTROL, Shortcut::Reload),
+            (key::r, Modifiers::CONTROL_SHIFT, Shortcut::Reload),
+            (key::F5, Modifiers::NONE, Shortcut::Reload),
+            (key::s, Modifiers::CONTROL, Shortcut::RememberSelection),
+            (key::q, Modifiers::CONTROL, Shortcut::Quit),
+            (key::Left, Modifiers::ALT, Shortcut::Back),
+            (key::F6, Modifiers::NONE, Shortcut::ToggleFocus),
+            (key::Escape, Modifiers::NONE, Shortcut::Escape),
+        ];
+        for (key, required, _) in bindings.iter().copied() {
+            for bits in 0..8 {
+                let state = if bits & 1 != 0 {
+                    M::SHIFT_MASK
+                } else {
+                    M::empty()
+                } | if bits & 2 != 0 {
+                    M::CONTROL_MASK
+                } else {
+                    M::empty()
+                } | if bits & 4 != 0 {
+                    M::MOD1_MASK
+                } else {
+                    M::empty()
+                };
+                let held = Modifiers::held(state);
+                let expected = bindings.iter().find_map(|(bound_key, modifiers, action)| {
+                    (*bound_key == key && *modifiers == held).then_some(*action)
+                });
+                assert_eq!(Shortcut::matching(held, key), expected, "{state:?} {key:?}");
+                assert_eq!(Shortcut::matching(held, key.to_upper()), expected);
+                assert_eq!(
+                    Shortcut::matching(Modifiers::held(state | M::LOCK_MASK | M::MOD2_MASK), key),
+                    expected,
+                    "lock modifiers must not affect {state:?} {key:?}"
+                );
+            }
+            for extra in [
+                M::MOD3_MASK,
+                M::MOD4_MASK,
+                M::MOD5_MASK,
+                M::SUPER_MASK,
+                M::HYPER_MASK,
+                M::META_MASK,
+            ] {
+                assert_eq!(
+                    Shortcut::matching(Modifiers::held(required.0 | extra), key),
+                    None
+                );
+            }
+        }
+        assert_eq!(
+            Shortcut::matching(Modifiers::CONTROL, key::K),
+            Some(Shortcut::Palette(PaletteSeed::Empty))
+        );
+    }
+
+    #[test]
+    fn digit_tree_shortcuts_accept_shifted_azerty_keyvals() {
+        let digits = [
+            key::_1,
+            key::_2,
+            key::_3,
+            key::_4,
+            key::_5,
+            key::_6,
+            key::_7,
+            key::_8,
+            key::_9,
+        ];
+        for (index, key) in digits.into_iter().enumerate() {
+            for modifiers in [Modifiers::CONTROL, Modifiers::CONTROL_SHIFT] {
+                assert_eq!(
+                    Shortcut::matching(modifiers, key),
+                    Some(Shortcut::Tree(index))
+                );
+            }
+            for state in [
+                M::empty(),
+                M::SHIFT_MASK,
+                M::CONTROL_MASK | M::MOD1_MASK,
+                M::CONTROL_MASK | M::SHIFT_MASK | M::MOD1_MASK,
+            ] {
+                assert_eq!(Shortcut::matching(Modifiers::held(state), key), None);
+            }
+        }
+        for key in [
+            key::_0,
+            key::ampersand,
+            key::eacute,
+            key::quotedbl,
+            key::apostrophe,
+            key::parenleft,
+            key::minus,
+            key::egrave,
+            key::underscore,
+            key::ccedilla,
+            key::F5,
+            key::F11,
+            key::f,
+            key::w,
+        ] {
+            assert_eq!(Shortcut::matching(Modifiers::CONTROL, key), None);
+        }
     }
 }
