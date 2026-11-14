@@ -12,7 +12,7 @@ use std::{
             net::{UnixListener, UnixStream},
         },
     },
-    path::Path,
+    path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
 };
@@ -70,7 +70,14 @@ impl Request {
 /// Becomes the Canopy for `data_dir`, or hands `request` to the one already running there.
 pub fn launch(data_dir: &Path, request: &Request) -> Result<Launch> {
     let lock_path = data_dir.join("instance.lock");
-    let socket_path = data_dir.join("instance.sock");
+    // A socket address holds about 100 bytes. Naming the socket through a handle on its
+    // directory keeps the address short whatever the data directory's path is.
+    let directory =
+        File::open(data_dir).with_context(|| format!("Could not open {}.", data_dir.display()))?;
+    let socket_path = PathBuf::from(format!(
+        "/proc/self/fd/{}/instance.sock",
+        directory.as_raw_fd()
+    ));
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
@@ -91,8 +98,12 @@ pub fn launch(data_dir: &Path, request: &Request) -> Result<Launch> {
                     }
                     _ => {}
                 }
-                let listener = UnixListener::bind(&socket_path)
-                    .with_context(|| format!("Could not listen at {}.", socket_path.display()))?;
+                let listener = UnixListener::bind(&socket_path).with_context(|| {
+                    format!(
+                        "Could not listen at {}.",
+                        data_dir.join("instance.sock").display()
+                    )
+                })?;
                 std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))?;
                 listener.set_nonblocking(true)?;
                 return Ok(Launch::Primary(Primary {
@@ -132,15 +143,21 @@ fn forward(mut stream: UnixStream, request: &Request) -> Result<()> {
     stream
         .read_to_end(&mut reply)
         .context("Canopy is open on this data directory but did not answer.")?;
-    if reply != ACCEPTED {
-        bail!("Canopy is open on this data directory but refused the request.");
+    if reply == ACCEPTED {
+        return Ok(());
     }
-    Ok(())
+    if reply.is_empty() {
+        bail!("Canopy is open on this data directory but did not answer.");
+    }
+    bail!(
+        "Canopy is open on this data directory but could not open the addresses. {}",
+        String::from_utf8_lossy(&reply).trim()
+    );
 }
 
 impl Primary {
-    /// Hands every waiting launch's request to `open`, then tells that launch it can exit.
-    pub fn answer(&self, mut open: impl FnMut(Request)) -> Result<()> {
+    /// Hands every waiting launch's request to `open`, then tells that launch how it went.
+    pub fn answer(&self, mut open: impl FnMut(Request) -> Result<()>) -> Result<()> {
         loop {
             let mut stream = match self.listener.accept() {
                 Ok((stream, _)) => stream,
@@ -154,8 +171,10 @@ impl Primary {
             (&mut stream).take(MAX_REQUEST).read_to_end(&mut bytes)?;
             let request = Request::decode(&bytes)
                 .map_err(|error| anyhow!("Ignored a launch request. {error}"))?;
-            open(request);
-            stream.write_all(ACCEPTED)?;
+            match open(request) {
+                Ok(()) => stream.write_all(ACCEPTED)?,
+                Err(error) => stream.write_all(format!("{error:#}").as_bytes())?,
+            }
         }
     }
 }
@@ -187,26 +206,69 @@ mod tests {
         }
     }
 
+    /// Launches on `path` from another thread while `first` answers with `open`.
+    fn second_launch(
+        first: &Primary,
+        path: &Path,
+        sent: &Request,
+        mut open: impl FnMut(Request) -> Result<()>,
+    ) -> Result<Launch> {
+        let (path, sent) = (path.to_owned(), sent.clone());
+        let second = thread::spawn(move || launch(&path, &sent));
+        while !second.is_finished() {
+            first.answer(&mut open).unwrap();
+            thread::sleep(Duration::from_millis(5));
+        }
+        second.join().unwrap()
+    }
+
     #[test]
     fn a_second_launch_hands_its_request_to_the_first() {
         let dir = tempfile::tempdir().unwrap();
         let first = primary(launch(dir.path(), &Request::default()).unwrap());
         let sent = request(&["a", "b"]);
-        let path = dir.path().to_owned();
-        let second = {
-            let sent = sent.clone();
-            thread::spawn(move || matches!(launch(&path, &sent), Ok(Launch::Forwarded)))
-        };
         let mut received = Vec::new();
-        while !second.is_finished() {
-            first.answer(|request| received.push(request)).unwrap();
-            thread::sleep(Duration::from_millis(5));
-        }
+        let second = second_launch(&first, dir.path(), &sent, |request| {
+            received.push(request);
+            Ok(())
+        });
         assert!(
-            second.join().unwrap(),
+            matches!(second, Ok(Launch::Forwarded)),
             "the second launch exits as forwarded"
         );
         assert_eq!(received, [sent]);
+    }
+
+    #[test]
+    fn a_launch_fails_with_the_reason_when_the_window_could_not_open_its_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = primary(launch(dir.path(), &Request::default()).unwrap());
+        let second = second_launch(&first, dir.path(), &request(&["a"]), |_| {
+            bail!("database is locked")
+        });
+        let error = second.err().expect("the launch fails").to_string();
+        assert!(error.contains("database is locked"), "{error}");
+    }
+
+    #[test]
+    fn a_symlink_to_the_data_directory_reaches_the_same_instance() {
+        let dir = tempfile::tempdir().unwrap();
+        let alias = tempfile::tempdir().unwrap().keep().join("alias");
+        std::os::unix::fs::symlink(dir.path(), &alias).unwrap();
+        let first = primary(launch(dir.path(), &Request::default()).unwrap());
+        let second = second_launch(&first, &alias, &request(&["a"]), |_| Ok(()));
+        assert!(matches!(second, Ok(Launch::Forwarded)));
+        std::fs::remove_dir_all(alias.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_data_directory_path_longer_than_a_socket_address_still_works() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("d".repeat(200));
+        std::fs::create_dir(&dir).unwrap();
+        let first = primary(launch(&dir, &Request::default()).unwrap());
+        let second = second_launch(&first, &dir, &request(&["a"]), |_| Ok(()));
+        assert!(matches!(second, Ok(Launch::Forwarded)));
     }
 
     #[test]

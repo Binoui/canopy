@@ -676,21 +676,28 @@ impl Browser {
         Ok(url)
     }
 
-    /// Plants `url` as a new tree before its page loads. Restoring the root loads it.
-    pub fn add_root(&mut self, url: Url) -> Result<VisitId> {
-        web_url(url.as_str())?;
-        let id = VisitId(Ulid::new());
+    /// Plants each URL as a new tree before its page loads, all of them or none.
+    /// Restoring a root loads it.
+    pub fn add_roots(&mut self, urls: &[Url]) -> Result<Vec<VisitId>> {
+        for url in urls {
+            web_url(url.as_str())?;
+        }
         let transaction = self.connection.transaction()?;
-        transaction.execute(
-            "INSERT INTO visits(id, parent_id, url, title, created_at, opened_at) VALUES (?1, NULL, ?2, '', ?3, ?3)",
-            params![id.to_string(), url.as_str(), now_ms()?],
-        )?;
-        transaction.execute(
-            "INSERT INTO tree_state(root_id, last_visit_id) VALUES (?1, ?1)",
-            [id.to_string()],
-        )?;
+        let mut roots = Vec::with_capacity(urls.len());
+        for url in urls {
+            let id = VisitId(Ulid::new());
+            transaction.execute(
+                "INSERT INTO visits(id, parent_id, url, title, created_at, opened_at) VALUES (?1, NULL, ?2, '', ?3, ?3)",
+                params![id.to_string(), url.as_str(), now_ms()?],
+            )?;
+            transaction.execute(
+                "INSERT INTO tree_state(root_id, last_visit_id) VALUES (?1, ?1)",
+                [id.to_string()],
+            )?;
+            roots.push(id);
+        }
         transaction.commit()?;
-        Ok(id)
+        Ok(roots)
     }
 
     pub fn restore(&mut self, id: VisitId) -> Result<Url> {
@@ -1222,8 +1229,8 @@ mod tests {
     fn added_roots_are_trees_in_order_and_load_when_restored() {
         let mut b = memory();
         let earlier = follow(&mut b, "earlier", NavigationTarget::Root);
-        let first = b.add_root(url("first")).unwrap();
-        let last = b.add_root(url("last")).unwrap();
+        let planted = b.add_roots(&[url("first"), url("last")]).unwrap();
+        let (first, last) = (planted[0], planted[1]);
         let roots: Vec<_> = b
             .tree_states()
             .unwrap()
@@ -1249,8 +1256,13 @@ mod tests {
         );
         assert_eq!(b.tree_states().unwrap().len(), 3);
         assert!(b
-            .add_root(Url::parse("file:///etc/passwd").unwrap())
+            .add_roots(&[url("valid"), Url::parse("file:///etc/passwd").unwrap()])
             .is_err());
+        assert_eq!(
+            b.tree_states().unwrap().len(),
+            3,
+            "a refused batch plants nothing"
+        );
     }
 
     #[test]

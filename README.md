@@ -47,7 +47,7 @@ Canopy ships the Inter typeface in `assets/fonts/`, under the SIL Open Font Lice
 
 ## Open links from other apps
 
-Pass one or more addresses to open each one as a new tree. The last one is shown:
+Pass one or more addresses to open each one as a new tree. The last one is shown, and the others load when you open their tree:
 
 ```sh
 canopy https://example.org https://www.rust-lang.org
@@ -63,7 +63,7 @@ xdg-settings set default-web-browser canopy.desktop
 
 `xdg-settings get default-web-browser` shows the current choice. Links clicked in other apps then open in Canopy.
 
-The running window holds a lock on `instance.lock` in its data folder and listens on `instance.sock` next to it. The system releases the lock when Canopy quits or crashes, so a crash never blocks the next start. The data folder path must stay shorter than about 100 characters for the socket to fit.
+The running window holds a lock on `instance.lock` in its data folder and listens on `instance.sock` next to it. The system releases the lock when Canopy quits or crashes, so a crash never blocks the next start. If the window cannot open the addresses, the second launch prints the reason and exits with an error.
 
 ## Bring your Chrome history
 

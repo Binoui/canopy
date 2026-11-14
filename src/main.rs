@@ -144,8 +144,9 @@ fn run() -> Result<()> {
     ui.resume(&request.urls)?;
     glib::unix_fd_add_local(instance.as_raw_fd(), glib::IOCondition::IN, move |_, _| {
         let answered = instance.answer(|request| {
-            ui.open(&request.urls);
+            let opened = ui.open(&request.urls);
             ui.bring_forward(request.activation.as_deref());
+            opened
         });
         if let Err(error) = answered {
             eprintln!("Canopy: {error:#}");

@@ -167,30 +167,35 @@ impl Ui {
     /// Restores the forest, then opens `urls` as new trees in place of reloading the last page.
     pub fn resume(&self, urls: &[Url]) -> Result<()> {
         self.after_cookies.set(Some(StartPage::Reload));
-        self.open(urls);
+        // A failed open is already on screen as an error, and the window still starts.
+        let _ = self.open(urls);
         self.drain_cookies();
         Ok(())
     }
 
-    /// Plants each URL as a new tree and shows the last one.
-    pub fn open(&self, urls: &[Url]) {
-        let planted: Result<Vec<VisitId>> = urls
-            .iter()
-            .map(|url| self.browser.borrow_mut().add_root(url.clone()))
-            .collect();
-        self.schedule_refresh();
-        let last = match planted {
-            Ok(roots) => roots.last().copied(),
-            Err(error) => return self.report_error(&error.to_string()),
+    /// Plants each URL as a new tree and shows the last one. A failure is shown in the
+    /// window and returned, so the launch that sent the URLs can fail too.
+    pub fn open(&self, urls: &[Url]) -> Result<()> {
+        let shown = self.plant(urls);
+        if let Err(error) = &shown {
+            self.report_error(&error.to_string());
+        }
+        shown
+    }
+
+    fn plant(&self, urls: &[Url]) -> Result<()> {
+        let roots = self.browser.borrow_mut().add_roots(urls)?;
+        let Some(last) = roots.last().copied() else {
+            return Ok(());
         };
-        let Some(last) = last else { return };
+        self.schedule_refresh();
         self.branch_after_commit.set(None);
         self.path_after_commit.borrow_mut().take();
         if self.after_cookies.get().is_some() {
             self.after_cookies.set(Some(StartPage::Show(last)));
-        } else {
-            self.report(self.engine.restore(last));
+            return Ok(());
         }
+        self.engine.restore(last)
     }
 
     /// Raises the window, using the launching app's activation token when it passed one.
