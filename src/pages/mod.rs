@@ -579,6 +579,7 @@ impl Pages {
                 live::Revival::Cold,
             ),
         };
+        page.follow_container_bounds(container);
         *self.live.borrow_mut() = Some(Rc::new(page));
         #[cfg(feature = "gui-smoke")]
         {

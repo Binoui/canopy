@@ -96,7 +96,11 @@ URLs, and stored visit URLs before rebinding every position. A mismatch or absen
 target takes the cold path. Alias-only targets reload their stored URL cold.
 The saved current entry wins over another entry showing the same visit and URL.
 SQLite scroll applies only when reviving the entry current at checkpoint time.
-Other entries retain WebKit's scroll, captured when the document was left.
+Revived views follow their container allocation. Their scroll helper waits for
+two rendered frames matching that viewport before applying SQLite scroll, because
+WebKit can finish loading before receiving GTK's final viewport. Normal live-view
+restoration keeps its existing timing. Other entries retain WebKit's scroll,
+captured when the document was left.
 Native back and forward retain the open-tree restriction.
 
 Canopy never automatically repeats a POST through back or forward navigation.

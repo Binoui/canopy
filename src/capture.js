@@ -134,7 +134,7 @@
   // Returns a page reloaded from the tree to where it was left. Layout can grow after the
   // load finishes, so it tries again a few times, and stops for good once anything else
   // scrolls the page: the user, or the page itself.
-  function restoreScroll(target) {
+  function restoreScroll(target, viewport = null) {
     let stopped = false;
     let reached = scrollY;
     const stop = () => { stopped = true; };
@@ -146,8 +146,25 @@
       if (Math.abs(scrollY - target) > 1) scrollTo({ top: target, behavior: 'instant' });
       reached = scrollY;
     };
-    attempt();
-    for (const delay of [300, 1000, 2500]) setTimeout(attempt, delay);
+    const begin = () => {
+      reached = scrollY;
+      attempt();
+      for (const delay of [300, 1000, 2500]) setTimeout(attempt, delay);
+    };
+    // Session load completion can precede the web process receiving GTK's viewport.
+    if (viewport) {
+      let matchingFrame = false;
+      const ready = () => {
+        if (stopped) return;
+        const matches = innerWidth === viewport[0] && innerHeight === viewport[1];
+        if (matches && matchingFrame) return begin();
+        matchingFrame = matches;
+        requestAnimationFrame(ready);
+      };
+      requestAnimationFrame(ready);
+    } else {
+      begin();
+    }
     return true;
   }
 

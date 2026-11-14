@@ -275,6 +275,11 @@ fn history_release() -> Result<()> {
     let live = web_process_count();
     assert!(live >= 1);
     f.release()?;
+    assert_eq!(
+        f.pages.read(|browser| browser.scroll(b))?,
+        Some(1800),
+        "checkpoint captured the visible source scroll"
+    );
     let released = Instant::now();
     wait("source web process exits", || web_process_count() < live)?;
     println!(
@@ -291,6 +296,11 @@ fn history_release() -> Result<()> {
         let pages = pages.upgrade().unwrap();
         assert_eq!(*hits.lock().unwrap().get("/b").unwrap(), before);
         assert!(!pages.selected_page().native.is_loading());
+        assert_eq!(
+            pages.selected_page().native.allocated_width(),
+            1000,
+            "revival must use its container viewport before loading"
+        );
         assert_eq!(
             pages
                 .selected_page()
