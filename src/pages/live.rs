@@ -568,6 +568,13 @@ impl LivePage {
             signals.push((
                 native.clone().upcast(),
                 native.connect_decide_policy(move |_, decision, kind| {
+                    if weak
+                        .upgrade()
+                        .is_some_and(|state| state.lifecycle.get() != Lifecycle::Live)
+                    {
+                        decision.ignore();
+                        return true;
+                    }
                     Pages::enter_native(&weak).is_some_and(|state| {
                         if kind == PolicyDecisionType::NavigationAction {
                             if let Some(request) = decision
