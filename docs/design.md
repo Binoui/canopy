@@ -98,3 +98,6 @@ scroll. The mount probe installs its replacement before releasing the old page t
 the shared checkpoint/release helper, so destroy callbacks can reenter Pages.
 
 Pages ignore window.close() so a page cannot destroy its browser view.
+
+Canopy refuses POST requests during back and forward navigation and loads the
+visit address with GET. Reviving a POST target takes the cold GET path.

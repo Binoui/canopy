@@ -36,6 +36,7 @@ use super::{PageEvent, Pages};
 pub(super) struct CheckpointEntry {
     pub(super) visit: VisitId,
     pub(super) document: u64,
+    pub(super) post: bool,
     pub(super) uri: Url,
     pub(super) stored_url: Url,
 }
@@ -62,6 +63,7 @@ struct HistoryEntry {
     item: BackForwardListItem,
     visit: VisitId,
     document: u64,
+    post: bool,
 }
 
 enum Issue {
@@ -138,6 +140,7 @@ struct NativeState {
     /// load as failed before it reports the download, and the navigation is forgotten then.
     response_page: RefCell<Option<(Url, Option<VisitId>)>>,
     reload_candidate: RefCell<Option<Url>>,
+    request_methods: RefCell<std::collections::HashMap<Url, bool>>,
 }
 
 struct NativeCallback {
@@ -267,6 +270,7 @@ impl LivePage {
             pending_scroll: Cell::new(None),
             response_page: RefCell::new(None),
             reload_candidate: RefCell::new(None),
+            request_methods: RefCell::new(std::collections::HashMap::new()),
         });
         manager.register_script_message_handler_in_world(SCROLLED, WORLD);
         {
@@ -567,7 +571,17 @@ impl LivePage {
             signals.push((
                 native.clone().upcast(),
                 native.connect_decide_policy(move |_, decision, kind| {
-                    Pages::enter_native(&weak).is_some_and(|state| state.decide(decision, kind))
+                    Pages::enter_native(&weak).is_some_and(|state| {
+                        if kind == PolicyDecisionType::NavigationAction {
+                            if let Some(request) = decision.downcast_ref::<NavigationPolicyDecision>()
+                                .and_then(|d| d.navigation_action()).and_then(|a| a.request()) {
+                                if let Some(url) = request.uri().and_then(|u| web_url(&u).ok()) {
+                                    state.request_methods.borrow_mut().insert(url, request.http_method().as_deref() == Some("POST"));
+                                }
+                            }
+                        }
+                        state.decide(decision, kind)
+                    })
                 }),
             ));
         }
@@ -670,6 +684,7 @@ impl LivePage {
                     Ok(CheckpointEntry {
                         visit: entry.visit,
                         document: entry.document,
+                        post: entry.post,
                         uri: web_url(&item.uri().context("History entry has no URL.")?)?,
                         stored_url: owner.browser.borrow().visit(entry.visit)?.url,
                     })
@@ -705,9 +720,10 @@ impl LivePage {
                 saved
                     .entries
                     .iter()
-                    .any(|e| e.visit == visit && e.uri == e.stored_url),
+                    .any(|e| e.visit == visit && e.uri == e.stored_url && !e.post),
                 "Visit has no traversable entry in checkpoint."
             );
+            anyhow::ensure!(!saved.entries.iter().any(|e| e.visit == visit && e.post), "POST target requires GET.");
             let (items, current) =
                 ordered_entries(&page.native.back_forward_list().context("No history.")?)?;
             let urls = items
@@ -738,6 +754,7 @@ impl LivePage {
                     item,
                     visit: e.visit,
                     document: e.document,
+                    post: e.post,
                 })
                 .collect())
         })();
@@ -1262,6 +1279,22 @@ impl NativeState {
             ));
             return true;
         };
+        if action.navigation_type() == NavigationType::BackForward
+            && action.request().and_then(|r| r.http_method()).as_deref() == Some("POST")
+        {
+            decision.ignore();
+            let visit = self.current_entry_visit();
+            if let Some(visit) = visit {
+                let result = self.owner().browser.borrow_mut().restore(&mut self.navigation.borrow_mut(), visit);
+                match result {
+                    Ok(url) => self.load(url),
+                    Err(error) => self.emit(PageEvent::Error(error.to_string())),
+                }
+            } else {
+                self.native.load_uri(url.as_str());
+            }
+            return true;
+        }
         if action.navigation_type() != NavigationType::Reload {
             self.reload_candidate.borrow_mut().take();
         }
@@ -1516,11 +1549,15 @@ impl NativeState {
         };
         let live = live_entries(&list);
         let mut history = self.history.borrow_mut();
+        let post = history.iter().find(|entry| entry.item == current).map(|entry| entry.post)
+            .unwrap_or_else(|| current.uri().and_then(|u| web_url(&u).ok())
+                .and_then(|u| self.request_methods.borrow().get(&u).copied()).unwrap_or(false));
         history.retain(|entry| entry.item != current && live.contains(&entry.item));
         history.push(HistoryEntry {
             item: current,
             visit,
             document: self.history_document.get(),
+            post,
         });
     }
 
@@ -1843,18 +1880,21 @@ mod checkpoint_tests {
                 CheckpointEntry {
                     visit: ids[0],
                     document: 1,
+                    post: false,
                     uri: a.clone(),
                     stored_url: a.clone(),
                 },
                 CheckpointEntry {
                     visit: ids[0],
                     document: 1,
+                    post: false,
                     uri: route.clone(),
                     stored_url: a.clone(),
                 },
                 CheckpointEntry {
                     visit: ids[1],
                     document: 2,
+                    post: false,
                     uri: b.clone(),
                     stored_url: b.clone(),
                 },
