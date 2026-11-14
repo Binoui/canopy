@@ -31,7 +31,12 @@ fn main() -> Result<()> {
     ui.window.show_all();
     ready(&ui)?;
     if let Ok(case) = std::env::var("NAVIGATION_CASE") {
-        regression(&case, &ui, &server)?;
+        regression2(
+            &case,
+            &ui,
+            &server,
+            &directory.path().join("forest.sqlite3"),
+        )?;
         ui.window.close();
         return Ok(());
     }
@@ -154,9 +159,22 @@ fn main() -> Result<()> {
         .visits
         .iter()
         .all(|visit| visit.url.path() != "/slow"));
-    println!("PASS replacing an active load drains its cancellation before issuing the latest equal-URL attempt.");
+    println!("PASS replacing an uncommitted load preserves the latest equal-URL intent.");
     for case in ["jank", "title", "adopt", "replace", "iframe"] {
         regression(case, &ui, &server)?;
+    }
+    for case in [
+        "samedoc_fail",
+        "spa_reload",
+        "spa_restore",
+        "unload_race",
+        "iframe_order",
+        "settle_back",
+        "settle_inflight",
+        "retire_committed",
+        "unbound_back",
+    ] {
+        regression2(case, &ui, &server, &directory.path().join("forest.sqlite3"))?;
     }
     ui.window.close();
     Ok(())
@@ -394,6 +412,261 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
     Ok(())
 }
 
+fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -> Result<()> {
+    if ![
+        "samedoc_fail",
+        "spa_reload",
+        "spa_restore",
+        "unload_race",
+        "iframe_order",
+        "settle_back",
+        "settle_inflight",
+        "retire_committed",
+        "unbound_back",
+    ]
+    .contains(&case)
+    {
+        return regression(case, ui, server);
+    }
+    ui.engine
+        .navigate(server.url("/long")?, NavigationTarget::Root)?;
+    let a = arrived(ui, "/long")?;
+    match case {
+        "samedoc_fail" => {
+            ui.engine
+                .navigate(server.url("/long#sec")?, NavigationTarget::ChildOf(a))?;
+            wait("fragment committed", || {
+                ui.snapshot().unwrap().current != Some(a)
+            })?;
+            let f = ui.snapshot()?.current.unwrap();
+            ui.engine.restore(a)?;
+            arrived(ui, "/long")?;
+            let other = rusqlite::Connection::open(db)?;
+            other.execute_batch("CREATE TRIGGER reject BEFORE UPDATE ON tree_state BEGIN SELECT RAISE(ABORT, 'disk'); END;")?;
+            ui.engine.restore(f)?;
+            wait("failed fragment traversal shown", || {
+                ui.engine.native.uri().is_some_and(|u| u.ends_with("#sec"))
+            })?;
+            pump(400);
+            assert_eq!(
+                ui.snapshot()?.current,
+                Some(a),
+                "the rejected transaction must not select F"
+            );
+            other.execute_batch("DROP TRIGGER reject")?;
+            let count = ui.snapshot()?.visits.len();
+            eval(ui, "location.href='/next'; JSON.stringify(true)")?;
+            arrived(ui, "/next")?;
+            assert_eq!(
+                ui.snapshot()?
+                    .visits
+                    .iter()
+                    .find(|v| v.id == f)
+                    .unwrap()
+                    .url,
+                server.url("/long#sec")?,
+                "failed same-document commit must not rewrite F"
+            );
+            assert_eq!(ui.snapshot()?.visits.len(), count + 1);
+        }
+        "spa_reload" | "spa_restore" => {
+            ui.engine
+                .navigate(server.url("/spa")?, NavigationTarget::Root)?;
+            let v = arrived(ui, "/spa")?;
+            eval(
+                ui,
+                "history.pushState({}, '', '/spa/route'); JSON.stringify(true)",
+            )?;
+            pump(300);
+            let hits = server.hits("/spa");
+            if case == "spa_reload" {
+                ui.engine.focus();
+                key("F5")?;
+            } else {
+                ui.engine.restore(v)?;
+            }
+            pump(800);
+            assert!(
+                ui.engine.remember_selection().is_ok(),
+                "pushState restore must end its attempt and allow document writes"
+            );
+            if case == "spa_reload" {
+                assert!(
+                    server.hits("/spa") > hits,
+                    "F5 must fetch the stored URL again"
+                );
+            }
+            eval(ui, "location.href='/next'; JSON.stringify(true)")?;
+            arrived(ui, "/next")?;
+            assert_eq!(
+                ui.snapshot()?
+                    .visits
+                    .iter()
+                    .find(|x| x.id == v)
+                    .unwrap()
+                    .url,
+                server.url("/spa")?
+            );
+            assert_eq!(ui.snapshot()?.current_visit().unwrap().parent, Some(v));
+        }
+        "unload_race" => {
+            ui.engine
+                .navigate(server.url("/heavy")?, NavigationTarget::ChildOf(a))?;
+            let h = arrived(ui, "/heavy")?;
+            let third_hits = server.hits("/third");
+            ui.engine
+                .navigate(server.url("/third")?, NavigationTarget::ChildOf(h))?;
+            pump(300);
+            assert_eq!(
+                server.hits("/third"),
+                third_hits,
+                "beforeunload must hold the replaced load before its request"
+            );
+            ui.engine
+                .navigate(server.url("/next")?, NavigationTarget::Root)?;
+            arrived(ui, "/next")?;
+            assert!(
+                ui.snapshot()?.current_visit().unwrap().parent.is_none(),
+                "replacement Started must preserve the requested root"
+            );
+        }
+        "iframe_order" => {
+            ui.engine
+                .navigate(server.url("/frame")?, NavigationTarget::Root)?;
+            let f = arrived(ui, "/frame")?;
+            eval(ui, "location.href='/next'; document.querySelector('iframe').contentWindow.location.reload(); JSON.stringify(true)")?;
+            arrived(ui, "/next")?;
+            assert_eq!(
+                ui.snapshot()?
+                    .visits
+                    .iter()
+                    .find(|v| v.id == f)
+                    .unwrap()
+                    .url
+                    .path(),
+                "/frame",
+                "iframe Reload must not classify main-frame Started as a restore"
+            );
+            assert_eq!(ui.snapshot()?.current_visit().unwrap().parent, Some(f));
+        }
+        "settle_back" => {
+            ui.engine
+                .navigate(server.url("/next")?, NavigationTarget::Root)?;
+            let b = arrived(ui, "/next")?;
+            ui.engine
+                .navigate(server.url("/third")?, NavigationTarget::ChildOf(b))?;
+            let c = arrived(ui, "/third")?;
+            ui.engine.restore(a)?;
+            arrived(ui, "/long")?;
+            ui.engine
+                .navigate(server.url("/spa")?, NavigationTarget::ChildOf(a))?;
+            arrived(ui, "/spa")?;
+            ui.engine.focus();
+            key("ctrl+w")?;
+            wait("settle landed on B", || {
+                ui.snapshot().unwrap().current == Some(c) && !ui.engine.native.is_loading()
+            })?;
+            eval(ui, "history.back(); JSON.stringify(true)")?;
+            wait("Back completed", || {
+                ui.engine
+                    .native
+                    .uri()
+                    .is_some_and(|u| !u.ends_with("/third"))
+                    && !ui.engine.native.is_loading()
+            })?;
+            assert_eq!(
+                ui.snapshot()?.current,
+                Some(b),
+                "mouse Back must stay in the current open tree"
+            );
+            assert_eq!(
+                chrome(ui, "document.querySelectorAll('#tab-row .tab').length")?,
+                json!(1)
+            );
+            ui.engine.focus();
+            key("ctrl+w")?;
+            wait("last tree blank", || {
+                ui.snapshot().unwrap().current.is_none()
+            })?;
+            eval(ui, "history.back(); JSON.stringify(true)")?;
+            pump(500);
+            assert!(
+                ui.snapshot()?.current.is_none(),
+                "Back from blank must do nothing"
+            );
+        }
+        "settle_inflight" => {
+            ui.engine
+                .navigate(server.url("/slow")?, NavigationTarget::ChildOf(a))?;
+            let hits = server.hits("/slow");
+            wait("slow requested", || {
+                server.hits("/slow") > hits && ui.engine.native.is_loading()
+            })?;
+            ui.engine.focus();
+            key("ctrl+w")?;
+            pump(1800);
+            assert!(
+                ui.snapshot()?.current.is_none(),
+                "settling the last tree must blank an in-flight load"
+            );
+            assert!(!ui
+                .snapshot()?
+                .visits
+                .iter()
+                .any(|v| v.url.path() == "/slow"));
+            ui.engine
+                .navigate(server.url("/next")?, NavigationTarget::Root)?;
+            arrived(ui, "/next")?;
+            assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
+        }
+        "retire_committed" => {
+            ui.engine
+                .navigate(server.url("/imgpage")?, NavigationTarget::ChildOf(a))?;
+            wait("committed page with unfinished subresource", || {
+                ui.snapshot()
+                    .unwrap()
+                    .current_visit()
+                    .is_some_and(|v| v.url.path() == "/imgpage")
+                    && ui.engine.native.is_loading()
+                    && server.hits("/slowimg") > 0
+            })?;
+            ui.engine
+                .navigate(server.url("/next")?, NavigationTarget::Root)?;
+            arrived(ui, "/next")?;
+            assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
+        }
+        "unbound_back" => {
+            let hits = server.hits("/slow");
+            ui.engine
+                .navigate(server.url("/slow")?, NavigationTarget::ChildOf(a))?;
+            wait("pending load requested", || {
+                server.hits("/slow") > hits && ui.engine.native.is_loading()
+            })?;
+            eval(
+                ui,
+                "history.pushState({}, '', '/long#p'); JSON.stringify(true)",
+            )?;
+            arrived(ui, "/slow")?;
+            let count = ui.snapshot()?.visits.len();
+            eval(ui, "history.back(); JSON.stringify(true)")?;
+            wait("Back returned to long", || {
+                ui.engine.native.uri().is_some_and(|u| u.contains("/long"))
+                    && !ui.engine.native.is_loading()
+            })?;
+            pump(300);
+            assert_eq!(
+                ui.snapshot()?.current,
+                Some(a),
+                "unbound same-document entry must restore the forest parent"
+            );
+            assert_eq!(ui.snapshot()?.visits.len(), count);
+        }
+        _ => unreachable!(),
+    }
+    println!("PASS regression {case}");
+    Ok(())
+}
+
 fn arrived(ui: &Ui, path: &str) -> Result<VisitId> {
     wait(&format!("{path} current and loaded"), || {
         ui.snapshot()
@@ -424,17 +697,25 @@ impl Server {
         thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
-                let mut request = [0; 4096];
-                let Ok(size) = stream.read(&mut request) else {
-                    continue;
-                };
-                let request = String::from_utf8_lossy(&request[..size]);
-                let path = request.split_whitespace().nth(1).unwrap_or("/").to_owned();
-                *counted.lock().unwrap().entry(path.clone()).or_insert(0) += 1;
-                if path == "/slow" {
-                    thread::sleep(std::time::Duration::from_millis(500));
-                }
-                let (status, body) = match path.as_str() {
+                let counted = counted.clone();
+                thread::spawn(move || {
+                    let mut request = [0; 4096];
+                    let Ok(size) = stream.read(&mut request) else {
+                        return;
+                    };
+                    let request = String::from_utf8_lossy(&request[..size]);
+                    let path = request.split_whitespace().nth(1).unwrap_or("/").to_owned();
+                    *counted.lock().unwrap().entry(path.clone()).or_insert(0) += 1;
+                    if path == "/slow" {
+                        thread::sleep(std::time::Duration::from_millis(1000));
+                    }
+                    if path == "/slowimg" {
+                        thread::sleep(Duration::from_secs(3));
+                    }
+                    let (status, body) = match path.as_str() {
+                    "/heavy" => ("200 OK", "<!doctype html><title>Heavy</title><script>addEventListener('beforeunload', () => { const t=Date.now(); while(Date.now()-t<1000) {} });</script>"),
+                    "/imgpage" => ("200 OK", "<!doctype html><title>Image page</title><img src='/slowimg'>"),
+                    "/slowimg" => ("200 OK", ""),
                     "/spa" => ("200 OK", "<!doctype html><title>SPA home</title><p>SPA</p>"),
                     "/frame" => ("200 OK", "<!doctype html><title>Frame page</title><iframe src=\"/inner\"></iframe>"),
                     "/inner" => ("200 OK", "<!doctype html><title>Inner</title><p>Inner</p>"),
@@ -444,11 +725,12 @@ impl Server {
                     "/next" => ("200 OK", "<!doctype html><title>Next page</title><p>Next page</p>"),
                     _ => ("404 Not Found", ""),
                 };
-                let _ = write!(
+                    let _ = write!(
                     stream,
                     "HTTP/1.1 {status}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
+                });
             }
         });
         Ok(Self { origin, hits })
