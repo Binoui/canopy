@@ -103,3 +103,9 @@ name = "settle_smoke"
 path = "tests/settle_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
+
+[[test]]
+name = "page_context_smoke"
+path = "tests/page_context_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]

@@ -15,16 +15,18 @@ use crate::{
         VisitPreview,
     },
     chrome::{
-        ChromeFrame, ChromeHost, ChromeIntent, Favicons, HtmlChrome, PageFile, PaletteScope,
-        PaletteSeed, Toast, CHROME_HEIGHT,
+        ChromeFrame, ChromeHost, ChromeIntent, HtmlChrome, PageFile, PaletteScope, PaletteSeed,
+        Toast, CHROME_HEIGHT,
     },
     engine::{DownloadEvent, Engine, EngineEvent},
     forest::ForestProjection,
+    pages::native::PageContext,
 };
 
 pub struct Ui {
     pub window: gtk::Window,
     pub engine: Engine,
+    context: Rc<PageContext>,
     pub chrome: HtmlChrome,
     browser: Rc<RefCell<Browser>>,
     refresh_scheduled: Cell<bool>,
@@ -69,8 +71,9 @@ impl Ui {
         let fixed = gtk::Fixed::new();
         scroller.add(&fixed);
         window.add(&scroller);
-        let engine = Engine::new(&fixed, browser.clone(), &data_dir.join("profile"))?;
-        let chrome = HtmlChrome::mount(&fixed, Favicons::new(&engine.native))?;
+        let context = PageContext::new(&data_dir.join("profile"), browser.clone())?;
+        let engine = Engine::new(&fixed, browser.clone(), &context)?;
+        let chrome = HtmlChrome::mount(&fixed, context.favicons.clone())?;
         {
             use webkit2gtk::{WebContextExt, WebViewExt};
             let confined = [engine.native.context(), chrome.native().context()]
@@ -93,6 +96,7 @@ impl Ui {
             Ui {
                 window,
                 engine,
+                context,
                 chrome,
                 browser,
                 refresh_scheduled: Cell::new(false),
@@ -268,7 +272,7 @@ impl Ui {
             }
         };
         let weak = self.me.clone();
-        self.engine.apply_cookie_batches(batches, move |result| {
+        self.context.apply_cookie_batches(batches, move |result| {
             let Some(ui) = weak.upgrade() else {
                 return;
             };

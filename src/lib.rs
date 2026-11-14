@@ -11,6 +11,8 @@ pub mod chrome;
 #[cfg(feature = "desktop")]
 pub mod engine;
 #[cfg(feature = "desktop")]
+pub mod pages;
+#[cfg(feature = "desktop")]
 pub mod ui;
 
 pub mod cookies;
