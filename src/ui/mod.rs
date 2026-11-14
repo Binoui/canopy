@@ -183,7 +183,28 @@ impl Ui {
 
     /// Restores the forest, then opens `urls` as new trees in place of reloading the last page.
     pub fn resume(&self, urls: &[Url]) -> Result<()> {
-        self.after_cookies.set(Some(StartPage::Reload));
+        let mut start = Some(StartPage::Reload);
+        if urls.is_empty() {
+            let forest = ForestProjection::from_snapshot(
+                self.browser.borrow().snapshot()?,
+                self.browser.borrow().tree_states()?,
+            )?;
+            if let Some(tree) = forest.current().and_then(|id| forest.tree_of(id)) {
+                if forest
+                    .trees()
+                    .iter()
+                    .any(|t| t.id == tree && !t.lifecycle.is_open())
+                {
+                    start = match self.browser.borrow_mut().settle_tree(tree)? {
+                        Landing::Restore(visit) => Some(StartPage::Show(visit)),
+                        Landing::Start => None,
+                        Landing::Unchanged => Some(StartPage::Reload),
+                    };
+                    self.schedule_refresh();
+                }
+            }
+        }
+        self.after_cookies.set(start);
         // A failed open is already on screen as an error, and the window still starts.
         let _ = self.open(urls);
         self.drain_cookies();
