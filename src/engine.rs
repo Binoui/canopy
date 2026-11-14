@@ -76,6 +76,69 @@ enum Issue {
     Retiring { ticket: LoadTicket, next: Url },
 }
 
+impl Issue {
+    fn finish(&mut self, navigation: &mut Navigation) -> Option<Url> {
+        match std::mem::replace(self, Self::Idle) {
+            Self::Retiring { next, .. } => Some(next),
+            Self::Active(ticket) => {
+                navigation.failed(ticket);
+                None
+            }
+            Self::Idle => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod attempt_tests {
+    use super::*;
+
+    #[test]
+    fn finished_failed_commit_cannot_rewrite_restored_visit() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("forest.sqlite3");
+        let mut browser = Browser::open(&path).unwrap();
+        let mut navigation = Navigation::default();
+        let url = |path| Url::parse(&format!("https://example.org/{path}")).unwrap();
+        let first = browser
+            .navigate(&mut navigation, url("a"), NavigationTarget::Root)
+            .unwrap();
+        let ticket = navigation.pending_ticket().unwrap();
+        navigation.started(ticket, first.clone());
+        browser
+            .commit_load(&mut navigation, ticket, first, Visibility::Selected)
+            .unwrap();
+        let a = navigation.current.as_ref().unwrap().visit;
+        browser.restore(&mut navigation, a).unwrap();
+        let ticket = navigation.pending_ticket().unwrap();
+        navigation.started(ticket, url("a"));
+        let mut issue = Issue::Active(ticket);
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TRIGGER reject BEFORE UPDATE ON tree_state BEGIN SELECT RAISE(ABORT, 'disk'); END;").unwrap();
+        assert!(browser
+            .commit_load(&mut navigation, ticket, url("a"), Visibility::Selected)
+            .is_err());
+        connection.execute_batch("DROP TRIGGER reject").unwrap();
+        assert!(issue.finish(&mut navigation).is_none());
+        assert!(
+            navigation.pending_ticket().is_none(),
+            "Finished must abandon the failed commit"
+        );
+        let ticket = navigation.native_request(url("elsewhere"));
+        navigation.started(ticket, url("elsewhere"));
+        browser
+            .commit_load(
+                &mut navigation,
+                ticket,
+                url("elsewhere"),
+                Visibility::Selected,
+            )
+            .unwrap();
+        assert_eq!(browser.visit(a).unwrap().url, url("a"));
+        assert_ne!(navigation.current.as_ref().unwrap().visit, a);
+    }
+}
+
 struct NativeState {
     native: webkit2gtk::WebView,
     browser: Rc<RefCell<Browser>>,
@@ -264,8 +327,11 @@ impl Engine {
                         }
                     }
                     LoadEvent::Finished => {
-                        let issue = std::mem::replace(&mut *state.issue.borrow_mut(), Issue::Idle);
-                        if let Issue::Retiring { next, .. } = issue {
+                        let next = state
+                            .issue
+                            .borrow_mut()
+                            .finish(&mut state.navigation.borrow_mut());
+                        if let Some(next) = next {
                             state.load(next);
                             return;
                         }
