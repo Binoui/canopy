@@ -85,3 +85,9 @@ required-features = ["gui-smoke"]
 
 [profile.dev]
 debug = 1
+
+[[test]]
+name = "profile_smoke"
+path = "tests/profile_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]
