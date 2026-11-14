@@ -6,6 +6,7 @@ use std::{
 
 use anyhow::Result;
 use gtk::prelude::*;
+use url::Url;
 use webkit2gtk::WebViewExt;
 
 use crate::{
@@ -34,7 +35,14 @@ pub struct Ui {
     cookie_monitor: gio::FileMonitor,
     draining_cookies: Cell<bool>,
     cookies_pending: Cell<bool>,
-    reload_after_cookies: Cell<bool>,
+    /// Set from start until the first cookie drain ends, so no page loads without them.
+    after_cookies: Cell<Option<StartPage>>,
+}
+
+#[derive(Clone, Copy)]
+enum StartPage {
+    Reload,
+    Show(VisitId),
 }
 
 struct PathContinuation {
@@ -83,7 +91,7 @@ impl Ui {
                 cookie_monitor,
                 draining_cookies: Cell::new(false),
                 cookies_pending: Cell::new(false),
-                reload_after_cookies: Cell::new(false),
+                after_cookies: Cell::new(None),
             }
         });
         let weak = Rc::downgrade(&ui);
@@ -157,10 +165,55 @@ impl Ui {
         self.browser.borrow().search(query)
     }
 
-    pub fn resume(&self) -> Result<()> {
-        self.reload_after_cookies.set(true);
+    /// Restores the forest, then opens `urls` as new trees in place of reloading the last page.
+    pub fn resume(&self, urls: &[Url]) -> Result<()> {
+        self.after_cookies.set(Some(StartPage::Reload));
+        // A failed open is already on screen as an error, and the window still starts.
+        let _ = self.open(urls);
         self.drain_cookies();
         Ok(())
+    }
+
+    /// Plants each URL as a new tree and shows the last one. A failure is shown in the
+    /// window and returned, so the launch that sent the URLs can fail too.
+    pub fn open(&self, urls: &[Url]) -> Result<()> {
+        let shown = self.plant(urls);
+        if let Err(error) = &shown {
+            self.report_error(&error.to_string());
+        }
+        shown
+    }
+
+    fn plant(&self, urls: &[Url]) -> Result<()> {
+        let roots = self.browser.borrow_mut().add_roots(urls)?;
+        let Some(last) = roots.last().copied() else {
+            return Ok(());
+        };
+        self.schedule_refresh();
+        self.branch_after_commit.set(None);
+        self.path_after_commit.borrow_mut().take();
+        if self.after_cookies.get().is_some() {
+            self.after_cookies.set(Some(StartPage::Show(last)));
+            return Ok(());
+        }
+        self.engine.restore(last)
+    }
+
+    /// Raises the window, using the launching app's activation token when it passed one.
+    pub fn bring_forward(&self, activation: Option<&str>) {
+        if let Some(token) = activation {
+            self.window.set_startup_id(token);
+        }
+        self.window.present();
+    }
+
+    fn show_start_page(&self) {
+        let result = match self.after_cookies.take() {
+            None => Ok(()),
+            Some(StartPage::Reload) => self.engine.reload(),
+            Some(StartPage::Show(visit)) => self.engine.restore(visit),
+        };
+        self.report(result);
     }
 
     fn drain_cookies(&self) {
@@ -173,9 +226,7 @@ impl Ui {
             Err(_) => {
                 self.draining_cookies.set(false);
                 self.report_error("Could not read imported cookies.");
-                if self.reload_after_cookies.replace(false) {
-                    self.report(self.engine.reload());
-                }
+                self.show_start_page();
                 return;
             }
         };
@@ -194,8 +245,8 @@ impl Ui {
             }
             if ui.cookies_pending.replace(false) {
                 ui.drain_cookies();
-            } else if ui.reload_after_cookies.replace(false) {
-                ui.report(ui.engine.reload());
+            } else {
+                ui.show_start_page();
             }
         });
     }
