@@ -9,6 +9,7 @@ pub mod naming;
 #[cfg(feature = "desktop")]
 pub mod chrome;
 #[cfg(feature = "desktop")]
+#[path = "pages/live.rs"]
 pub mod engine;
 #[cfg(feature = "desktop")]
 pub mod pages;

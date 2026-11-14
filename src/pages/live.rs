@@ -15,6 +15,7 @@ use webkit2gtk::{
     ResponsePolicyDecisionExt, URIRequestExt, UserContentInjectedFrames, UserContentManagerExt,
     UserScript, UserScriptInjectionTime, WebViewExt,
 };
+#[path = "mouse.rs"]
 mod mouse;
 
 use crate::{
@@ -26,7 +27,7 @@ use crate::{
 };
 
 const WORLD: &str = "canopy-reading-memory";
-const HELPER: &str = include_str!("capture.js");
+const HELPER: &str = include_str!("../capture.js");
 /// Script message the helper posts, debounced, when the page scrolls.
 const SCROLLED: &str = "canopyScrolled";
 type Observer = RefCell<Option<Box<dyn Fn(EngineEvent)>>>;
