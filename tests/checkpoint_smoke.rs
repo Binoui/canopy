@@ -359,8 +359,17 @@ fn corrupt(kind: &str) -> Result<()> {
     let f = Fixture::new()?;
     let [_, b, _] = f.chain()?;
     f.eval("scrollTo(0,1700); return true;")?;
-    settle();
+    wait("cold source scroll saved", || {
+        if f.pages.read(|brow| brow.scroll(b)).unwrap() == Some(1700)
+            && f.eval("return scrollY;").unwrap() == json!(1700)
+        {
+            return true;
+        }
+        f.eval("scrollTo(0,1700); return true;").unwrap();
+        false
+    })?;
     f.release()?;
+    assert_eq!(f.pages.read(|brow| brow.scroll(b))?, Some(1700));
     f.pages.corrupt_checkpoint(kind);
     assert!(f.revive(b)?);
     wait("cold saved scroll", || {
