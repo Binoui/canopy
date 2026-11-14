@@ -52,6 +52,8 @@ struct NativeState {
     load_generation: Cell<u64>,
     foreground_generation: Cell<u64>,
     same_document_request: RefCell<Option<Url>>,
+    /// The URL last handed to WebKit. A fresh view reports no URI when that load starts.
+    issued: RefCell<Option<Url>>,
 }
 
 pub struct Engine {
@@ -100,6 +102,7 @@ impl Engine {
             load_generation: Cell::new(0),
             foreground_generation: Cell::new(0),
             same_document_request: RefCell::new(None),
+            issued: RefCell::new(None),
         });
         {
             let weak = Rc::downgrade(&state);
@@ -110,7 +113,8 @@ impl Engine {
                     LoadEvent::Started => {
                         state.same_document_request.borrow_mut().take();
                         state.invalidate();
-                        if let Some(url) = url {
+                        let issued = state.issued.borrow_mut().take();
+                        if let Some(url) = url.or(issued) {
                             let result = state.browser.borrow_mut().started(url);
                             state.report(result);
                             state.emit(EngineEvent::Loading(true));
@@ -436,6 +440,8 @@ impl NativeState {
                             .is_some_and(|current| current != url && same_resource(&current, &url))
                     {
                         *state.same_document_request.borrow_mut() = Some(url.clone());
+                    } else {
+                        *state.issued.borrow_mut() = Some(url.clone());
                     }
                     state.native.load_uri(url.as_str());
                     state.complete_same_document();
