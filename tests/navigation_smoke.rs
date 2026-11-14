@@ -163,8 +163,10 @@ fn main() -> Result<()> {
     for case in ["jank", "title", "adopt", "replace", "iframe"] {
         regression(case, &ui, &server)?;
     }
+    ui.window.close();
     for case in [
         "samedoc_fail",
+        "failed_commit",
         "spa_reload",
         "spa_restore",
         "unload_race",
@@ -174,9 +176,13 @@ fn main() -> Result<()> {
         "retire_committed",
         "unbound_back",
     ] {
+        let directory = tempfile::tempdir()?;
+        let ui = Ui::new(directory.path())?;
+        ui.window.show_all();
+        ready(&ui)?;
         regression2(case, &ui, &server, &directory.path().join("forest.sqlite3"))?;
+        ui.window.close();
     }
-    ui.window.close();
     Ok(())
 }
 
@@ -415,6 +421,7 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
 fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -> Result<()> {
     if ![
         "samedoc_fail",
+        "failed_commit",
         "spa_reload",
         "spa_restore",
         "unload_race",
@@ -432,6 +439,36 @@ fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -
         .navigate(server.url("/long")?, NavigationTarget::Root)?;
     let a = arrived(ui, "/long")?;
     match case {
+        "failed_commit" => {
+            let finished = Rc::new(Cell::new(false));
+            let seen = finished.clone();
+            let handler = ui.engine.native.connect_load_changed(move |_, event| {
+                if event == webkit2gtk::LoadEvent::Finished {
+                    seen.set(true);
+                }
+            });
+            let other = rusqlite::Connection::open(db)?;
+            other.execute_batch("CREATE TRIGGER reject BEFORE UPDATE ON tree_state BEGIN SELECT RAISE(ABORT, 'disk'); END;")?;
+            ui.engine.reload()?;
+            wait("rejected reload Finished", || finished.get())?;
+            assert_eq!(ui.snapshot()?.current, Some(a));
+            ui.engine.native.disconnect(handler);
+            other.execute_batch("DROP TRIGGER reject")?;
+            eval(ui, "location.href='/next'; JSON.stringify(true)")?;
+            arrived(ui, "/next")?;
+            assert_eq!(
+                ui.snapshot()?
+                    .visits
+                    .iter()
+                    .find(|v| v.id == a)
+                    .unwrap()
+                    .url
+                    .path(),
+                "/long",
+                "Finished must abandon the rejected restore"
+            );
+            assert_eq!(ui.snapshot()?.current_visit().unwrap().parent, Some(a));
+        }
         "samedoc_fail" => {
             ui.engine
                 .navigate(server.url("/long#sec")?, NavigationTarget::ChildOf(a))?;

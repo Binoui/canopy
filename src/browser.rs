@@ -1623,6 +1623,8 @@ mod tests {
         fn open_citation(&mut self, child: VisitId) -> Result<Option<Url>> {
             self.browser.open_citation(&mut self.navigation, child)
         }
+        // These SQLite tests model an accepted request followed by Started. They have no
+        // native signal queue; navigation_smoke covers policy and Started interleavings.
         fn started(&mut self, url: Url) -> Result<()> {
             let ticket = self
                 .navigation
