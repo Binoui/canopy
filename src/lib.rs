@@ -4,6 +4,7 @@ pub mod download;
 pub mod forest;
 pub mod import;
 pub mod instance;
+pub mod naming;
 
 #[cfg(feature = "desktop")]
 pub mod chrome;

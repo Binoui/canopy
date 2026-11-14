@@ -80,6 +80,8 @@ pub enum PaletteSeed {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChromeIntent {
     SelectTree(TreeId),
+    /// Name a tree; an empty name goes back to the automatic one.
+    RenameTree(TreeId, String),
     OpenPath(UsualPath),
     SetTheme(ThemeMode),
     CancelContinuation,
@@ -482,6 +484,9 @@ impl Inner {
         let index = || message["index"].as_u64().map(|i| i as usize);
         Some(match message["kind"].as_str()? {
             "select-tree" => ChromeIntent::SelectTree(TreeId(id("id")?)),
+            "rename-tree" => {
+                ChromeIntent::RenameTree(TreeId(id("id")?), message["name"].as_str()?.to_owned())
+            }
             "restore" => ChromeIntent::Restore(id("id")?),
             "branch-queued" => ChromeIntent::BranchFromQueued(id("id")?),
             "open-citation" => ChromeIntent::OpenCitation(id("id")?),

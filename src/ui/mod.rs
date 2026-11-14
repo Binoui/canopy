@@ -491,6 +491,11 @@ impl ChromeHost for Ui {
                 self.schedule_refresh();
                 result
             }
+            ChromeIntent::RenameTree(tree, name) => {
+                let result = self.browser.borrow_mut().rename_tree(tree, &name);
+                self.schedule_refresh();
+                result
+            }
             ChromeIntent::SelectTree(tree) => {
                 let target = self.browser.borrow().tree_target(tree);
                 target.and_then(|visit| self.engine.restore(visit))

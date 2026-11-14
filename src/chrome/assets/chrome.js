@@ -522,7 +522,7 @@ function renderCard(preview) {
   }));
 }
 
-// ---------- popovers: Memory menu, hidden pages, trees that do not fit ----------
+// ---------- popovers: Memory menu, hidden pages, trees that do not fit, a tree's name ----------
 
 function openPopover(kind, anchor, data) {
   const popover = $('popover');
@@ -572,6 +572,20 @@ function renderPopover() {
       setSurface('reading');
       intent('select-tree', { id: row.dataset.id });
     }));
+  } else if (kind === 'rename') {
+    // A frame that arrives while a name is being typed must not reset the field.
+    if (S.popover.field) return;
+    const title = (S.frame?.trees ?? []).find((tree) => tree.id === data)?.title ?? '';
+    popover.innerHTML = '<div class="menu-heading">Tree name</div>'
+      + `<input id="tree-name" class="menu-input" value="${esc(title)}" maxlength="80" spellcheck="false" aria-label="Tree name">`
+      + '<div class="menu-hint">Leave it empty to name the tree after its pages.</div>';
+    const field = S.popover.field = $('tree-name');
+    field.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      // Enter on the name as it was changes nothing: it stays automatic if it was.
+      if (field.value.trim() !== title) intent('rename-tree', { id: data, name: field.value });
+      closePopover();
+    });
   } else if (kind === 'memory') {
     popover.innerHTML = '<div class="menu-heading">Memory</div>'
       + captureRow()
@@ -1052,6 +1066,16 @@ $('tab-row').addEventListener('click', (event) => {
   if (!tab) return;
   setSurface('reading');
   intent('select-tree', { id: tab.dataset.id });
+});
+// A right click on a tab names its tree.
+$('tab-row').addEventListener('contextmenu', (event) => {
+  const tab = event.target.closest('[data-id]');
+  if (!tab) return;
+  event.preventDefault();
+  openPopover('rename', tab, tab.dataset.id);
+  post({ t: 'focus', target: 'chrome' });
+  S.popover.field.focus();
+  S.popover.field.select();
 });
 $('tab-overflow').addEventListener('click', (event) => {
   event.stopPropagation();

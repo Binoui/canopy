@@ -465,6 +465,7 @@ mod tests {
             .map(|v| TreeState {
                 root: crate::browser::TreeId(v.id),
                 last_visit: v.id,
+                name: None,
             })
             .collect();
         let forest = ForestProjection::from_snapshot(
@@ -617,6 +618,7 @@ mod tests {
             vec![TreeState {
                 root: crate::browser::TreeId(root),
                 last_visit: leaf,
+                name: None,
             }],
         )
         .unwrap();

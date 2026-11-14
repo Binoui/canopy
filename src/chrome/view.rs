@@ -393,6 +393,7 @@ mod tests {
             vec![TreeState {
                 root: TreeId(ids[0]),
                 last_visit: ids[1],
+                name: None,
             }],
         )
         .unwrap();
