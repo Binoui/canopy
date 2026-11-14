@@ -384,6 +384,16 @@ impl Engine {
                         node = (*node).next;
                     }
                 }
+                if added.is_some() && state.navigation.borrow().pending_ticket().is_none() {
+                    let document = state.navigation.borrow().current.clone();
+                    if let Some(document) = document {
+                        state.remember_entry(document.visit);
+                        if let Some(url) = state.native.uri().and_then(|uri| web_url(&uri).ok()) {
+                            state.navigation.borrow_mut().same_document(url);
+                        }
+                        state.bind_document();
+                    }
+                }
                 let attempt = state.navigation.borrow().pending_ticket();
                 let weak = Rc::downgrade(&state);
                 glib::idle_add_local_once(move || {
@@ -659,7 +669,9 @@ impl NativeState {
         let weak = Rc::downgrade(self);
         glib::idle_add_local_once(move || {
             if let Some(state) = weak.upgrade() {
-                if state.load_generation.get() == generation {
+                if state.load_generation.get() == generation
+                    && state.navigation.borrow().pending_ticket() == requested
+                {
                     {
                         let mut issue = state.issue.borrow_mut();
                         if let Issue::Retiring { next, .. } = &mut *issue {
