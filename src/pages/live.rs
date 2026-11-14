@@ -1566,11 +1566,11 @@ impl NativeState {
         let list = self.native.back_forward_list()?;
         let current = list.current_item();
         let live = live_entries(&list);
-        self.history
-            .borrow()
-            .iter()
-            .rev()
-            .find(|entry| {
+        let history = self.history.borrow();
+        let preferred = history.iter().filter(|entry| {
+            self.history_document.get() == 0 && Some(&entry.item) == current.as_ref()
+        });
+        preferred.chain(history.iter().rev()).find(|entry| {
                 entry.visit == visit
                     && entry.document != self.history_document.get()
                     && (self.history_document.get() == 0

@@ -548,6 +548,33 @@ fn tree_boundary() -> Result<()> {
     Ok(())
 }
 
+fn duplicate_entry() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.navigate("/a")?;
+    f.eval("history.pushState({}, '', '/route'); history.pushState({}, '', '/a'); history.go(-2); return true;")?;
+    wait("original history position", || {
+        f.pages
+            .selected_page()
+            .native
+            .back_forward_list()
+            .unwrap()
+            .back_list()
+            .is_empty()
+    })?;
+    f.release()?;
+    assert!(!f.revive(a)?);
+    assert!(
+        f.pages
+            .selected_page()
+            .native
+            .back_forward_list()
+            .unwrap()
+            .back_list()
+            .is_empty(),
+        "saved cursor wins over duplicate URL"
+    );
+    Ok(())
+}
 fn main() -> Result<()> {
     let environment = tempfile::tempdir()?;
     let home = environment.path().join("home");
@@ -566,6 +593,7 @@ fn main() -> Result<()> {
     let selected = std::env::args().nth(1);
     type Case = (&'static str, fn() -> Result<()>);
     let cases: &[Case] = &[
+        ("duplicate_entry", duplicate_entry),
         ("history_release", history_release),
         ("download_release", download_release),
         ("late_callbacks", late_callbacks),
