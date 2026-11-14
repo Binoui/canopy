@@ -861,7 +861,7 @@ function renderForest() {
     return `<button class="${cls}" data-id="${n.id}" title="${esc(v.label)}" style="left:${n.x - n.w / 2}px;top:${n.y - n.s / 2}px;width:${n.w}px;height:${n.s}px">`
       + visitFav(v, 16) + (S.forestLabels ? `<span>${esc(v.label)}</span>` : '') + '</button>';
   }).join('');
-  const heads = layout.heads.map((h) => `<div class="forest-head${h.settled ? ' settled' : ''}" style="top:${h.y}px"><b>${esc(h.title)}</b><span>${esc(h.detail)}</span></div>`).join('');
+  const heads = layout.heads.map((h) => `<button class="forest-head${h.settled ? ' settled' : ''}" data-id="${h.id}" style="top:${h.y}px"><b>${esc(h.title)}</b><span>${esc(h.detail)}</span></button>`).join('');
   const edges = layout.nodes.map((b) => {
     const v = visit(b.id);
     const a = v?.parent && positions.get(v.parent);

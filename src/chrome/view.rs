@@ -221,6 +221,7 @@ fn forest_value(forest: &ForestProjection, labels: bool) -> Value {
             let tree = &forest.trees()[index];
             json!({
                 "y": y,
+                "id": tree.last_visit.to_string(),
                 "title": tree.title,
                 "settled": !tree.lifecycle.is_open(),
                 "detail": format!(

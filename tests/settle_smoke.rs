@@ -122,6 +122,18 @@ fn main() -> Result<()> {
         visible(&ui, ".forest-divider") && visible(&ui, ".forest-node.settled")
     })?;
     assert!(text(&ui, ".forest-divider").contains("3 trees"));
+    click_chrome(&ui, &format!(".forest-head[data-id='{}']", ids[0]))?;
+    wait("settled head reopens its last page", || {
+        tabs(&ui) == 1 && shown(&ui, ids[0])
+    })?;
+    key("ctrl+w")?;
+    wait("settle the reopened head again", || {
+        tabs(&ui) == 0 && ui.snapshot().unwrap().current.is_none()
+    })?;
+    key("ctrl+e")?;
+    wait("return to settled forest", || {
+        visible(&ui, ".forest-node.settled")
+    })?;
     click_chrome(&ui, &format!(".forest-node[data-id='{}']", ids[0]))?;
     wait("forest click reopens Alpha", || {
         tabs(&ui) == 1 && shown(&ui, ids[0])
