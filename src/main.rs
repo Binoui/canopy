@@ -1,7 +1,10 @@
-use std::{ffi::OsString, path::PathBuf};
+use std::{ffi::OsString, os::fd::AsRawFd, path::PathBuf};
 
 use anyhow::{bail, Context, Result};
-use canopy::address::Destination;
+use canopy::{
+    address::Destination,
+    instance::{self, Launch, Request},
+};
 use gtk::prelude::*;
 use url::Url;
 
@@ -120,6 +123,16 @@ fn run() -> Result<()> {
         Command::Browse(urls) => urls,
     };
     let data_dir = prepare_data_dir(data_dir)?;
+    let request = Request {
+        urls,
+        activation: ["XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID"]
+            .into_iter()
+            .find_map(|name| std::env::var(name).ok().filter(|token| !token.is_empty())),
+    };
+    let instance = match instance::launch(&data_dir, &request)? {
+        Launch::Primary(instance) => instance,
+        Launch::Forwarded => return Ok(()),
+    };
     gtk::init()
         .context("Could not open a window. Start Canopy from your Linux desktop session.")?;
     let ui = canopy::ui::Ui::new(&data_dir)?;
@@ -128,7 +141,17 @@ fn run() -> Result<()> {
         glib::Propagation::Proceed
     });
     ui.window.show_all();
-    ui.resume(&urls)?;
+    ui.resume(&request.urls)?;
+    glib::unix_fd_add_local(instance.as_raw_fd(), glib::IOCondition::IN, move |_, _| {
+        let answered = instance.answer(|request| {
+            ui.open(&request.urls);
+            ui.bring_forward(request.activation.as_deref());
+        });
+        if let Err(error) = answered {
+            eprintln!("Canopy: {error:#}");
+        }
+        glib::ControlFlow::Continue
+    });
     gtk::main();
     Ok(())
 }
