@@ -103,6 +103,7 @@ mod tests {
             states.push(TreeState {
                 root: TreeId(root),
                 last_visit: parent.unwrap(),
+                name: None,
             });
         }
         ForestProjection::from_snapshot(Snapshot { visits, current }, states).unwrap()

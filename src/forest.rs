@@ -93,24 +93,29 @@ impl ForestProjection {
         }
         let mut states = HashMap::with_capacity(tree_states.len());
         for state in tree_states {
-            if states.insert(state.root, state.last_visit).is_some() {
+            if states
+                .insert(state.root, (state.last_visit, state.name))
+                .is_some()
+            {
                 bail!("Duplicate tree state.");
             }
         }
         let mut trees = Vec::with_capacity(roots.len());
         for root in roots {
             let node = &nodes[&root];
-            let last_visit = states.remove(&node.tree).context("Missing tree state.")?;
+            let (last_visit, name) = states.remove(&node.tree).context("Missing tree state.")?;
             let last = nodes.get(&last_visit).context("Missing tree target.")?;
             if last.tree != node.tree || last.visit.state != VisitState::Opened {
                 bail!("Tree target must be an opened page in its tree.");
             }
             trees.push(TreeSummary {
                 id: node.tree,
-                title: tree_name(
-                    &node.visit,
-                    node.children.iter().map(|child| &nodes[child].visit),
-                ),
+                title: name.unwrap_or_else(|| {
+                    tree_name(
+                        &node.visit,
+                        node.children.iter().map(|child| &nodes[child].visit),
+                    )
+                }),
                 root_host: node.visit.url.host_str().unwrap_or_default().to_owned(),
                 page_count: node.descendants + 1,
                 pending_count: node.pending_below
@@ -215,6 +220,7 @@ mod tests {
             vec![TreeState {
                 root: TreeId(root_id),
                 last_visit: leaf,
+                name: None,
             }],
         )
         .unwrap();
@@ -241,6 +247,7 @@ mod tests {
             states.push(TreeState {
                 root: TreeId(root_id),
                 last_visit: root_id,
+                name: None,
             });
         }
         let forest = ForestProjection::from_snapshot(
@@ -278,6 +285,7 @@ mod tests {
         let state = TreeState {
             root: TreeId(root.id),
             last_visit: root.id,
+            name: None,
         };
         let snapshot = Snapshot {
             visits: vec![root.clone(), child.clone()],

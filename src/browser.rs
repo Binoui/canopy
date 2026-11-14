@@ -85,6 +85,8 @@ pub struct StartSuggestions {
 pub struct TreeState {
     pub root: TreeId,
     pub last_visit: VisitId,
+    /// The name the user gave the tree. Without one, the tree is named after its pages.
+    pub name: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -230,6 +232,8 @@ enum Navigation {
     },
 }
 
+const MAX_TREE_NAME: usize = 80;
+
 pub struct Browser {
     connection: Connection,
     navigation: Navigation,
@@ -263,7 +267,7 @@ impl Browser {
              INSERT OR IGNORE INTO session(singleton, current_id) VALUES(1, NULL);",
         )?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version > 4 {
+        if version > 5 {
             bail!("This database comes from a newer version of Canopy.");
         }
         if version == 0 {
@@ -382,6 +386,15 @@ impl Browser {
                     PRIMARY KEY(source, url)
                  );
                  PRAGMA user_version = 4;",
+            )?;
+            transaction.commit()?;
+        }
+        if version < 5 {
+            // A name the user chose for a tree. NULL keeps the automatic name.
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(
+                "ALTER TABLE tree_state ADD COLUMN name TEXT;
+                 PRAGMA user_version = 5;",
             )?;
             transaction.commit()?;
         }
@@ -533,7 +546,7 @@ impl Browser {
 
     pub fn tree_states(&self) -> Result<Vec<TreeState>> {
         let mut statement = self.connection.prepare(
-            "SELECT t.root_id, t.last_visit_id FROM tree_state t
+            "SELECT t.root_id, t.last_visit_id, t.name FROM tree_state t
              JOIN visits v ON v.id=t.root_id ORDER BY v.created_at, v.rowid",
         )?;
         let mut rows = statement.query([])?;
@@ -542,9 +555,25 @@ impl Browser {
             states.push(TreeState {
                 root: TreeId(row.get::<_, String>(0)?.parse()?),
                 last_visit: row.get::<_, String>(1)?.parse()?,
+                name: row.get(2)?,
             });
         }
         Ok(states)
+    }
+
+    /// Gives `tree` a name that stays whatever its pages become. An empty name goes back to
+    /// naming the tree after its pages.
+    pub fn rename_tree(&mut self, tree: TreeId, name: &str) -> Result<()> {
+        let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+        let name: String = name.chars().take(MAX_TREE_NAME).collect();
+        let renamed = self.connection.execute(
+            "UPDATE tree_state SET name=?1 WHERE root_id=?2",
+            params![(!name.is_empty()).then_some(name), tree.0.to_string()],
+        )?;
+        if renamed == 0 {
+            bail!("This tree no longer exists.");
+        }
+        Ok(())
     }
 
     pub fn tree_target(&self, tree: TreeId) -> Result<VisitId> {
@@ -1223,6 +1252,41 @@ mod tests {
     fn follow_child(browser: &mut Browser, path: &str) -> VisitId {
         let parent = browser.current_id().unwrap().unwrap();
         follow(browser, path, NavigationTarget::ChildOf(parent))
+    }
+
+    #[test]
+    fn a_renamed_tree_keeps_its_name_until_the_name_is_cleared() {
+        let mut b = memory();
+        let root = follow(&mut b, "a", NavigationTarget::Root);
+        b.title_changed(&url("a"), "First title").unwrap();
+        let title = |b: &Browser| {
+            let states = b.tree_states().unwrap();
+            crate::forest::ForestProjection::from_snapshot(b.snapshot().unwrap(), states)
+                .unwrap()
+                .trees()[0]
+                .title
+                .clone()
+        };
+        assert_eq!(title(&b), "First title");
+
+        b.rename_tree(TreeId(root), "  Trip   to Lisbon ").unwrap();
+        assert_eq!(title(&b), "Trip to Lisbon");
+        // Neither a new page nor a new title changes a chosen name.
+        follow_child(&mut b, "b");
+        b.title_changed(&url("b"), "Elsewhere").unwrap();
+        assert_eq!(title(&b), "Trip to Lisbon");
+        assert_eq!(
+            b.tree_target(TreeId(root)).unwrap(),
+            b.current_id().unwrap().unwrap()
+        );
+
+        b.rename_tree(TreeId(root), &"long ".repeat(40)).unwrap();
+        assert_eq!(title(&b).chars().count(), MAX_TREE_NAME);
+        b.rename_tree(TreeId(root), "   ").unwrap();
+        assert_eq!(title(&b), "First title");
+
+        let child = b.current_id().unwrap().unwrap();
+        assert!(b.rename_tree(TreeId(child), "Not a tree").is_err());
     }
 
     #[test]
@@ -1929,7 +1993,10 @@ mod tests {
                 .is_err());
             assert!(browser
                 .connection
-                .execute("INSERT INTO tree_state VALUES(?1,?1)", [child.to_string()])
+                .execute(
+                    "INSERT INTO tree_state(root_id, last_visit_id) VALUES(?1,?1)",
+                    [child.to_string()]
+                )
                 .is_err());
             browser.tree_states().unwrap()
         };

@@ -347,6 +347,24 @@ fn main() -> Result<()> {
     assert_eq!(ui.snapshot()?.current, Some(pending.id));
     println!("PASS a tree tab restores its tree's last page.");
 
+    let tab_title = format!("#tab-row [data-id='{a}'] .tab-title");
+    let automatic = text(&ui, &tab_title);
+    let name_tree = |keys: &dyn Fn() -> Result<()>| -> Result<()> {
+        let (x, y) = chrome_point(&ui, &tab_title)?;
+        move_to(x, y)?;
+        xdo(&["click", "3"])?;
+        wait("tree name field", || chrome_focused(&ui, "#tree-name"))?;
+        keys()?;
+        key("Return")?;
+        wait("tree name field closed", || !visible(&ui, "#popover"))
+    };
+    name_tree(&|| type_text("Reading list"))?;
+    wait("tree renamed", || text(&ui, &tab_title) == "Reading list")?;
+    assert_eq!(ui.snapshot()?.current, Some(pending.id));
+    name_tree(&|| key("BackSpace"))?;
+    wait("automatic tree name", || text(&ui, &tab_title) == automatic)?;
+    println!("PASS a right click on a tab names its tree; an empty name is automatic again.");
+
     for n in 1..=8 {
         ui.engine.navigate(
             web_url(&fixture.url(&format!("/topic-{n}")))?,

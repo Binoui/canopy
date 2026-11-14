@@ -87,7 +87,7 @@ Running the command again refreshes imported pages and updates matching password
 
 ## Find your way around
 
-The top row has one tab per tree, in the order you started them. Trees that do not fit wait behind the arrow at the end of the row. Under the tabs, a strip shows the current tree: the path to the current page, with small buds for the other branches. Rest the pointer on the strip and it opens over the page with every branch. Rest it on a page in the strip to see a card with its title, site and a preview.
+The top row has one tab per tree, in the order you started them. Trees that do not fit wait behind the arrow at the end of the row. A tree is named after what you searched for, or after its first page. Right-click a tab to give the tree a name of your own; an empty name goes back to the automatic one. Under the tabs, a strip shows the current tree: the path to the current page, with small buds for the other branches. Rest the pointer on the strip and it opens over the page with every branch. Rest it on a page in the strip to see a card with its title, site and a preview.
 
 Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not affect them.
 
