@@ -385,6 +385,17 @@ impl Pages {
             let index = dormant
                 .iter()
                 .rposition(|saved| saved.entries.iter().any(|e| e.visit == visit))?;
+            // A noncurrent restored POST cannot be replaced in WebKit's list by GET.
+            // Keep this checkpoint intact and open that visit in a fresh branch instead.
+            let saved = &dormant[index];
+            if saved.entries.iter().any(|e| e.visit == visit && e.post)
+                && saved
+                    .entries
+                    .get(saved.current)
+                    .is_none_or(|e| e.visit != visit)
+            {
+                return None;
+            }
             Some((index, dormant.remove(index)))
         });
         let page = match (saved.as_ref().map(|(_, saved)| saved), visit) {
@@ -408,6 +419,23 @@ impl Pages {
         Ok(page)
     }
 
+    fn cold_restore(&self, visit: VisitId) -> Result<()> {
+        self.cancel_candidate();
+        let selected = self.branches.live.borrow().clone();
+        if let Some(selected) = selected {
+            selected.cancel_foreground();
+        }
+        let page = Rc::new(LivePage::empty(
+            &self.container,
+            self.me.clone(),
+            &self.context,
+        )?);
+        page.native.hide();
+        page.follow_container_bounds(&self.container);
+        *self.branches.candidate.borrow_mut() = Some(page.clone());
+        page.restore(visit)
+    }
+
     fn route(&self, visit: VisitId) -> Result<()> {
         let candidate = self.branches.candidate.borrow().clone();
         if candidate
@@ -423,7 +451,11 @@ impl Pages {
                 return Ok(());
             }
             if self.read(|b| b.visit(visit))?.opened_at.is_some() && page.contains(visit) {
-                return page.restore(visit);
+                return if page.requires_get(visit) {
+                    self.cold_restore(visit)
+                } else {
+                    page.restore(visit)
+                };
             }
         }
         self.candidate_page(Some(visit))?.restore_revived(visit)
@@ -497,7 +529,9 @@ impl Pages {
         let candidate = self.branches.candidate.borrow().clone();
         if candidate.as_ref().is_some_and(|p| p.view() == view) {
             if matches!(event, PageEvent::Error(_))
-                || matches!(event, PageEvent::Loading(false)) && empty
+                || matches!(event, PageEvent::Loading(false))
+                    && empty
+                    && !candidate.as_ref().unwrap().awaiting_download()
             {
                 let failed = matches!(event, PageEvent::Error(_));
                 self.cancel_candidate();

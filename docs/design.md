@@ -118,11 +118,16 @@ replaceState and fragments) and subframe policy decisions do not. Settling cance
 creates a fresh home view, so the next branch cannot inherit settled history. Release
 keeps a valid checkpoint when its current entry belongs to an open tree.
 
-A restored current POST uses the same refusal-and-GET path as other restored POST
-entries. It retains the back list without resubmission; the replacement GET drops
-forward entries. Back skips frame entries and duplicate visits introduced by this GET.
-It selects the nearest previous page visit; if none exists, native alias entries can
-still traverse without a network load. Saved captures route by their visit identity.
+A restored POST that is current at initial revival is fetched by GET. Its duplicate
+native entry is skipped by page Back; the GET drops forward entries, retaining the
+back list. A noncurrent restored POST opens by GET in a fresh branch instead of
+appending into the revived list. Its Back routes to its forest parent, reviving the
+previous branch at that entry. The checkpoint and its forward entries remain dormant;
+no form is resubmitted. This preserves the existing current-POST revival behavior.
+Back selects the nearest previous page visit, skipping same-page frame and alias
+entries. If none exists, it routes to the forest parent. Only when neither exists
+may it traverse an earlier same-page state. Mouse Back runs this same command;
+mouse Forward stays native. Saved captures route by visit identity.
 A citation uses its parent's current view only when that parent is the current document;
 otherwise it opens a fresh branch with that parent. Failed candidates emit the error
 and Loading(false), allowing chrome to refresh.
@@ -136,3 +141,10 @@ Foreground cancellation keeps an issued native load in a draining state until
 Finished. A delayed Started from that cancelled load cannot become a new native
 request or cancel the candidate. A subsequent user load queues behind that drain
 with its own ticket. This includes a load waiting for beforeunload to return.
+
+The chrome has a persistent GTK size request matching its window width and current
+cover height. GtkFixed can therefore reallocate children when page views are added
+or removed without shrinking the chrome to its initial 1 px request. The scrolled
+wrapper still permits the window to shrink. A candidate that becomes a download is
+retained until WebKit hands the download to the shared context. Handover has a 30 s
+fallback, so a missing download-started signal cannot retain a candidate forever.

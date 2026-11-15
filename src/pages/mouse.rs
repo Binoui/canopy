@@ -9,7 +9,10 @@ use gtk::{
 };
 use webkit2gtk::{SettingsExt, WebView, WebViewExt};
 
-pub(super) fn setup(webview: &WebView) -> Vec<glib::SignalHandlerId> {
+pub(super) fn setup(
+    webview: &WebView,
+    pages: std::rc::Weak<super::super::Pages>,
+) -> Vec<glib::SignalHandlerId> {
     webview.add_events(EventMask::BUTTON1_MOTION_MASK | EventMask::BUTTON_PRESS_MASK);
 
     let bf_state = BackForwardState(Rc::new(RefCell::new(0)));
@@ -57,13 +60,11 @@ pub(super) fn setup(webview: &WebView) -> Vec<glib::SignalHandlerId> {
             8 => {
                 inhibit = true;
                 bf_state_c.remove(BACK);
-                webview.evaluate_javascript(
-                    &create_js_mouse_event(webview, event, false, &bf_state_c),
-                    None,
-                    None,
-                    None::<&gtk::gio::Cancellable>,
-                    |_| {},
-                );
+                if let Some(pages) = pages.upgrade() {
+                    if let Err(error) = pages.go(super::super::Go::Parent) {
+                        pages.receive(super::super::PageEvent::Error(error.to_string()));
+                    }
+                }
             }
             9 => {
                 inhibit = true;

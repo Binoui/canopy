@@ -136,6 +136,7 @@ struct NativeState {
     /// page its file belongs to if it becomes a download instead. WebKit may report that
     /// load as failed before it reports the download, and the navigation is forgotten then.
     response_page: RefCell<Option<(Url, Option<VisitId>)>>,
+    download_handover: Cell<bool>,
     reload_candidate: RefCell<Option<Url>>,
     main_frame_post: Cell<Option<bool>>,
     #[cfg(feature = "gui-smoke")]
@@ -251,6 +252,20 @@ impl LivePage {
         self.native.stop_loading();
     }
 
+    pub(super) fn awaiting_download(&self) -> bool {
+        self.state.download_handover.get()
+    }
+
+    pub(super) fn requires_get(&self, visit: VisitId) -> bool {
+        self.state.history_document.get() != 0
+            && self
+                .state
+                .history
+                .borrow()
+                .iter()
+                .any(|e| e.visit == visit && e.needs_get)
+    }
+
     pub(super) fn cancel(&self) {
         self.state
             .owner()
@@ -291,6 +306,9 @@ impl LivePage {
                     .any(|e| e.item == **item && Some(e.visit) != self.current_visit())
             })
             .or_else(|| {
+                if self.back_visit().ok().flatten().is_some() {
+                    return None;
+                }
                 items
                     .iter()
                     .filter(allowed)
@@ -344,7 +362,7 @@ impl LivePage {
         let mut signals = Vec::new();
         signals.push((native.clone().upcast(), native.connect_close(|_| {})));
         signals.extend(
-            mouse::setup(&native)
+            mouse::setup(&native, pages.clone())
                 .into_iter()
                 .map(|id| (native.clone().upcast(), id)),
         );
@@ -390,6 +408,7 @@ impl LivePage {
             pending_scroll: Cell::new(None),
             restoration_viewport: Cell::new(None),
             response_page: RefCell::new(None),
+            download_handover: Cell::new(false),
             reload_candidate: RefCell::new(None),
             main_frame_post: Cell::new(None),
             #[cfg(feature = "gui-smoke")]
@@ -509,7 +528,9 @@ impl LivePage {
                             state.complete_same_document();
                             state.update_title();
                             state.restore_scroll();
-                            state.emit(PageEvent::Loading(false));
+                            if !state.download_handover.get() {
+                                state.emit(PageEvent::Loading(false));
+                            }
                             let enabled = state
                                 .owner()
                                 .browser
@@ -567,7 +588,20 @@ impl LivePage {
                     // A response turned into a download ends the page load this way; the page
                     // the user was reading stays.
                     if error.matches(PolicyError::FrameLoadInterruptedByPolicyChange) {
-                        state.emit(PageEvent::Loading(false));
+                        state.download_handover.set(true);
+                        // Handover normally completes in download-started. Give failures
+                        // that never produce that signal a bounded exit as well.
+                        let weak = Rc::downgrade(&state);
+                        glib::timeout_add_local_once(
+                            std::time::Duration::from_secs(30),
+                            move || {
+                                if let Some(state) = Pages::enter_native(&weak) {
+                                    if state.download_handover.replace(false) {
+                                        state.emit(PageEvent::Loading(false));
+                                    }
+                                }
+                            },
+                        );
                     } else if !cancelled {
                         state.emit(PageEvent::Error(format!(
                             "Could not load this page. {}",
@@ -748,7 +782,20 @@ impl LivePage {
         }
         let weak = Rc::downgrade(&state);
         let favicon = context.register_view(&native, move |source| {
-            Pages::enter_native(&weak).and_then(|state| state.download_page(source))
+            Pages::enter_native(&weak).and_then(|state| {
+                let page = state
+                    .download_page(source)
+                    .or_else(|| state.owner().read(|b| b.snapshot()).ok()?.current);
+                if state.download_handover.replace(false) {
+                    let weak = Rc::downgrade(&state);
+                    glib::idle_add_local_once(move || {
+                        if let Some(state) = Pages::enter_native(&weak) {
+                            state.emit(PageEvent::Loading(false));
+                        }
+                    });
+                }
+                page
+            })
         });
         signals.push((native.clone().upcast(), favicon));
         Ok(Self {
@@ -1593,7 +1640,14 @@ impl NativeState {
             #[cfg(feature = "gui-smoke")]
             self.revival_refusals.set(self.revival_refusals.get() + 1);
             decision.ignore();
-            // GET replaces this restored POST entry in place, retaining its back list.
+            if self.history_document.get() != 0 {
+                if let Some(visit) = self.current_entry_visit() {
+                    self.report(self.owner().cold_restore(visit));
+                }
+                return true;
+            }
+            // At initial revival the POST is current in the native list. Its GET
+            // appends after it; page Back skips the duplicate visit.
             if let Some(document) = self.current_entry_document() {
                 self.history_document.set(document);
             }
