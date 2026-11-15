@@ -383,6 +383,8 @@ fn owner_fork_queue_scroll() -> Result<()> {
 fn middle_history() -> Result<()> {
     let f = Fixture::new()?;
     let [a, b, c] = f.chain()?;
+    f.pages.go(Go::Visit(c))?;
+    f.arrived(c)?;
     f.pages.open_roots(&[f.server.url("/root")])?;
     wait("root", || {
         f.pages
