@@ -1746,6 +1746,77 @@ mod tests {
     }
 
     #[test]
+    fn seeded_history_pins_ranked_suggestions() {
+        let b = memory();
+        let now = 100 * crate::suggest::DAY;
+        for i in 1..=40_u128 {
+            let id = ulid::Ulid::from(i).to_string();
+            b.connection
+                .execute(
+                    "INSERT INTO visits(id,url,title,created_at,opened_at) VALUES(?1,?2,?3,?4,?4)",
+                    params![
+                        id,
+                        format!("https://seed{i}.test/"),
+                        format!("Seed {i}"),
+                        now - 10 * crate::suggest::DAY
+                    ],
+                )
+                .unwrap();
+            b.connection
+                .execute(
+                    "INSERT INTO tree_state(root_id,last_visit_id,settled_at) VALUES(?1,?1,?2)",
+                    params![id, now],
+                )
+                .unwrap();
+            for day in 1..=3 {
+                b.connection
+                    .execute(
+                        "INSERT INTO visit_events(visit_id,kind,at) VALUES(?1,'return',?2)",
+                        params![id, now - day * crate::suggest::DAY],
+                    )
+                    .unwrap();
+            }
+        }
+        let forest = crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap();
+        let arrivals = b.arrivals(0).unwrap();
+        let result = crate::suggest::rank(
+            &crate::suggest::Inputs {
+                forest: &forest,
+                bookmarks: &[],
+                declined: &HashSet::new(),
+                arrivals: &arrivals,
+                chrome: &[],
+                left: b.last_event_tree().unwrap(),
+            },
+            now,
+        );
+        assert_eq!(
+            result
+                .iter()
+                .map(|s| (s.key().to_string(), s.why()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "tree 00000000000000000000000001".into(),
+                    "Opened 3 days in a row".into()
+                ),
+                (
+                    "tree 00000000000000000000000002".into(),
+                    "Opened 3 days in a row".into()
+                ),
+                (
+                    "tree 00000000000000000000000003".into(),
+                    "Opened 3 days in a row".into()
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn history_counts_returns_but_never_reloads_and_finds_the_last_tree_outside_the_window() {
         let mut b = memory();
         let root = follow(&mut b, "root", NavigationTarget::Root);
