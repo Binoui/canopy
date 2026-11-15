@@ -908,6 +908,16 @@ fn wedge_script() -> Result<()> {
         uri_path(&f),
         f.pages.read(|b| b.snapshot())?.visits.len() - before
     );
+    assert_eq!(
+        f.cursor_path(),
+        "/scripted",
+        "N2: self navigation must select its visit"
+    );
+    assert_eq!(
+        f.pages.read(|b| b.snapshot())?.visits.len(),
+        before + 1,
+        "N2: exactly one script visit"
+    );
     f.pages.go(Go::Address {
         url: f.server.url("/after"),
         target: NavigationTarget::ChildOf(f.cursor().unwrap()),
