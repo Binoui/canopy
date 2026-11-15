@@ -510,58 +510,99 @@ impl Pages {
         let old = self.branches.live.borrow_mut().replace(candidate.clone());
         let focus = old.as_ref().is_some_and(|page| page.native.has_focus());
         if let Some(old) = old {
-            old.native.set_child_visible(false);
             self.releasing.set(true);
+            if let Some(window) = old.native.window() {
+                window.set_pass_through(true);
+            }
+            let pending = RefCell::new(Some(old.clone()));
             let weak = self.me.clone();
-            let pending = old.clone();
-            old.capture_checkpoint_scroll(move || {
-                let saved = Self::release_page(pending);
-                if let Some(pages) = weak.upgrade() {
-                    if let Ok(saved) = saved {
-                        let open = pages
-                            .read(|b| {
-                                ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)
-                            })
-                            .is_ok_and(|forest| {
-                                saved.entries.get(saved.current).is_some_and(|e| {
-                                    forest.tree_of(e.visit).is_some_and(|tree| {
-                                        forest.open().iter().any(|t| t.id == tree)
-                                    })
-                                })
-                            });
-                        if open {
-                            pages.branches.dormant.borrow_mut().push(saved);
-                        }
-                    }
-                    pages.releasing.set(false);
-                    loop {
-                        let command = pages.commands.borrow_mut().pop_front();
-                        let Some(command) = command else { break };
-                        let result = match command {
-                            Command::Go(go, continuation) => {
-                                let result = pages.go(go);
-                                if let Some(continuation) = continuation {
-                                    pages.continue_with(continuation);
-                                }
-                                result
-                            }
-                            Command::Settle(tree) => pages.settle_tree(tree),
-                            Command::Reload => pages.reload(),
-                        };
-                        if let Err(error) = result {
-                            pages.receive(PageEvent::Error(error.to_string()));
-                        }
-                        if pages.releasing.get() {
-                            break;
-                        }
+            #[cfg(feature = "gui-smoke")]
+            let started = std::time::Instant::now();
+            let finish: Rc<dyn Fn(&str)> = Rc::new(move |_reason| {
+                if let Some(old) = pending.borrow_mut().take() {
+                    #[cfg(feature = "gui-smoke")]
+                    eprintln!("PICTURE {_reason} {}ms", started.elapsed().as_millis());
+                    if let Some(pages) = weak.upgrade() {
+                        pages.release_picture(old);
                     }
                 }
             });
+            let painted = finish.clone();
+            let view = candidate.native.clone();
+            candidate.native.call_async_javascript_function(
+                "while (!document.body) await new Promise(r => requestAnimationFrame(r)); await new Promise(r => requestAnimationFrame(r)); await new Promise(r => requestAnimationFrame(r)); return true;",
+                None, Some("canopy-picture"), None, None::<&gio::Cancellable>,
+                move |result| {
+                    if result.is_ok() {
+                        view.snapshot(webkit2gtk::SnapshotRegion::Visible, webkit2gtk::SnapshotOptions::NONE, None::<&gio::Cancellable>, move |result| {
+                            if result.is_ok() {
+                                glib::timeout_add_local_once(std::time::Duration::from_millis(34), move || painted("snapshot"));
+                            }
+                        });
+                    }
+                },
+            );
+            glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+                finish("cap")
+            });
+            candidate.show();
+            if let Some(window) = old.native.window() {
+                window.raise();
+            }
+            self.place_view(&candidate.native);
+        } else {
+            candidate.show();
         }
-        candidate.show();
         if focus {
             candidate.focus();
         }
+    }
+
+    fn release_picture(&self, old: Rc<LivePage>) {
+        old.native.set_child_visible(false);
+        let weak = self.me.clone();
+        let pending = old.clone();
+        old.capture_checkpoint_scroll(move || {
+            let saved = Self::release_page(pending);
+            if let Some(pages) = weak.upgrade() {
+                if let Ok(saved) = saved {
+                    let open = pages
+                        .read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))
+                        .is_ok_and(|forest| {
+                            saved.entries.get(saved.current).is_some_and(|e| {
+                                forest
+                                    .tree_of(e.visit)
+                                    .is_some_and(|tree| forest.open().iter().any(|t| t.id == tree))
+                            })
+                        });
+                    if open {
+                        pages.branches.dormant.borrow_mut().push(saved);
+                    }
+                }
+                pages.releasing.set(false);
+                loop {
+                    let command = pages.commands.borrow_mut().pop_front();
+                    let Some(command) = command else { break };
+                    let result = match command {
+                        Command::Go(go, continuation) => {
+                            let result = pages.go(go);
+                            if let Some(continuation) = continuation {
+                                pages.continue_with(continuation);
+                            }
+                            result
+                        }
+                        Command::Settle(tree) => pages.settle_tree(tree),
+                        Command::Reload => pages.reload(),
+                    };
+                    if let Err(error) = result {
+                        pages.receive(PageEvent::Error(error.to_string()));
+                    }
+                    if pages.releasing.get() {
+                        break;
+                    }
+                }
+            }
+        });
     }
 
     fn receive_view(&self, view: crate::browser::ViewId, empty: bool, event: PageEvent) {

@@ -193,6 +193,12 @@ Pages::place_view owns page allocation and stacking. Every page view, including
 hidden candidates and releasing views, uses the content rectangle (window width,
 window height minus the fixed 94 px header). Pages stores that rectangle and applies
 it at creation, show, map and every resize, without waiting for a container signal.
+The widget's size request and Fixed position also equal this rectangle. Thus the
+container's own allocation pass agrees with Pages; cover changes and view churn
+cannot briefly allocate a different viewport before a corrective handler runs.
+The external-policy ScrolledWindow takes the window's allocation independently
+of these requests, including when shrinking; page positions do not introduce a
+scroll offset.
 GTK child visibility unmaps dormant candidates while retaining their visible flag,
 so GTK accepts allocations for them; ordinary hide() rejects those allocations.
 Expanded chrome covers overlay content rather than shrinking the page viewport.
@@ -202,6 +208,18 @@ can span a refresh without losing the click. renderForest owns that identity rul
 Adding, removing, showing or hiding page views never changes chrome allocation;
 its persistent size request still matches the window width and cover height. These
 independent allocations let the same GtkFixed preserve both rules.
+
+Pages::select_candidate switches bookkeeping and keyboard focus at commit. It
+maps the incoming page under the outgoing native window, whose GDK input is made
+pass-through immediately. Only that outgoing picture is held. Two isolated-world
+animation frames after a body exists, followed by a rendered snapshot and 34 ms
+for presentation, release the picture through Pages::release_picture. A 300 ms
+cap bounds a stalled renderer. Release then checkpoints and destroys the outgoing
+view before draining the existing FIFO. Commands arriving during the picture hold
+use that same queue, so a second switch cannot leave a third picture mapped.
+Failures and cancellation before commit never enter the picture handoff.
+This is a measured rendering heuristic, not a WebKit first-paint API; a cap expiry
+can still reveal an unpainted document if the renderer is stalled beyond the cap.
 
 Response state belongs to a LoadTicket. Only the main response policy decision
 that calls download marks that ticket for handover. NativeState::end_response

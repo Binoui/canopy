@@ -156,6 +156,57 @@ fn main() -> Result<()> {
         accounts: store(&[("alice", "fake-alice")]),
     }));
 
+    // A second origin holds its response until both fill paths have been checked.
+    open(&ui, &base, "/login")?;
+    wait("saved login before pending switch", || {
+        offered(&ui) == json!(["alice"])
+    })?;
+    let pending = TcpListener::bind("127.0.0.1:0")?;
+    let pending_url = web_url(&format!("http://{}/login", pending.local_addr()?))?;
+    let (arrived, hit) = std::sync::mpsc::channel();
+    let (release, gate) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        if let Ok((mut stream, _)) = pending.accept() {
+            let _ = http::request(&mut stream);
+            let _ = arrived.send(());
+            let _ = gate.recv();
+            let body = page("/login");
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    ui.pages.open_roots(std::slice::from_ref(&pending_url))?;
+    wait("other origin is pending", || hit.try_recv().is_ok())?;
+    click_chrome(&ui, "#login-chip")?;
+    wait(
+        "click fills the visible page during a pending switch",
+        || fields(&ui).is_ok_and(|f| f["pass"] == "fake-alice"),
+    )?;
+    eval(&ui, "user.value='';pass.value='';JSON.stringify(true)")?;
+    key("ctrl+shift+l")?;
+    wait(
+        "shortcut fills the visible page during a pending switch",
+        || fields(&ui).is_ok_and(|f| f["pass"] == "fake-alice"),
+    )?;
+    release.send(())?;
+    wait("other origin lands", || {
+        ui.pages
+            .selected_page()
+            .native
+            .uri()
+            .is_some_and(|u| u == pending_url.as_str())
+            && !ui.pages.selected_page().native.is_loading()
+    })?;
+    assert_eq!(
+        fields(&ui)?["pass"],
+        "",
+        "incoming origin must receive no saved password"
+    );
+    println!("PASS saved login fills only the visible page while another origin is pending.");
+
     open(&ui, &base, "/plain")?;
     pump(700);
     assert_eq!(offered(&ui), json!([]));

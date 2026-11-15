@@ -29,6 +29,14 @@ struct Server {
     gates: Arc<Mutex<HashSet<String>>>,
 }
 fn page_body(path: &str) -> String {
+    if path.starts_with("/colour/") {
+        let colour = if path.ends_with('a') {
+            "#d02040"
+        } else {
+            "#20b060"
+        };
+        return format!("<!doctype html><body style='margin:0;background:{colour}'><a id='fork' href='/d'>fork</a><script>window.resizes=[];addEventListener('resize',()=>resizes.push([innerWidth,innerHeight]))</script>");
+    }
     format!("<!doctype html><title>{path}</title><body style='margin:0;height:10000px'><input id='field'><a id='fork' href='/d'>fork</a><div id='fragment' style='margin-top:5000px'>end</div></body>")
 }
 fn respond(stream: &mut std::net::TcpStream, status: &str, extra: &str, body: &str) {
@@ -704,6 +712,105 @@ fn palette_anchor_stable() -> Result<()> {
     Ok(())
 }
 
+fn page_picture_never_blanks() -> Result<()> {
+    let u = U::new()?;
+    let roots = [u.root("/colour/a")?, u.root("/colour/b")?];
+    pump(500);
+    for i in 0..24 {
+        u.ui.pages.go(Go::Visit(roots[i % 2]))?;
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(900) || u.cursor() != Some(roots[i % 2]) {
+            assert!(
+                start.elapsed() < Duration::from_secs(8),
+                "switch must commit"
+            );
+            pump(3);
+            let window = u.ui.window.window().context("window")?;
+            let pixel = window.pixbuf(600, 600, 1, 1).context("pixel")?;
+            let p = pixel.read_pixel_bytes();
+            assert!(
+                (p[0] == 208 && p[1] == 32 && p[2] == 64)
+                    || (p[0] == 32 && p[1] == 176 && p[2] == 96),
+                "page must show only the outgoing or incoming picture: {:?}",
+                &p[..3]
+            );
+        }
+        assert_eq!(u.cursor(), Some(roots[i % 2]));
+    }
+    Ok(())
+}
+
+fn layout_stays_in_slot() -> Result<()> {
+    let u = U::new()?;
+    let a = u.root("/colour/a")?;
+    let b = u.root("/colour/b")?;
+    pump(500);
+    let bad = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = bad.clone();
+    u.ui.pages.observe_page_placement(move |view| {
+        if view.widget_name() == "watched" {
+            return;
+        }
+        view.set_widget_name("watched");
+        let seen = seen.clone();
+        let expected = view.allocation();
+        view.connect_size_allocate(move |_, rect| {
+            if *rect != expected {
+                seen.borrow_mut().push(*rect);
+            }
+        });
+    });
+    for i in 0..10 {
+        move_to(600, 40)?;
+        pump(300);
+        move_to(600, 600)?;
+        pump(500);
+        u.ui.chrome
+            .toast(canopy::chrome::Toast::Info("layout check".into()));
+        pump(2600);
+        if i % 3 == 0 {
+            click_chrome(&u.ui, &u.tab(if i % 2 == 0 { a } else { b }))?;
+        } else if i % 3 == 1 {
+            key(if i % 2 == 0 { "ctrl+1" } else { "ctrl+2" })?;
+        } else {
+            u.ui.pages.go(Go::Visit(if i % 2 == 0 { a } else { b }))?;
+        }
+        pump(700);
+        assert_eq!(
+            eval(&u.ui, "JSON.stringify(resizes)")?,
+            json!([]),
+            "page must not receive a resize during a switch or cover change"
+        );
+    }
+    u.root("/colour/c")?;
+    pump(500);
+    key("ctrl+w")?;
+    pump(1000);
+    assert_eq!(eval(&u.ui, "JSON.stringify(resizes)")?, json!([]));
+    assert!(
+        bad.borrow().is_empty(),
+        "every native allocation must equal the slot: {:?}",
+        bad.borrow()
+    );
+    u.ui.window.resize(700, 500);
+    pump(500);
+    wait("page receives only the window resize", || {
+        eval(&u.ui, "JSON.stringify(resizes)").ok() == Some(json!([[700, 406]]))
+    })?;
+    let scroller =
+        u.ui.window
+            .child()
+            .unwrap()
+            .downcast::<gtk::ScrolledWindow>()
+            .unwrap();
+    assert_eq!(scroller.hadjustment().value(), 0.);
+    assert_eq!(scroller.vadjustment().value(), 0.);
+    assert!(!scroller.hscrollbar().is_some_and(|w| w.is_mapped()));
+    assert!(!scroller.vscrollbar().is_some_and(|w| w.is_mapped()));
+    geometry(&u)?;
+    Ok(())
+}
+
 /// Opens a new tree, then 300 ms after it shows, clicks the first tree's tab, ten times.
 fn main() -> Result<()> {
     let environment = tempfile::tempdir()?;
@@ -726,6 +833,8 @@ fn main() -> Result<()> {
         .collect();
     type Case = (&'static str, fn() -> Result<()>);
     let cases: &[Case] = &[
+        ("picture", page_picture_never_blanks),
+        ("slot", layout_stays_in_slot),
         ("mouse", ui_mouse_back),
         ("allocation", ui_tab_collapse),
         ("resize", resize_and_show),
