@@ -151,3 +151,9 @@ name = "refresh_smoke"
 path = "tests/refresh_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
+
+[[test]]
+name = "readme_shots"
+path = "tests/readme_shots.rs"
+harness = false
+required-features = ["gui-smoke"]

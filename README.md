@@ -1,42 +1,216 @@
-# Canopy
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/banner-light.svg">
+    <img src="docs/assets/banner-light.svg" alt="Canopy: a browser where your browsing forms trees" width="880">
+  </picture>
+</p>
 
-Canopy is a prototype Linux browser written in Rust. Your visits form trees. Going back to a page and following another link keeps both branches.
+<p align="center">
+  A Linux browser written in Rust that remembers <b>how you got there</b>. Every page keeps the page it came from, so going back and following another link grows a second branch instead of losing the first.
+</p>
 
-## Run the browser
+<p align="center">
+  <img alt="Linux" src="https://img.shields.io/badge/Linux-X11_and_Wayland-2f9e5f?style=flat-square&labelColor=151917">
+  <img alt="Written in Rust" src="https://img.shields.io/badge/Rust-stable-2f9e5f?style=flat-square&logo=rust&logoColor=white&labelColor=151917">
+  <img alt="Engine: WebKitGTK 4.1" src="https://img.shields.io/badge/engine-WebKitGTK_4.1-2f9e5f?style=flat-square&labelColor=151917">
+  <img alt="Status: prototype" src="https://img.shields.io/badge/status-prototype-e6ba66?style=flat-square&labelColor=151917">
+  <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-2f9e5f?style=flat-square&labelColor=151917">
+</p>
 
-Install stable Rust, GTK 3, WebKitGTK 4.1 and the SQLite development files.
+<p align="center">
+  <img src="docs/assets/shots/fork.webp" width="880" alt="A wiki page about repotting is open. A link to a forum thread is followed, three links in the thread are middle-clicked and appear in the strip as dashed waiting pages, a fourth link is followed, then the pointer rests on the strip and it opens to show the whole tree and a card for the forum thread">
+</p>
 
-On Debian or Ubuntu, install the native dependencies with this command:
+<p align="center">
+  <sub>One tree growing: a link followed, three left waiting for later, another followed, then the strip opened over the page.</sub>
+</p>
 
-```sh
-sudo apt install build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libsqlite3-dev bubblewrap xdg-dbus-proxy
-```
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#what-it-is">What it is</a> ·
+  <a href="#a-look-inside">A look inside</a> ·
+  <a href="#what-it-does">What it does</a> ·
+  <a href="#keyboard">Keyboard</a> ·
+  <a href="#install-it">Install it</a> ·
+  <a href="#working-on-canopy">Working on Canopy</a> ·
+  <a href="#how-it-is-built">How it is built</a>
+</p>
 
-On Arch Linux, use this command:
+<table align="center">
+  <tr>
+    <td align="center" width="290"><a href="#quick-start"><b>Try it</b></a><br>Build it, run it, grow your first fork.</td>
+    <td align="center" width="290"><a href="docs/guide.md"><b>Read the guide</b></a><br>Every feature, step by step.</td>
+    <td align="center" width="290"><a href="#working-on-canopy"><b>Work on Canopy</b></a><br>Run the checks, read the design notes.</td>
+  </tr>
+</table>
 
-```sh
-sudo pacman -S --needed base-devel pkgconf gtk3 webkit2gtk sqlite bubblewrap xdg-dbus-proxy
-```
+## Quick start
 
-From the project folder, run this command:
+1. **Install the build tools and libraries:** stable Rust, GTK 3, WebKitGTK 4.1, SQLite, and the two programs WebKit's sandbox needs.
 
-```sh
-cargo run --locked
-```
+   ```sh
+   # Debian or Ubuntu
+   sudo apt install build-essential pkg-config libgtk-3-dev libwebkit2gtk-4.1-dev libsqlite3-dev bubblewrap xdg-dbus-proxy
 
-To keep the data in a separate folder, pass its path:
+   # Arch Linux
+   sudo pacman -S --needed base-devel pkgconf gtk3 webkit2gtk sqlite bubblewrap xdg-dbus-proxy
+   ```
 
-```sh
-cargo run --locked -- --data-dir .data
-```
+2. **Run it** from the project folder:
 
-Canopy runs page and chrome processes inside WebKit's Linux sandbox, which needs `bubblewrap` and `xdg-dbus-proxy`. If the sandbox cannot start, WebKit stops with a fatal error. Setting `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1` starts Canopy without it, and Canopy then prints a warning.
+   ```sh
+   cargo run --locked
+   ```
 
-NVIDIA's video decoders cannot start inside the sandbox, so on a machine with NVIDIA's driver pages decode video in software. Canopy sets `GST_PLUGIN_FEATURE_RANK` and `WEBKIT_GST_DISABLE_GL_SINK` at startup to keep that video from painting green. A value you set yourself for either variable is kept.
+3. **Grow a fork.** Press **Ctrl+K**, type an address and press **Enter**. Follow a link. Click the first page in the strip under the tabs, then follow a different link. Both pages now hang under the first one, and neither is lost.
 
-## Install for your launcher
+Good to know:
 
-To build an optimized binary into `~/.local/bin` and add Canopy to rofi, wofi or your desktop menu, run these commands:
+- Close Canopy and start it again: the trees and the page you were on are kept.
+- Your data lives in `~/.local/share/canopy`. To try Canopy without touching it, run `cargo run --locked -- --data-dir .data`.
+- `canopy --import-chrome` brings your Chrome history, bookmarks, cookies and saved passwords ([how it works](docs/guide.md#bring-your-chrome-history)).
+- If the window does not start, or video plays green on an NVIDIA card, see [Sandbox and video](docs/guide.md#sandbox-and-video).
+
+## What it is
+
+A tab bar is a flat list. It forgets which page led to which, and going back to try another link throws away where you had been. Canopy keeps that shape. Each visit records its parent, each search or typed address starts a new tree, and the tabs at the top are whole trees, not single pages.
+
+Under the tabs, a strip draws the tree you are in: the path to the current page, with small buds for the other branches. Rest the pointer on it and it opens over the page with every branch. Click any page to return to it.
+
+A tree is also a place to keep things. Links you open with a middle click wait in the tree until you read them. Files you download hang as leaves on the page they came from. The text of the pages you read is saved, so a few remembered words find the page again, along with the comment that linked to it.
+
+> [!NOTE]
+> **Prototype.** Canopy is a personal browser in active development and runs on Linux only. It has no extensions, no list of all downloads, no editor for saved logins, and resuming a page does not restore its forms. The [guide](docs/guide.md) says plainly what each feature does not do yet.
+
+## A look inside
+
+Every picture here is the real window, taken by the test suite while it browses a small made-up web about repotting a bonsai. They follow your GitHub theme: Canopy has a dark and a light theme, and starts dark.
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/assets/shots/card-dark.webp">
+        <img src="docs/assets/shots/card-light.webp" width="418" alt="The strip opened over a page, showing the whole tree as small icons. A card under one of them gives the page's title, site, the text around the link that led to it, and the buttons Open and New branch here">
+      </picture>
+      <br><sub><b>The strip.</b> Every branch of the tree, one hover away. A card tells you what each page was.</sub>
+    </td>
+    <td width="50%" align="center">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/assets/shots/tree-dark.webp">
+        <img src="docs/assets/shots/tree-light.webp" width="418" alt="The current tree in a larger view: nine pages with their titles, three of them dashed because they are waiting to be read">
+      </picture>
+      <br><sub><b>Waiting pages.</b> Middle-click links to keep them in the tree, drawn dashed until you read them.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/assets/shots/forest-dark.webp">
+        <img src="docs/assets/shots/forest-light.webp" width="418" alt="The forest view: three trees listed with their names and page counts, the first drawn in full with titled pages">
+      </picture>
+      <br><sub><b>The forest.</b> Every tree on one canvas. Pan, zoom, and click a page to return to it.</sub>
+    </td>
+    <td width="50%" align="center">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/assets/shots/start-dark.webp">
+        <img src="docs/assets/shots/start-light.webp" width="418" alt="The new-tree page: a search field, three pinned trees drawn as small trees, twelve bookmarks, and two pages suggested from history with the reason under each">
+      </picture>
+      <br><sub><b>A new tree.</b> Pinned trees reopen where you left them, above bookmarks and suggestions from your habits.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/assets/shots/palette-dark.webp">
+        <img src="docs/assets/shots/palette-light.webp" width="418" alt="The palette searching for akadama: four results from saved text, each with the passage that matched, and a web search below">
+      </picture>
+      <br><sub><b>Search what you read.</b> The palette finds words inside pages you visited, not only titles.</sub>
+    </td>
+    <td width="50%" align="center">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/assets/shots/files-dark.webp">
+        <img src="docs/assets/shots/files-light.webp" width="418" alt="A green leaf on the current page in the strip, opened into a list of the two files downloaded from that page, with their sizes">
+      </picture>
+      <br><sub><b>Downloads are leaves.</b> A file stays attached to the page it came from.</sub>
+    </td>
+  </tr>
+</table>
+
+## What it does
+
+Each heading links to its part of the [guide](docs/guide.md).
+
+### [Trees instead of tabs](docs/guide.md#find-your-way-around)
+
+- One tab per tree, named after what you searched for or after its first page. Right-click to rename it.
+- The strip shows the path to the current page and opens on hover to show every branch.
+- A card on each page gives its title, site and where it was found, with **New branch here** to start from that page without loading it.
+- **Ctrl+E** opens the forest, with every tree on one canvas.
+- **Ctrl+W** settles a tree: it leaves the tabs, keeps every page, and comes back when you open one of them. Pinned trees stay on the new-tree page.
+
+### [Read now, read later](docs/guide.md#resume-reading)
+
+- **Ctrl+click** or **middle-click** a link and its page waits in the tree, with the comment or passage it was linked from.
+- A counter at the end of the strip shows how many pages wait. **Ctrl+Tab** opens the next one.
+- Canopy saves the text of the pages you read, or only the passage you select with **Ctrl+S**. Form fields are left out, and a page showing a password form is not saved automatically.
+- **Ctrl+K** searches titles, addresses and saved text. A saved passage opens offline, with a way back to its source.
+
+### [A new-tree page that knows your habits](docs/guide.md#find-your-way-around)
+
+- **Ctrl+T** shows pinned trees, bookmarks and up to three suggestions from your own history, each with the reason it is there.
+- Keep a suggestion as a bookmark or a pinned tree, or dismiss it for good.
+- Until Canopy has history of its own, your busiest Chrome sites fill in.
+
+### [Downloads that stay in context](docs/guide.md#download-files)
+
+- A file is saved straight to your download folder, never over an existing file.
+- It shows as a green leaf on the page it came from. Click the leaf to open the file or its folder.
+- Move or delete the file and the leaf turns hollow.
+
+### [Logins, yours or your password manager's](docs/guide.md#sign-in-with-a-saved-login)
+
+- Saved logins live in an encrypted vault whose key stays in your system keyring.
+- Nothing is filled until you ask, with the key button or **Ctrl+Shift+L**, and only on the exact site the login was saved for.
+- Canopy offers to save a login once the site has let you in.
+- Prefer your own manager? `canopy --login-helper bitwarden` uses Bitwarden through its `bw` tool, and a [helper for another manager](docs/guide.md#write-a-helper) is a small program that answers three questions in JSON.
+
+### [Coming from Chrome](docs/guide.md#bring-your-chrome-history)
+
+- `canopy --import-chrome` reads history, bookmarks, cookies and saved passwords while Chrome stays open.
+- Sites whose sessions still work stay signed in.
+- Imported history is searchable and fills suggestions, and plants no trees of its own.
+
+### [A good desktop citizen](docs/guide.md#open-links-from-other-apps)
+
+- `canopy URL…` opens each address as a new tree. If Canopy is already running, the links go to that window.
+- It can be your default browser: `xdg-settings set default-web-browser canopy.desktop`.
+- Pages run inside WebKit's sandbox.
+
+## Keyboard
+
+| Keys | What they do |
+| --- | --- |
+| **Ctrl+K**, **Ctrl+L** | Open the palette: search your forest and saved text, or go to an address. **Ctrl+L** selects the current address. |
+| **Enter**, **Alt+Enter** | In the palette, open the result here, or in a new tree. |
+| **Ctrl+T** | New-tree page. Start typing to search in a new tree. |
+| **Ctrl+1** to **Ctrl+9** | Switch to a tree. |
+| **Ctrl+W** | Settle the current tree. |
+| **Ctrl+E** | The forest: every tree. |
+| **Ctrl+Shift+E** | The current tree in a larger view. |
+| **Alt+Left** | Back to the parent page. |
+| **Ctrl+Tab** | Next waiting page of this tree. |
+| **F6** | Move the keyboard between the page and the strip. **Left** and **Right** walk the path. |
+| **Ctrl+D** | Bookmark the page, or remove its bookmark. |
+| **Ctrl+S** | Remember the selected passage. |
+| **Ctrl+Shift+L** | Fill the saved login. |
+| **Ctrl+R**, **F5** | Reload. |
+| **Ctrl+Q** | Quit. |
+
+## Install it
+
+To build an optimized binary into `~/.local/bin` and add Canopy to rofi, wofi or your desktop menu:
 
 ```sh
 cargo install --path . --locked --root ~/.local
@@ -48,181 +222,15 @@ for size in 16 22 24 32; do
 done
 ```
 
-Run the first command again after pulling changes. The binary embeds its font, so it does not need the project folder.
+Run the first command again after pulling changes. The binary embeds its font, so it does not need the project folder. The simpler `canopy-small.svg` replaces the icon at 32 pixels and below, where the full drawing blurs.
 
-The icon is `assets/logo/canopy.svg`. The simpler `assets/logo/canopy-small.svg` replaces it at 32 pixels and below, where the full drawing blurs.
-
-The `rust-toolchain.toml` file selects stable Rust for this project. It does not change your default version in other projects.
-
-Canopy ships the Inter typeface in `assets/fonts/`, under the SIL Open Font License in `assets/fonts/LICENSE.txt`.
-
-## Open links from other apps
-
-Pass one or more addresses to open each one as a new tree. The last one is shown, and the others load when you open their tree:
-
-```sh
-canopy https://example.org https://www.rust-lang.org
-```
-
-When Canopy is already open on the same data folder, a second launch hands its addresses to that window, brings it forward and exits. Without addresses it only brings the window forward. A different `--data-dir` is a separate browser with its own window. Canopy opens only HTTP and HTTPS addresses and refuses anything else with an error.
-
-The installed `canopy.desktop` declares Canopy as a handler for `http` and `https` links. To make Canopy your default browser, run this command after installing it:
+To make Canopy your default browser, so links clicked in other apps open in it:
 
 ```sh
 xdg-settings set default-web-browser canopy.desktop
 ```
 
-`xdg-settings get default-web-browser` shows the current choice. Links clicked in other apps then open in Canopy.
-
-The running window holds a lock on `instance.lock` in its data folder and listens on `instance.sock` next to it. The system releases the lock when Canopy quits or crashes, so a crash never blocks the next start. If the window cannot open the addresses, the second launch prints the reason and exits with an error.
-
-## Bring your Chrome history
-
-To bring your Chrome history, bookmarks, cookies, and saved passwords into Canopy, run:
-
-```sh
-canopy --import-chrome
-```
-
-It reads `~/.config/google-chrome/Default`. Pass another profile folder after the flag to read that one instead, and add `--data-dir PATH` to import into a separate data folder. Chrome can stay open.
-
-`--import-chrome` replaces the history for that profile and adds missing bookmarks to Canopy. Existing bookmarks keep their title, folder, and order. The upgrade copies previously imported bookmarks once. A bookmark removed in Canopy can return on re-import.
-
-**Ctrl+K** then shows **Bookmarks** and **From Chrome** results next to your forest. A bookmark always plants a new tree. Imported history opens like a typed address. Until Canopy has habits of its own, the new-tree page offers your busiest Chrome sites. Imported pages plant no trees and add no tabs.
-
-Cookies reach Canopy while it runs, or at its next start before it reloads your page or opens the addresses it was given. This keeps sites signed in when their sessions still work. Chrome's cookies replace matching Canopy cookies. Session cookies last until Canopy quits. Partitioned and expired cookies are skipped.
-
-Passwords go into an encrypted vault. Its key stays in your system keyring. The import may ask you to unlock the keyring. [Sign in with a saved login](#sign-in-with-a-saved-login) explains how Canopy fills them.
-
-Running the command again refreshes imported pages and updates matching passwords without removing other saved accounts. Canopy loads none of the imported pages. If Chrome is writing a database, or the keyring is locked, resolve the reported error and run the import again. Cookies accepted just before a crash may need another import.
-
-## Find your way around
-
-The top row has one tab per open tree, in the order you started them. Trees that do not fit wait behind the arrow at the end of the row. A tree is named after what you searched for, or after its first page. Right-click a tab to give the tree a name of your own; an empty name goes back to the automatic one. Under the tabs, a strip shows the current tree: the path to the current page, with small buds for the other branches. Rest the pointer on the strip and it opens over the page with every branch. Rest it on a page in the strip to see a card with its title, site and a preview.
-
-The Bookmarks band shows up to sixteen top-level tiles, with folder chips to the right of its heading. Overflow tiles and chips open lists. Right-click a tile or list row to remove its bookmark.
-
-Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not affect them.
-
-- **Ctrl+K** or the **Search or go…** pill opens the palette. Type to search your forest and your saved text, or to go to an address. **Enter** opens the selected result. **Alt+Enter** opens it in a new tree. **Escape** closes the palette and gives the focus back to the page.
-- **Ctrl+D** bookmarks the current page or removes its bookmark, including while the new-tree page shows over it.
-- **Ctrl+L** opens the same palette with the current address selected.
-- **Ctrl+E** or the forest button opens every tree. Drag or scroll to pan, Ctrl+scroll to zoom, and use **Titles** to switch between pills and icons. Click a page to restore it.
-- **Ctrl+T** or **+** opens the new-tree page. Type immediately to search in a new tree, or click its search field. Pinned trees appear in a stable three-column band above bookmarks and up to three suggestions from your history. A pinned card restores the tree where you left it, even after you settle it. Suggested pages plant a new tree, suggested trees reopen where you left them, and suggested paths load a root and its next page. The reason appears under each title. Hover a chip to **Keep** it as a bookmark or pinned tree, or use the cross to stop suggesting it permanently. Keep on a path bookmarks its first page. Suggestions stay in place until you leave the page. The empty search palette lists the same suggestions in the same order. Chrome history fills spare places while Canopy has little history. **Escape** returns to your page.
-- Right-click a tree tab for **Rename**, **Pin tree** or **Unpin tree**, and **Settle tree**. Pinned tabs show a pin mark. Right-click a pinned card to unpin it. Pinning and settling are independent.
-- **Ctrl+W**, a middle click on a tab, or the **×** on a tab settles a tree. A settled tree leaves the tabs and keeps every page. It waits under **Settled** in the forest view, and opening any of its pages brings its tab back. With the new-tree page, the forest view or the palette open, **Ctrl+W** closes that instead.
-- **Ctrl+1** to **Ctrl+9** switch to a tab. Shift is also accepted for layouts such as AZERTY.
-- **F6** moves the keyboard focus between the page and the current page in the strip. **Left** and **Right** walk the path, and **Enter** opens the focused page.
-- **Alt+Left** goes back to the parent page.
-- **Ctrl+R**, **F5**, and **Ctrl+Shift+R** reload the current page. Canopy has no hard reload, so all three perform a plain reload.
-- **Ctrl+Shift+L** fills the saved login for the page.
-
-## Sign in with a saved login
-
-When a page asks you to sign in and the vault holds a login for that site, a key button appears in the top row with the account name. Click it, or press **Ctrl+Shift+L**, and Canopy types the user name and password into the page. With several accounts for the site, the button opens a list to choose from. You then sign in yourself: Canopy does not submit the form.
-
-Nothing is filled until you ask. A login is offered only on the exact site it was saved for, with the same scheme, host and port, and never to a frame embedded in the page. On a sign-in that asks for the user name first and the password on the next page, use the button on each page.
-
-The keyring may ask you to unlock it the first time a login is filled. Sign-up and change-password forms are not filled. Fields that a site keeps in a closed component or in a frame are not found.
-
-### Save a login
-
-When you sign in or sign up with a login the vault does not hold, the key button reads **Save login?** once the site has let you in. For a saved account with a different password, it reads **Update password?**. Click it and choose **Save** or **Update** to keep the login, or **Not now** to let it go. Nothing is saved until you choose. An offer you do not answer goes away after five minutes.
-
-Canopy waits for the page to stop asking for a password before it offers. If the site sends you back to its sign-in page, or nothing happens for a minute, there is no offer. A site that keeps its sign-in form on screen after letting you in gets no offer either.
-
-A login you save stays in the encrypted vault on this computer, next to the ones brought in from Chrome, and replaces the imported copy of the same account. Importing from Chrome again does not bring the old password back. There is no list of saved logins to edit or delete yet, and no way to tell Canopy never to ask for a site.
-
-### Keep logins in your password manager
-
-Canopy can read and save logins in a password manager you already use, in place of its own vault. It reaches the manager through a helper, a small program called `canopy-login-NAME`. To choose one, run:
-
-```sh
-canopy --login-helper NAME
-```
-
-The choice takes effect the next time Canopy starts. `canopy --login-helper vault` goes back to the vault on this computer. Canopy uses one or the other, not both: with a helper chosen, the vault's logins are not offered.
-
-When the manager is locked, the key button reads **Unlock** with the manager's name. Click it, or press **Ctrl+Shift+L**, and the manager asks for what it needs. The manager decides which of its logins match a page. Canopy asks it only about pages loaded over HTTPS, or from this computer.
-
-#### Bitwarden
-
-The Bitwarden helper comes with Canopy and uses `bw`, Bitwarden's own command-line tool. Set it up once:
-
-```sh
-sudo pacman -S bitwarden-cli   # or your system's package for bw
-bw login
-install -Dm755 helpers/canopy-login-bitwarden ~/.local/bin/canopy-login-bitwarden
-canopy --login-helper bitwarden
-```
-
-Your master password is asked for in a small window once each time Canopy runs, the first time you unlock. The helper needs `zenity` or `kdialog` for that window, and Python 3. The session stays in Canopy's memory, so the vault locks again when Canopy quits. Logins you save in Canopy go to your Bitwarden vault and reach your other devices from there. Changes made on other devices arrive at the next unlock.
-
-`bw` is slow to start. The key button appears about four seconds after a sign-in page has loaded, and unlocking takes about six seconds after you type your password. Logins that ask for the master password again are not offered, because `bw` cannot ask for it.
-
-#### Write a helper
-
-A helper is run once per question, with the question as its only argument. It reads a JSON request on its input and writes a JSON answer on its output.
-
-| Question | Request | Answer |
-| --- | --- | --- |
-| `get` | `url`, `origin`, `state` | `{"logins": [{"username": "…", "password": "…"}]}` |
-| `store` | `url`, `origin`, `username`, `password`, `state` | `{}` |
-| `unlock` | `state` | `{"state": "…"}` or `{"cancelled": true}` |
-
-Any answer can instead be `{"locked": true}` or `{"error": "why"}`. `state` is the text the last `unlock` answered, or null. Canopy keeps it in memory only and sends it back with every request, so a helper can hold an unlocked session without writing it to disk. `get` has 30 seconds to answer, `store` 60 seconds, and `unlock` five minutes.
-
-## Try a fork
-
-1. Press **Ctrl+K**, type an address and press **Enter**.
-2. Follow a link to a second page.
-3. Go back to the first page by clicking it in the strip.
-4. Follow another link. Both visits appear under the first page.
-5. Close the browser, then start it again with the same data folder. The tree and the current page are kept.
-
-Clicking an older visit reloads its URL. Resuming does not restore the scroll position or forms.
-
-On a page's card, **New branch here** opens the palette from that page without loading it, so the next address you type becomes its child. A tree's tab reopens the page you were last reading in that tree.
-
-## Resume reading
-
-1. From a comment or an article, open several links with **Ctrl+click**, a **middle click** or a link meant for a new window. The destinations wait in the tree, drawn dashed. The source page stays open and the destinations are not downloaded.
-2. Click a waiting page to read it. The visit keeps its parent and the link's context when it is available.
-3. Let **Remember pages** save the text of the open page, or select a passage and press **Ctrl+S**. These live in the **Memory** menu, behind the dot at the end of the current page in the strip. **Remember selection** in that menu does the same as Ctrl+S.
-4. Close the browser, then start it again with the same data folder.
-5. Search a few words of the saved text with **Ctrl+K**. Open a **Saved text** result to read the passage offline, or go back to the source to find the links that are still waiting.
-
-Results cover titles, URLs, saved text and source context. Saved text carries its date. Reading saved text and loading the live page are two separate actions. On the current page's card, **Back to source** and **Open comment** lead back to where the page was found.
-
-Turn off **Remember pages** in the Memory menu to stop automatic capture. Remembering a selection stays available. **Read saved text** shows the text saved for the current page. The Memory menu also lists recent errors, which otherwise appear briefly under the tab row.
-
-Form fields and editable areas are left out of saved text. Visible password forms block automatic capture.
-
-Recovering the comment or permalink depends on the site's DOM. When that context is missing, the parent page is still kept. The imported Chrome corpus stays separate from live browsing.
-
-For a post that appears later in a dynamic feed, select the passage and press **Ctrl+S**. Automatic capture does not keep saving everything that appears while you scroll.
-
-Without `--data-dir`, Canopy keeps its database and WebKit profile in `$XDG_DATA_HOME/canopy`, or in `~/.local/share/canopy`. Canopy starts dark. The gear at the end of the tab row opens **Settings**, where **Theme** offers **Dark**, **Light** or **System**, and **Remember pages** turns automatic capture on or off. The theme persists in the `theme_mode` session setting and applies immediately. With **System**, it follows the desktop's dark preference.
-
-## Download files
-
-A link to a file Canopy cannot show, such as an archive or a file the site marks as an attachment, is saved instead of opened. **Download Linked File** and **Save Image As** in the page's context menu save too. Canopy does not ask where to save. Files go to your download folder, the XDG download directory or `~/Downloads`, which Canopy creates when it is missing.
-
-Canopy keeps only the last part of the name the site suggests, so a file always lands directly in that folder. It never replaces a file. A second `report.pdf` is saved as `report (1).pdf`. While a download runs, its data sits in a hidden `.canopy-download-…` folder there, and the file appears under its name once it is complete.
-
-A message under the tab row says when a download starts, when it is saved, with its file name, and when it fails, with the reason. A failed download leaves no partial file behind. A download adds no page to your forest and keeps the page you are reading.
-
-A saved file stays attached to the page it was downloaded from. In the tree strip it shows as a small green leaf on top of that page's node. A page with up to three files shows one leaf for each. A page with more shows one leaf and their count. At rest only the current page and its ancestors carry leaves. Hover the strip to see them on side branches too.
-
-Click a leaf to list that page's files, with their size and when they were saved. Click a file to open it with your desktop's app for that kind of file. The folder button beside it opens the folder it was saved in.
-
-Canopy records where the file was saved and leaves the file there. If you move or delete it, its leaf turns hollow and the list says **Moved or deleted**. Canopy notices this the next time it redraws the strip or when you try to open the file. A file whose address you type, or that another app hands to Canopy, attaches to the page on screen. A file saved with no page open is not attached to any page.
-
-Canopy has no list of all downloads yet, and it cannot pause or resume one.
-
-## Check the project
-
-Check the formatting, the core tests and the compiler diagnostics:
+## Working on Canopy
 
 ```sh
 cargo fmt --check
@@ -230,31 +238,22 @@ cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
-The Bitwarden helper has its own tests, which run it against a stand-in for `bw`:
+The GUI suites drive the real window with pointer and keyboard input under Xvfb, and check the chrome through its own DOM. [Working on Canopy](docs/development.md) explains how to run them all, where things live in the source, and how to retake the pictures on this page with one command.
 
-```sh
-python3 helpers/test_canopy_login_bitwarden.py
-```
+`rust-toolchain.toml` selects stable Rust for this project only. It does not change your default version elsewhere.
 
-The GUI tests load locally served pages and drive the window with real pointer and keyboard input. They check the HTML chrome through its own DOM. Install Xvfb and xdotool, then run them like this. Unsetting `WAYLAND_DISPLAY` keeps the window on Xvfb from a Wayland session:
+## How it is built
 
-```sh
-env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test newtree_smoke
-env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test refresh_smoke
-env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test webkit_smoke
-env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test reading_smoke
-env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test download_smoke
-env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test open_url_smoke
-env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test shortcut_smoke
-env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test palette_smoke
-env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test sandbox_smoke
-env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test login_smoke
-```
+Canopy is one Rust program. WebKitGTK shows the pages, one live web view per branch you keep open. The chrome (tabs, strip, palette, cards, forest) is HTML drawn by a transparent web view over the page. SQLite holds the forest, and one module is its only writer.
 
-`open_url_smoke` starts the `canopy` binary on temporary data folders and launches it again with addresses, so it checks the hand-off between real processes. It needs no session bus.
+The design notes explain the choices and what was rejected:
 
-The download test points `HOME`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` at a temporary folder, so it never writes to your real download folder and opens files with a stand-in app instead of yours. Set `CANOPY_DOWNLOAD_SHOTS` to a folder to keep screenshots of the leaves and their list.
+- [A forest of visits](docs/design.md): the data model, and why SQLite owns the forest and the cursor.
+- [The memory of an exploration](docs/reading-memory.md): waiting links, saved text and the search over them.
+- [Themes an agent can write](docs/theming.md): a design for chrome themes as one JSON file. Not built yet.
 
-The design choices are described in [A forest of visits](docs/design.md) and [The memory of an exploration](docs/reading-memory.md).
+## License and credits
 
-`newtree_smoke` checks pinned cards, the tab menu, new-tree typing and focus, the empty strip placeholder, and scrolling at 900 by 600. Set `CANOPY_NEWTREE_SHOTS=1` to save dark and light captures in `.cache/shots/`.
+Canopy is MIT-licensed, as declared in `Cargo.toml`. It ships the [Inter](https://rsms.me/inter/) typeface in `assets/fonts/`, under the SIL Open Font License in `assets/fonts/LICENSE.txt`.
+
+The sites in the pictures (Bonsai Wiki, Rootbound, Moss & Wire, Kōen Nursery and the others) do not exist. They are served by the test suite from `tests/readme_site`.
