@@ -1067,6 +1067,7 @@ impl LivePage {
 
     pub fn focus(&self) {
         self.native.grab_focus();
+        self.state.owner().place_view(&self.native);
     }
 
     pub fn navigate(&self, url: Url, target: NavigationTarget) -> Result<()> {
