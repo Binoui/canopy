@@ -1851,6 +1851,21 @@ mod tests {
     }
 
     #[test]
+    fn arrivals_skip_a_page_the_callers_forest_does_not_hold_yet() {
+        let mut b = memory();
+        follow(&mut b, "known", NavigationTarget::Root);
+        let forest = crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap();
+        let known = b.arrivals(&forest, 0).unwrap().len();
+        follow(&mut b, "newer", NavigationTarget::Root);
+        assert_eq!(b.arrivals(&forest, 0).unwrap().len(), known);
+        assert_eq!(b.last_event_tree(&forest).unwrap(), None);
+    }
+
+    #[test]
     fn the_tree_just_left_follows_the_order_of_the_log_not_the_clock() {
         let mut b = memory();
         let old = follow(&mut b, "old", NavigationTarget::Root);

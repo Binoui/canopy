@@ -34,15 +34,17 @@ impl Browser {
                 r.get::<_, i64>(3)?,
             ))
         })?;
-        rows.map(|r| {
-            let (id, from, kind, at) = r?;
+        let mut arrivals = Vec::new();
+        for row in rows {
+            let (id, from, kind, at) = row?;
             let visit: VisitId = id.parse()?;
-            let page = forest
-                .visit(visit)
-                .ok_or_else(|| anyhow::anyhow!("Missing arrival page."))?;
-            Ok(Arrival {
+            // The caller's forest can be one page older than the log.
+            let (Some(page), Some(tree)) = (forest.visit(visit), forest.tree_of(visit)) else {
+                continue;
+            };
+            arrivals.push(Arrival {
                 visit,
-                tree: forest.tree_of(visit).unwrap(),
+                tree,
                 url: web_url(page.url.as_str())?,
                 title: page.title.clone(),
                 from: from.map(|v| v.parse()).transpose()?,
@@ -53,9 +55,9 @@ impl Browser {
                     ArrivalKind::Return
                 },
                 at,
-            })
-        })
-        .collect()
+            });
+        }
+        Ok(arrivals)
     }
 
     pub fn last_event_tree(&self, forest: &ForestProjection) -> Result<Option<TreeId>> {
