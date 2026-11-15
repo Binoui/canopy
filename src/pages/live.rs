@@ -384,6 +384,7 @@ impl LivePage {
                     let url = native.uri().and_then(|uri| web_url(&uri).ok());
                     match event {
                         LoadEvent::Started => {
+                            state.foreground_requested();
                             state.main_frame_post.set(None);
                             if matches!(*state.issue.borrow(), Issue::Issued { decided: false, .. })
                             {
@@ -1527,11 +1528,6 @@ impl NativeState {
         };
         if uri == "about:blank" {
             return false;
-        }
-        if self.navigation.borrow().pending_ticket().is_none()
-            && matches!(*self.issue.borrow(), Issue::Idle)
-        {
-            self.foreground_requested();
         }
         let Ok(url) = web_url(&uri) else {
             // Frames load about:, blob: and data: documents all the time; only a link the
