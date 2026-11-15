@@ -1010,6 +1010,7 @@ $('forest-titles').addEventListener('click', () => {
 });
 $('forest-fit').addEventListener('click', () => fitForest(true));
 $('forest-close').addEventListener('click', closeOverlay);
+$('forest').querySelector('.scrim').addEventListener('mousedown', closeOverlay);
 
 // ---------- reader ----------
 
@@ -1186,7 +1187,7 @@ window.canopy = {
 
 $('new-tree').innerHTML = icon('plus');
 $('agent').innerHTML = icon('spark');
-$('forest-button').innerHTML = icon('forest');
+$('forest-button').innerHTML = icon('forest') + '<span>Forest</span>';
 $('settings-button').innerHTML = icon('settings');
 $('tab-overflow').innerHTML = icon('chevron');
 $('search-pill').insertAdjacentHTML('afterbegin', icon('search'));

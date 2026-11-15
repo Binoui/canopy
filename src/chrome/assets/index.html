@@ -7,13 +7,14 @@
 </head>
 <body>
 <header id="tabs">
+  <button id="forest-button" class="label-button" title="Forest · Ctrl+E" aria-pressed="false"></button>
+  <div class="tabs-divider"></div>
   <div id="tab-row"></div>
   <button id="tab-overflow" class="icon-button" title="More trees" hidden></button>
   <button id="new-tree" class="icon-button" title="New tree · Ctrl+T" aria-label="New tree"></button>
   <div class="spacer"></div>
   <button id="search-pill" title="Search your forest or go to an address · Ctrl+K"><span>Search or go…</span><kbd>Ctrl K</kbd></button>
   <button id="agent" class="icon-button" title="Agent · Coming soon" aria-label="Agent" disabled></button>
-  <button id="forest-button" class="icon-button" title="Forest view · Ctrl+E" aria-label="Forest view"></button>
   <button id="settings-button" class="icon-button" title="Settings" aria-label="Settings"></button>
 </header>
 
@@ -35,17 +36,20 @@
   <div id="start-content"></div>
 </div>
 
-<div id="forest" class="surface" hidden>
-  <div class="forest-toolbar">
-    <strong>Forest</strong>
-    <span class="menu-detail" id="forest-count"></span>
-    <div class="spacer"></div>
-    <button class="action" id="forest-titles">Titles</button>
-    <button class="action" id="forest-fit">Fit</button>
-    <button class="action" id="forest-close" aria-label="Close the forest view">×</button>
-  </div>
-  <div id="forest-canvas" class="dapple">
-    <div id="forest-layer"><svg id="forest-edges" width="1" height="1"></svg><div id="forest-nodes"></div></div>
+<div id="forest" class="overlay" hidden>
+  <div class="scrim"></div>
+  <div class="forest-pop">
+    <div class="forest-toolbar">
+      <strong>Forest</strong>
+      <span class="menu-detail" id="forest-count"></span>
+      <div class="spacer"></div>
+      <button class="action" id="forest-titles">Titles</button>
+      <button class="action" id="forest-fit">Fit</button>
+      <button class="action" id="forest-close" aria-label="Close the forest view">×</button>
+    </div>
+    <div id="forest-canvas" class="dapple">
+      <div id="forest-layer"><svg id="forest-edges" width="1" height="1"></svg><div id="forest-nodes"></div></div>
+    </div>
   </div>
 </div>
 
