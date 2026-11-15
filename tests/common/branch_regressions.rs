@@ -497,12 +497,12 @@ fn settle_other_during_switch() -> Result<()> {
 fn post_switch_back() -> Result<()> {
     let f = Fixture::new()?;
     let a = f.navigate("/a")?;
-    let form = f.navigate("/form")?;
+    let mut form = f.navigate("/form")?;
     let before = f.pages.read(|b| b.snapshot())?.visits.len();
     let mut posted = false;
     for attempt in 0..3 {
         if attempt > 0 {
-            f.navigate("/form")?;
+            form = f.navigate("/form")?;
         }
         f.eval("globalThis.__formPainted=false; requestAnimationFrame(()=>requestAnimationFrame(()=>{globalThis.__formPainted=true})); return true;")?;
         wait("form painted for pointer input", || {
@@ -529,7 +529,7 @@ fn post_switch_back() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("POST visit missing after arrival"))?;
     let next = f.navigate("/after-post")?;
     f.pages.go(Go::Visit(post))?;
-    let back = f.arrives(post, 8000);
+    anyhow::ensure!(f.arrives(post, 8000), "setup return to POST did not arrive");
     pump_for(800);
     f.open_root("/root")?;
     pump_for(800);
