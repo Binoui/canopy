@@ -6,6 +6,7 @@ use crate::{
     browser::{Browser, Landing, LoadTicket, NavigationTarget, ThemeMode, TreeId, VisitId},
     chrome::{Favicons, CHROME_HEIGHT},
     forest::ForestProjection,
+    logins::Login,
     secret::Secret,
 };
 use anyhow::Result;
@@ -34,11 +35,24 @@ pub enum PageEvent {
     Error(String),
     Remembered(i64),
     Download(DownloadEvent),
-    OpenBranchPalette {
-        visit: VisitId,
+    OpenBranchPalette { visit: VisitId },
+    Login(LoginEvent),
+}
+
+/// What the selected page reports about signing in.
+pub enum LoginEvent {
+    /// A new document replaced the page. Its fields are not known yet.
+    NewDocument,
+    /// The document on screen at `page` reported its fields: whether a saved user name or
+    /// password can be filled, and whether it shows any password field at all.
+    Fields {
+        page: Url,
+        username: bool,
+        password: bool,
+        asks_password: bool,
     },
-    /// The page on screen shows sign-in fields, at this address, or stopped showing any.
-    LoginFields(Option<Url>),
+    /// The user sent this login to the page.
+    Sent(Login),
 }
 
 enum Continuation {

@@ -28,7 +28,7 @@ const $ = (id) => document.getElementById(id);
 const post = (message) => window.ipc.postMessage(JSON.stringify(message));
 /// Intents that load a page also give the keyboard back to it, as the GTK buttons that
 /// never took focus did.
-const NAVIGATES = new Set(['restore', 'select-tree', 'settle-tree', 'settle-current', 'shortcut', 'path', 'open-citation', 'open-saved', 'branch-queued', 'fill-login']);
+const NAVIGATES = new Set(['restore', 'select-tree', 'settle-tree', 'settle-current', 'shortcut', 'path', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
 const intent = (kind, extra = {}) => {
   post({ t: 'intent', kind, ...extra });
   if (NAVIGATES.has(kind)) post({ t: 'focus', target: 'page' });
@@ -42,6 +42,7 @@ const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 const S = {
   frame: null,
   logins: null,
+  save: null,
   strip: null,
   rev: 0,
   systemDark: null,
@@ -672,20 +673,33 @@ function closePopover(returnFocus = true) {
 const loginNames = () => S.logins?.names ?? [];
 const loginLabel = (name) => name || 'No user name';
 
+/// The key button in the tab row. A login waiting to be saved comes before the logins that
+/// could be filled: it is the one that needs an answer.
 function renderLoginChip() {
   const chip = $('login-chip');
   const names = loginNames();
-  chip.hidden = !names.length;
-  if (names.length) {
+  chip.hidden = !S.save && !names.length;
+  chip.classList.toggle('on', !!S.save);
+  if (S.save) {
+    chip.innerHTML = `${icon('key')}<span>${S.save.update ? 'Update password?' : 'Save login?'}</span>`;
+    chip.title = `${S.save.update ? 'Update the saved password' : 'Save the login'} for ${loginLabel(S.save.username)} on ${S.save.site}`;
+  } else if (names.length) {
     const one = names.length === 1;
     chip.innerHTML = `${icon('key')}<span>${esc(one ? loginLabel(names[0]) : `${names.length} logins`)}</span>`;
     chip.title = `${one ? `Fill the saved login for ${loginLabel(names[0])}` : 'Choose a saved login to fill'} · Ctrl+Shift+L`;
   }
+  if (S.popover?.kind === 'save-login' && !S.save) closePopover(false);
   if (S.popover?.kind === 'logins') {
-    if (names.length > 1) renderPopover();
+    if (names.length > 1 && !S.save) renderPopover();
     else closePopover(false);
   }
   fitTabs();
+}
+
+function answerSave(save) {
+  const offer = S.save?.offer;
+  closePopover(false);
+  if (offer != null) intent('save-login', { offer, save });
 }
 
 /// One saved login is filled at once; several open the list under the chip.
@@ -721,6 +735,14 @@ function renderPopover() {
         return `<button class="menu-row${i === 0 ? ' next' : ''}" data-id="${id}">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.when)}</span>${i === 0 ? '<kbd>Ctrl Tab</kbd>' : ''}</button>`;
       }).join('');
     popover.querySelectorAll('[data-id]').forEach((row) => row.addEventListener('click', () => openNextWaiting(row.dataset.id)));
+  } else if (kind === 'save-login') {
+    const save = S.save;
+    if (!save) { closePopover(false); return; }
+    popover.innerHTML = `<div class="menu-heading">${save.update ? 'Update the saved password?' : 'Save this login?'}</div>`
+      + `<div class="menu-row" id="save-login-account">${icon('key')}<span class="grow">${esc(loginLabel(save.username))}</span><span class="menu-detail">${esc(save.site)}</span></div>`
+      + '<div class="menu-hint">Kept in the encrypted vault on this computer.</div>'
+      + `<div class="card-actions save-actions"><button class="action" data-save="1">${save.update ? 'Update' : 'Save'}</button><button class="action" data-save="0">Not now</button></div>`;
+    popover.querySelectorAll('[data-save]').forEach((button) => button.addEventListener('click', () => answerSave(button.dataset.save === '1')));
   } else if (kind === 'logins') {
     popover.innerHTML = '<div class="menu-heading">Saved logins for this site</div>'
       + loginNames().map((name, index) => `<button class="menu-row" data-login="${index}">${icon('key')}<span class="grow">${esc(loginLabel(name))}</span></button>`).join('');
@@ -1272,6 +1294,10 @@ window.canopy = {
     S.logins = offer.names.length ? offer : null;
     renderLoginChip();
   },
+  saveLogin(offer) {
+    S.save = offer;
+    renderLoginChip();
+  },
   fillLogin() { fillLogin(); },
   nextWaiting() { openNextWaiting(); },
   openPalette(options) { openPalette(options); },
@@ -1373,7 +1399,7 @@ window.canopy = {
   state() {
     return {
       surface: S.surface, overlay: S.overlay, treeSide: S.treeSide, open: S.open, animating: !!strip.anim, card: S.card, layer: S.layer, palette: !!S.palette,
-      reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported, logins: loginNames(),
+      reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported, logins: loginNames(), save: S.save,
       dark: document.documentElement.classList.contains('dark'),
       nodes: [...strip.elements.keys()], rows: S.palette?.rows ?? [],
       waiting: S.frame?.waiting.ids ?? [], pins: (S.strip?.pins ?? []).map((p) => p.kind), room: S.strip?.room ?? null,
@@ -1425,7 +1451,9 @@ $('forest-button').addEventListener('click', () => window.canopy.toggleForest())
 $('search-pill').addEventListener('click', () => openPalette({ scope: S.surface === 'start' ? null : current(), text: '' }));
 $('login-chip').addEventListener('click', (event) => {
   event.stopPropagation();
-  fillLogin();
+  if (!S.save) fillLogin();
+  else if (S.popover?.kind === 'save-login') closePopover();
+  else openPopover('save-login', $('login-chip'));
 });
 $('settings-button').addEventListener('click', (event) => {
   event.stopPropagation();

@@ -69,6 +69,17 @@ document of another origin, and the helper checks the origin again in the same t
 sets the fields. Nothing is filled without that choice, which keeps a hidden form from
 collecting a password on load.
 
+The same helper hears the user send a login: a form submission, a press on a button or
+Enter in a field, while a password field holds a value. It posts the user name and password
+at once, because the document may be gone a moment later. The live page accepts them only
+for the origin of its committed document. SaveWatch in src/ui/save_watch.rs holds that
+login as a candidate. It offers it when the page reports that it shows no password field
+any more, drops it when a new document shows one, and drops it after a minute. Ui then
+compares it with the provider: an identical saved login brings no offer, a different
+password brings an update. The password is written only when the user accepts, and an
+unanswered offer is dropped after five minutes. In the vault, a login saved in Canopy has
+its own source and stands in for imported copies of the same account.
+
 ## The MVP1 scope
 
 The first milestone checks navigation, forks and resuming after a restart.
