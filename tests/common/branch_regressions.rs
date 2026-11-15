@@ -498,7 +498,14 @@ fn post_switch_back() -> Result<()> {
     let a = f.navigate("/a")?;
     let form = f.navigate("/form")?;
     let before = f.pages.read(|b| b.snapshot())?.visits.len();
+    f.eval("globalThis.__formPainted=false; requestAnimationFrame(()=>requestAnimationFrame(()=>{globalThis.__formPainted=true})); return true;")?;
+    wait("form painted for pointer input", || {
+        f.eval("return globalThis.__formPainted;").ok() == Some(json!(true))
+    })?;
     click(&f, "go")?;
+    wait("POST request sent", || {
+        f.server.hits("POST /post-result") > 0
+    })?;
     let posted = wait_for(8000, || {
         f.cursor_path() == "/post-result" && !f.pages.selected_page().native.is_loading()
     });
