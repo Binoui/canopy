@@ -32,6 +32,8 @@ cargo run --locked -- --data-dir .data
 
 Canopy runs page and chrome processes inside WebKit's Linux sandbox, which needs `bubblewrap` and `xdg-dbus-proxy`. If the sandbox cannot start, WebKit stops with a fatal error. Setting `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1` starts Canopy without it, and Canopy then prints a warning.
 
+NVIDIA's video decoders cannot start inside the sandbox, so on a machine with NVIDIA's driver pages decode video in software. Canopy sets `GST_PLUGIN_FEATURE_RANK` and `WEBKIT_GST_DISABLE_GL_SINK` at startup to keep that video from painting green. A value you set yourself for either variable is kept.
+
 ## Install for your launcher
 
 To build an optimized binary into `~/.local/bin` and add Canopy to rofi, wofi or your desktop menu, run these commands:
