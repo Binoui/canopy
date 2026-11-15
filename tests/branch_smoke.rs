@@ -33,9 +33,16 @@ fn pump() {
     }
 }
 fn wait(label: &str, condition: impl Fn() -> bool) -> Result<()> {
-    // Destroyed WebKit processes can take 20s to exit under CPU load.
-    let deadline =
-        Instant::now() + Duration::from_secs(if label.contains("process") { 60 } else { 15 });
+    wait_until(label, Duration::from_secs(15), condition)
+}
+fn wait_web_process_exit() -> Result<()> {
+    // Widget removal is asserted separately; only OS process teardown gets this bound.
+    wait_until("web process exit", Duration::from_secs(60), || {
+        web_process_count() == 1
+    })
+}
+fn wait_until(label: &str, limit: Duration, condition: impl Fn() -> bool) -> Result<()> {
+    let deadline = Instant::now() + limit;
     loop {
         pump();
         if condition() {
@@ -289,7 +296,7 @@ fn branch_history() -> Result<()> {
         1,
         "released source widget must be removed"
     );
-    wait("previous web process exited", || web_process_count() == 1)?;
+    wait_web_process_exit()?;
     f.pages.go(Go::Visit(b))?;
     f.arrived(b)?;
     assert!(
@@ -476,9 +483,7 @@ fn replacement(same: bool) -> Result<()> {
         1,
         "activation leaves exactly one widget"
     );
-    wait("one web process after activation", || {
-        web_process_count() == 1
-    })?;
+    wait_web_process_exit()?;
     Ok(())
 }
 fn failed_switch() -> Result<()> {
