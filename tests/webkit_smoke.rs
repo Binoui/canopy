@@ -330,7 +330,17 @@ fn main() -> Result<()> {
     wait("palette anchored after the commit", || {
         visible(&ui, "#palette") && chrome_focused(&ui, "#palette-input")
     })?;
-    assert!(text(&ui, "#palette-context").contains("Link opened in another window"));
+    wait("palette context has the loaded page title", || {
+        text(&ui, "#palette-context").contains("Link opened in another window")
+    })?;
+    // A title delivered after the palette opens must update its anchor too.
+    eval(
+        &ui,
+        "JSON.stringify(document.title = 'Updated branch title')",
+    )?;
+    wait("palette context follows page title", || {
+        text(&ui, "#palette-context").contains("Updated branch title")
+    })?;
     key("Escape")?;
     println!("PASS a target=_blank link waits in the tree; New branch here activates it without a duplicate, then anchors the palette on it.");
 
@@ -411,15 +421,8 @@ fn main() -> Result<()> {
         .find(|root| root.label() == hidden[0])
         .unwrap()
         .id;
-    let hidden_target = ui.pages.read(|browser| {
-        let forest = canopy::forest::ForestProjection::from_snapshot(
-            browser.snapshot()?,
-            browser.tree_states()?,
-        )?;
-        browser.tree_target(forest.tree_of(hidden_root).context("hidden tree exists")?)
-    })?;
     wait("hidden tree selected", || {
-        ui.snapshot().unwrap().current == Some(hidden_target)
+        ui.snapshot().unwrap().current == Some(hidden_root)
             && !ui.pages.selected_page().native.is_loading()
     })?;
     println!(
@@ -656,6 +659,10 @@ fn link(ui: &Ui, id: &str) -> Result<()> {
 }
 
 fn trusted_click(ui: &Ui, id: &str) -> Result<()> {
+    eval(ui, "globalThis.__painted = false; requestAnimationFrame(() => requestAnimationFrame(() => { globalThis.__painted = true; })); JSON.stringify(true)")?;
+    wait("page painted before pointer input", || {
+        eval(ui, "JSON.stringify(globalThis.__painted)").ok() == Some(serde_json::json!(true))
+    })?;
     let (x, y) = element_point(ui, id)?;
     focus_window()?;
     click_at(x, y)

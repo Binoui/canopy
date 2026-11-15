@@ -710,10 +710,7 @@ function openPalette({ scope, text }) {
   closePopover(false);
   S.palette = { scope, rows: [], selected: 0, seq: 0 };
   setLayer('palette');
-  const v = scope && visit(scope);
-  $('palette-context').innerHTML = v
-    ? `From ${visitFav(v, 12)}<span>${esc(v.label)}</span>`
-    : '<span class="tag">New tree</span>';
+  renderPaletteContext();
   $('palette-icon').innerHTML = icon('search');
   $('palette').hidden = false;
   const input = $('palette-input');
@@ -722,6 +719,14 @@ function openPalette({ scope, text }) {
   input.select();
   queryPalette();
   syncLayer();
+}
+
+function renderPaletteContext() {
+  if (!S.palette) return;
+  const v = S.palette.scope && visit(S.palette.scope);
+  $('palette-context').innerHTML = v
+    ? `From ${visitFav(v, 12)}<span>${esc(v.label)}</span>`
+    : '<span class="tag">New tree</span>';
 }
 
 function closePalette(returnFocus = true) {
@@ -1011,6 +1016,7 @@ window.canopy = {
       else showCard(S.card);
     }
     if (S.popover) renderPopover();
+    renderPaletteContext();
     syncLayer();
   },
   strip(layouts) {
