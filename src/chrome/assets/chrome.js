@@ -42,6 +42,7 @@ const S = {
   rev: 0,
   systemDark: null,
   surface: 'reading',
+  overlay: null,
   open: false,
   layer: 'none',
   hovered: null,
@@ -143,10 +144,10 @@ function setLayer(layer) {
 /// Tells Rust how far down the view must reach (null for the whole window), and whether
 /// Escape is ours. Below that, the page gets the pointer.
 function syncLayer() {
-  const modal = !!(S.reader || S.palette || S.popover || S.card || S.open
+  const modal = !!(S.reader || S.palette || S.popover || S.card || S.open || S.overlay
     || (S.surface !== 'reading' && current()));
   let height = HEADER + REST;
-  if (S.palette || S.reader || S.surface !== 'reading') {
+  if (S.palette || S.reader || S.overlay || S.surface !== 'reading') {
     height = null;
   } else {
     if (S.open || strip.anim) {
@@ -492,11 +493,9 @@ function drawStrip() {
 }
 
 function activate(id) {
-  hideCard();
-  if (id !== current()) {
-    setSurface('reading');
-    intent('restore', { id });
-  }
+  uncover();
+  if (id === current()) post({ t: 'focus', target: 'page' });
+  else intent('restore', { id });
 }
 
 /// Left and Right walk the trunk while a node has the keyboard.
@@ -559,13 +558,13 @@ function renderCard(preview) {
     const act = button.dataset.act;
     hideCard();
     if (act === 'open') {
-      setSurface('reading');
-      intent('restore', { id });
+      if (isCurrent) { uncover(); intent('restore', { id }); }
+      else activate(id);
     } else if (act === 'branch') {
       if (v.queued) intent('branch-queued', { id });
       else openPalette({ scope: id, text: '' });
     } else if (act === 'source') {
-      intent('restore', { id: v.parent });
+      activate(v.parent);
     } else if (act === 'comment') {
       intent('open-citation', { id });
     }
@@ -593,8 +592,8 @@ function closePopover(returnFocus = true) {
   if (!S.popover) return;
   S.popover = null;
   $('popover').hidden = true;
-  if (S.layer === 'menu') setLayer('none');
-  if (returnFocus && S.surface === 'reading' && !S.palette && !S.reader) post({ t: 'focus', target: 'page' });
+  if (S.layer === 'menu') setLayer(restingLayer());
+  if (returnFocus && pageShows() && !S.palette && !S.reader) post({ t: 'focus', target: 'page' });
   syncLayer();
 }
 
@@ -621,7 +620,7 @@ function renderPopover() {
     }).join('');
     popover.querySelectorAll('[data-id]').forEach((row) => row.addEventListener('click', () => {
       closePopover();
-      setSurface('reading');
+      uncover();
       intent('select-tree', { id: row.dataset.id });
     }));
   } else if (kind === 'rename') {
@@ -730,8 +729,8 @@ function closePalette(returnFocus = true) {
   S.palette = null;
   $('palette').hidden = true;
   $('palette-results').innerHTML = '';
-  setLayer(S.surface === 'reading' ? 'none' : 'palette');
-  if (returnFocus && S.surface === 'reading') post({ t: 'focus', target: 'page' });
+  setLayer(restingLayer());
+  if (returnFocus && pageShows()) post({ t: 'focus', target: 'page' });
   syncLayer();
 }
 
@@ -764,7 +763,7 @@ function runPalette(index, newTree) {
   post({ t: 'run', q: query, item: row ? row.item : null, newTree, scope: palette.scope });
   const reading = row?.kind !== 'saved';
   closePalette(reading);
-  if (reading) setSurface('reading');
+  if (reading) uncover();
 }
 
 $('palette-input').addEventListener('input', () => {
@@ -795,17 +794,66 @@ $('palette').querySelector('.scrim').addEventListener('mousedown', () => closePa
 
 // ---------- surfaces ----------
 
+const OVERLAYS = {
+  forest: {
+    el: 'forest', button: 'forest-button',
+    available: () => !!S.frame,
+    show(reveal) { renderForest(); if (reveal) fitForest(false); },
+  },
+};
+const restingLayer = () => (S.palette || S.overlay || S.surface !== 'reading') ? 'palette' : 'none';
+const pageShows = () => S.surface === 'reading' && !S.overlay;
+
 function setSurface(surface) {
   if (S.surface === surface) return;
   S.surface = surface;
   $('start').hidden = surface !== 'start';
-  $('forest').hidden = surface !== 'forest';
-  setLayer(surface === 'reading' ? 'none' : 'palette');
-  if (surface === 'forest') {
-    renderForest();
-    fitForest(false);
-  }
+  setLayer(restingLayer());
   syncLayer();
+}
+
+function setOverlay(kind) {
+  if (S.overlay === kind) return;
+  const previous = OVERLAYS[S.overlay];
+  if (previous) {
+    $(previous.el).hidden = true;
+    $(previous.button).classList.remove('on');
+    $(previous.button).setAttribute('aria-pressed', 'false');
+  }
+  S.overlay = kind;
+  const overlay = OVERLAYS[kind];
+  if (overlay) {
+    hideCard();
+    closePopover(false);
+    $(overlay.el).hidden = false;
+    $(overlay.button).classList.add('on');
+    $(overlay.button).setAttribute('aria-pressed', 'true');
+    overlay.show(true);
+  }
+  setLayer(restingLayer());
+  syncLayer();
+}
+
+function closeOverlay() {
+  setOverlay(null);
+  if (pageShows()) post({ t: 'focus', target: 'page' });
+}
+
+function toggleOverlay(kind) {
+  if (S.overlay === kind) { closeOverlay(); return; }
+  if (!OVERLAYS[kind].available()) return;
+  intent('cancel');
+  closePalette(false);
+  setOverlay(kind);
+}
+
+function uncover() {
+  closeReader(false);
+  closePalette(false);
+  closePopover(false);
+  hideCard();
+  setOverlay(null);
+  setSurface('reading');
 }
 
 function renderStart() {
@@ -839,7 +887,7 @@ function forestLayout() {
 }
 
 function renderForest() {
-  if (S.surface !== 'forest' || !S.frame) {
+  if (S.overlay !== 'forest' || !S.frame) {
     S.forestDirty = true;
     return;
   }
@@ -937,8 +985,7 @@ function fitForest(animate) {
     if (drag?.moved) return;
     const node = event.target.closest('[data-id]');
     if (!node) return;
-    setSurface('reading');
-    intent('restore', { id: node.dataset.id });
+    activate(node.dataset.id);
   });
   canvas.addEventListener('wheel', (event) => {
     event.preventDefault();
@@ -962,7 +1009,7 @@ $('forest-titles').addEventListener('click', () => {
   fitForest(true);
 });
 $('forest-fit').addEventListener('click', () => fitForest(true));
-$('forest-close').addEventListener('click', () => setSurface(S.frame?.tabs.length ? 'reading' : 'start'));
+$('forest-close').addEventListener('click', closeOverlay);
 
 // ---------- reader ----------
 
@@ -979,11 +1026,11 @@ function showReader(html, list) {
   syncLayer();
 }
 
-function closeReader() {
+function closeReader(returnFocus = true) {
   if (!S.reader) return;
   S.reader = null;
   $('reader').hidden = true;
-  if (S.surface === 'reading') post({ t: 'focus', target: 'page' });
+  if (returnFocus && pageShows()) post({ t: 'focus', target: 'page' });
   syncLayer();
 }
 $('reader').querySelector('.scrim').addEventListener('mousedown', closeReader);
@@ -999,7 +1046,10 @@ window.canopy = {
     S.strip = frame.strip;
     S.manualPan = null;
     applyTheme();
-    if (frame.current !== previous && S.surface !== 'reading') setSurface('reading');
+    if (frame.current !== previous) {
+      setOverlay(null);
+      if (S.surface !== 'reading') setSurface('reading');
+    }
     if (!frame.tabs.length && S.surface === 'reading') setSurface('start');
     if (S.popover?.kind === 'rename' && !frame.tabs.some((tree) => tree.id === S.popover.data)) closePopover();
     renderTabs();
@@ -1031,13 +1081,10 @@ window.canopy = {
   newTree() {
     intent('cancel');
     closePalette(false);
+    setOverlay(null);
     setSurface('start');
   },
-  toggleForest() {
-    intent('cancel');
-    closePalette(false);
-    setSurface(S.surface === 'forest' ? (S.frame?.tabs.length ? 'reading' : 'start') : 'forest');
-  },
+  toggleForest() { toggleOverlay('forest'); },
   toast(kind, text) {
     if (kind === 'error') {
       S.errors.unshift(text);
@@ -1066,7 +1113,7 @@ window.canopy = {
     el.focus();
   },
   settleCurrent() {
-    if (S.reader || S.palette || S.popover || (S.surface !== 'reading' && current())) {
+    if (S.reader || S.palette || S.popover || S.overlay || (S.surface !== 'reading' && current())) {
       this.escape();
     } else if (current()) {
       intent('settle-current');
@@ -1078,7 +1125,8 @@ window.canopy = {
     else if (S.palette) closePalette();
     else if (S.popover) closePopover();
     else if (S.card) hideCard();
-    else if (S.surface === 'forest' || (S.surface !== 'reading' && current())) {
+    else if (S.overlay) closeOverlay();
+    else if (S.surface !== 'reading' && current()) {
       setSurface(S.frame?.tabs.length ? 'reading' : 'start');
       post({ t: 'focus', target: 'page' });
     } else if (S.open) {
@@ -1107,7 +1155,7 @@ window.canopy = {
       const act = button.dataset.act;
       closeReader();
       if (act === 'live') intent('open-saved', { capture: c.capture });
-      else if (act === 'source') intent('restore', { id: c.parent });
+      else if (act === 'source') activate(c.parent);
       else intent('open-citation', { id: c.visit });
     }));
   },
@@ -1126,7 +1174,7 @@ window.canopy = {
   /// For tests: what the view shows, without reaching into the DOM.
   state() {
     return {
-      surface: S.surface, open: S.open, animating: !!strip.anim, card: S.card, layer: S.layer, palette: !!S.palette,
+      surface: S.surface, overlay: S.overlay, open: S.open, animating: !!strip.anim, card: S.card, layer: S.layer, palette: !!S.palette,
       reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported,
       dark: document.documentElement.classList.contains('dark'),
       nodes: [...strip.elements.keys()], rows: S.palette?.rows ?? [],
@@ -1148,7 +1196,7 @@ $('tab-row').addEventListener('click', (event) => {
   if (close) { intent('settle-tree', { id: close.dataset.settle }); return; }
   const tab = event.target.closest('[data-id]');
   if (!tab) return;
-  setSurface('reading');
+  uncover();
   intent('select-tree', { id: tab.dataset.id });
 });
 $('tab-row').addEventListener('mousedown', (event) => {
