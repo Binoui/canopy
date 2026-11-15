@@ -503,14 +503,12 @@ fn geometry(u: &U) -> Result<()> {
     key("Escape")?;
     if let Some(original) = u.cursor() {
         eval(&u.ui, "scrollTo(0,0);document.getElementById('fork').style.cssText='display:block;margin-top:150px;height:60px';JSON.stringify(true)")?;
+        eval(&u.ui, "window.name='[]';window.__placementEvents=[];for(const kind of ['resize','pointerdown'])addEventListener(kind,e=>{__placementEvents.push({kind,t:performance.now(),w:innerWidth,h:innerHeight,x:e.clientX,y:e.clientY,target:e.target?.id});window.name=JSON.stringify(__placementEvents)},true);JSON.stringify(true)")?;
         let click_at = clock.elapsed().as_millis();
         u.page_click("fork", "1")?;
         let followed = u.until(6000, || u.cursor_path() == "/d" && !u.loading());
-        println!(
-            "PLACEMENT_CLICK start={click_at} followed={followed} presses={:?} allocations={:?}",
-            presses.borrow(),
-            allocations.borrow()
-        );
+        let dom_events = eval(&u.ui, "JSON.stringify(window.name)")?;
+        println!("PLACEMENT_CLICK start={click_at} followed={followed} presses={:?} allocations={:?} dom={dom_events}", presses.borrow(), allocations.borrow());
         anyhow::ensure!(followed, "page follows a real link after placement");
         let (x, y) = page_point(&u.ui, u.ui.window.allocated_width() / 2, 400)?;
         move_to(x, y)?;
