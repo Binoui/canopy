@@ -456,7 +456,12 @@ impl LivePage {
                             if matches!(*state.issue.borrow(), Issue::Cancelling(_)) {
                                 return;
                             }
-                            state.foreground_requested();
+                            let bootstrap = url.is_none()
+                                && state.navigation.borrow().current.is_none()
+                                && state.navigation.borrow().pending_ticket().is_none();
+                            if !bootstrap {
+                                state.foreground_requested();
+                            }
                             state.end_response();
                             state.main_frame_post.set(None);
                             if matches!(*state.issue.borrow(), Issue::Issued { decided: false, .. })

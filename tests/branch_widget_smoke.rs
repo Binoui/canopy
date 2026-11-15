@@ -798,6 +798,33 @@ fn palette_anchor_stable() -> Result<()> {
     Ok(())
 }
 
+fn first_address_survives_initial_home() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let server = Server::new()?;
+    let ui = Ui::new(dir.path())?;
+    ui.window.show_all();
+    let home = ui.pages.selected_page().native.clone();
+    server.gate("initial", true);
+    ui.pages.open_roots(&[server.url("/gate/initial/first")])?;
+    // A bootstrap notification already queued before stop_loading can arrive late.
+    home.emit_by_name::<()>("load-changed", &[&webkit2gtk::LoadEvent::Started]);
+    server.gate("initial", false);
+    wait(
+        "first address survives a late initial-home notification",
+        || {
+            ui.snapshot()
+                .ok()
+                .and_then(|s| s.current_visit().map(|v| v.url.path().to_string()))
+                .as_deref()
+                == Some("/gate/initial/first")
+        },
+    )?;
+    assert!(server.hits("/gate/initial/first") > 0);
+    ui.window.close();
+    pump(50);
+    Ok(())
+}
+
 fn page_picture_never_blanks() -> Result<()> {
     let u = U::new()?;
     let roots = [u.root("/colour/a")?, u.root("/colour/b")?];
@@ -904,7 +931,7 @@ fn later_switch_keeps_the_picture_on_screen() -> Result<()> {
                 {
                     if let Some(pixel) = ui.window.window().and_then(|w| w.pixbuf(600, 600, 1, 1)) {
                         let p = pixel.read_pixel_bytes();
-                        recorded.set(Some([p[0], p[1], p[2]]));
+                        recorded.set(Some((Instant::now(), [p[0], p[1], p[2]])));
                     }
                 }
             }
@@ -915,7 +942,12 @@ fn later_switch_keeps_the_picture_on_screen() -> Result<()> {
     let mut committed = false;
     let mut old = [208, 32, 64];
     let mut blue = false;
-    while started.elapsed() < Duration::from_secs(6) {
+    let mut commit_ms = None;
+    let mut committed_at = None;
+    while committed_at.map_or_else(
+        || started.elapsed() < Duration::from_secs(8),
+        |at: Instant| at.elapsed() < Duration::from_secs(6),
+    ) {
         pump(3);
         if !requested
             && u.cursor_path() == "/colour/short-busy"
@@ -927,7 +959,10 @@ fn later_switch_keeps_the_picture_on_screen() -> Result<()> {
         }
         if !committed && u.cursor_path() == "/colour/third-busy" {
             committed = true;
-            old = held.get().context("picture at the second commit")?;
+            let (at, picture) = held.get().context("picture at the second commit")?;
+            committed_at = Some(at);
+            commit_ms = Some(at.duration_since(started).as_millis());
+            old = picture;
         }
         let pixel =
             u.ui.window
@@ -955,6 +990,10 @@ fn later_switch_keeps_the_picture_on_screen() -> Result<()> {
                 "switch picture must never be blank: {colour:?}"
             );
         }
+    }
+    eprintln!("LATER_RESULT requested={requested} committed={committed} blue={blue} commit_ms={commit_ms:?} elapsed_ms={} loading={} uri={}", started.elapsed().as_millis(), u.loading(), u.uri());
+    if !blue {
+        eprintln!("LATER_DOCUMENT {:?}", eval(&u.ui, "JSON.stringify([location.href,document.readyState,performance.now(),getComputedStyle(document.body).backgroundColor,document.visibilityState])"));
     }
     assert!(requested && committed && blue);
     Ok(())
@@ -1063,6 +1102,7 @@ fn main() -> Result<()> {
         .collect();
     type Case = (&'static str, fn() -> Result<()>);
     let cases: &[Case] = &[
+        ("first_address", first_address_survives_initial_home),
         ("picture", page_picture_never_blanks),
         ("busy_picture", switch_while_picture_waits_for_script),
         ("later_picture", later_switch_keeps_the_picture_on_screen),

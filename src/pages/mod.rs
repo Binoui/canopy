@@ -451,9 +451,23 @@ impl Pages {
         self.advance_continuation(ContinuationEvent::Discard);
     }
 
+    #[cfg_attr(feature = "gui-smoke", track_caller)]
     fn cancel_candidate(&self) {
         let page = self.branches.candidate.borrow_mut().take();
         if let Some(page) = page {
+            #[cfg(feature = "gui-smoke")]
+            eprintln!(
+                "CANCEL_CANDIDATE at={} uri={:?} pending={:?} loading={} selected={:?}",
+                std::panic::Location::caller(),
+                page.native.uri(),
+                page.pending_ticket(),
+                page.native.is_loading(),
+                self.branches
+                    .live
+                    .borrow()
+                    .as_ref()
+                    .and_then(|p| p.native.uri())
+            );
             page.cancel();
         }
         if let Some((index, saved)) = self.branches.candidate_saved.borrow_mut().take() {
