@@ -56,10 +56,21 @@ fn main() -> Result<()> {
         toast_text(&ui).as_deref() == Some("No waiting pages in this tree")
     })?;
     assert!(!visible(&ui, "#waiting-pin"));
+    key("ctrl+shift+e")?;
+    pump(200);
+    assert_eq!(
+        chrome(&ui, "canopy.state().overlay")?,
+        serde_json::Value::Null
+    );
+    assert!(!visible(&ui, "#zoom-pin"));
     ui.pages
         .selected_page()
         .navigate(web_url(&format!("{base}/source"))?, NavigationTarget::Root)?;
     loaded(&ui, "/source")?;
+    key("ctrl+shift+e")?;
+    wait("zero-waiting sheet", || visible(&ui, "#tree-sheet"))?;
+    assert_eq!(text(&ui, "#tree-detail"), "1 page · 0 waiting");
+    key("Escape")?;
     prove_delivery(&ui)?;
     assert!(!visible(&ui, "#waiting-pin"));
     for i in 0..3 {
@@ -118,6 +129,7 @@ fn main() -> Result<()> {
     ui.window.resize(800, 800);
     pump(400);
     settle(&ui)?;
+    open_strip(&ui)?;
     let pin = rect(&ui, "#waiting-pin")?;
     let before = chrome(
         &ui,
@@ -139,6 +151,7 @@ fn main() -> Result<()> {
     println!("PASS pinned counter stays still while the strip pans; current pill fits reserved room at three widths.");
     ui.window.resize(1240, 800);
     pump(400);
+    prove_tree_sheet(&ui)?;
     for theme in ["dark", "light"] {
         chrome(
             &ui,
@@ -254,8 +267,12 @@ fn main() -> Result<()> {
     }
     assert!(!visible(&ui, "#waiting-pin"));
     assert_eq!(
-        chrome(&ui, "canopy.state().room")?,
-        ui.window.allocated_width()
+        chrome(&ui, "canopy.state().pins")?,
+        serde_json::json!(["zoom"])
+    );
+    assert!(
+        chrome(&ui, "canopy.state().room")?.as_f64().unwrap()
+            < f64::from(ui.window.allocated_width())
     );
     key("ctrl+Tab")?;
     wait("nothing waiting toast", || {
@@ -268,7 +285,8 @@ fn main() -> Result<()> {
         )?;
         shots(&ui, &format!("{theme}-empty"))?;
     }
-    println!("PASS counter hides and full strip room returns at zero; empty shortcut shows toast.");
+    println!("PASS counter hides and only the zoom pin reserves room at zero; empty shortcut shows toast.");
+    small_tree_shots(&ui, &base)?;
     ui.window.close();
     Ok(())
 }
@@ -377,5 +395,140 @@ fn prove_delivery(ui: &Ui) -> Result<()> {
             key("Escape")?;
         }
     }
+    Ok(())
+}
+
+fn prove_tree_sheet(ui: &Ui) -> Result<()> {
+    let original = ui.snapshot()?.current.unwrap();
+    let pin = rect(ui, "#zoom-pin")?;
+    let waiting = rect(ui, "#waiting-pin")?;
+    assert!(pin.0 > waiting.0 + waiting.2);
+    assert!(pin.0 + pin.2 <= f64::from(ui.window.allocated_width()) - 7.5);
+    key("ctrl+t")?;
+    key("ctrl+shift+e")?;
+    wait("tree sheet from start", || visible(ui, "#tree-sheet"))?;
+    assert_eq!(chrome(ui, "canopy.state().surface")?, "reading");
+    assert_eq!(chrome(ui, "canopy.state().overlay")?, "tree");
+    assert_eq!(rect(ui, "#zoom-pin")?, pin);
+    assert!(visible(ui, "#zoom-pin.on"));
+    assert!(!visible(ui, "#waiting-pin"));
+    assert_eq!(rect(ui, ".sheet-box")?.1, 42.);
+    assert!(rect(ui, ".sheet-box")?.3 > 52.);
+    assert_eq!(cover(ui), None);
+    assert!(visible(ui, "#tree-sheet > .scrim"));
+    assert!(chrome(ui, "document.querySelector('#tree-title').textContent === S.frame.treeView.title && document.querySelector('#tree-detail').textContent === S.frame.treeView.detail")? == true);
+    assert!(chrome(ui, "document.querySelectorAll('.tree-tile').length === S.frame.treeView.tiles.length && document.querySelectorAll('.tree-tile.current').length === 1 && !!document.querySelector('.tree-tile.pending .pending-dot')")? == true);
+    assert!(chrome(ui, "(() => {const a=document.querySelector('.tree-tile.current').getBoundingClientRect(),b=document.querySelector('#tree-board').getBoundingClientRect();return a.left>=b.left && a.right<=b.right && a.top>=b.top && a.bottom<=b.bottom})()")? == true);
+    hover_chrome(ui, ".sheet-head")?;
+    pump(400);
+    assert_eq!(strip_height(ui), 52);
+    assert!(chrome(ui, "canopy.state().open")? == false);
+    for theme in ["dark", "light"] {
+        chrome(ui, &format!("(intent('theme', {{mode:'{theme}'}}), true)"))?;
+        wait("sheet theme", || {
+            chrome(ui, "canopy.state().dark").is_ok_and(|v| v == (theme == "dark"))
+        })?;
+        chrome(ui, "(setTreeSide('tree'), true)")?;
+        pump(100);
+        tree_shot(ui, &format!("{theme}-tree"))?;
+        click_chrome(ui, "[data-side=list]")?;
+        assert!(chrome(ui, "document.querySelectorAll('.tree-row').length === S.frame.treeView.rows.length && !!document.querySelector('.tree-row.current') && [...document.querySelectorAll('.tree-row.pending')].every(r=>r.textContent.includes('not loaded'))")? == true);
+        assert!(chrome(ui, "document.querySelector('#tree-list').scrollHeight > document.querySelector('#tree-list').clientHeight")? == true);
+        tree_shot(ui, &format!("{theme}-list"))?;
+    }
+    key("Escape")?;
+    wait("sheet escape", || !visible(ui, "#tree-sheet"))?;
+    key("ctrl+shift+e")?;
+    wait("remember list", || visible(ui, "#tree-list"))?;
+    assert_eq!(chrome(ui, "canopy.state().treeSide")?, "list");
+    key("ctrl+shift+e")?;
+    wait("sheet shortcut closes", || !visible(ui, "#tree-sheet"))?;
+    click_chrome(ui, "#zoom-pin")?;
+    wait("sheet button opens", || visible(ui, "#tree-sheet"))?;
+    click_chrome(ui, "#zoom-pin")?;
+    wait("sheet button closes", || !visible(ui, "#tree-sheet"))?;
+    key("ctrl+shift+e")?;
+    wait("sheet for scrim", || visible(ui, "#tree-sheet"))?;
+    let (x, y) = chrome_point(ui, "#tree-sheet > .scrim")?;
+    let (_, top, _, h) = rect(ui, ".sheet-box")?;
+    click_at(x, y.max((top + h + 20.) as i32))?;
+    wait("sheet scrim closes", || !visible(ui, "#tree-sheet"))?;
+    key("ctrl+shift+e")?;
+    click_chrome(ui, "[data-side=tree]")?;
+    click_chrome(ui, ".tree-tile.current")?;
+    wait("current tile closes", || !visible(ui, "#tree-sheet"))?;
+    let target = chrome(ui, "S.frame.treeView.rows[0].id")?
+        .as_str()
+        .unwrap()
+        .to_owned();
+    key("ctrl+shift+e")?;
+    click_chrome(ui, "[data-side=list]")?;
+    chrome(
+        ui,
+        "(document.querySelector('#tree-list').scrollTop=0,true)",
+    )?;
+    click_chrome(ui, &format!(".tree-row[data-id='{target}']"))?;
+    wait("list opens selected page", || {
+        ui.snapshot().unwrap().current.unwrap().to_string() == target && !visible(ui, "#tree-sheet")
+    })?;
+    ui.pages.selected_page().restore(original)?;
+    wait("restore sheet fixture", || {
+        ui.snapshot().unwrap().current == Some(original)
+            && !ui.pages.selected_page().native.is_loading()
+    })?;
+    println!("PASS tree sheet pins, header, marks, native scrolling, side memory, start-page shortcut, tile/list activation, all close paths and hover suppression.");
+    Ok(())
+}
+fn tree_shot(ui: &Ui, name: &str) -> Result<()> {
+    if let Ok(folder) = std::env::var("CANOPY_TREE_SHOTS") {
+        std::fs::create_dir_all(&folder)?;
+        save_window(ui, &format!("{folder}/{name}.png"))?;
+    }
+    Ok(())
+}
+
+fn small_tree_shots(ui: &Ui, base: &str) -> Result<()> {
+    ui.pages.selected_page().navigate(
+        web_url(&format!("{base}/sheet-root"))?,
+        NavigationTarget::Root,
+    )?;
+    loaded(ui, "/sheet-root")?;
+    let root = ui.snapshot()?.current.unwrap();
+    ui.pages.selected_page().navigate(
+        web_url(&format!("{base}/sheet-branch"))?,
+        NavigationTarget::ChildOf(root),
+    )?;
+    loaded(ui, "/sheet-branch")?;
+    queue(ui, "link0")?;
+    queue(ui, "link1")?;
+    let branch = ui.snapshot()?.current.unwrap();
+    ui.pages.selected_page().restore(root)?;
+    loaded(ui, "/sheet-root")?;
+    queue(ui, "link2")?;
+    ui.pages.selected_page().restore(branch)?;
+    loaded(ui, "/sheet-branch")?;
+    ui.pages.selected_page().navigate(
+        web_url(&format!("{base}/sheet-current"))?,
+        NavigationTarget::ChildOf(branch),
+    )?;
+    loaded(ui, "/sheet-current")?;
+    key("ctrl+shift+e")?;
+    wait("small screenshot sheet", || visible(ui, "#tree-sheet"))?;
+    wait("old toast gone", || !visible(ui, "#toast"))?;
+    for theme in ["dark", "light"] {
+        chrome(ui, &format!("(intent('theme', {{mode:'{theme}'}}), true)"))?;
+        wait("sheet theme", || {
+            chrome(ui, "canopy.state().dark").is_ok_and(|v| v == (theme == "dark"))
+        })?;
+        chrome(ui, "(setTreeSide('tree'), true)")?;
+        pump(100);
+        tree_shot(ui, &format!("{theme}-tree"))?;
+        click_chrome(ui, "[data-side=list]")?;
+        tree_shot(ui, &format!("{theme}-list"))?;
+    }
+    key("Escape")?;
+    println!(
+        "PASS screenshots use a short path, side branches at two path pages and waiting pages."
+    );
     Ok(())
 }

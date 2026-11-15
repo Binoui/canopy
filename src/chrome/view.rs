@@ -12,7 +12,7 @@ use super::{
     forest_layout,
     graph::{self, EdgeKind, NodeKind, StripLayout},
     palette::{Group, PaletteItem},
-    pins,
+    pins, tree_view,
     waiting::{self, WaitState, WaitingOrder},
     ChromeFrame, PageFile,
 };
@@ -62,6 +62,7 @@ pub(crate) fn frame(frame: &ChromeFrame, width: f64) -> Value {
         "tabs": tabs,
         "visits": visits,
         "strip": strip(forest, width),
+        "treeView": tree_view_value(forest),
         "waiting": { "order": WaitingOrder::CHOSEN.label(), "ids": waiting::pages(forest).iter().map(|v| v.id.to_string()).collect::<Vec<_>>() },
         "files": files_value(&frame.files),
         "forest": {
@@ -94,6 +95,24 @@ pub(crate) fn frame(frame: &ChromeFrame, width: f64) -> Value {
             "text": format!("{}, then {}", short_host(&path.first), short_host(&path.second)),
             "count": format!("{} times", path.visits),
         })).collect::<Vec<_>>(),
+    })
+}
+
+fn tree_view_value(forest: &ForestProjection) -> Value {
+    let Some(view) = tree_view::tree_view(forest) else {
+        return Value::Null;
+    };
+    let current_tree = forest.current().and_then(|id| forest.tree_of(id));
+    let Some(tree) = forest.trees().iter().find(|t| Some(t.id) == current_tree) else {
+        return Value::Null;
+    };
+    json!({
+        "title": tree.title,
+        "detail": format!("{} · {} waiting", plural(view.tiles.len(), "page"), waiting::pages(forest).len()),
+        "width": view.width, "height": view.height,
+        "tiles": view.tiles.iter().map(|t| json!({"id": t.id.to_string(), "x": t.rect.x, "y": t.rect.y, "w": t.rect.w, "s": t.rect.s, "path": t.on_path})).collect::<Vec<_>>(),
+        "edges": view.edges.iter().map(|e| json!({"from": e.from.to_string(), "to": e.to.to_string(), "kind": match e.kind { EdgeKind::Path => "path", EdgeKind::Pending => "pending", EdgeKind::Plain => "plain" }, "c": e.curve})).collect::<Vec<_>>(),
+        "rows": view.rows.iter().map(|r| json!({"id": r.id.to_string(), "depth": r.depth, "path": r.on_path})).collect::<Vec<_>>(),
     })
 }
 
@@ -514,6 +533,23 @@ mod tests {
         )
         .unwrap();
         (forest, ids)
+    }
+
+    #[test]
+    fn the_frame_carries_the_current_tree_view() {
+        let (forest, _) = chain();
+        let view = tree_view_value(&forest);
+        assert_eq!(view["detail"], "3 pages · 1 waiting");
+        assert_eq!(view["tiles"].as_array().unwrap().len(), 3);
+        let empty = ForestProjection::from_snapshot(
+            Snapshot {
+                visits: vec![],
+                current: None,
+            },
+            vec![],
+        )
+        .unwrap();
+        assert!(tree_view_value(&empty).is_null());
     }
 
     #[test]

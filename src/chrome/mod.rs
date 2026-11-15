@@ -12,6 +12,7 @@ mod forest_layout;
 pub(crate) mod graph;
 mod palette;
 mod pins;
+mod tree_view;
 mod view;
 mod waiting;
 
@@ -276,6 +277,10 @@ impl HtmlChrome {
 
     pub fn next_waiting(&self) {
         self.inner.call("nextWaiting", &[]);
+    }
+
+    pub fn toggle_tree(&self) {
+        self.inner.call("toggleTree", &[]);
     }
 
     pub fn toggle_forest(&self) {
