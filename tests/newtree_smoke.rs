@@ -325,6 +325,7 @@ fn main() -> Result<()> {
     click_chrome(&ui, ".pinned-card")?;
     wait("placeholder leaves", || !visible(&ui, "#strip-placeholder"))?;
     println!("PASS all-settled placeholder clears on card click.");
+    chrome_fill(&ui, directory.path())?;
     ui.window.close();
     Ok(())
 }
@@ -657,6 +658,13 @@ fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
             chrome(ui, "canopy.state().start.suggested.map(s=>s.key)")?,
             keys
         );
+        assert_eq!(
+            chrome(
+                ui,
+                "[...document.querySelectorAll('[data-start=suggestion]')].map(e=>e.dataset.id)"
+            )?,
+            keys
+        );
     }
     click_chrome(ui, "[data-start=suggestion]")?;
     wait("painted page opens", || {
@@ -726,13 +734,23 @@ fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
         ui,
         &format!("[data-start=suggestion][data-id='{path_key}']"),
     )?;
-    wait("suggested path loads its child", || {
+    let opened_path = wait("suggested path loads its child", || {
         ui.snapshot()
             .unwrap()
             .current_visit()
             .is_some_and(|v| v.url.path() == "/path-second" && v.parent.is_some())
             && !ui.pages.selected_page().native.is_loading()
-    })?;
+    });
+    if let Err(error) = opened_path {
+        anyhow::bail!(
+            "{error}; current {:?}; native {:?}; loading {}; surface {:?}; chips {:?}",
+            ui.snapshot()?.current_visit(),
+            ui.pages.selected_page().native.uri(),
+            ui.pages.selected_page().native.is_loading(),
+            chrome(ui, "canopy.state().surface")?,
+            chrome(ui, "canopy.state().start.suggested")?
+        );
+    }
     let snapshot = ui.snapshot()?;
     let second = snapshot.current_visit().unwrap();
     let root = snapshot
@@ -797,5 +815,39 @@ fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
     });
     assert!(browser.snapshot()?.visits.iter().any(|v| v.id == page));
     println!("PASS three suggestion kinds, reasons and hover actions, frozen keys across two refreshes, painted-key activation, new-entry ranking, Keep page/tree, persisted cross, path activation and Keep, tree restoration and no backfill.");
+    Ok(())
+}
+
+fn chrome_fill(ui: &Ui, data: &std::path::Path) -> Result<()> {
+    use canopy::browser::{Browser, ImportedPage};
+    let mut browser = Browser::open(&data.join("forest.sqlite3"))?;
+    let connection = rusqlite::Connection::open(data.join("forest.sqlite3"))?;
+    connection.execute("DELETE FROM visit_events", [])?;
+    let pages: Vec<_> = (0..12)
+        .map(|i| ImportedPage {
+            url: web_url(&format!("https://chrome{i}.test/")).unwrap(),
+            title: format!("Chrome {i}"),
+            visits: 100 - i,
+            typed: 0,
+            last_visit: None,
+        })
+        .collect();
+    browser.replace_imported("test", &pages)?;
+    for page in &pages[..8] {
+        browser.bookmark(&page.url, &page.title)?;
+    }
+    browser.decline(&canopy::suggest::SuggestionKey::Page(pages[8].url.clone()))?;
+    ui.dispatch(ChromeIntent::SetTheme(ThemeMode::Dark));
+    start_page(ui)?;
+    wait("Chrome fills every remaining place", || {
+        chrome(ui, "canopy.state().start.suggested.map(s=>s.why)").is_ok_and(|v| {
+            v == serde_json::json!(["Often in Chrome", "Often in Chrome", "Often in Chrome"])
+        })
+    })?;
+    assert_eq!(
+        chrome(ui, "canopy.state().start.suggested.map(s=>s.title)")?,
+        serde_json::json!(["Chrome 9", "Chrome 10", "Chrome 11"])
+    );
+    println!("PASS Chrome history fills all three places after eight bookmarked pages and a declined key.");
     Ok(())
 }

@@ -44,7 +44,7 @@ fn main() -> Result<()> {
     ready(&ui)?;
     assert!(visible(&ui, "#start"));
     assert!(ui.snapshot()?.visits.is_empty());
-    assert!(text(&ui, "#start").contains("as your forest grows"));
+    assert!(text(&ui, "#start").contains("Pin a tree from its tab menu"));
     assert_eq!(
         chrome(&ui, "canopy.state().dark")?,
         true,
