@@ -959,7 +959,10 @@ fn main() -> Result<()> {
         ("services_after_switches", services_after_switches),
         ("chrome_after_switch", chrome_after_switch),
     ];
-    let all: Vec<_> = cases.iter().copied().chain(regressions::cases()).collect();
+    let all: Vec<_> = regressions::cases()
+        .into_iter()
+        .chain(cases.iter().copied())
+        .collect();
     for (name, run) in all {
         if only.as_ref().is_some_and(|s| s != name) {
             continue;

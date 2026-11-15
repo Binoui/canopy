@@ -411,8 +411,15 @@ fn main() -> Result<()> {
         .find(|root| root.label() == hidden[0])
         .unwrap()
         .id;
+    let hidden_target = ui.pages.read(|browser| {
+        let forest = canopy::forest::ForestProjection::from_snapshot(
+            browser.snapshot()?,
+            browser.tree_states()?,
+        )?;
+        browser.tree_target(forest.tree_of(hidden_root).context("hidden tree exists")?)
+    })?;
     wait("hidden tree selected", || {
-        ui.snapshot().unwrap().current == Some(hidden_root)
+        ui.snapshot().unwrap().current == Some(hidden_target)
             && !ui.pages.selected_page().native.is_loading()
     })?;
     println!(
