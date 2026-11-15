@@ -613,9 +613,12 @@ impl Pages {
         }
         anyhow::ensure!(self.branches.live.borrow().is_some(), "No selected page.");
         self.cancel_continuation();
-        self.cancel_candidate();
         let forest =
             self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
+        let target = self.branches.candidate.borrow().as_ref().and_then(|p| p.pending_visit());
+        if target.is_some_and(|visit| forest.tree_of(visit) == Some(tree)) {
+            self.cancel_candidate();
+        }
         self.branches.dormant.borrow_mut().retain(|saved| {
             !saved
                 .entries
