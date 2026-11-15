@@ -312,6 +312,10 @@ body[data-overlay="tree"] #pins .pin:not(.on) { visibility: hidden; }
 .pc-foot .pc-name { flex: 1; }
 .pc-meta { font-size: 11px; color: var(--muted); display: block; }
 
+.folder-chip { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px 0 6px; border: 1px solid var(--border); border-radius: 6px; font-size: 11px; font-weight: 500; color: var(--muted); min-width: 0; }
+.folder-chip svg.icon { width: 11px; height: 11px; color: var(--faint); flex: none; }
+.folder-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-chip i { font-style: normal; color: var(--faint); }
 .start-tiles { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); }
 .start-tile { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 7px 2px 6px; border-radius: 10px; color: var(--muted); font-size: 11px; min-width: 0; }
 .start-tile:hover { background: var(--hover); }

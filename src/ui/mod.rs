@@ -275,6 +275,7 @@ impl Ui {
                 capture_enabled: browser.capture_enabled()?,
                 theme: browser.theme_mode()?,
                 suggestions: browser.start_suggestions()?,
+                bookmarks: browser.bookmarks()?,
                 files,
             })
         })
@@ -328,6 +329,18 @@ impl Ui {
         self.chrome.open_palette(scope, seed);
     }
 
+    fn toggle_bookmark(&self) {
+        use crate::browser::BookmarkToggle;
+        let toast = match self.pages.toggle_current_bookmark() {
+            Ok(BookmarkToggle::Added) => Toast::Info("Bookmarked".into()),
+            Ok(BookmarkToggle::Removed) => Toast::Info("Bookmark removed".into()),
+            Ok(BookmarkToggle::NoPage) => Toast::Info("No page to bookmark".into()),
+            Err(error) => Toast::Error(error.to_string()),
+        };
+        self.schedule_refresh();
+        self.chrome.toast(toast);
+    }
+
     fn shortcut(&self, event: &gdk::EventKey) -> glib::Propagation {
         let Some(shortcut) = Shortcut::of(event) else {
             return glib::Propagation::Proceed;
@@ -336,6 +349,7 @@ impl Ui {
         match shortcut {
             Shortcut::Palette(seed) => self.open_palette(seed),
             Shortcut::SettleTree => self.chrome.settle_current(),
+            Shortcut::Bookmark => self.toggle_bookmark(),
             Shortcut::NewTree => self.chrome.new_tree(),
             Shortcut::Forest => self.chrome.toggle_forest(),
             Shortcut::ZoomTree => self.chrome.toggle_tree(),
@@ -364,6 +378,7 @@ impl Ui {
 enum Shortcut {
     Palette(PaletteSeed),
     NewTree,
+    Bookmark,
     SettleTree,
     Forest,
     ZoomTree,
@@ -425,6 +440,7 @@ impl Shortcut {
                 Self::Palette(PaletteSeed::CurrentAddress),
             ),
             (Modifiers::CONTROL, key::t, Self::NewTree),
+            (Modifiers::CONTROL, key::d, Self::Bookmark),
             (Modifiers::CONTROL, key::w, Self::SettleTree),
             (Modifiers::CONTROL, key::e, Self::Forest),
             (Modifiers::CONTROL_SHIFT, key::e, Self::ZoomTree),
@@ -465,6 +481,11 @@ impl ChromeHost for Ui {
             ChromeIntent::OpenPath(path) => self.pages.open_path(path.first, path.second),
             ChromeIntent::SetTheme(mode) => {
                 let result = self.pages.set_theme(mode);
+                self.schedule_refresh();
+                result
+            }
+            ChromeIntent::RemoveBookmark(id) => {
+                let result = self.pages.remove_bookmark(id);
                 self.schedule_refresh();
                 result
             }
@@ -631,6 +652,7 @@ mod shortcut_tests {
                 Shortcut::Palette(PaletteSeed::CurrentAddress),
             ),
             (key::t, Modifiers::CONTROL, Shortcut::NewTree),
+            (key::d, Modifiers::CONTROL, Shortcut::Bookmark),
             (key::w, Modifiers::CONTROL, Shortcut::SettleTree),
             (key::e, Modifiers::CONTROL, Shortcut::Forest),
             (key::e, Modifiers::CONTROL_SHIFT, Shortcut::ZoomTree),
