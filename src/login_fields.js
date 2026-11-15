@@ -60,12 +60,14 @@
   function targets() {
     const all = inputs();
     const password = passwordField(all);
-    return { password, username: usernameField(all, password) };
+    return { password, username: usernameField(all, password), asks: all.some(field => field.type === 'password') };
   }
 
+  // `asks` is true while the page shows any password field, fillable or not: a page that
+  // still asks for a password has not accepted the one just sent.
   function state() {
-    const { username, password } = targets();
-    return { url: location.href, username: !!username, password: !!password };
+    const { username, password, asks } = targets();
+    return { url: location.href, username: !!username, password: !!password, asks };
   }
 
   // Sets the field the way typing would, so the page's own scripts notice the value.
@@ -89,11 +91,11 @@
 
   // Tells Canopy when sign-in fields appear or go away. The message carries nothing:
   // Canopy asks for the state itself, against the document it knows.
-  let reported = 'false/false';
+  let reported = 'false/false/false';
   let timer = 0;
   function check() {
     const now = state();
-    const key = `${now.username}/${now.password}`;
+    const key = `${now.username}/${now.password}/${now.asks}`;
     if (key === reported) return;
     reported = key;
     try { webkit.messageHandlers.canopyLoginFields.postMessage(''); } catch (_) {}
@@ -112,10 +114,53 @@
   // A page returning from the page cache has a new owner on Canopy's side.
   addEventListener('pageshow', event => {
     if (event.persisted) {
-      reported = 'false/false';
+      reported = 'false/false/false';
       soon();
     }
   });
+
+  // ---------- a login the user sends ----------
+
+  // The password being sent: the only one typed, the one marked as new, or the one typed
+  // twice on a form that asks for it again.
+  function sentPassword(all) {
+    const typed = all.filter(field => field.type === 'password' && field.value);
+    if (typed.length < 2) return typed[0] || null;
+    return typed.find(field => hint(field).includes('new-password'))
+      || typed.find((field, index) => typed.some((other, at) => at > index && other.value === field.value))
+      || typed[0];
+  }
+
+  // The second step of a two-step sign-in keeps the user name in a field it does not show.
+  function keptUsername(password) {
+    for (const field of (password.form || document).querySelectorAll('input')) {
+      if (field.type === 'password' || !field.value) continue;
+      if (hint(field).includes('username') || (field.type === 'hidden' && /^(user(name)?|login(fmt)?|e-?mail|identifier)$/i.test(field.name))) return field.value;
+    }
+    return '';
+  }
+
+  // Tells Canopy the user name and password as the user sends them, since the page may be
+  // gone a moment later. Canopy offers to save them only once the page stops asking.
+  let sent = '';
+  function send() {
+    const all = inputs();
+    const password = sentPassword(all);
+    if (!password) return;
+    const username = usernameField(all, password)?.value || keptUsername(password);
+    const message = JSON.stringify({ origin: location.origin, username, password: password.value });
+    if (message === sent) return;
+    sent = message;
+    try { webkit.messageHandlers.canopyLoginSent.postMessage(message); } catch (_) {}
+  }
+  const source = event => event.composedPath()[0];
+  addEventListener('submit', send, true);
+  addEventListener('click', event => {
+    if (event.isTrusted && source(event)?.closest?.('button,input[type="submit"],input[type="button"],[role="button"],a')) send();
+  }, true);
+  addEventListener('keydown', event => {
+    if (event.isTrusted && event.key === 'Enter' && source(event)?.localName === 'input') send();
+  }, true);
 
   Object.defineProperty(globalThis, '__canopyLogins', { value: Object.freeze({ state, fill }) });
 })();

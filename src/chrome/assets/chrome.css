@@ -52,6 +52,9 @@ svg.icon { width: 14px; height: 14px; flex: none; fill: none; stroke: currentCol
 .label-button svg.icon { width: 15px; height: 15px; color: var(--green-ink); }
 .label-button.on { background: var(--green-soft); border-color: transparent; color: var(--green-ink); }
 #login-chip { margin-right: 4px; max-width: 220px; }
+#save-login-account { pointer-events: none; }
+.save-actions { margin: 4px 8px 6px; }
+.save-actions .action:first-child { background: var(--green-soft); color: var(--green-ink); border-color: transparent; font-weight: 600; }
 #login-chip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tabs-divider { align-self: center; flex: none; width: 1px; height: 18px; margin: 0 5px 0 6px; background: var(--border); }
 #tab-row { display: flex; align-items: flex-end; gap: 2px; min-width: 0; height: 100%; }

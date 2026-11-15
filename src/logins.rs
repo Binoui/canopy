@@ -67,6 +67,8 @@ pub trait LoginProvider {
     fn for_page(&self, page: &Url) -> Result<Vec<SavedLogin>>;
     /// The password of an account `for_page` returned.
     fn password(&self, login: &SavedLogin) -> Result<Secret>;
+    /// Keeps `login`, replacing the password of the same account on the same origin.
+    fn save(&mut self, login: &Login) -> Result<()>;
 }
 
 impl LoginProvider for Logins {
@@ -77,7 +79,15 @@ impl LoginProvider for Logins {
     fn password(&self, login: &SavedLogin) -> Result<Secret> {
         Logins::password(self, login)
     }
+
+    fn save(&mut self, login: &Login) -> Result<()> {
+        self.upsert_imported(SAVED, std::slice::from_ref(login))
+            .map(|_| ())
+    }
 }
+
+/// The source of logins saved in Canopy itself, next to those imported from a browser.
+const SAVED: &str = "canopy";
 
 pub struct Logins {
     db: Connection,
@@ -213,10 +223,13 @@ impl Logins {
         let Some(origin) = WebOrigin::of(page) else {
             return Ok(Vec::new());
         };
-        let mut stmt = self
-            .db
-            .prepare("SELECT id,username FROM logins WHERE origin=?1 ORDER BY last_used DESC,id")?;
-        let rows = stmt.query_map([origin.as_str()], |r| {
+        // An account saved in Canopy stands in for imported copies of the same account.
+        let mut stmt = self.db.prepare(
+            "SELECT id,username FROM logins l WHERE origin=?1 AND (source=?2 OR NOT EXISTS
+                (SELECT 1 FROM logins s WHERE s.origin=l.origin AND s.username=l.username AND s.source=?2))
+             ORDER BY last_used DESC,id",
+        )?;
+        let rows = stmt.query_map([origin.as_str(), SAVED], |r| {
             Ok(SavedLogin {
                 id: LoginId(r.get(0)?),
                 origin: origin.clone(),
@@ -351,6 +364,36 @@ mod tests {
         }
         let locked = Logins::open(dir.path()).unwrap();
         assert_eq!(locked.for_page(&page).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_saved_login_stands_in_for_its_imported_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut vault = Logins::with_key(dir.path(), [7; 32]);
+        let page = Url::parse("https://example.test/").unwrap();
+        let mut bob = login(page.as_str(), "bob-fake");
+        bob.username = "bob".into();
+        vault
+            .upsert_imported("chrome:one", &[login(page.as_str(), "old-fake"), bob])
+            .unwrap();
+        let provider: &mut dyn LoginProvider = &mut vault;
+        let mut changed = login(page.as_str(), "new-fake");
+        changed.last_used = 9;
+        provider.save(&changed).unwrap();
+        let offered = provider.for_page(&page).unwrap();
+        let names: Vec<_> = offered.iter().map(|l| l.username.as_str()).collect();
+        assert_eq!(names, ["alice", "bob"]);
+        assert!(provider.password(&offered[0]).unwrap().expose() == "new-fake");
+        assert!(provider.password(&offered[1]).unwrap().expose() == "bob-fake");
+        // Saving again replaces the saved password; a later import does not bring the old one back.
+        provider.save(&login(page.as_str(), "newer-fake")).unwrap();
+        vault
+            .upsert_imported("chrome:one", &[login(page.as_str(), "old-fake")])
+            .unwrap();
+        let offered = vault.for_page(&page).unwrap();
+        assert_eq!(offered.len(), 2);
+        let alice = offered.iter().find(|l| l.username == "alice").unwrap();
+        assert!(vault.password(alice).unwrap().expose() == "newer-fake");
     }
 
     #[test]

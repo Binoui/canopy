@@ -116,7 +116,15 @@ When a page asks you to sign in and the vault holds a login for that site, a key
 
 Nothing is filled until you ask. A login is offered only on the exact site it was saved for, with the same scheme, host and port, and never to a frame embedded in the page. On a sign-in that asks for the user name first and the password on the next page, use the button on each page.
 
-The vault holds the passwords brought in from Chrome. Canopy does not save new passwords yet. The keyring may ask you to unlock it the first time a login is filled. Sign-up and change-password forms are left alone. Fields that a site keeps in a closed component or in a frame are not found.
+The keyring may ask you to unlock it the first time a login is filled. Sign-up and change-password forms are not filled. Fields that a site keeps in a closed component or in a frame are not found.
+
+### Save a login
+
+When you sign in or sign up with a login the vault does not hold, the key button reads **Save login?** once the site has let you in. For a saved account with a different password, it reads **Update password?**. Click it and choose **Save** or **Update** to keep the login, or **Not now** to let it go. Nothing is saved until you choose. An offer you do not answer goes away after five minutes.
+
+Canopy waits for the page to stop asking for a password before it offers. If the site sends you back to its sign-in page, or nothing happens for a minute, there is no offer. A site that keeps its sign-in form on screen after letting you in gets no offer either.
+
+A login you save stays in the encrypted vault on this computer, next to the ones brought in from Chrome, and replaces the imported copy of the same account. Importing from Chrome again does not bring the old password back. There is no list of saved logins to edit or delete yet, and no way to tell Canopy never to ask for a site.
 
 ## Try a fork
 
