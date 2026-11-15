@@ -11,6 +11,7 @@ mod favicon;
 mod forest_layout;
 pub(crate) mod graph;
 mod palette;
+mod pins;
 mod view;
 mod waiting;
 
@@ -271,6 +272,10 @@ impl HtmlChrome {
 
     pub fn new_tree(&self) {
         self.inner.call("newTree", &[]);
+    }
+
+    pub fn next_waiting(&self) {
+        self.inner.call("nextWaiting", &[]);
     }
 
     pub fn toggle_forest(&self) {
