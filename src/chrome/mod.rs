@@ -11,7 +11,10 @@ mod favicon;
 mod forest_layout;
 pub(crate) mod graph;
 mod palette;
+mod pins;
+mod tree_view;
 mod view;
+mod waiting;
 
 use std::{
     borrow::Cow,
@@ -59,6 +62,9 @@ type PaletteCache = (String, Vec<(Group, PaletteItem)>, usize);
 /// Everything the chrome shows, read from SQLite in one go.
 pub struct ChromeFrame {
     pub forest: ForestProjection,
+    /// Waiting pages that already have a live view. Nothing fills it yet: background
+    /// loading will, and the chrome then shows those pages as loaded with no other change.
+    pub loaded: std::collections::HashSet<VisitId>,
     pub capture_enabled: bool,
     pub theme: ThemeMode,
     pub suggestions: StartSuggestions,
@@ -113,6 +119,30 @@ pub enum ChromeIntent {
     OpenFile(i64),
     /// Open the folder a downloaded file was saved in.
     OpenFileFolder(i64),
+    /// Fill one of the saved logins of offer number `offer` into the page.
+    FillLogin {
+        offer: u64,
+        index: usize,
+    },
+    /// Unlock the password manager that holds the logins.
+    UnlockLogins,
+    /// Answer save offer number `offer`: keep the login, or not now.
+    AnswerSave {
+        offer: u64,
+        save: bool,
+    },
+}
+
+/// A login waiting for the user to say whether to keep it.
+pub struct SaveOffer {
+    pub id: u64,
+    /// The site's host, as shown to the user.
+    pub site: String,
+    pub username: String,
+    /// The account is already saved with another password.
+    pub update: bool,
+    /// Where the login would be kept, as in "Kept in …".
+    pub keeper: String,
 }
 
 pub enum Toast {
@@ -269,8 +299,44 @@ impl HtmlChrome {
         self.inner.call("newTree", &[]);
     }
 
+    pub fn next_waiting(&self) {
+        self.inner.call("nextWaiting", &[]);
+    }
+
+    pub fn toggle_tree(&self) {
+        self.inner.call("toggleTree", &[]);
+    }
+
     pub fn toggle_forest(&self) {
         self.inner.call("toggleForest", &[]);
+    }
+
+    /// Offers these saved accounts for the sign-in fields on the page. No account takes
+    /// the offer away. `offer` comes back with the choice, so a choice made on an offer
+    /// that has since been replaced can be told apart.
+    pub fn offer_logins(&self, offer: u64, usernames: &[&str]) {
+        self.inner
+            .call("logins", &[json!({ "offer": offer, "names": usernames })]);
+    }
+
+    /// Offers to save the login the user just signed in with, or to update its saved
+    /// password. `None` takes the offer away.
+    pub fn offer_save(&self, offer: Option<&SaveOffer>) {
+        let value = offer.map_or(Value::Null, |offer| {
+            json!({ "offer": offer.id, "site": offer.site, "username": offer.username, "update": offer.update, "keeper": offer.keeper })
+        });
+        self.inner.call("saveLogin", &[value]);
+    }
+
+    /// Says that `keeper` has to be unlocked before it can offer the page its logins, or,
+    /// with `None`, that it no longer has to.
+    pub fn logins_locked(&self, keeper: Option<&str>) {
+        self.inner.call("loginsLocked", &[json!(keeper)]);
+    }
+
+    /// Fills the only offered login, or opens the list when there are several.
+    pub fn fill_login(&self) {
+        self.inner.call("fillLogin", &[]);
     }
 
     pub fn toast(&self, toast: Toast) {
@@ -544,6 +610,15 @@ impl Inner {
             "remember" => ChromeIntent::RememberSelection,
             "open-file" => ChromeIntent::OpenFile(message["file"].as_i64()?),
             "open-file-folder" => ChromeIntent::OpenFileFolder(message["file"].as_i64()?),
+            "unlock-logins" => ChromeIntent::UnlockLogins,
+            "save-login" => ChromeIntent::AnswerSave {
+                offer: message["offer"].as_u64()?,
+                save: message["save"].as_bool()?,
+            },
+            "fill-login" => ChromeIntent::FillLogin {
+                offer: message["offer"].as_u64()?,
+                index: index()?,
+            },
             "cancel" => ChromeIntent::CancelContinuation,
             "path" => ChromeIntent::OpenPath(suggestions.paths.get(index()?)?.clone()),
             "shortcut" => ChromeIntent::Navigate {

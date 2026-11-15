@@ -12,6 +12,8 @@ use super::{
     forest_layout,
     graph::{self, EdgeKind, NodeKind, StripLayout},
     palette::{Group, PaletteItem},
+    pins, tree_view,
+    waiting::{self, WaitState, WaitingOrder},
     ChromeFrame, PageFile,
 };
 use crate::{
@@ -46,7 +48,10 @@ pub(crate) fn frame(frame: &ChromeFrame, width: f64) -> Value {
         let mut stack = vec![tree.id.root()];
         while let Some(id) = stack.pop() {
             if let Some(visit) = forest.visit(id) {
-                visits.insert(id.to_string(), visit_value(forest, visit, &tree.title));
+                visits.insert(
+                    id.to_string(),
+                    visit_value(forest, visit, &tree.title, &frame.loaded),
+                );
             }
             stack.extend(forest.children(id).iter().copied());
         }
@@ -57,6 +62,8 @@ pub(crate) fn frame(frame: &ChromeFrame, width: f64) -> Value {
         "tabs": tabs,
         "visits": visits,
         "strip": strip(forest, width),
+        "treeView": tree_view_value(forest),
+        "waiting": { "order": WaitingOrder::CHOSEN.label(), "ids": waiting::pages(forest).iter().map(|v| v.id.to_string()).collect::<Vec<_>>() },
         "files": files_value(&frame.files),
         "forest": {
             "count": if forest.settled().is_empty() {
@@ -91,27 +98,69 @@ pub(crate) fn frame(frame: &ChromeFrame, width: f64) -> Value {
     })
 }
 
+fn tree_view_value(forest: &ForestProjection) -> Value {
+    let Some(view) = tree_view::tree_view(forest) else {
+        return Value::Null;
+    };
+    let current_tree = forest.current().and_then(|id| forest.tree_of(id));
+    let Some(tree) = forest.trees().iter().find(|t| Some(t.id) == current_tree) else {
+        return Value::Null;
+    };
+    json!({
+        "title": tree.title,
+        "detail": format!("{} · {} waiting", plural(view.tiles.len(), "page"), waiting::pages(forest).len()),
+        "width": view.width, "height": view.height,
+        "tiles": view.tiles.iter().map(|t| json!({"id": t.id.to_string(), "x": t.rect.x, "y": t.rect.y, "w": t.rect.w, "s": t.rect.s, "path": t.on_path})).collect::<Vec<_>>(),
+        "edges": view.edges.iter().map(|e| json!({"from": e.from.to_string(), "to": e.to.to_string(), "kind": match e.kind { EdgeKind::Path => "path", EdgeKind::Pending => "pending", EdgeKind::Plain => "plain" }, "c": e.curve})).collect::<Vec<_>>(),
+        "rows": view.rows.iter().map(|r| json!({"id": r.id.to_string(), "depth": r.depth, "path": r.on_path})).collect::<Vec<_>>(),
+    })
+}
+
 /// The current tree's strip at rest and open, for a window `width` wide.
 pub(crate) fn strip(forest: &ForestProjection, width: f64) -> Value {
+    let pins = pins::pins(forest, width);
+    let room = pins.room;
+    let placed: Vec<_> = pins
+        .placed
+        .iter()
+        .map(|(pin, r)| json!({ "kind": pin.kind(), "x": r.x, "y": r.y, "w": r.w, "s": r.s }))
+        .collect();
     let Some(current) = forest.current() else {
         return json!({
+            "room": room, "pins": placed,
             "rest": empty_strip(graph::REST_HEIGHT),
             "open": empty_strip(graph::OPEN_HEIGHT),
         });
     };
     let pill = forest.visit(current).map_or(120., pill_width);
     let layout = |open| {
-        let layout = graph::strip_layout(forest, current, width, open, pill);
-        strip_value(&layout, width)
+        let layout = graph::strip_layout(forest, current, room, open, pill);
+        strip_value(&layout, room)
     };
-    json!({ "rest": layout(false), "open": layout(true) })
+    json!({ "rest": layout(false), "open": layout(true), "room": room, "pins": placed })
 }
 
 fn empty_strip(height: f64) -> Value {
     json!({ "height": height, "width": 0, "pan": 0, "nodes": [], "edges": [] })
 }
 
-fn strip_value(layout: &StripLayout, width: f64) -> Value {
+fn strip_value(layout: &StripLayout, room: f64) -> Value {
+    let width = layout
+        .nodes
+        .iter()
+        .map(|n| n.rect.x + n.rect.w / 2. + 22.)
+        .fold(layout.width, f64::max);
+    let mut pan = graph::pan(layout, room).clamp((room - width).min(0.), 0.);
+    if let Some(pill) = layout.nodes.iter().find(|n| n.kind == NodeKind::Pill) {
+        let left = pill.rect.x - pill.rect.w / 2.;
+        let right = pill.rect.x + pill.rect.w / 2.;
+        let lower = (-left).max((room - width).min(0.));
+        let upper = (room - right).min(0.);
+        if lower <= upper {
+            pan = pan.clamp(lower, upper);
+        }
+    }
+
     let nodes: Vec<Value> = layout
         .nodes
         .iter()
@@ -149,8 +198,8 @@ fn strip_value(layout: &StripLayout, width: f64) -> Value {
         .collect();
     json!({
         "height": layout.height,
-        "width": layout.width,
-        "pan": graph::pan(layout, width),
+        "width": width,
+        "pan": pan,
         "trunk": layout.trunk().iter().map(ToString::to_string).collect::<Vec<_>>(),
         "nodes": nodes,
         "edges": edges,
@@ -242,7 +291,13 @@ fn forest_value(forest: &ForestProjection, labels: bool) -> Value {
     })
 }
 
-fn visit_value(forest: &ForestProjection, visit: &Visit, tree: &str) -> Value {
+fn visit_value(
+    forest: &ForestProjection,
+    visit: &Visit,
+    tree: &str,
+    loaded: &HashSet<VisitId>,
+) -> Value {
+    let wait = WaitState::of(visit, loaded);
     let source = visit.source.as_ref().map(|source| {
         let host = source.page_url.host_str().unwrap_or("the source");
         json!({
@@ -261,6 +316,8 @@ fn visit_value(forest: &ForestProjection, visit: &Visit, tree: &str) -> Value {
         "label": visit.label(),
         "site": site_line(visit),
         "queued": visit.state == VisitState::Queued,
+        "loaded": wait == Some(WaitState::Loaded),
+        "when": match wait { Some(WaitState::NotLoaded) => "not loaded".into(), Some(WaitState::Loaded) => "loaded".into(), None => ago(visit.opened_at.unwrap_or(visit.created_at)) },
         "after": forest.descendant_count(visit.id).unwrap_or(0),
         "tree": tree,
         "source": source,
@@ -438,7 +495,10 @@ mod tests {
         chain_with_lifecycle(Lifecycle::Open)
     }
     fn chain_with_lifecycle(lifecycle: Lifecycle) -> (ForestProjection, Vec<VisitId>) {
-        let ids: Vec<VisitId> = (0..3)
+        chain_length(lifecycle, 3)
+    }
+    fn chain_length(lifecycle: Lifecycle, length: usize) -> (ForestProjection, Vec<VisitId>) {
+        let ids: Vec<VisitId> = (0..length)
             .map(|_| ulid::Ulid::new().to_string().parse().unwrap())
             .collect();
         let visits = ids
@@ -451,7 +511,7 @@ mod tests {
                 title: format!("Page {i}"),
                 created_at: 0,
                 opened_at: Some(0),
-                state: if i == 2 {
+                state: if i == length - 1 {
                     VisitState::Queued
                 } else {
                     VisitState::Opened
@@ -462,17 +522,91 @@ mod tests {
         let forest = ForestProjection::from_snapshot(
             Snapshot {
                 visits,
-                current: Some(ids[1]),
+                current: Some(ids[length - 2]),
             },
             vec![TreeState {
                 lifecycle,
                 root: TreeId(ids[0]),
-                last_visit: ids[1],
+                last_visit: ids[length - 2],
                 name: None,
             }],
         )
         .unwrap();
         (forest, ids)
+    }
+
+    #[test]
+    fn the_frame_carries_the_current_tree_view() {
+        let (forest, _) = chain();
+        let view = tree_view_value(&forest);
+        assert_eq!(view["detail"], "3 pages · 1 waiting");
+        assert_eq!(view["tiles"].as_array().unwrap().len(), 3);
+        let empty = ForestProjection::from_snapshot(
+            Snapshot {
+                visits: vec![],
+                current: None,
+            },
+            vec![],
+        )
+        .unwrap();
+        assert!(tree_view_value(&empty).is_null());
+    }
+
+    #[test]
+    fn current_pill_fits_reserved_room_at_rest_and_open() {
+        let (forest, _) = chain_length(Lifecycle::Open, 40);
+        for width in [390., 800., 1240., 1440.] {
+            let strip = super::strip(&forest, width);
+            let room = strip["room"].as_f64().unwrap();
+            assert!(room < width);
+            for mode in ["rest", "open"] {
+                let layout = &strip[mode];
+                let pill = layout["nodes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|n| n["kind"] == "pill")
+                    .unwrap();
+                let x = pill["x"].as_f64().unwrap() + layout["pan"].as_f64().unwrap();
+                let half = pill["w"].as_f64().unwrap() / 2.;
+                assert!(x - half >= -0.001 && x + half <= room + 0.001);
+            }
+        }
+        let empty = ForestProjection::from_snapshot(
+            Snapshot {
+                visits: vec![],
+                current: None,
+            },
+            vec![],
+        )
+        .unwrap();
+        let strip = super::strip(&empty, 800.);
+        assert_eq!(strip["room"], 800.);
+        assert_eq!(strip["pins"], json!([]));
+    }
+
+    #[test]
+    fn loaded_frame_serializes_all_three_states() {
+        let (forest, ids) = chain();
+        let mut frame = ChromeFrame {
+            forest,
+            loaded: HashSet::new(),
+            capture_enabled: true,
+            theme: ThemeMode::Dark,
+            suggestions: StartSuggestions::default(),
+            files: vec![],
+        };
+        let value = super::frame(&frame, 800.);
+        assert_eq!(value["visits"][ids[2].to_string()]["when"], "not loaded");
+        assert_eq!(value["waiting"]["ids"], json!([ids[2].to_string()]));
+        frame.loaded.extend(ids.iter().copied());
+        let value = super::frame(&frame, 800.);
+        assert_eq!(value["visits"][ids[2].to_string()]["loaded"], true);
+        assert_eq!(value["visits"][ids[2].to_string()]["queued"], true);
+        assert_eq!(value["visits"][ids[2].to_string()]["when"], "loaded");
+        assert_eq!(value["visits"][ids[0].to_string()]["loaded"], false);
+        assert_eq!(value["visits"][ids[0].to_string()]["queued"], false);
+        assert_ne!(value["visits"][ids[0].to_string()]["when"], "loaded");
     }
 
     #[test]
@@ -501,6 +635,7 @@ mod tests {
         )
         .unwrap();
         let frame = ChromeFrame {
+            loaded: HashSet::new(),
             forest,
             capture_enabled: true,
             theme: ThemeMode::Dark,
@@ -518,6 +653,7 @@ mod tests {
     fn settled_pages_stay_in_the_visits_map_so_search_and_the_forest_can_open_them() {
         let (forest, ids) = chain_with_lifecycle(Lifecycle::Settled { since: 1 });
         let frame = ChromeFrame {
+            loaded: HashSet::new(),
             forest,
             capture_enabled: true,
             theme: ThemeMode::Dark,
@@ -540,6 +676,7 @@ mod tests {
     fn the_frame_carries_every_visit_and_both_strip_states() {
         let (forest, ids) = chain();
         let frame = ChromeFrame {
+            loaded: HashSet::new(),
             forest,
             capture_enabled: true,
             theme: ThemeMode::Dark,
@@ -583,6 +720,7 @@ mod tests {
             missing,
         };
         let frame = ChromeFrame {
+            loaded: HashSet::new(),
             forest,
             capture_enabled: true,
             theme: ThemeMode::Dark,

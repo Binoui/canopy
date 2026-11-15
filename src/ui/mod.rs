@@ -1,5 +1,8 @@
+mod logins;
+mod save_watch;
+
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     path::Path,
     rc::{Rc, Weak},
 };
@@ -15,6 +18,7 @@ use crate::{
         Toast,
     },
     forest::ForestProjection,
+    logins::{Login, LoginProvider, SavedLogin},
     pages::{DownloadEvent, Go, PageEvent, Pages},
 };
 
@@ -28,6 +32,21 @@ pub struct Ui {
     cookie_monitor: gio::FileMonitor,
     draining_cookies: Cell<bool>,
     cookies_pending: Cell<bool>,
+    /// Where saved logins are kept. `None` when the vault could not be opened.
+    logins: RefCell<Option<Rc<dyn LoginProvider>>>,
+    /// The page on screen that shows sign-in fields, and the number of the lookup made
+    /// for it, so an answer that arrives for an earlier page is dropped.
+    login_page: RefCell<Option<Url>>,
+    lookups: Cell<u64>,
+    /// The provider asked to be unlocked before it answers for this page.
+    logins_locked: Cell<bool>,
+    /// The accounts offered for the page on screen, and the number of that offer.
+    offered: RefCell<(u64, Vec<SavedLogin>)>,
+    /// The login the user last sent to a page, until the page shows whether it was accepted.
+    save_watch: RefCell<save_watch::SaveWatch>,
+    /// The login offered for saving, and the number of that offer.
+    saving: RefCell<Option<(u64, Login)>>,
+    save_offers: Cell<u64>,
 }
 
 impl Ui {
@@ -69,6 +88,7 @@ impl Ui {
         inbox.prepare()?;
         let cookie_monitor = gio::File::for_path(inbox.directory())
             .monitor_directory(gio::FileMonitorFlags::NONE, None::<&gio::Cancellable>)?;
+        let (logins, logins_problem) = logins::provider(data_dir);
         let ui = Rc::new_cyclic(|me: &Weak<Ui>| {
             let host: Weak<dyn ChromeHost> = me.clone();
             chrome.attach(host);
@@ -82,6 +102,14 @@ impl Ui {
                 cookie_monitor,
                 draining_cookies: Cell::new(false),
                 cookies_pending: Cell::new(false),
+                logins: RefCell::new(logins),
+                login_page: RefCell::new(None),
+                lookups: Cell::new(0),
+                logins_locked: Cell::new(false),
+                offered: RefCell::default(),
+                save_watch: RefCell::default(),
+                saving: RefCell::new(None),
+                save_offers: Cell::new(0),
             }
         });
         let weak = Rc::downgrade(&ui);
@@ -108,6 +136,7 @@ impl Ui {
                     .chrome
                     .toast(Toast::Info("Selection remembered on this computer.".into())),
                 PageEvent::Download(event) => ui.chrome.toast(download_toast(event)),
+                PageEvent::Login(event) => ui.login_event(event),
                 PageEvent::OpenBranchPalette { visit } => {
                     ui.refresh();
                     ui.chrome
@@ -138,6 +167,9 @@ impl Ui {
         });
         ui.chrome.set_system_dark(prefers_dark());
         ui.refresh();
+        if let Some(problem) = logins_problem {
+            ui.report_error(&problem);
+        }
         Ok(ui)
     }
 
@@ -240,6 +272,7 @@ impl Ui {
                 })
                 .collect();
             Ok(ChromeFrame {
+                loaded: Default::default(),
                 forest,
                 capture_enabled: browser.capture_enabled()?,
                 theme: browser.theme_mode()?,
@@ -307,8 +340,11 @@ impl Ui {
             Shortcut::SettleTree => self.chrome.settle_current(),
             Shortcut::NewTree => self.chrome.new_tree(),
             Shortcut::Forest => self.chrome.toggle_forest(),
+            Shortcut::ZoomTree => self.chrome.toggle_tree(),
+            Shortcut::NextWaiting => self.chrome.next_waiting(),
             Shortcut::Reload => self.report(self.pages.reload()),
             Shortcut::RememberSelection => self.report(self.pages.remember_selection()),
+            Shortcut::FillLogin => self.chrome.fill_login(),
             Shortcut::Quit => self.window.close(),
             Shortcut::Tree(index) => {
                 let tree = self.chrome.tab(index);
@@ -332,8 +368,11 @@ enum Shortcut {
     NewTree,
     SettleTree,
     Forest,
+    ZoomTree,
+    NextWaiting,
     Reload,
     RememberSelection,
+    FillLogin,
     Quit,
     Tree(usize),
     Back,
@@ -390,10 +429,13 @@ impl Shortcut {
             (Modifiers::CONTROL, key::t, Self::NewTree),
             (Modifiers::CONTROL, key::w, Self::SettleTree),
             (Modifiers::CONTROL, key::e, Self::Forest),
+            (Modifiers::CONTROL_SHIFT, key::e, Self::ZoomTree),
+            (Modifiers::CONTROL, key::Tab, Self::NextWaiting),
             (Modifiers::CONTROL, key::r, Self::Reload),
             (Modifiers::CONTROL_SHIFT, key::r, Self::Reload),
             (Modifiers::NONE, key::F5, Self::Reload),
             (Modifiers::CONTROL, key::s, Self::RememberSelection),
+            (Modifiers::CONTROL_SHIFT, key::l, Self::FillLogin),
             (Modifiers::CONTROL, key::q, Self::Quit),
             (Modifiers::ALT, key::Left, Self::Back),
             (Modifiers::NONE, key::F6, Self::ToggleFocus),
@@ -456,6 +498,12 @@ impl ChromeHost for Ui {
             ChromeIntent::RememberSelection => self.pages.remember_selection(),
             ChromeIntent::OpenFile(id) => ui.open_file(id, false),
             ChromeIntent::OpenFileFolder(id) => ui.open_file(id, true),
+            ChromeIntent::FillLogin { offer, index } => ui.fill_login(offer, index),
+            ChromeIntent::AnswerSave { offer, save } => ui.answer_save(offer, save),
+            ChromeIntent::UnlockLogins => {
+                ui.unlock_logins();
+                Ok(())
+            }
         };
         self.report(result);
     }
@@ -582,10 +630,13 @@ mod shortcut_tests {
             (key::t, Modifiers::CONTROL, Shortcut::NewTree),
             (key::w, Modifiers::CONTROL, Shortcut::SettleTree),
             (key::e, Modifiers::CONTROL, Shortcut::Forest),
+            (key::e, Modifiers::CONTROL_SHIFT, Shortcut::ZoomTree),
+            (key::Tab, Modifiers::CONTROL, Shortcut::NextWaiting),
             (key::r, Modifiers::CONTROL, Shortcut::Reload),
             (key::r, Modifiers::CONTROL_SHIFT, Shortcut::Reload),
             (key::F5, Modifiers::NONE, Shortcut::Reload),
             (key::s, Modifiers::CONTROL, Shortcut::RememberSelection),
+            (key::l, Modifiers::CONTROL_SHIFT, Shortcut::FillLogin),
             (key::q, Modifiers::CONTROL, Shortcut::Quit),
             (key::Left, Modifiers::ALT, Shortcut::Back),
             (key::F6, Modifiers::NONE, Shortcut::ToggleFocus),

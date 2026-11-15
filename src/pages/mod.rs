@@ -2,9 +2,12 @@ mod live;
 mod native;
 
 use crate::{
+    address::WebOrigin,
     browser::{Browser, Landing, LoadTicket, NavigationTarget, ThemeMode, TreeId, VisitId},
     chrome::{Favicons, CHROME_HEIGHT},
     forest::ForestProjection,
+    logins::Login,
+    secret::Secret,
 };
 use anyhow::Result;
 use gtk::prelude::*;
@@ -34,6 +37,23 @@ pub enum PageEvent {
     Remembered(i64),
     Download(DownloadEvent),
     OpenBranchPalette { visit: VisitId },
+    Login(LoginEvent),
+}
+
+/// What the selected page reports about signing in.
+pub enum LoginEvent {
+    /// A new document replaced the page. Its fields are not known yet.
+    NewDocument,
+    /// The document on screen at `page` reported its fields: whether a saved user name or
+    /// password can be filled, and whether it shows any password field at all.
+    Fields {
+        page: Url,
+        username: bool,
+        password: bool,
+        asks_password: bool,
+    },
+    /// The user sent this login to the page.
+    Sent(Login),
 }
 
 enum Continuation {
@@ -824,6 +844,23 @@ impl Pages {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("No selected page."))?;
         page.remember_selection()
+    }
+    /// Types a saved login into the selected page, if it is still on `origin`.
+    pub fn fill_login(
+        &self,
+        origin: &WebOrigin,
+        username: &str,
+        password: &Secret,
+        done: impl FnOnce(Result<()>) + 'static,
+    ) -> Result<()> {
+        let page = self
+            .branches
+            .live
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No selected page."))?;
+        page.fill_login(origin, username, password, done);
+        Ok(())
     }
     pub fn set_capture_enabled(&self, enabled: bool) -> Result<()> {
         let page = self

@@ -441,7 +441,7 @@ fn main() -> Result<()> {
         "the first forest view fits after allocation"
     );
     let before_zoom = rect(&ui, &root_node)?.2;
-    let (x, y) = page_point(&ui, 950, 500)?;
+    let (x, y) = chrome_point(&ui, "#forest-canvas")?;
     move_to(x, y)?;
     xdo(&["keydown", "ctrl", "click", "5", "keyup", "ctrl"])?;
     pump(80);

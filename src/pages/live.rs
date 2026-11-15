@@ -15,6 +15,8 @@ use webkit2gtk::{
     ResponsePolicyDecisionExt, URIRequestExt, UserContentInjectedFrames, UserContentManagerExt,
     UserScript, UserScriptInjectionTime, WebViewExt,
 };
+#[path = "login_fields.rs"]
+mod login_fields;
 #[path = "mouse.rs"]
 mod mouse;
 
@@ -30,7 +32,7 @@ const WORLD: &str = "canopy-reading-memory";
 const HELPER: &str = include_str!("../capture.js");
 /// Script message the helper posts, debounced, when the page scrolls.
 const SCROLLED: &str = "canopyScrolled";
-use super::{PageEvent, Pages};
+use super::{LoginEvent, PageEvent, Pages};
 
 #[derive(Clone)]
 pub(super) struct CheckpointEntry {
@@ -436,6 +438,11 @@ impl LivePage {
                 }),
             ));
         }
+        signals.extend(
+            login_fields::setup(&manager, &state)
+                .into_iter()
+                .map(|id| (manager.clone().upcast(), id)),
+        );
         {
             let weak = Rc::downgrade(&state);
             signals.push((
@@ -523,6 +530,8 @@ impl LivePage {
                                     Err(error) => state.emit(PageEvent::Error(error.to_string())),
                                 }
                             }
+                            // The new document reports its own sign-in fields.
+                            state.emit(PageEvent::Login(LoginEvent::NewDocument));
                         }
                         LoadEvent::Finished => {
                             let next = state
@@ -541,6 +550,7 @@ impl LivePage {
                                 state.end_response();
                                 state.emit(PageEvent::Loading(false));
                             }
+                            state.look_for_login_fields();
                             let enabled = state
                                 .owner()
                                 .browser

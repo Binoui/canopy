@@ -40,6 +40,7 @@ To build an optimized binary into `~/.local/bin` and add Canopy to rofi, wofi or
 
 ```sh
 cargo install --path . --locked --root ~/.local
+install -Dm755 helpers/canopy-login-bitwarden ~/.local/bin/canopy-login-bitwarden
 install -Dm644 packaging/canopy.desktop ~/.local/share/applications/canopy.desktop
 install -Dm644 assets/logo/canopy.svg ~/.local/share/icons/hicolor/scalable/apps/canopy.svg
 for size in 16 22 24 32; do
@@ -89,7 +90,7 @@ It reads `~/.config/google-chrome/Default`. Pass another profile folder after th
 
 Cookies reach Canopy while it runs, or at its next start before it reloads your page or opens the addresses it was given. This keeps sites signed in when their sessions still work. Chrome's cookies replace matching Canopy cookies. Session cookies last until Canopy quits. Partitioned and expired cookies are skipped.
 
-Passwords go into an encrypted vault. Its key stays in your system keyring. The import may ask you to unlock the keyring. Canopy does not fill password fields yet.
+Passwords go into an encrypted vault. Its key stays in your system keyring. The import may ask you to unlock the keyring. [Sign in with a saved login](#sign-in-with-a-saved-login) explains how Canopy fills them.
 
 Running the command again refreshes imported pages and updates matching passwords without removing other saved accounts. Canopy loads none of the imported pages. If Chrome is writing a database, or the keyring is locked, resolve the reported error and run the import again. Cookies accepted just before a crash may need another import.
 
@@ -108,6 +109,62 @@ Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not aff
 - **F6** moves the keyboard focus between the page and the current page in the strip. **Left** and **Right** walk the path, and **Enter** opens the focused page.
 - **Alt+Left** goes back to the parent page.
 - **Ctrl+R**, **F5**, and **Ctrl+Shift+R** reload the current page. Canopy has no hard reload, so all three perform a plain reload.
+- **Ctrl+Shift+L** fills the saved login for the page.
+
+## Sign in with a saved login
+
+When a page asks you to sign in and the vault holds a login for that site, a key button appears in the top row with the account name. Click it, or press **Ctrl+Shift+L**, and Canopy types the user name and password into the page. With several accounts for the site, the button opens a list to choose from. You then sign in yourself: Canopy does not submit the form.
+
+Nothing is filled until you ask. A login is offered only on the exact site it was saved for, with the same scheme, host and port, and never to a frame embedded in the page. On a sign-in that asks for the user name first and the password on the next page, use the button on each page.
+
+The keyring may ask you to unlock it the first time a login is filled. Sign-up and change-password forms are not filled. Fields that a site keeps in a closed component or in a frame are not found.
+
+### Save a login
+
+When you sign in or sign up with a login the vault does not hold, the key button reads **Save login?** once the site has let you in. For a saved account with a different password, it reads **Update password?**. Click it and choose **Save** or **Update** to keep the login, or **Not now** to let it go. Nothing is saved until you choose. An offer you do not answer goes away after five minutes.
+
+Canopy waits for the page to stop asking for a password before it offers. If the site sends you back to its sign-in page, or nothing happens for a minute, there is no offer. A site that keeps its sign-in form on screen after letting you in gets no offer either.
+
+A login you save stays in the encrypted vault on this computer, next to the ones brought in from Chrome, and replaces the imported copy of the same account. Importing from Chrome again does not bring the old password back. There is no list of saved logins to edit or delete yet, and no way to tell Canopy never to ask for a site.
+
+### Keep logins in your password manager
+
+Canopy can read and save logins in a password manager you already use, in place of its own vault. It reaches the manager through a helper, a small program called `canopy-login-NAME`. To choose one, run:
+
+```sh
+canopy --login-helper NAME
+```
+
+The choice takes effect the next time Canopy starts. `canopy --login-helper vault` goes back to the vault on this computer. Canopy uses one or the other, not both: with a helper chosen, the vault's logins are not offered.
+
+When the manager is locked, the key button reads **Unlock** with the manager's name. Click it, or press **Ctrl+Shift+L**, and the manager asks for what it needs. The manager decides which of its logins match a page. Canopy asks it only about pages loaded over HTTPS, or from this computer.
+
+#### Bitwarden
+
+The Bitwarden helper comes with Canopy and uses `bw`, Bitwarden's own command-line tool. Set it up once:
+
+```sh
+sudo pacman -S bitwarden-cli   # or your system's package for bw
+bw login
+install -Dm755 helpers/canopy-login-bitwarden ~/.local/bin/canopy-login-bitwarden
+canopy --login-helper bitwarden
+```
+
+Your master password is asked for in a small window once each time Canopy runs, the first time you unlock. The helper needs `zenity` or `kdialog` for that window, and Python 3. The session stays in Canopy's memory, so the vault locks again when Canopy quits. Logins you save in Canopy go to your Bitwarden vault and reach your other devices from there. Changes made on other devices arrive at the next unlock.
+
+`bw` is slow to start. The key button appears about four seconds after a sign-in page has loaded, and unlocking takes about six seconds after you type your password. Logins that ask for the master password again are not offered, because `bw` cannot ask for it.
+
+#### Write a helper
+
+A helper is run once per question, with the question as its only argument. It reads a JSON request on its input and writes a JSON answer on its output.
+
+| Question | Request | Answer |
+| --- | --- | --- |
+| `get` | `url`, `origin`, `state` | `{"logins": [{"username": "…", "password": "…"}]}` |
+| `store` | `url`, `origin`, `username`, `password`, `state` | `{}` |
+| `unlock` | `state` | `{"state": "…"}` or `{"cancelled": true}` |
+
+Any answer can instead be `{"locked": true}` or `{"error": "why"}`. `state` is the text the last `unlock` answered, or null. Canopy keeps it in memory only and sends it back with every request, so a helper can hold an unlocked session without writing it to disk. `get` has 30 seconds to answer, `store` 60 seconds, and `unlock` five minutes.
 
 ## Try a fork
 
@@ -167,6 +224,12 @@ cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
+The Bitwarden helper has its own tests, which run it against a stand-in for `bw`:
+
+```sh
+python3 helpers/test_canopy_login_bitwarden.py
+```
+
 The GUI tests load locally served pages and drive the window with real pointer and keyboard input. They check the HTML chrome through its own DOM. Install Xvfb and xdotool, then run them like this. Unsetting `WAYLAND_DISPLAY` keeps the window on Xvfb from a Wayland session:
 
 ```sh
@@ -176,6 +239,7 @@ env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' c
 env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test open_url_smoke
 env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test shortcut_smoke
 env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test sandbox_smoke
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test login_smoke
 ```
 
 `open_url_smoke` starts the `canopy` binary on temporary data folders and launches it again with addresses, so it checks the hand-off between real processes. It needs no session bus.

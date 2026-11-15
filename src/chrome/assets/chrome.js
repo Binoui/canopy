@@ -9,6 +9,8 @@ const MOVE = 300, RESIZE = 220;
 const LEAVES = 3;
 const MONOGRAM = ['#d95c42', '#3b7ad6', '#2e9e5e', '#9c6bde', '#d9962e', '#3b99ad', '#d1547a', '#6b7380'];
 const ICONS = {
+  expand: '<path d="M9 4H4v5M15 4h5v5M4 15v5h5M20 15v5h-5" stroke-width="1.7"/>',
+  collapse: '<path d="M4 9h5V4M20 9h-5V4M9 20v-5H4M15 20v-5h5" stroke-width="1.7"/>',
   plus: '<path d="M12 5v14M5 12h14" stroke-width="1.9"/>',
   search: '<circle cx="11" cy="11" r="6.5" stroke-width="1.9"/><path d="M20 20l-4.2-4.2" stroke-width="1.9"/>',
   spark: '<path d="M11 2.5l1.9 5.6 5.6 1.9-5.6 1.9L11 17.5l-1.9-5.6L3.5 10l5.6-1.9z" fill="currentColor" stroke="none"/><path d="M18.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z" fill="currentColor" stroke="none" opacity=".7"/>',
@@ -17,6 +19,7 @@ const ICONS = {
   globe: '<circle cx="12" cy="12" r="8.5" stroke-width="1.7"/><path d="M3.5 12h17M12 3.5c2.6 2.6 2.6 14.4 0 17M12 3.5c-2.6 2.6-2.6 14.4 0 17" stroke-width="1.7"/>',
   close: '<path d="M6 6l12 12M18 6L6 18" stroke-width="1.9"/>',
   file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" stroke-width="1.7"/><path d="M14 3v5h5" stroke-width="1.7"/>',
+  key: '<circle cx="7.5" cy="15.5" r="5.5" stroke-width="1.7"/><path d="M21 2l-9.6 9.6M15.5 7.5l3 3L22 7l-3-3" stroke-width="1.7"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" stroke-width="1.7"/>',
   settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" stroke-width="1.6"/><circle cx="12" cy="12" r="3" stroke-width="1.6"/>',
 };
@@ -25,7 +28,7 @@ const $ = (id) => document.getElementById(id);
 const post = (message) => window.ipc.postMessage(JSON.stringify(message));
 /// Intents that load a page also give the keyboard back to it, as the GTK buttons that
 /// never took focus did.
-const NAVIGATES = new Set(['restore', 'select-tree', 'settle-tree', 'settle-current', 'shortcut', 'path', 'open-citation', 'open-saved', 'branch-queued']);
+const NAVIGATES = new Set(['restore', 'select-tree', 'settle-tree', 'settle-current', 'shortcut', 'path', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
 const intent = (kind, extra = {}) => {
   post({ t: 'intent', kind, ...extra });
   if (NAVIGATES.has(kind)) post({ t: 'focus', target: 'page' });
@@ -38,10 +41,15 @@ const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 
 const S = {
   frame: null,
+  logins: null,
+  save: null,
+  locked: null,
   strip: null,
   rev: 0,
   systemDark: null,
   surface: 'reading',
+  overlay: null,
+  treeSide: 'tree',
   open: false,
   layer: 'none',
   hovered: null,
@@ -81,7 +89,11 @@ function fav(url, opened, size) {
     + `<b style="font-size:${Math.round(size * 0.62)}px">${letter}</b>`
     + `<img src="${src}" alt="" onload="this.parentNode.style.background='none';this.previousSibling.style.visibility='hidden'" onerror="this.remove()"></span>`;
 }
-const visitFav = (v, size) => fav(v.url, !v.queued, size);
+const waitState = (v) => v.queued ? (v.loaded ? 'loaded' : 'unloaded') : null;
+const markClass = (v) => waitState(v) === 'loaded' ? ' pending loaded' : waitState(v) ? ' pending' : '';
+const visitFav = (v, size) => fav(v.url, waitState(v) !== 'unloaded', size);
+const markedFav = (v, size) => `<span class="mk">${visitFav(v, size)}`
+  + (waitState(v) ? `<i class="pending-dot${waitState(v) === 'loaded' ? ' loaded' : ''}"></i>` : '') + '</span>';
 
 // ---------- timers and layers, as the GTK chrome's presentation state machine ----------
 
@@ -143,10 +155,10 @@ function setLayer(layer) {
 /// Tells Rust how far down the view must reach (null for the whole window), and whether
 /// Escape is ours. Below that, the page gets the pointer.
 function syncLayer() {
-  const modal = !!(S.reader || S.palette || S.popover || S.card || S.open
+  const modal = !!(S.reader || S.palette || S.popover || S.card || S.open || S.overlay
     || (S.surface !== 'reading' && current()));
   let height = HEADER + REST;
-  if (S.palette || S.reader || S.surface !== 'reading') {
+  if (S.palette || S.reader || S.overlay || S.surface !== 'reading') {
     height = null;
   } else {
     if (S.open || strip.anim) {
@@ -314,7 +326,7 @@ function buildStrip(layout) {
       nodes.appendChild(el);
       strip.elements.set(n.id, el);
     }
-    el.className = `node ${n.kind}` + (n.kind === 'tile' && n.s < 24 ? ' sm' : '') + (v.queued ? ' pending' : '');
+    el.className = `node ${n.kind}` + (n.kind === 'tile' && n.s < 24 ? ' sm' : '') + markClass(v);
     el.setAttribute('aria-label', `${v.label}, ${v.site}`);
     const html = n.kind === 'bud' ? ''
       : n.kind === 'pill'
@@ -336,6 +348,7 @@ function buildStrip(layout) {
       dot.remove();
       strip.dots.delete(n.id);
     }
+    if (dot) dot.classList.toggle('loaded', waitState(v) === 'loaded');
     let badge = strip.badges.get(n.id);
     if (n.hidden.length) {
       if (!badge) {
@@ -418,7 +431,7 @@ function step(now, t) {
 
 function drawStrip() {
   const shown = strip.shown;
-  const width = window.innerWidth;
+  const width = stripRoom();
   const openness = clamp((shown.height - REST) / (OPEN - REST), 0, 1);
   $('strip').style.height = `${shown.height}px`;
   $('strip-clip').style.height = `${shown.height}px`;
@@ -492,11 +505,9 @@ function drawStrip() {
 }
 
 function activate(id) {
-  hideCard();
-  if (id !== current()) {
-    setSurface('reading');
-    intent('restore', { id });
-  }
+  uncover();
+  if (id === current()) post({ t: 'focus', target: 'page' });
+  else intent('restore', { id });
 }
 
 /// Left and Right walk the trunk while a node has the keyboard.
@@ -559,18 +570,78 @@ function renderCard(preview) {
     const act = button.dataset.act;
     hideCard();
     if (act === 'open') {
-      setSurface('reading');
-      intent('restore', { id });
+      if (isCurrent) { uncover(); intent('restore', { id }); }
+      else activate(id);
     } else if (act === 'branch') {
       if (v.queued) intent('branch-queued', { id });
       else openPalette({ scope: id, text: '' });
     } else if (act === 'source') {
-      intent('restore', { id: v.parent });
+      activate(v.parent);
     } else if (act === 'comment') {
       intent('open-citation', { id });
     }
   }));
 }
+
+// ---------- waiting pages and pinned controls ----------
+
+const stripRoom = () => S.strip?.room ?? 0;
+
+function applyStrip(layouts) {
+  S.strip = layouts;
+  S.manualPan = null;
+  $('strip-clip').style.width = `${layouts.room}px`;
+  placePins();
+}
+
+function placePins() {
+  const placed = new Map((S.strip?.pins ?? []).map((p) => [p.kind, p]));
+  for (const el of $('pins').children) {
+    const p = placed.get(el.dataset.pin);
+    el.hidden = !p;
+    if (p) Object.assign(el.style, { left: `${p.x - p.w / 2}px`, top: `${p.y - p.s / 2}px`, width: `${p.w}px`, height: `${p.s}px` });
+  }
+}
+
+function renderWaitingPin() {
+  const ids = S.frame?.waiting.ids ?? [];
+  const next = visit(ids[0]);
+  $('waiting-pin').innerHTML = next ? markedFav(next, 16) + `<span class="count">${ids.length}</span>` : '';
+  $('waiting-pin').title = next ? `Next waiting page: ${next.label} · Ctrl+Tab` : '';
+}
+
+function openNextWaiting(id = S.frame?.waiting.ids[0]) {
+  if (!id) { canopy.toast('info', 'No waiting pages in this tree'); return; }
+  closeReader();
+  closePalette(false);
+  closePopover(false);
+  activate(id);
+}
+
+function enterWaitingPin() {
+  cancel('waitingClose');
+  if (S.layer !== 'none' || S.popover) return;
+  schedule('waitingOpen', 120, () => {
+    if (S.layer !== 'none' || S.popover || !S.frame?.waiting.ids.length) return;
+    cancel('open');
+    if (S.open) setOpen(false);
+    openPopover('waiting', $('waiting-pin'), null);
+  });
+}
+
+function leaveWaitingPin() {
+  cancel('waitingOpen');
+  const popover = S.popover;
+  if (popover?.kind === 'waiting') schedule('waitingClose', 220, () => {
+    if (S.popover === popover) closePopover(false);
+  });
+}
+
+$('waiting-pin').addEventListener('click', () => openNextWaiting());
+$('waiting-pin').addEventListener('mouseenter', enterWaitingPin);
+$('waiting-pin').addEventListener('mouseleave', leaveWaitingPin);
+$('popover').addEventListener('mouseenter', () => cancel('waitingClose'));
+$('popover').addEventListener('mouseleave', leaveWaitingPin);
 
 // ---------- popovers: Memory menu, hidden pages, trees that do not fit, a tree's name ----------
 
@@ -593,9 +664,62 @@ function closePopover(returnFocus = true) {
   if (!S.popover) return;
   S.popover = null;
   $('popover').hidden = true;
-  if (S.layer === 'menu') setLayer('none');
-  if (returnFocus && S.surface === 'reading' && !S.palette && !S.reader) post({ t: 'focus', target: 'page' });
+  if (S.layer === 'menu') setLayer(restingLayer());
+  if (returnFocus && pageShows() && !S.palette && !S.reader) post({ t: 'focus', target: 'page' });
   syncLayer();
+}
+
+// ---------- saved logins for the page's sign-in fields ----------
+
+const loginNames = () => S.logins?.names ?? [];
+const loginLabel = (name) => name || 'No user name';
+
+/// The key button in the tab row. A login waiting to be saved comes before the logins that
+/// could be filled: it is the one that needs an answer.
+function renderLoginChip() {
+  const chip = $('login-chip');
+  const names = loginNames();
+  chip.hidden = !S.save && !names.length && !S.locked;
+  chip.classList.toggle('on', !!S.save);
+  if (S.save) {
+    chip.innerHTML = `${icon('key')}<span>${S.save.update ? 'Update password?' : 'Save login?'}</span>`;
+    chip.title = `${S.save.update ? 'Update the saved password' : 'Save the login'} for ${loginLabel(S.save.username)} on ${S.save.site}`;
+  } else if (S.locked && !names.length) {
+    chip.innerHTML = `${icon('key')}<span>${esc(`Unlock ${S.locked}`)}</span>`;
+    chip.title = `Unlock ${S.locked} to fill a saved login · Ctrl+Shift+L`;
+  } else if (names.length) {
+    const one = names.length === 1;
+    chip.innerHTML = `${icon('key')}<span>${esc(one ? loginLabel(names[0]) : `${names.length} logins`)}</span>`;
+    chip.title = `${one ? `Fill the saved login for ${loginLabel(names[0])}` : 'Choose a saved login to fill'} · Ctrl+Shift+L`;
+  }
+  if (S.popover?.kind === 'save-login' && !S.save) closePopover(false);
+  if (S.popover?.kind === 'logins') {
+    if (names.length > 1 && !S.save) renderPopover();
+    else closePopover(false);
+  }
+  fitTabs();
+}
+
+function answerSave(save) {
+  const offer = S.save?.offer;
+  closePopover(false);
+  if (offer != null) intent('save-login', { offer, save });
+}
+
+/// One saved login is filled at once; several open the list under the chip.
+function fillLogin() {
+  const names = loginNames();
+  if (!names.length && S.locked) { intent('unlock-logins'); return; }
+  if (!names.length) { canopy.toast('info', 'No saved login for this page'); return; }
+  if (names.length === 1) { pickLogin(0); return; }
+  if (S.popover?.kind === 'logins') { closePopover(); return; }
+  openPopover('logins', $('login-chip'));
+  post({ t: 'focus', target: 'chrome' });
+  $('popover').querySelector('[data-login]')?.focus();
+}
+
+function pickLogin(index) {
+  intent('fill-login', { offer: S.logins.offer, index });
 }
 
 function visitRow(v) {
@@ -606,7 +730,33 @@ function visitRow(v) {
 function renderPopover() {
   const popover = $('popover');
   const { kind, data } = S.popover;
-  if (kind === 'hidden') {
+  popover.classList.toggle('waiting', kind === 'waiting');
+  if (kind === 'waiting') {
+    const { ids, order } = S.frame.waiting;
+    if (!ids.length) { closePopover(false); return; }
+    popover.innerHTML = `<div class="pop-head"><span class="menu-heading grow">Waiting in this tree · ${ids.length}</span><span class="menu-detail">${esc(order)}</span></div>`
+      + ids.map((id, i) => {
+        const v = visit(id);
+        return `<button class="menu-row${i === 0 ? ' next' : ''}" data-id="${id}">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.when)}</span>${i === 0 ? '<kbd>Ctrl Tab</kbd>' : ''}</button>`;
+      }).join('');
+    popover.querySelectorAll('[data-id]').forEach((row) => row.addEventListener('click', () => openNextWaiting(row.dataset.id)));
+  } else if (kind === 'save-login') {
+    const save = S.save;
+    if (!save) { closePopover(false); return; }
+    popover.innerHTML = `<div class="menu-heading">${save.update ? 'Update the saved password?' : 'Save this login?'}</div>`
+      + `<div class="menu-row" id="save-login-account">${icon('key')}<span class="grow">${esc(loginLabel(save.username))}</span><span class="menu-detail">${esc(save.site)}</span></div>`
+      + `<div class="menu-hint">Kept in ${esc(save.keeper)}.</div>`
+      + `<div class="card-actions save-actions"><button class="action" data-save="1">${save.update ? 'Update' : 'Save'}</button><button class="action" data-save="0">Not now</button></div>`;
+    popover.querySelectorAll('[data-save]').forEach((button) => button.addEventListener('click', () => answerSave(button.dataset.save === '1')));
+  } else if (kind === 'logins') {
+    popover.innerHTML = '<div class="menu-heading">Saved logins for this site</div>'
+      + loginNames().map((name, index) => `<button class="menu-row" data-login="${index}">${icon('key')}<span class="grow">${esc(loginLabel(name))}</span></button>`).join('');
+    popover.querySelectorAll('[data-login]').forEach((row) => row.addEventListener('click', () => {
+      const index = Number(row.dataset.login);
+      closePopover(false);
+      pickLogin(index);
+    }));
+  } else if (kind === 'hidden') {
     popover.innerHTML = data.map(visit).filter(Boolean).map(visitRow).join('');
     popover.querySelectorAll('[data-id]').forEach((row) => row.addEventListener('click', () => {
       closePopover();
@@ -621,7 +771,7 @@ function renderPopover() {
     }).join('');
     popover.querySelectorAll('[data-id]').forEach((row) => row.addEventListener('click', () => {
       closePopover();
-      setSurface('reading');
+      uncover();
       intent('select-tree', { id: row.dataset.id });
     }));
   } else if (kind === 'rename') {
@@ -743,8 +893,8 @@ function closePalette(returnFocus = true) {
   S.palette = null;
   $('palette').hidden = true;
   $('palette-results').innerHTML = '';
-  setLayer(S.surface === 'reading' ? 'none' : 'palette');
-  if (returnFocus && S.surface === 'reading') post({ t: 'focus', target: 'page' });
+  setLayer(restingLayer());
+  if (returnFocus && pageShows()) post({ t: 'focus', target: 'page' });
   syncLayer();
 }
 
@@ -777,7 +927,7 @@ function runPalette(index, newTree) {
   post({ t: 'run', q: query, item: row ? row.item : null, newTree, scope: palette.scope });
   const reading = row?.kind !== 'saved';
   closePalette(reading);
-  if (reading) setSurface('reading');
+  if (reading) uncover();
 }
 
 $('palette-input').addEventListener('input', () => {
@@ -806,19 +956,131 @@ $('palette-results').addEventListener('click', (event) => {
 });
 $('palette').querySelector('.scrim').addEventListener('mousedown', () => closePalette());
 
+// ---------- current-tree sheet ----------
+
+function renderSheet(reveal) {
+  if (S.overlay !== 'tree') return;
+  const view = S.frame?.treeView;
+  if (!view) { closeOverlay(); return; }
+  $('tree-title').textContent = view.title;
+  $('tree-detail').textContent = view.detail;
+  $('tree-layer').style.width = `${view.width}px`;
+  $('tree-layer').style.height = `${view.height}px`;
+  $('tree-edges').setAttribute('width', view.width);
+  $('tree-edges').setAttribute('height', view.height);
+  $('tree-edges').innerHTML = view.edges.map((e) => `<path class="${e.kind}" d="M${e.c[0]} C${e.c[1]} ${e.c[2]} ${e.c[3]}"/>`).join('');
+  $('tree-nodes').innerHTML = view.tiles.map((t) => {
+    const v = visit(t.id);
+    return `<button class="tree-tile${t.path ? ' path' : ''}${t.id === current() ? ' current' : ''}${markClass(v)}" data-id="${t.id}" title="${esc(v.label)}" style="left:${t.x-t.w/2}px;top:${t.y-t.s/2}px;width:${t.w}px;height:${t.s}px">${markedFav(v, 16)}<span class="t">${esc(v.label)}</span></button>`;
+  }).join('');
+  $('tree-list').innerHTML = view.rows.map((r) => {
+    const v = visit(r.id);
+    return `<button class="tree-row${r.path ? ' path' : ''}${r.id === current() ? ' current' : ''}${markClass(v)}" data-id="${r.id}" style="padding-left:${8+r.depth*22}px">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.when)}</span></button>`;
+  }).join('');
+  setTreeSide(S.treeSide, reveal);
+}
+
+function setTreeSide(side, reveal = true) {
+  S.treeSide = side;
+  $('tree-board').hidden = side !== 'tree';
+  $('tree-list').hidden = side !== 'list';
+  for (const button of $('tree-side').children) {
+    const selected = button.dataset.side === side;
+    button.classList.toggle('on', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  }
+  if (reveal) {
+    const body = $(side === 'tree' ? 'tree-board' : 'tree-list');
+    const selected = body.querySelector('.current');
+    if (selected) {
+      const a = selected.getBoundingClientRect(), b = body.getBoundingClientRect();
+      body.scrollLeft += a.left - b.left - (b.width-a.width)/2;
+      body.scrollTop += a.top - b.top - (b.height-a.height)/2;
+    }
+  }
+}
+
+$('tree-side').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-side]');
+  if (button) setTreeSide(button.dataset.side);
+});
+$('tree-sheet').addEventListener('click', (event) => {
+  const page = event.target.closest('[data-id]');
+  if (page) activate(page.dataset.id);
+});
+$('tree-sheet').querySelector('.scrim').addEventListener('mousedown', closeOverlay);
+$('zoom-pin').innerHTML = icon('expand') + icon('collapse');
+$('zoom-pin').addEventListener('click', () => toggleOverlay('tree'));
+
 // ---------- surfaces ----------
+
+const OVERLAYS = {
+  tree: {
+    el: 'tree-sheet', button: 'zoom-pin', leavesStart: true,
+    available: () => !!S.frame?.treeView,
+    show(reveal) { renderSheet(reveal); },
+  },
+  forest: {
+    el: 'forest', button: 'forest-button',
+    available: () => !!S.frame,
+    show(reveal) { renderForest(); if (reveal) fitForest(false); },
+  },
+};
+const restingLayer = () => (S.palette || S.overlay || S.surface !== 'reading') ? 'palette' : 'none';
+const pageShows = () => S.surface === 'reading' && !S.overlay;
 
 function setSurface(surface) {
   if (S.surface === surface) return;
   S.surface = surface;
   $('start').hidden = surface !== 'start';
-  $('forest').hidden = surface !== 'forest';
-  setLayer(surface === 'reading' ? 'none' : 'palette');
-  if (surface === 'forest') {
-    renderForest();
-    fitForest(false);
-  }
+  setLayer(restingLayer());
   syncLayer();
+}
+
+function setOverlay(kind) {
+  if (S.overlay === kind) return;
+  const previous = OVERLAYS[S.overlay];
+  if (previous) {
+    $(previous.el).hidden = true;
+    $(previous.button).classList.remove('on');
+    $(previous.button).setAttribute('aria-pressed', 'false');
+  }
+  S.overlay = kind;
+  document.body.dataset.overlay = kind ?? '';
+  const overlay = OVERLAYS[kind];
+  if (overlay) {
+    if (overlay.leavesStart) setSurface('reading');
+    hideCard();
+    closePopover(false);
+    $(overlay.el).hidden = false;
+    $(overlay.button).classList.add('on');
+    $(overlay.button).setAttribute('aria-pressed', 'true');
+    overlay.show(true);
+  }
+  setLayer(restingLayer());
+  syncLayer();
+}
+
+function closeOverlay() {
+  setOverlay(null);
+  if (pageShows()) post({ t: 'focus', target: 'page' });
+}
+
+function toggleOverlay(kind) {
+  if (S.overlay === kind) { closeOverlay(); return; }
+  if (!OVERLAYS[kind].available()) return;
+  intent('cancel');
+  closePalette(false);
+  setOverlay(kind);
+}
+
+function uncover() {
+  closeReader(false);
+  closePalette(false);
+  closePopover(false);
+  hideCard();
+  setOverlay(null);
+  setSurface('reading');
 }
 
 function renderStart() {
@@ -852,7 +1114,7 @@ function forestLayout() {
 }
 
 function renderForest() {
-  if (S.surface !== 'forest' || !S.frame) {
+  if (S.overlay !== 'forest' || !S.frame) {
     S.forestDirty = true;
     return;
   }
@@ -870,9 +1132,9 @@ function renderForest() {
     if (!v) return '';
     maxX = Math.max(maxX, n.x + n.w / 2);
     maxY = Math.max(maxY, n.y + n.s / 2);
-    const cls = `forest-node${n.settled ? ' settled' : ''}${S.forestLabels ? '' : ' icon-only'}${path.has(n.id) ? ' path' : ''}${v.queued ? ' pending' : ''}`;
+    const cls = `forest-node${n.settled ? ' settled' : ''}${S.forestLabels ? '' : ' icon-only'}${path.has(n.id) ? ' path' : ''}${markClass(v)}`;
     return `<button class="${cls}" data-id="${n.id}" title="${esc(v.label)}" style="left:${n.x - n.w / 2}px;top:${n.y - n.s / 2}px;width:${n.w}px;height:${n.s}px">`
-      + visitFav(v, 16) + (S.forestLabels ? `<span>${esc(v.label)}</span>` : '') + '</button>';
+      + markedFav(v, 16) + (S.forestLabels ? `<span>${esc(v.label)}</span>` : '') + '</button>';
   }).join('');
   const heads = layout.heads.map((h) => `<button class="forest-head${h.settled ? ' settled' : ''}" data-id="${h.id}" style="top:${h.y}px"><b>${esc(h.title)}</b><span>${esc(h.detail)}</span></button>`).join('');
   const edges = layout.nodes.map((b) => {
@@ -955,8 +1217,7 @@ function fitForest(animate) {
     if (drag?.moved) return;
     const node = event.target.closest('[data-id]');
     if (!node) return;
-    setSurface('reading');
-    intent('restore', { id: node.dataset.id });
+    activate(node.dataset.id);
   });
   canvas.addEventListener('wheel', (event) => {
     event.preventDefault();
@@ -980,7 +1241,8 @@ $('forest-titles').addEventListener('click', () => {
   fitForest(true);
 });
 $('forest-fit').addEventListener('click', () => fitForest(true));
-$('forest-close').addEventListener('click', () => setSurface(S.frame?.tabs.length ? 'reading' : 'start'));
+$('forest-close').addEventListener('click', closeOverlay);
+$('forest').querySelector('.scrim').addEventListener('mousedown', closeOverlay);
 
 // ---------- reader ----------
 
@@ -997,11 +1259,11 @@ function showReader(html, list) {
   syncLayer();
 }
 
-function closeReader() {
+function closeReader(returnFocus = true) {
   if (!S.reader) return;
   S.reader = null;
   $('reader').hidden = true;
-  if (S.surface === 'reading') post({ t: 'focus', target: 'page' });
+  if (returnFocus && pageShows()) post({ t: 'focus', target: 'page' });
   syncLayer();
 }
 $('reader').querySelector('.scrim').addEventListener('mousedown', closeReader);
@@ -1014,16 +1276,20 @@ window.canopy = {
   present(frame) {
     const previous = current();
     S.frame = frame;
-    S.strip = frame.strip;
-    S.manualPan = null;
+    applyStrip(frame.strip);
+    renderWaitingPin();
     applyTheme();
-    if (frame.current !== previous && S.surface !== 'reading') setSurface('reading');
+    if (frame.current !== previous) {
+      setOverlay(null);
+      if (S.surface !== 'reading') setSurface('reading');
+    }
     if (!frame.tabs.length && S.surface === 'reading') setSurface('start');
     if (S.popover?.kind === 'rename' && !frame.tabs.some((tree) => tree.id === S.popover.data)) closePopover();
     renderTabs();
     animateStrip(previous === null && strip.shown.nodes.size === 0 ? 0 : MOVE);
     renderStart();
     renderForest();
+    renderSheet(false);
     if (S.card) {
       if (!visit(S.card)) hideCard();
       else showCard(S.card);
@@ -1033,8 +1299,8 @@ window.canopy = {
     syncLayer();
   },
   strip(layouts) {
-    S.strip = layouts;
-    S.manualPan = null;
+    applyStrip(layouts);
+    renderWaitingPin();
     animateStrip(0);
     fitTabs();
   },
@@ -1043,21 +1309,35 @@ window.canopy = {
     renderPaletteContext();
     if (!S.frame) return;
     renderTabs();
+    renderWaitingPin();
+    if (S.popover?.kind === 'waiting') renderPopover();
     buildStrip(strip.target ?? targetLayout());
     renderStart();
     renderForest();
   },
+  logins(offer) {
+    S.logins = offer.names.length ? offer : null;
+    renderLoginChip();
+  },
+  loginsLocked(keeper) {
+    S.locked = keeper;
+    renderLoginChip();
+  },
+  saveLogin(offer) {
+    S.save = offer;
+    renderLoginChip();
+  },
+  fillLogin() { fillLogin(); },
+  nextWaiting() { openNextWaiting(); },
   openPalette(options) { openPalette(options); },
   newTree() {
     intent('cancel');
     closePalette(false);
+    setOverlay(null);
     setSurface('start');
   },
-  toggleForest() {
-    intent('cancel');
-    closePalette(false);
-    setSurface(S.surface === 'forest' ? (S.frame?.tabs.length ? 'reading' : 'start') : 'forest');
-  },
+  toggleForest() { toggleOverlay('forest'); },
+  toggleTree() { toggleOverlay('tree'); },
   toast(kind, text) {
     if (kind === 'error') {
       S.errors.unshift(text);
@@ -1086,7 +1366,7 @@ window.canopy = {
     el.focus();
   },
   settleCurrent() {
-    if (S.reader || S.palette || S.popover || (S.surface !== 'reading' && current())) {
+    if (S.reader || S.palette || S.popover || S.overlay || (S.surface !== 'reading' && current())) {
       this.escape();
     } else if (current()) {
       intent('settle-current');
@@ -1098,7 +1378,8 @@ window.canopy = {
     else if (S.palette) closePalette();
     else if (S.popover) closePopover();
     else if (S.card) hideCard();
-    else if (S.surface === 'forest' || (S.surface !== 'reading' && current())) {
+    else if (S.overlay) closeOverlay();
+    else if (S.surface !== 'reading' && current()) {
       setSurface(S.frame?.tabs.length ? 'reading' : 'start');
       post({ t: 'focus', target: 'page' });
     } else if (S.open) {
@@ -1127,7 +1408,7 @@ window.canopy = {
       const act = button.dataset.act;
       closeReader();
       if (act === 'live') intent('open-saved', { capture: c.capture });
-      else if (act === 'source') intent('restore', { id: c.parent });
+      else if (act === 'source') activate(c.parent);
       else intent('open-citation', { id: c.visit });
     }));
   },
@@ -1146,10 +1427,11 @@ window.canopy = {
   /// For tests: what the view shows, without reaching into the DOM.
   state() {
     return {
-      surface: S.surface, open: S.open, animating: !!strip.anim, card: S.card, layer: S.layer, palette: !!S.palette,
-      reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported,
+      surface: S.surface, overlay: S.overlay, treeSide: S.treeSide, open: S.open, animating: !!strip.anim, card: S.card, layer: S.layer, palette: !!S.palette,
+      reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported, logins: loginNames(), save: S.save, locked: S.locked,
       dark: document.documentElement.classList.contains('dark'),
       nodes: [...strip.elements.keys()], rows: S.palette?.rows ?? [],
+      waiting: S.frame?.waiting.ids ?? [], pins: (S.strip?.pins ?? []).map((p) => p.kind), room: S.strip?.room ?? null,
     };
   },
 };
@@ -1158,7 +1440,7 @@ window.canopy = {
 
 $('new-tree').innerHTML = icon('plus');
 $('agent').innerHTML = icon('spark');
-$('forest-button').innerHTML = icon('forest');
+$('forest-button').innerHTML = icon('forest') + '<span>Forest</span>';
 $('settings-button').innerHTML = icon('settings');
 $('tab-overflow').innerHTML = icon('chevron');
 $('search-pill').insertAdjacentHTML('afterbegin', icon('search'));
@@ -1168,7 +1450,7 @@ $('tab-row').addEventListener('click', (event) => {
   if (close) { intent('settle-tree', { id: close.dataset.settle }); return; }
   const tab = event.target.closest('[data-id]');
   if (!tab) return;
-  setSurface('reading');
+  uncover();
   intent('select-tree', { id: tab.dataset.id });
 });
 $('tab-row').addEventListener('mousedown', (event) => {
@@ -1196,6 +1478,12 @@ $('tab-overflow').addEventListener('click', (event) => {
 $('new-tree').addEventListener('click', () => window.canopy.newTree());
 $('forest-button').addEventListener('click', () => window.canopy.toggleForest());
 $('search-pill').addEventListener('click', () => openPalette({ scope: S.surface === 'start' ? null : current(), text: '' }));
+$('login-chip').addEventListener('click', (event) => {
+  event.stopPropagation();
+  if (!S.save) fillLogin();
+  else if (S.popover?.kind === 'save-login') closePopover();
+  else openPopover('save-login', $('login-chip'));
+});
 $('settings-button').addEventListener('click', (event) => {
   event.stopPropagation();
   if (S.popover?.kind === 'settings') closePopover();
@@ -1215,7 +1503,7 @@ stripEl.addEventListener('wheel', (event) => {
   if (!layout) return;
   event.preventDefault();
   const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-  const min = Math.min(window.innerWidth - layout.width, 0);
+  const min = Math.min(stripRoom() - layout.width, 0);
   S.manualPan = clamp((S.manualPan ?? strip.shown.pan) - delta, min, 0);
   strip.shown.pan = S.manualPan;
   drawStrip();

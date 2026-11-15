@@ -7,13 +7,15 @@
 </head>
 <body>
 <header id="tabs">
+  <button id="forest-button" class="label-button" title="Forest · Ctrl+E" aria-pressed="false"></button>
+  <div class="tabs-divider"></div>
   <div id="tab-row"></div>
   <button id="tab-overflow" class="icon-button" title="More trees" hidden></button>
   <button id="new-tree" class="icon-button" title="New tree · Ctrl+T" aria-label="New tree"></button>
   <div class="spacer"></div>
+  <button id="login-chip" class="label-button" hidden></button>
   <button id="search-pill" title="Search your forest or go to an address · Ctrl+K"><span>Search or go…</span><kbd>Ctrl K</kbd></button>
   <button id="agent" class="icon-button" title="Agent · Coming soon" aria-label="Agent" disabled></button>
-  <button id="forest-button" class="icon-button" title="Forest view · Ctrl+E" aria-label="Forest view"></button>
   <button id="settings-button" class="icon-button" title="Settings" aria-label="Settings"></button>
 </header>
 
@@ -30,22 +32,36 @@
     <div class="fade" id="fade-right" hidden></div>
   </div>
 </section>
+<div id="tree-sheet" class="overlay" hidden>
+  <div class="scrim"></div>
+  <div class="sheet-box">
+    <div class="sheet-head"><b id="tree-title"></b><span id="tree-detail"></span>
+      <div class="segmented" id="tree-side" aria-label="Tree view"><button data-side="tree">Tree</button><button data-side="list">List</button></div>
+    </div>
+    <div id="tree-board" class="sheet-body"><div id="tree-layer"><svg id="tree-edges"></svg><div id="tree-nodes"></div></div></div>
+    <div id="tree-list" class="sheet-body" hidden></div>
+  </div>
+</div>
+<div id="pins"><button id="waiting-pin" class="pin" data-pin="waiting" aria-label="Next waiting page" hidden></button><button id="zoom-pin" class="pin icon-pin" data-pin="zoom" aria-pressed="false" title="Zoom into this tree · Ctrl+Shift+E" aria-label="Zoom into this tree" hidden></button></div>
 
 <div id="start" class="surface dapple" hidden>
   <div id="start-content"></div>
 </div>
 
-<div id="forest" class="surface" hidden>
-  <div class="forest-toolbar">
-    <strong>Forest</strong>
-    <span class="menu-detail" id="forest-count"></span>
-    <div class="spacer"></div>
-    <button class="action" id="forest-titles">Titles</button>
-    <button class="action" id="forest-fit">Fit</button>
-    <button class="action" id="forest-close" aria-label="Close the forest view">×</button>
-  </div>
-  <div id="forest-canvas" class="dapple">
-    <div id="forest-layer"><svg id="forest-edges" width="1" height="1"></svg><div id="forest-nodes"></div></div>
+<div id="forest" class="overlay" hidden>
+  <div class="scrim"></div>
+  <div class="forest-pop">
+    <div class="forest-toolbar">
+      <strong>Forest</strong>
+      <span class="menu-detail" id="forest-count"></span>
+      <div class="spacer"></div>
+      <button class="action" id="forest-titles">Titles</button>
+      <button class="action" id="forest-fit">Fit</button>
+      <button class="action" id="forest-close" aria-label="Close the forest view">×</button>
+    </div>
+    <div id="forest-canvas" class="dapple">
+      <div id="forest-layer"><svg id="forest-edges" width="1" height="1"></svg><div id="forest-nodes"></div></div>
+    </div>
   </div>
 </div>
 
