@@ -237,10 +237,15 @@ impl LivePage {
         if let Some(ticket) = self.pending_ticket() {
             state.navigation.borrow_mut().failed(ticket);
         }
-        // Policy-phase cancellation has no Finished signal to drain. Only Started
-        // loads participate in the stop/Finished handshake (including beforeunload).
+        // A request stopped before policy acceptance has no Finished signal.
+        // Accepted requests can still deliver Started after a busy beforeunload;
+        // drain those too so they cannot cancel the candidate or commit later.
         let draining = match *state.issue.borrow() {
-            Issue::Loading(ticket) if self.native.is_loading() => Some(ticket),
+            Issue::Loading(ticket)
+            | Issue::Issued {
+                ticket,
+                decided: true,
+            } if self.native.is_loading() => Some(ticket),
             _ => None,
         };
         *state.issue.borrow_mut() = draining.map(Issue::Cancelling).unwrap_or(Issue::Idle);

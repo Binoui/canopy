@@ -948,6 +948,7 @@ fn unload_stuck(kind: &str) -> Result<()> {
     })?;
     pump_for(300);
     match kind {
+        "land" => f.pages.open_roots(&[f.server.url("/landing")])?,
         "refused" => f.pages.open_roots(&[refused_url()])?,
         "nocontent" => f.pages.open_roots(&[f.server.url("/nocontent")])?,
         "reselect" => {
@@ -993,8 +994,18 @@ fn unload_stuck(kind: &str) -> Result<()> {
         uri_path(&f),
         f.errors()
     );
+    assert!(
+        arrived,
+        "N2: old page must recover after beforeunload cancellation"
+    );
+    assert_eq!(
+        third_visits, 0,
+        "cancelled beforeunload request must not commit"
+    );
+    if kind == "land" {
+        assert_eq!(mid, "/landing", "beforeunload must not cancel switch");
+    }
     let _ = a;
-
     Ok(())
 }
 
@@ -1037,6 +1048,7 @@ fn main() -> Result<()> {
         ("spa", || alias_first_page("/spa")),
         ("spa_late", || alias_first_page("/spa-late")),
         ("anchor", alias_anchor),
+        ("unload_lands", || unload_stuck("land")),
         ("unload_refused", || unload_stuck("refused")),
         ("unload_204", || unload_stuck("nocontent")),
     ];
