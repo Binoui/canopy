@@ -319,6 +319,12 @@ pub fn eval(ui: &Ui, script: &str) -> Result<Value> {
 
 /// Screen point at the center of a page element.
 pub fn element_point(ui: &Ui, id: &str) -> Result<(i32, i32)> {
+    // Load Finished can precede the first frame that accepts pointer input.
+    eval(ui, "globalThis.__canopyPointerReady = false; requestAnimationFrame(() => requestAnimationFrame(() => { globalThis.__canopyPointerReady = true; })); JSON.stringify(true)")?;
+    wait("page painted for pointer input", || {
+        eval(ui, "JSON.stringify(globalThis.__canopyPointerReady)").ok()
+            == Some(serde_json::json!(true))
+    })?;
     let script = format!("(() => {{const r=document.getElementById({}).getBoundingClientRect();return JSON.stringify({{x:r.x+r.width/2,y:r.y+r.height/2}})}})()", serde_json::to_string(id)?);
     let point = eval(ui, &script)?;
     screen_point(

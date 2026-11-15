@@ -659,10 +659,6 @@ fn link(ui: &Ui, id: &str) -> Result<()> {
 }
 
 fn trusted_click(ui: &Ui, id: &str) -> Result<()> {
-    eval(ui, "globalThis.__painted = false; requestAnimationFrame(() => requestAnimationFrame(() => { globalThis.__painted = true; })); JSON.stringify(true)")?;
-    wait("page painted before pointer input", || {
-        eval(ui, "JSON.stringify(globalThis.__painted)").ok() == Some(serde_json::json!(true))
-    })?;
     let (x, y) = element_point(ui, id)?;
     focus_window()?;
     click_at(x, y)
