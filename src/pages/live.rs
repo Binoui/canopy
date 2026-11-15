@@ -21,7 +21,7 @@ mod mouse;
 use crate::{
     address::web_url,
     browser::{
-        Capture, CaptureKind, CapturePayload, Document, LoadTicket, Navigation, NavigationTarget,
+        CaptureKind, CapturePayload, Document, LoadTicket, Navigation, NavigationTarget,
         SourceContext, Visibility, VisitId,
     },
 };
@@ -223,9 +223,15 @@ impl LivePage {
     }
     pub(super) fn cancel_foreground(&self) {
         let state = &self.state;
-        state.owner().discard_view_continuation(&state.navigation.borrow());
-        state.foreground_generation.set(state.foreground_generation.get().wrapping_add(1));
-        state.load_generation.set(state.load_generation.get().wrapping_add(1));
+        state
+            .owner()
+            .discard_view_continuation(&state.navigation.borrow());
+        state
+            .foreground_generation
+            .set(state.foreground_generation.get().wrapping_add(1));
+        state
+            .load_generation
+            .set(state.load_generation.get().wrapping_add(1));
         if let Some(ticket) = self.pending_ticket() {
             state.navigation.borrow_mut().failed(ticket);
         }
@@ -256,11 +262,14 @@ impl LivePage {
         let mut items = list.back_list();
         // WebKit returns nearest first; frame and pushState entries share a document.
         items.sort_by_key(|item| {
-            (1..=list.length()).find(|n| list.nth_item(-(*n as i32)).as_ref() == Some(item)).unwrap_or(u32::MAX)
+            (1..=list.length())
+                .find(|n| list.nth_item(-(*n as i32)).as_ref() == Some(item))
+                .unwrap_or(u32::MAX)
         });
         items.into_iter().find(|item| {
             self.state.history.borrow().iter().any(|e| {
-                e.item == *item && e.document != self.state.history_document.get()
+                e.item == *item
+                    && e.document != self.state.history_document.get()
                     && self.state.native_history_allowed(e.visit)
             })
         })
@@ -1120,36 +1129,6 @@ impl LivePage {
         Ok(())
     }
 
-    pub fn open_saved(&self, capture: &Capture) -> Result<()> {
-        let target = capture
-            .citation_url
-            .clone()
-            .unwrap_or_else(|| capture.document_url.clone());
-        let visit = self.state.owner().browser.borrow().visit(capture.visit)?;
-        let url = if target == visit.url {
-            self.state
-                .owner()
-                .browser
-                .borrow_mut()
-                .restore(&mut self.state.navigation.borrow_mut(), visit.id)?
-        } else {
-            let source = SourceContext {
-                page_url: capture.document_url.clone(),
-                citation_url: capture.citation_url.clone(),
-                link_text: capture.title.clone(),
-                excerpt: capture.text.chars().take(1000).collect(),
-            };
-            self.state.owner().browser.borrow_mut().follow_link(
-                &mut self.state.navigation.borrow_mut(),
-                visit.id,
-                target,
-                source,
-            )?
-        };
-        self.state.load(url);
-        Ok(())
-    }
-
     pub fn remember_selection(&self) -> Result<()> {
         if self.state.ticket().is_none() {
             bail!("Open a page and select the text to remember.")
@@ -1802,6 +1781,15 @@ impl NativeState {
                 };
                 self.navigation.borrow_mut().publish(visit, stored.url);
             }
+        }
+        if self
+            .navigation
+            .borrow()
+            .current
+            .as_ref()
+            .is_some_and(|d| d.page_url != url)
+        {
+            self.foreground_requested();
         }
         self.navigation.borrow_mut().same_document(url);
         if let Some(document) = self.ticket() {

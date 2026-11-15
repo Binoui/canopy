@@ -493,8 +493,12 @@ impl Pages {
             if matches!(event, PageEvent::Error(_))
                 || matches!(event, PageEvent::Loading(false)) && empty
             {
+                let failed = matches!(event, PageEvent::Error(_));
                 self.cancel_candidate();
                 self.receive(event);
+                if failed {
+                    self.receive(PageEvent::Loading(false));
+                }
             }
             return;
         }
@@ -550,10 +554,17 @@ impl Pages {
                     page.navigate(url, target)
                 }
             }
-            Go::Citation(visit) => page.open_citation(visit),
+            Go::Citation(visit) => {
+                let parent = self.read(|b| b.visit(visit))?.parent;
+                if parent.is_some() && parent == page.current_visit() {
+                    page.open_citation(visit)
+                } else {
+                    self.candidate_page(None)?.open_citation(visit)
+                }
+            }
             Go::Saved(id) => {
                 let capture = self.read(|b| b.capture(id))?;
-                page.open_saved(&capture)
+                self.route(capture.visit)
             }
         };
         if page.pending_ticket().is_some() && page.pending_ticket() != before {
@@ -615,7 +626,12 @@ impl Pages {
         self.cancel_continuation();
         let forest =
             self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
-        let target = self.branches.candidate.borrow().as_ref().and_then(|p| p.pending_visit());
+        let target = self
+            .branches
+            .candidate
+            .borrow()
+            .as_ref()
+            .and_then(|p| p.pending_visit());
         if target.is_some_and(|visit| forest.tree_of(visit) == Some(tree)) {
             self.cancel_candidate();
         }
@@ -631,7 +647,11 @@ impl Pages {
             Landing::Unchanged => Ok(()),
             Landing::Restore(visit) => self.go(Go::Visit(visit)),
             Landing::Start => {
-                let page = Rc::new(LivePage::new(&self.container, self.me.clone(), &self.context)?);
+                let page = Rc::new(LivePage::new(
+                    &self.container,
+                    self.me.clone(),
+                    &self.context,
+                )?);
                 page.follow_container_bounds(&self.container);
                 let previous = self.branches.live.borrow_mut().replace(page.clone());
                 drop(previous);
