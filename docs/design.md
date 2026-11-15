@@ -212,14 +212,21 @@ independent allocations let the same GtkFixed preserve both rules.
 Pages::select_candidate switches bookkeeping and keyboard focus at commit. It
 maps the incoming page under the outgoing native window, whose GDK input is made
 pass-through immediately. Only that outgoing picture is held. Two isolated-world
-animation frames after a body exists, followed by a rendered snapshot and 34 ms
-for presentation, release the picture through Pages::release_picture. A 1000 ms
-cap bounds a stalled renderer. Release then checkpoints and destroys the outgoing
-view before draining the existing FIFO. Commands arriving during the picture hold
-use that same queue, so a second switch cannot leave a third picture mapped.
-Failures and cancellation before commit never enter the picture handoff.
-This is a measured rendering heuristic, not a WebKit first-paint API; a cap expiry
-can still reveal an unpainted document if the renderer is stalled beyond the cap.
+animation frames after a body exists request a rendered snapshot. Pages::present_snapshot
+paints this actual document image after the incoming widget's default draw, so an
+empty native backing store cannot show through. Only after that draw does
+Pages::release_picture hide/checkpoint/release the outgoing view and drain the FIFO.
+Subsequent commands use that same queue, so another switch cannot retain a third
+page's picture. Failures/cancellation before commit never enter this handoff.
+The temporary image scales with the slot while resizing. Native draws are probed
+without the image; once the backing store matches it or contains rendered pixels
+rather than an empty transparent/grey/white frame, the image handler is removed.
+No timer reveals an empty backing store: both 300 ms and 1000 ms cutoffs failed
+pixel sampling under load. A renderer that never supplies a snapshot retains the
+outgoing picture. This deliberately favours a continuous picture over a deadline.
+Pages derives the content rectangle from the host window even when a late Fixed
+allocation still reflects the old child requests, preventing a shrink from being
+undone by the Fixed's own size-allocate signal.
 
 Response state belongs to a LoadTicket. Only the main response policy decision
 that calls download marks that ticket for handover. NativeState::end_response

@@ -223,9 +223,19 @@ impl Pages {
             start: Cell::new(None),
         });
         let weak = Rc::downgrade(&pages);
-        container.connect_size_allocate(move |_, a| {
+        container.connect_size_allocate(move |container, a| {
             if let Some(pages) = weak.upgrade() {
-                pages.resize(a.width() as f64, a.height() as f64);
+                if let Some(window) = container
+                    .toplevel()
+                    .and_then(|w| w.downcast::<gtk::Window>().ok())
+                {
+                    pages.resize(
+                        window.allocated_width() as f64,
+                        window.allocated_height() as f64,
+                    );
+                } else {
+                    pages.resize(a.width() as f64, a.height() as f64);
+                }
             }
         });
         let page = LivePage::new(container, Rc::downgrade(&pages), &pages.context)?;
@@ -515,40 +525,35 @@ impl Pages {
                 window.set_pass_through(true);
             }
             let pending = RefCell::new(Some(old.clone()));
-            let cancel = gio::Cancellable::new();
-            let stop = cancel.clone();
             let weak = self.me.clone();
             #[cfg(feature = "gui-smoke")]
             let started = std::time::Instant::now();
-            let finish: Rc<dyn Fn(&str)> = Rc::new(move |_reason| {
+            let finish: Rc<dyn Fn()> = Rc::new(move || {
                 if let Some(old) = pending.borrow_mut().take() {
-                    stop.cancel();
                     #[cfg(feature = "gui-smoke")]
-                    eprintln!("PICTURE {_reason} {}ms", started.elapsed().as_millis());
+                    eprintln!("PICTURE presented {}ms", started.elapsed().as_millis());
                     if let Some(pages) = weak.upgrade() {
                         pages.release_picture(old);
                     }
                 }
             });
-            let painted = finish.clone();
-            let view = candidate.native.clone();
-            let snapshot_cancel = cancel.clone();
+            let view = candidate.native.downgrade();
             candidate.native.call_async_javascript_function(
                 "while (!document.body) await new Promise(r => requestAnimationFrame(r)); await new Promise(r => requestAnimationFrame(r)); await new Promise(r => requestAnimationFrame(r)); return true;",
-                None, Some("canopy-picture"), None, Some(&cancel),
+                None, Some("canopy-picture"), None, None::<&gio::Cancellable>,
                 move |result| {
                     if result.is_ok() {
-                        view.snapshot(webkit2gtk::SnapshotRegion::Visible, webkit2gtk::SnapshotOptions::NONE, Some(&snapshot_cancel), move |result| {
-                            if result.is_ok() {
-                                glib::timeout_add_local_once(std::time::Duration::from_millis(34), move || painted("snapshot"));
-                            }
-                        });
+                        if let Some(view) = view.upgrade() {
+                            let target = view.downgrade();
+                            view.snapshot(webkit2gtk::SnapshotRegion::Visible, webkit2gtk::SnapshotOptions::NONE, None::<&gio::Cancellable>, move |result| {
+                                if let (Some(view), Ok(surface)) = (target.upgrade(), result) {
+                                    Self::present_snapshot(&view, surface, finish);
+                                }
+                            });
+                        }
                     }
                 },
             );
-            glib::timeout_add_local_once(std::time::Duration::from_millis(1000), move || {
-                finish("cap")
-            });
             candidate.show();
             if let Some(window) = old.native.window() {
                 window.raise();
@@ -560,6 +565,131 @@ impl Pages {
         if focus {
             candidate.focus();
         }
+    }
+
+    /// The first incoming frame is an actual rendered snapshot, painted over any empty
+    /// native draws until WebKit's backing store catches up. Occlusion cannot expose grey.
+    fn present_snapshot(
+        view: &webkit2gtk::WebView,
+        surface: gtk::cairo::Surface,
+        finish: Rc<dyn Fn()>,
+    ) {
+        let probing = Rc::new(Cell::new(false));
+        let bypass = probing.clone();
+        let picture = surface.clone();
+        let shown = Rc::new(Cell::new(false));
+        let presented = shown.clone();
+        let painted = finish.clone();
+        let id = view.connect_local("draw", true, move |values| {
+            if !bypass.get() {
+                let context = values[1]
+                    .get::<gtk::cairo::Context>()
+                    .expect("draw context");
+                let view = values[0].get::<webkit2gtk::WebView>().expect("draw view");
+                if Self::paint_picture(
+                    &context,
+                    &picture,
+                    view.allocated_width(),
+                    view.allocated_height(),
+                ) && !presented.replace(true)
+                {
+                    let finish = painted.clone();
+                    glib::idle_add_local_once(move || finish());
+                }
+            }
+            Some(false.to_value())
+        });
+        let target = view.downgrade();
+        let mut signal = Some(id);
+        view.queue_draw();
+        glib::timeout_add_local(std::time::Duration::from_millis(8), move || {
+            let Some(view) = target.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if !shown.get() {
+                return glib::ControlFlow::Continue;
+            }
+            probing.set(true);
+            let ready = Self::picture_ready(&view, &surface);
+            probing.set(false);
+            if ready {
+                view.disconnect(signal.take().expect("presentation signal"));
+                view.queue_draw();
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+    }
+
+    fn paint_picture(
+        context: &gtk::cairo::Context,
+        surface: &gtk::cairo::Surface,
+        width: i32,
+        height: i32,
+    ) -> bool {
+        let Ok(image) = gtk::cairo::ImageSurface::try_from(surface.clone()) else {
+            return false;
+        };
+        if context.save().is_err() {
+            return false;
+        }
+        context.scale(
+            width as f64 / image.width().max(1) as f64,
+            height as f64 / image.height().max(1) as f64,
+        );
+        let painted = context
+            .set_source_surface(surface, 0., 0.)
+            .and_then(|_| context.paint())
+            .is_ok();
+        let _ = context.restore();
+        painted
+    }
+
+    fn picture_ready(view: &webkit2gtk::WebView, expected: &gtk::cairo::Surface) -> bool {
+        use gtk::cairo::{Context, Format, ImageSurface};
+        if let Some(parent) = view
+            .parent()
+            .and_then(|p| p.downcast::<gtk::Container>().ok())
+        {
+            parent.check_resize();
+        }
+        let render = |snapshot: bool| -> Option<Vec<u8>> {
+            let mut image = ImageSurface::create(
+                Format::ARgb32,
+                view.allocated_width(),
+                view.allocated_height(),
+            )
+            .ok()?;
+            {
+                let context = Context::new(&image).ok()?;
+                if snapshot {
+                    if !Self::paint_picture(
+                        &context,
+                        expected,
+                        view.allocated_width(),
+                        view.allocated_height(),
+                    ) {
+                        return None;
+                    }
+                } else {
+                    view.draw(&context);
+                }
+            }
+            let bytes = image.data().ok()?.to_vec();
+            Some(bytes)
+        };
+        let (Some(actual), Some(expected)) = (render(false), render(true)) else {
+            return false;
+        };
+        if actual == expected {
+            return true;
+        }
+        // Empty GTK/WebKit draws are transparent, theme grey, or white. Keep the
+        // rendered document over them; animated content need not match an earlier frame.
+        actual
+            .chunks_exact(4)
+            .any(|p| p[3] != 0 && p[..3] != [244, 245, 246] && p[..3] != [255, 255, 255])
     }
 
     fn release_picture(&self, old: Rc<LivePage>) {
@@ -940,7 +1070,11 @@ impl Pages {
         if view.size_request() != (rect.width(), rect.height()) {
             view.set_size_request(rect.width(), rect.height());
         }
-        self.container.move_(view, rect.x(), rect.y());
+        if self.container.child_property::<i32>(view, "x") != rect.x()
+            || self.container.child_property::<i32>(view, "y") != rect.y()
+        {
+            self.container.move_(view, rect.x(), rect.y());
+        }
         if view.allocation() != rect {
             view.size_allocate(&rect);
         }

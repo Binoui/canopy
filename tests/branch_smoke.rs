@@ -478,6 +478,9 @@ fn replacement(same: bool) -> Result<()> {
         assert!(f.pages.read(|b| b.visit(q))?.opened_at.is_none());
     }
     drop(old);
+    wait("outgoing picture released", || {
+        f.fixed.children().len() == 1
+    })?;
     assert_eq!(
         f.fixed.children().len(),
         1,
