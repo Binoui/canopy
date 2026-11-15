@@ -455,6 +455,28 @@ fn geometry(u: &U) -> Result<()> {
     click_chrome(&u.ui, "#search-pill")?;
     wait("chrome responds immediately", || visible(&u.ui, "#palette"))?;
     key("Escape")?;
+    if let Some(original) = u.cursor() {
+        eval(&u.ui, "scrollTo(0,0);document.getElementById('fork').style.cssText='display:block;margin-top:150px;height:60px';JSON.stringify(true)")?;
+        u.page_click("fork", "1")?;
+        anyhow::ensure!(
+            u.until(6000, || u.cursor_path() == "/d" && !u.loading()),
+            "page follows a real link after placement"
+        );
+        let (x, y) = page_point(&u.ui, u.ui.window.allocated_width() / 2, 400)?;
+        move_to(x, y)?;
+        xdo(&["click", "5"])?;
+        wait("placed page receives wheel", || {
+            eval(&u.ui, "JSON.stringify(scrollY)")
+                .ok()
+                .and_then(|v| v.as_f64())
+                .is_some_and(|y| y > 0.)
+        })?;
+        u.ui.pages.go(Go::Visit(original))?;
+        anyhow::ensure!(
+            u.arrives(original, 6000),
+            "return after checking placed page input"
+        );
+    }
     Ok(())
 }
 
