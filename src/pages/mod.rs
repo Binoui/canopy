@@ -892,6 +892,10 @@ impl Pages {
             width.max(1),
             (height - CHROME_HEIGHT as i32).max(1),
         );
+        if view.size_request() != (rect.width(), rect.height()) {
+            view.set_size_request(rect.width(), rect.height());
+        }
+        self.container.move_(view, rect.x(), rect.y());
         if view.allocation() != rect {
             view.size_allocate(&rect);
         }

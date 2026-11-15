@@ -375,7 +375,6 @@ impl LivePage {
                 .into_iter()
                 .map(|id| (native.clone().upcast(), id)),
         );
-        native.set_size_request(200, 200);
         container.put(&native, 0, 0);
         native.set_child_visible(matches!(initial, InitialPage::Home));
         native.show();
