@@ -568,6 +568,30 @@ fn chrome_after_changes() -> Result<()> {
         u.until(4000, || u.server.hits("/gate/x/target") > 0),
         "candidate starts"
     );
+    let parent =
+        u.ui.pages
+            .selected_page()
+            .native
+            .parent()
+            .unwrap()
+            .downcast::<gtk::Fixed>()
+            .unwrap();
+    let rect = u.ui.pages.selected_page().native.allocation();
+    for child in parent.children() {
+        if child == u.ui.chrome.native().upcast::<gtk::Widget>() {
+            continue;
+        }
+        println!(
+            "HIDDEN_RECT visible={} allocation={:?}",
+            child.is_visible(),
+            child.allocation()
+        );
+        assert_eq!(
+            child.allocation(),
+            rect,
+            "hidden candidates must already have the content rectangle"
+        );
+    }
     key("Escape")?;
     u.ui.pages.go(Go::Visit(a))?;
     u.server.gate("x", false);

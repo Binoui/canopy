@@ -431,7 +431,7 @@ impl Pages {
             _ => LivePage::empty(&self.container, self.me.clone(), &self.context)?,
         };
         *self.branches.candidate_saved.borrow_mut() = saved;
-        page.native.hide();
+        page.native.set_child_visible(false);
 
         let page = Rc::new(page);
         *self.branches.candidate.borrow_mut() = Some(page.clone());
@@ -449,7 +449,7 @@ impl Pages {
             self.me.clone(),
             &self.context,
         )?);
-        page.native.hide();
+        page.native.set_child_visible(false);
 
         *self.branches.candidate.borrow_mut() = Some(page.clone());
         page.restore(visit)
@@ -490,7 +490,7 @@ impl Pages {
         let old = self.branches.live.borrow_mut().replace(candidate.clone());
         let focus = old.as_ref().is_some_and(|page| page.native.has_focus());
         if let Some(old) = old {
-            old.native.hide();
+            old.native.set_child_visible(false);
             self.releasing.set(true);
             let weak = self.me.clone();
             let pending = old.clone();
@@ -1000,7 +1000,7 @@ impl Pages {
                 live::Revival::Cold,
             ),
         };
-        page.native.show();
+        page.show();
 
         let page = Rc::new(page);
         *self.branches.live.borrow_mut() = Some(page.clone());

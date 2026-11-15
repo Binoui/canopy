@@ -281,7 +281,9 @@ impl LivePage {
         self.detach();
     }
     pub(super) fn show(&self) {
+        self.native.set_child_visible(true);
         self.native.show();
+        self.state.owner().place_view(&self.native);
         self.state.restore_scroll();
     }
     pub(super) fn native_back(&self) -> Option<BackForwardListItem> {
@@ -373,6 +375,8 @@ impl LivePage {
         );
         native.set_size_request(200, 200);
         container.put(&native, 0, 0);
+        native.set_child_visible(matches!(initial, InitialPage::Home));
+        native.show();
         if container.is_realized() {
             native.realize();
         }
@@ -1963,7 +1967,7 @@ impl NativeState {
     }
 
     fn restore_scroll(self: &Rc<Self>) {
-        if !self.native.is_visible() {
+        if !self.native.is_mapped() {
             return;
         }
         // A cancelled earlier load can finish first; keep the target for the visit it names.

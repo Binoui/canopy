@@ -74,7 +74,7 @@ current open tree, or routes the forest parent when no eligible item exists.
 
 Candidates load hidden, without focus. Their successful commit writes the cursor,
 tree target and arrival once, in Browser's transaction, and synchronously promotes
-the candidate. The old widget is then hidden and the candidate shown. It takes
+the candidate. The old widget is then unmapped with GTK child visibility and the candidate shown. It takes
 focus only when the previous page held it, preserving an active chrome editor.
 Pages places and raises each view at creation, show and map, before page events.
 Candidates are realized while hidden. A failure before commit reports the normal error
@@ -148,6 +148,8 @@ Pages::place_view owns page allocation and stacking. Every page view, including
 hidden candidates and releasing views, uses the content rectangle (window width,
 window height minus the fixed 94 px header). Pages stores that rectangle and applies
 it at creation, show, map and every resize, without waiting for a container signal.
+GTK child visibility unmaps dormant candidates while retaining their visible flag,
+so GTK accepts allocations for them; ordinary hide() rejects those allocations.
 Expanded chrome covers overlay content rather than shrinking the page viewport.
 Chrome stays above every page view, including immediately when a native view maps.
 Adding, removing, showing or hiding page views never changes chrome allocation;
