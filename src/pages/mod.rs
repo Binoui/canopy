@@ -7,6 +7,7 @@ use crate::{
     forest::ForestProjection,
 };
 use anyhow::Result;
+use gtk::prelude::*;
 use live::LivePage;
 pub use native::{CookieApplyError, DownloadEvent};
 use std::{
@@ -139,6 +140,10 @@ pub struct Pages {
     browser: RefCell<Browser>,
     context: Rc<native::PageContext>,
     live: RefCell<Option<Rc<LivePage>>>,
+    container: gtk::Fixed,
+    dormant: RefCell<Vec<live::Checkpoint>>,
+    candidate: RefCell<Option<Rc<LivePage>>>,
+    commands: RefCell<std::collections::VecDeque<(Go, Option<Continuation>)>>,
     #[cfg(feature = "gui-smoke")]
     checkpoint: RefCell<Option<live::Checkpoint>>,
     #[cfg(feature = "gui-smoke")]
@@ -157,6 +162,10 @@ impl Pages {
             browser: RefCell::new(browser),
             context,
             live: RefCell::new(None),
+            container: container.clone(),
+            dormant: RefCell::new(Vec::new()),
+            candidate: RefCell::new(None),
+            commands: RefCell::new(std::collections::VecDeque::new()),
             #[cfg(feature = "gui-smoke")]
             checkpoint: RefCell::new(None),
             #[cfg(feature = "gui-smoke")]
@@ -214,20 +223,28 @@ impl Pages {
 
     // Clone the observer and end every state borrow before WebKit, GTK or Ui can reenter.
     fn receive(&self, event: PageEvent) {
-        if matches!(event, PageEvent::Error(_)) {
-            self.advance_continuation(ContinuationEvent::Failed);
-        }
-        if matches!(event, PageEvent::Loading(false)) {
-            if let Some(ticket) = self.advance_continuation(ContinuationEvent::Finished) {
-                self.schedule_continuation(ticket);
+        let continuation_selected = self.continuation.borrow().as_ref().is_none_or(|c| {
+            self.live
+                .borrow()
+                .as_ref()
+                .is_some_and(|page| page.owns(c.state.ticket()))
+        });
+        if continuation_selected {
+            if matches!(event, PageEvent::Error(_)) {
+                self.advance_continuation(ContinuationEvent::Failed);
             }
+            if matches!(event, PageEvent::Loading(false)) {
+                if let Some(ticket) = self.advance_continuation(ContinuationEvent::Finished) {
+                    self.schedule_continuation(ticket);
+                }
+            }
+            let pending = self
+                .live
+                .borrow()
+                .as_ref()
+                .and_then(|page| page.pending_ticket());
+            self.advance_continuation(ContinuationEvent::Pending(pending));
         }
-        let pending = self
-            .live
-            .borrow()
-            .as_ref()
-            .and_then(|page| page.pending_ticket());
-        self.advance_continuation(ContinuationEvent::Pending(pending));
         let observer = self.observer.borrow().clone();
         if let Some(observer) = observer {
             observer(event);
@@ -249,6 +266,7 @@ impl Pages {
     }
 
     fn committed(self: &Rc<Self>, ticket: LoadTicket, visit: VisitId) {
+        self.select_candidate(ticket);
         let same_document = self
             .live
             .borrow()
@@ -316,7 +334,130 @@ impl Pages {
         self.advance_continuation(ContinuationEvent::Discard);
     }
 
+    fn cancel_candidate(&self) {
+        let page = self.candidate.borrow_mut().take();
+        if let Some(page) = page {
+            page.cancel();
+        }
+    }
+
+    fn candidate_page(&self, visit: Option<VisitId>) -> Result<Rc<LivePage>> {
+        self.cancel_candidate();
+        let saved = visit.and_then(|visit| {
+            let mut dormant = self.dormant.borrow_mut();
+            let index = dormant
+                .iter()
+                .rposition(|saved| saved.entries.iter().any(|e| e.visit == visit))?;
+            Some(dormant.remove(index))
+        });
+        let page = match (saved.as_ref(), visit) {
+            (Some(saved), Some(visit)) => {
+                LivePage::revive(
+                    &self.container,
+                    self.me.clone(),
+                    &self.context,
+                    saved,
+                    visit,
+                )?
+                .0
+            }
+            _ => LivePage::empty(&self.container, self.me.clone(), &self.context)?,
+        };
+        page.native.hide();
+        page.follow_container_bounds(&self.container);
+        let page = Rc::new(page);
+        *self.candidate.borrow_mut() = Some(page.clone());
+        Ok(page)
+    }
+
+    fn route(&self, visit: VisitId) -> Result<()> {
+        let candidate = self.candidate.borrow().clone();
+        if candidate
+            .as_ref()
+            .is_some_and(|p| p.pending_visit() == Some(visit))
+        {
+            return Ok(());
+        }
+        self.cancel_candidate();
+        let selected = self.live.borrow().clone();
+        if let Some(page) = selected {
+            if page.current_visit() == Some(visit) {
+                return Ok(());
+            }
+            if self.read(|b| b.visit(visit))?.opened_at.is_some() && page.contains(visit) {
+                return page.restore(visit);
+            }
+        }
+        self.candidate_page(Some(visit))?.restore_revived(visit)
+    }
+
+    fn select_candidate(&self, ticket: LoadTicket) {
+        let candidate = self.candidate.borrow().clone();
+        let Some(candidate) = candidate.filter(|p| p.owns(ticket)) else {
+            return;
+        };
+        self.candidate.borrow_mut().take();
+        let old = self.live.borrow_mut().replace(candidate.clone());
+        if let Some(old) = old {
+            old.native.hide();
+            self.releasing.set(true);
+            let weak = self.me.clone();
+            let pending = old.clone();
+            old.capture_checkpoint_scroll(move || {
+                let saved = Self::release_page(pending);
+                if let Some(pages) = weak.upgrade() {
+                    if let Ok(saved) = saved {
+                        pages.dormant.borrow_mut().push(saved);
+                    }
+                    pages.releasing.set(false);
+                    loop {
+                        let command = pages.commands.borrow_mut().pop_front();
+                        let Some((command, continuation)) = command else {
+                            break;
+                        };
+                        if let Err(error) = pages.go(command) {
+                            pages.receive(PageEvent::Error(error.to_string()));
+                        }
+                        if let Some(continuation) = continuation {
+                            pages.continue_with(continuation);
+                        }
+                        if pages.releasing.get() {
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+        candidate.show();
+        self.receive(PageEvent::Changed);
+    }
+
+    fn receive_view(&self, view: crate::browser::ViewId, empty: bool, event: PageEvent) {
+        let candidate = self.candidate.borrow().clone();
+        if candidate.as_ref().is_some_and(|p| p.view() == view) {
+            if matches!(event, PageEvent::Error(_))
+                || matches!(event, PageEvent::Loading(false)) && empty
+            {
+                self.cancel_candidate();
+                self.receive(event);
+            }
+            return;
+        }
+        let selected = self
+            .live
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| p.view() == view);
+        if selected {
+            self.receive(event);
+        }
+    }
+
     pub fn go(&self, go: Go) -> Result<()> {
+        if self.releasing.get() {
+            self.commands.borrow_mut().push_back((go, None));
+            return Ok(());
+        }
         let page = self
             .live
             .borrow()
@@ -327,13 +468,26 @@ impl Pages {
         }
         let before = page.pending_ticket();
         let result = match go {
-            Go::Visit(visit) => page.restore(visit),
-            Go::Parent => page.back(),
+            Go::Visit(visit) => self.route(visit),
+            Go::Parent => {
+                self.cancel_candidate();
+                match page.back_visit()? {
+                    Some(visit) => self.route(visit),
+                    None => Ok(()),
+                }
+            }
             Go::Tree(tree) => {
                 let visit = self.read(|b| b.tree_target(tree))?;
-                page.restore(visit)
+                self.route(visit)
             }
-            Go::Address { url, target } => page.navigate(url, target),
+            Go::Address { url, target } => {
+                if matches!(target, NavigationTarget::Root) && page.current_visit().is_some() {
+                    self.candidate_page(None)?.navigate(url, target)
+                } else {
+                    self.cancel_candidate();
+                    page.navigate(url, target)
+                }
+            }
             Go::Citation(visit) => page.open_citation(visit),
             Go::Saved(id) => {
                 let capture = self.read(|b| b.capture(id))?;
@@ -360,20 +514,36 @@ impl Pages {
         Ok(())
     }
     fn continue_with(&self, action: Continuation) {
-        *self.continuation.borrow_mut() = self
-            .live
+        if let Some(command) = self.commands.borrow_mut().back_mut() {
+            command.1 = Some(action);
+            return;
+        }
+        let page = self
+            .candidate
             .borrow()
-            .as_ref()
-            .and_then(|page| page.pending_ticket())
-            .map(|ticket| PendingContinuation {
-                state: ContinuationState::Waiting(ticket),
-                action,
-            });
+            .clone()
+            .or_else(|| self.live.borrow().clone());
+        *self.continuation.borrow_mut() =
+            page.as_ref()
+                .and_then(|page| page.pending_ticket())
+                .map(|ticket| PendingContinuation {
+                    state: ContinuationState::Waiting(ticket),
+                    action,
+                });
     }
 
     pub fn settle_tree(&self, tree: TreeId) -> Result<()> {
         anyhow::ensure!(self.live.borrow().is_some(), "No selected page.");
         self.cancel_continuation();
+        self.cancel_candidate();
+        let forest =
+            self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
+        self.dormant.borrow_mut().retain(|saved| {
+            !saved
+                .entries
+                .iter()
+                .any(|e| forest.tree_of(e.visit) == Some(tree))
+        });
         let landing = self.browser.borrow_mut().settle_tree(tree)?;
         self.receive(PageEvent::Changed);
         match landing {
@@ -590,6 +760,7 @@ impl Pages {
             }
         }
         page.restore_revived(visit)?;
+        page.show();
         Ok(cold)
     }
 

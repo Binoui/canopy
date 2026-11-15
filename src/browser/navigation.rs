@@ -80,6 +80,10 @@ impl Default for Navigation {
 }
 
 impl Navigation {
+    pub(crate) fn view_id(&self) -> ViewId {
+        self.view
+    }
+
     pub(super) fn request(&mut self, intent: Intent, url: Url) -> LoadTicket {
         self.sequence += 1;
         let ticket = LoadTicket {
@@ -92,6 +96,20 @@ impl Navigation {
             url,
         };
         ticket
+    }
+
+    pub(crate) fn pending_restore(&self) -> Option<VisitId> {
+        match &self.pending {
+            Pending::Requested {
+                intent: Intent::Restore { visit },
+                ..
+            }
+            | Pending::Loading {
+                intent: Intent::Restore { visit },
+                ..
+            } => Some(*visit),
+            _ => None,
+        }
     }
 
     pub fn pending_ticket(&self) -> Option<LoadTicket> {

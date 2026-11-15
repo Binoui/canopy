@@ -121,3 +121,9 @@ name = "checkpoint_smoke"
 path = "tests/checkpoint_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
+
+[[test]]
+name = "branch_smoke"
+path = "tests/branch_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]

@@ -73,14 +73,6 @@ fn main() -> Result<()> {
         .unwrap()
         .forward_list_with_limit(20)
         .is_empty());
-    let fork_item = ui
-        .pages
-        .selected_page()
-        .native
-        .back_forward_list()
-        .unwrap()
-        .current_item()
-        .unwrap();
     let before = server.hits("/next");
     ui.pages.selected_page().restore(b)?;
     assert_eq!(arrived(&ui, "/next")?, b);
@@ -90,10 +82,9 @@ fn main() -> Result<()> {
         "a removed item must be fetched, never traversed"
     );
     let list = ui.pages.selected_page().native.back_forward_list().unwrap();
-    assert_eq!(
-        list.back_item(),
-        Some(fork_item),
-        "stored restore must append after the fork"
+    assert!(
+        list.back_item().is_none(),
+        "a removed suffix opens in a fresh branch"
     );
     assert_eq!(
         list.current_item().unwrap().uri().as_deref(),

@@ -186,6 +186,78 @@ impl LivePage {
         self.state.navigation.borrow().pending_ticket()
     }
 
+    pub(super) fn empty(
+        container: &gtk::Fixed,
+        pages: Weak<Pages>,
+        context: &Rc<super::native::PageContext>,
+    ) -> Result<Self> {
+        Self::build(container, pages, context, InitialPage::Session)
+    }
+    pub(super) fn view(&self) -> crate::browser::ViewId {
+        self.state.navigation.borrow().view_id()
+    }
+    pub(super) fn owns(&self, ticket: LoadTicket) -> bool {
+        ticket.belongs_to(&self.state.navigation.borrow())
+    }
+    pub(super) fn current_visit(&self) -> Option<VisitId> {
+        self.state
+            .navigation
+            .borrow()
+            .current
+            .as_ref()
+            .map(|d| d.visit)
+    }
+    pub(super) fn pending_visit(&self) -> Option<VisitId> {
+        self.state.navigation.borrow().pending_restore()
+    }
+    pub(super) fn contains(&self, visit: VisitId) -> bool {
+        let Some(list) = self.native.back_forward_list() else {
+            return false;
+        };
+        let entries = live_entries(&list);
+        self.state
+            .history
+            .borrow()
+            .iter()
+            .any(|e| e.visit == visit && entries.contains(&e.item))
+    }
+    pub(super) fn cancel(&self) {
+        self.state
+            .owner()
+            .discard_view_continuation(&self.state.navigation.borrow());
+        if let Some(ticket) = self.pending_ticket() {
+            self.state.navigation.borrow_mut().failed(ticket);
+        }
+        self.detach();
+    }
+    pub(super) fn show(&self) {
+        self.native.show();
+        self.native.grab_focus();
+        self.state.restore_scroll();
+    }
+    pub(super) fn back_visit(&self) -> Result<Option<VisitId>> {
+        let back = self.native.back_forward_list().and_then(|l| l.back_item());
+        if let Some(item) = back {
+            if let Some(visit) = self
+                .state
+                .history
+                .borrow()
+                .iter()
+                .find(|e| e.item == item)
+                .map(|e| e.visit)
+            {
+                if self.state.native_history_allowed(visit) {
+                    return Ok(Some(visit));
+                }
+            }
+        }
+        let Some(visit) = self.current_visit() else {
+            return Ok(None);
+        };
+        let parent = self.state.owner().browser.borrow().visit(visit)?.parent;
+        Ok(parent.filter(|v| self.state.native_history_allowed(*v)))
+    }
+
     pub fn new(
         container: &gtk::Fixed,
         pages: Weak<Pages>,
@@ -233,8 +305,10 @@ impl LivePage {
         if matches!(initial, InitialPage::Home) {
             native.load_html(HOME, None);
         }
-        native.show_all();
-        native.grab_focus();
+        if matches!(initial, InitialPage::Home) {
+            native.show_all();
+            native.grab_focus();
+        }
         let manager = native
             .user_content_manager()
             .context("The JavaScript context is unavailable.")?;
@@ -1001,19 +1075,6 @@ impl LivePage {
         Ok(())
     }
 
-    pub fn back(&self) -> Result<()> {
-        let request = self
-            .state
-            .owner()
-            .browser
-            .borrow_mut()
-            .back(&mut self.state.navigation.borrow_mut())?;
-        if let Some(url) = request {
-            self.state.load(url);
-        }
-        Ok(())
-    }
-
     pub fn reload(&self) -> Result<()> {
         let request = self
             .state
@@ -1140,11 +1201,22 @@ impl NativeState {
         let Some(ticket) = self.loading_ticket() else {
             return Ok(false);
         };
-        let committed = self.owner().browser.borrow_mut().commit_load(
+        let owner = self.owner();
+        let foreground = owner.live.borrow().as_ref().is_some_and(|p| p.owns(ticket))
+            || owner
+                .candidate
+                .borrow()
+                .as_ref()
+                .is_some_and(|p| p.owns(ticket));
+        let committed = owner.browser.borrow_mut().commit_load(
             &mut self.navigation.borrow_mut(),
             ticket,
             url,
-            Visibility::Selected,
+            if foreground {
+                Visibility::Selected
+            } else {
+                Visibility::Hidden
+            },
         )?;
         if committed {
             let visit = self
@@ -1167,7 +1239,14 @@ impl NativeState {
 
     fn emit(&self, event: PageEvent) {
         if self.lifecycle.get() == Lifecycle::Live {
-            self.owner().receive(event);
+            let (view, empty) = {
+                let navigation = self.navigation.borrow();
+                (
+                    navigation.view_id(),
+                    navigation.current.is_none() && navigation.pending_ticket().is_none(),
+                )
+            };
+            self.owner().receive_view(view, empty, event);
         }
     }
 
@@ -1775,6 +1854,9 @@ impl NativeState {
     }
 
     fn restore_scroll(self: &Rc<Self>) {
+        if !self.native.is_visible() {
+            return;
+        }
         // A cancelled earlier load can finish first; keep the target for the visit it names.
         let Some((visit, y)) = self.pending_scroll.get() else {
             return;

@@ -98,6 +98,7 @@ impl Ui {
         let weak = Rc::downgrade(&ui);
         ui.pages.observe(move |event| {
             let Some(ui) = weak.upgrade() else { return };
+            ui.chrome.raise();
             match event {
                 PageEvent::Changed | PageEvent::Loading(false) => ui.schedule_refresh(),
                 PageEvent::Loading(true) => {}
