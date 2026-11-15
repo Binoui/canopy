@@ -724,9 +724,17 @@ function openPalette({ scope, text }) {
 function renderPaletteContext() {
   if (!S.palette) return;
   const v = S.palette.scope && visit(S.palette.scope);
-  $('palette-context').innerHTML = v
-    ? `From ${visitFav(v, 12)}<span>${esc(v.label)}</span>`
+  const content = v
+    ? `From ${visitFav(v, 12)}<span></span>`
     : '<span class="tag">New tree</span>';
+  const anchor = $('palette-context');
+  if (anchor.__content !== content) {
+    anchor.innerHTML = content;
+    anchor.__content = content;
+  }
+  if (v && anchor.lastElementChild.textContent !== v.label) {
+    anchor.lastElementChild.textContent = v.label;
+  }
 }
 
 function closePalette(returnFocus = true) {
@@ -1027,6 +1035,7 @@ window.canopy = {
   },
   icons(revision) {
     S.rev = revision;
+    renderPaletteContext();
     if (!S.frame) return;
     renderTabs();
     buildStrip(strip.target ?? targetLayout());
