@@ -792,9 +792,7 @@ impl LivePage {
                     glib::idle_add_local_once(move || {
                         if let Some(state) = Pages::enter_native(&weak) {
                             if state.load_generation.get() == generation
-                                && state
-                                    .loading_ticket()
-                                    .is_none_or(|current| current == ticket)
+                                && ticket.is_latest(&state.navigation.borrow())
                             {
                                 state.emit(PageEvent::Loading(false));
                             }

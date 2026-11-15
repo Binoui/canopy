@@ -15,6 +15,10 @@ impl LoadTicket {
     pub fn belongs_to(self, navigation: &Navigation) -> bool {
         self.view == navigation.view
     }
+
+    pub(crate) fn is_latest(self, navigation: &Navigation) -> bool {
+        self.belongs_to(navigation) && self.sequence == navigation.sequence
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -193,5 +197,39 @@ impl Navigation {
                 document.page_url = page_url;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completion_ticket_stays_identifiable_after_finish_but_not_after_another_load() {
+        let mut navigation = Navigation::default();
+        let url = Url::parse("https://example.test/").unwrap();
+        let first = navigation.request(
+            Intent::New {
+                parent: None,
+                source: None,
+            },
+            url.clone(),
+        );
+        navigation.started(first);
+        navigation.failed(first);
+        assert!(first.is_latest(&navigation));
+        let second = navigation.request(
+            Intent::New {
+                parent: None,
+                source: None,
+            },
+            url,
+        );
+        navigation.started(second);
+        navigation.failed(second);
+        assert!(navigation.pending_ticket().is_none());
+        assert!(!first.is_latest(&navigation));
+        assert!(second.is_latest(&navigation));
+        assert!(!second.is_latest(&Navigation::default()));
     }
 }
