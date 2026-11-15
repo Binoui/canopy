@@ -57,8 +57,8 @@ thread_local! {
     static FAVICONS: RefCell<Weak<Favicons>> = const { RefCell::new(Weak::new()) };
 }
 
-/// The palette's last query, its results, and the row Enter runs first.
-type PaletteCache = (String, Vec<(Group, PaletteItem)>, usize);
+/// The query and rows last sent to the view, and their default row.
+type ShownPalette = (String, Vec<(Group, PaletteItem)>, usize);
 
 /// Everything the chrome shows, read from SQLite in one go.
 pub struct ChromeFrame {
@@ -197,7 +197,7 @@ struct Inner {
     suggested: RefCell<Vec<crate::suggest::Suggestion>>,
     start: Cell<bool>,
     /// The last palette results, so Enter runs exactly the row the view showed.
-    palette: RefCell<Option<PaletteCache>>,
+    palette: RefCell<Option<ShownPalette>>,
 }
 
 impl HtmlChrome {
@@ -262,7 +262,6 @@ impl HtmlChrome {
             &[view::frame(&frame, &inner.suggested.borrow(), width)],
         );
         *inner.frame.borrow_mut() = Some(frame);
-        inner.palette.borrow_mut().take();
     }
 
     /// Follows the window: the page sits below `CHROME_HEIGHT`, the view on top.
@@ -516,22 +515,27 @@ impl Inner {
                         .as_ref()
                         .context("The chrome has no forest yet.")?
                         .forest;
-                    json!({ "rows": view::palette_rows(&items, forest), "first": first })
+                    let rows =
+                        json!({ "rows": view::palette_rows(&items, forest), "first": first });
+                    *self.palette.borrow_mut() = Some((query.to_owned(), items, first));
+                    rows
                 };
                 self.call("paletteResults", &[message["seq"].clone(), rows]);
             }
             "run" => {
                 let query = message["q"].as_str().unwrap_or_default();
-                let fresh = self
+                let shown = self
                     .palette
                     .borrow()
                     .as_ref()
-                    .is_some_and(|(shown, _, _)| shown == query);
-                let (items, first) = self.palette_items(query);
-                let index = if fresh {
-                    message["item"].as_u64().map_or(first, |i| i as usize)
-                } else {
-                    first
+                    .filter(|(q, _, _)| q == query)
+                    .cloned();
+                let (items, index) = match shown {
+                    Some((_, items, first)) => (
+                        items,
+                        message["item"].as_u64().map_or(first, |i| i as usize),
+                    ),
+                    None => self.palette_items(query),
                 };
                 let scope = match message["scope"].as_str() {
                     Some(id) => PaletteScope::From(id.parse()?),
@@ -571,13 +575,8 @@ impl Inner {
         Ok(())
     }
 
-    /// The palette's results for `query`, kept so that running a row runs what was shown.
+    /// Fresh results for `query`, independent of the rows the view was last sent.
     fn palette_items(&self, query: &str) -> (Vec<(Group, PaletteItem)>, usize) {
-        if let Some((shown, items, first)) = self.palette.borrow().as_ref() {
-            if shown == query {
-                return (items.clone(), *first);
-            }
-        }
         let (hits, imported) = match self.host() {
             Some(host) if !query.trim().is_empty() => (
                 host.search(query).unwrap_or_default(),
@@ -608,7 +607,6 @@ impl Inner {
                     .map(|s| (Group::Suggested, PaletteItem::Suggestion(s))),
             );
         }
-        *self.palette.borrow_mut() = Some((query.to_owned(), items.clone(), first));
         (items, first)
     }
 
@@ -621,7 +619,6 @@ impl Inner {
             .host()
             .context("The browser closed.")?
             .suggestions(&frame.forest)?;
-        self.palette.borrow_mut().take();
         self.call("start", &[start::value(frame, &self.suggested.borrow())]);
         Ok(())
     }

@@ -78,6 +78,12 @@ harness = false
 required-features = ["gui-smoke"]
 
 [[test]]
+name = "palette_smoke"
+path = "tests/palette_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]
+
+[[test]]
 name = "history_smoke"
 path = "tests/history_smoke.rs"
 harness = false
