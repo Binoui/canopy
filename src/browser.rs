@@ -1770,6 +1770,20 @@ mod tests {
     }
 
     #[test]
+    fn the_tree_just_left_follows_the_order_of_the_log_not_the_clock() {
+        let mut b = memory();
+        let old = follow(&mut b, "old", NavigationTarget::Root);
+        let recent = follow(&mut b, "recent", NavigationTarget::Root);
+        b.connection
+            .execute(
+                "UPDATE visit_events SET at=at+7200000 WHERE visit_id=?1",
+                [old.to_string()],
+            )
+            .unwrap();
+        assert_eq!(b.last_event_tree().unwrap(), Some(TreeId(recent)));
+    }
+
+    #[test]
     fn opens_a_version_9_database_and_copies_chrome_bookmarks_once() {
         let connection = historical_connection(9);
         for (i, folder) in [

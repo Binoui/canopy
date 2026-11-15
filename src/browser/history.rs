@@ -64,7 +64,7 @@ impl Browser {
         let id: Option<String> = self
             .connection
             .query_row(
-                "SELECT visit_id FROM visit_events ORDER BY at DESC,id DESC LIMIT 1",
+                "SELECT visit_id FROM visit_events ORDER BY id DESC LIMIT 1",
                 [],
                 |r| r.get(0),
             )
