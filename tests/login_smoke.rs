@@ -1,10 +1,7 @@
-use std::{
-    cell::RefCell,
-    io::{Read, Write},
-    net::TcpListener,
-    rc::Rc,
-    thread,
-};
+#[path = "common/http.rs"]
+mod http;
+
+use std::{cell::RefCell, io::Write, net::TcpListener, rc::Rc, thread};
 
 use anyhow::{Context, Result};
 use canopy::{
@@ -98,16 +95,19 @@ fn page(path: &str) -> String {
 
 fn open(ui: &Ui, base: &Url, path: &str) -> Result<()> {
     let url = base.join(path)?;
+    // A new tree loads out of sight while the old page stays on screen, and the old page
+    // can be on this very address. Mark it, so only a new document passes.
+    eval(ui, "globalThis.__leaving = true; 'null'")?;
     ui.pages
         .selected_page()
         .navigate(url.clone(), NavigationTarget::Root)?;
     // The view names the new address before the old document is gone, so ask the document.
-    let loaded = json!(format!("{url} complete"));
+    let loaded = json!(format!("{url} complete false"));
     wait(&format!("{path} loads"), || {
         !ui.pages.selected_page().native.is_loading()
             && eval(
                 ui,
-                "JSON.stringify(`${location.href} ${document.readyState}`)",
+                "JSON.stringify(`${location.href} ${document.readyState} ${globalThis.__leaving === true}`)",
             )
             .is_ok_and(|state| state == loaded)
     })
@@ -132,36 +132,19 @@ fn main() -> Result<()> {
     let base = web_url(&format!("http://{}/", listener.local_addr()?))?;
     thread::spawn(move || {
         while let Ok((mut stream, _)) = listener.accept() {
-            // Read the whole request: closing on an unread form body resets the connection
-            // and the browser never sees the answer.
-            let mut request = Vec::new();
-            let mut chunk = [0; 4096];
-            let complete = |request: &[u8]| {
-                let text = String::from_utf8_lossy(request);
-                text.split_once("\r\n\r\n").is_some_and(|(head, body)| {
-                    let length = head
-                        .lines()
-                        .find_map(|line| {
-                            line.to_ascii_lowercase()
-                                .strip_prefix("content-length:")?
-                                .trim()
-                                .parse()
-                                .ok()
-                        })
-                        .unwrap_or(0);
-                    body.len() >= length
-                })
-            };
-            while !complete(&request) {
-                match stream.read(&mut chunk) {
-                    Ok(size) if size > 0 => request.extend_from_slice(&chunk[..size]),
-                    _ => break,
-                }
-            }
-            let text = String::from_utf8_lossy(&request);
-            let path = text.split(' ').nth(1).unwrap_or("/");
-            let body = page(path);
-            let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            // One thread a connection: the browser also opens connections it sends nothing
+            // on, and waiting for one of those must not hold up the next request.
+            thread::spawn(move || {
+                // Read the whole request: closing on an unread form body resets the
+                // connection and the browser never sees the answer.
+                let Ok(request) = http::request(&mut stream) else {
+                    return;
+                };
+                let text = String::from_utf8_lossy(&request);
+                let path = text.split(' ').nth(1).unwrap_or("/");
+                let body = page(path);
+                let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            });
         }
     });
     let origin = WebOrigin::of(&base).unwrap();
@@ -310,6 +293,20 @@ fn main() -> Result<()> {
     })?;
     assert_eq!(fields(&ui)?["pass"], "");
     println!("PASS a choice from a replaced offer fills nothing.");
+
+    // Settling the last tree leaves the start page, which has nothing to sign in to.
+    assert_eq!(offered(&ui), json!(["alice", "bob"]));
+    let forest = canopy::forest::ForestProjection::from_snapshot(
+        ui.pages.read(|browser| browser.snapshot())?,
+        ui.pages.read(|browser| browser.tree_states())?,
+    )?;
+    for tree in forest.open() {
+        ui.pages.settle_tree(tree.id)?;
+    }
+    wait("the offer leaves with the last tree", || {
+        offered(&ui) == json!([])
+    })?;
+    println!("PASS settling the last tree takes the offer away.");
 
     saving(&ui, &base, origin)?;
     helper(&ui, &base, directory.path())?;
