@@ -706,6 +706,9 @@ fn restart_only_cursor() -> Result<()> {
         .map(|(k, v)| (k.clone(), v - before.get(k).copied().unwrap_or(0)))
         .filter(|(_, v)| *v > 0)
         .collect();
+    wait("restart releases previous web process", || {
+        web_process_count() == 1
+    })?;
     let procs = web_process_count();
     f.pages.go(Go::Visit(d))?;
     let back = f.arrives(d, 8000);
@@ -941,9 +944,38 @@ fn back_during_switch() -> Result<()> {
     Ok(())
 }
 
+fn saved_citation_routing() -> Result<()> {
+    let f = Fixture::new()?;
+    f.pages.set_capture_enabled(true)?;
+    let a = f.navigate("/a")?;
+    let b = f.navigate("/b")?;
+    wait("capture", || {
+        f.pages
+            .read(|br| br.captures(b))
+            .is_ok_and(|c| !c.is_empty())
+    })?;
+    let capture = f.pages.read(|br| br.captures(b))?[0].id;
+    rusqlite::Connection::open(f.dir.join("forest.sqlite3"))?.execute(
+        "UPDATE captures SET citation_url=?1 WHERE id=?2",
+        rusqlite::params![f.server.url("/b#fragment").as_str(), capture],
+    )?;
+    let r = f.open_root("/r")?;
+    f.pages.go(Go::Saved(capture))?;
+    wait("saved citation", || {
+        f.cursor_path() == "/b" && f.cursor() != Some(b)
+    })?;
+    let child = f.cursor().unwrap();
+    assert_eq!(f.pages.read(|br| br.visit(child))?.parent, Some(b));
+    assert!(f.history().contains(&a));
+    assert!(!f.history().contains(&r));
+    f.pages.go(Go::Parent)?;
+    assert!(f.arrives(b, 6000));
+    Ok(())
+}
 type Case = (&'static str, fn() -> Result<()>);
 pub fn cases() -> Vec<Case> {
     vec![
+        ("saved_citation_routing", saved_citation_routing),
         ("back_switch_requests", back_during_switch),
         ("click_during_switch", click_during_switch),
         ("script_during_switch", script_during_switch),

@@ -1146,6 +1146,27 @@ impl LivePage {
         Ok(())
     }
 
+    pub(super) fn open_saved(&self, capture: &crate::browser::Capture) -> Result<()> {
+        let target = capture
+            .citation_url
+            .clone()
+            .unwrap_or_else(|| capture.document_url.clone());
+        let source = SourceContext {
+            page_url: capture.document_url.clone(),
+            citation_url: capture.citation_url.clone(),
+            link_text: capture.title.clone(),
+            excerpt: capture.text.chars().take(1000).collect(),
+        };
+        let url = self.state.owner().browser.borrow_mut().follow_link(
+            &mut self.state.navigation.borrow_mut(),
+            capture.visit,
+            target,
+            source,
+        )?;
+        self.state.load(url);
+        Ok(())
+    }
+
     pub fn remember_selection(&self) -> Result<()> {
         if self.state.ticket().is_none() {
             bail!("Open a page and select the text to remember.")

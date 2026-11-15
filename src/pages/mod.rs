@@ -39,6 +39,7 @@ pub enum PageEvent {
 enum Continuation {
     BranchPalette,
     Path(Url),
+    Saved(i64),
 }
 struct PendingContinuation {
     state: ContinuationState,
@@ -328,6 +329,11 @@ impl Pages {
                 Continuation::BranchPalette => {
                     pages.receive(PageEvent::OpenBranchPalette { visit })
                 }
+                Continuation::Saved(id) => {
+                    if let Err(error) = pages.go(Go::Saved(id)) {
+                        pages.receive(PageEvent::Error(error.to_string()));
+                    }
+                }
                 Continuation::Path(second) => {
                     let result = pages.go(Go::Address {
                         url: second,
@@ -564,7 +570,24 @@ impl Pages {
             }
             Go::Saved(id) => {
                 let capture = self.read(|b| b.capture(id))?;
-                self.route(capture.visit)
+                self.route(capture.visit)?;
+                let target = capture
+                    .citation_url
+                    .as_ref()
+                    .unwrap_or(&capture.document_url);
+                if target != &self.read(|b| b.visit(capture.visit))?.url {
+                    let selected = self.branches.live.borrow().clone();
+                    if let Some(selected) =
+                        selected.filter(|p| p.current_visit() == Some(capture.visit))
+                    {
+                        selected.open_saved(&capture)
+                    } else {
+                        self.continue_with(Continuation::Saved(id));
+                        Ok(())
+                    }
+                } else {
+                    Ok(())
+                }
             }
         };
         if page.pending_ticket().is_some() && page.pending_ticket() != before {

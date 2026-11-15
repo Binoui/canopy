@@ -126,3 +126,8 @@ still traverse without a network load. Saved captures route by their visit ident
 A citation uses its parent's current view only when that parent is the current document;
 otherwise it opens a fresh branch with that parent. Failed candidates emit the error
 and Loading(false), allowing chrome to refresh.
+
+When a saved capture identifies a more precise citation URL, its visit is routed
+first. The existing ticket continuation then opens that citation as a child in the
+routed branch, preserving both the capture branch and the previously selected branch.
+The URL comparison chooses capture content only; branch ownership still uses visits.
