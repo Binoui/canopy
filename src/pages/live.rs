@@ -221,20 +221,21 @@ impl LivePage {
             .iter()
             .any(|e| e.visit == visit && entries.contains(&e.item))
     }
-    pub(super) fn cancel_unissued(&self) {
-        if !matches!(*self.state.issue.borrow(), Issue::Idle) {
-            return;
-        }
+    pub(super) fn cancel_foreground(&self) {
+        let state = &self.state;
+        state.owner().discard_view_continuation(&state.navigation.borrow());
+        state.foreground_generation.set(state.foreground_generation.get().wrapping_add(1));
+        state.load_generation.set(state.load_generation.get().wrapping_add(1));
         if let Some(ticket) = self.pending_ticket() {
-            self.state
-                .owner()
-                .discard_view_continuation(&self.state.navigation.borrow());
-            self.state.navigation.borrow_mut().failed(ticket);
-            self.state
-                .load_generation
-                .set(self.state.load_generation.get().wrapping_add(1));
-            *self.state.issue.borrow_mut() = Issue::Idle;
+            state.navigation.borrow_mut().failed(ticket);
         }
+        *state.issue.borrow_mut() = Issue::Idle;
+        state.issued.borrow_mut().take();
+        state.traversal.borrow_mut().take();
+        state.same_document_request.borrow_mut().take();
+        state.reload_candidate.borrow_mut().take();
+        state.pending_scroll.set(None);
+        self.native.stop_loading();
     }
 
     pub(super) fn cancel(&self) {

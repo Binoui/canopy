@@ -372,7 +372,7 @@ impl Pages {
         self.cancel_candidate();
         let selected = self.branches.live.borrow().clone();
         if let Some(selected) = selected {
-            selected.cancel_unissued();
+            selected.cancel_foreground();
         }
         let saved = visit.and_then(|visit| {
             let mut dormant = self.branches.dormant.borrow_mut();
