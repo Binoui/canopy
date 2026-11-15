@@ -259,10 +259,7 @@ impl HtmlChrome {
         let (width, _) = inner.size.get();
         inner.call(
             "present",
-            &[
-                view::frame(&frame, &inner.suggested.borrow(), width),
-                json!(inner.size.get().1),
-            ],
+            &[view::frame(&frame, &inner.suggested.borrow(), width)],
         );
         *inner.frame.borrow_mut() = Some(frame);
         inner.palette.borrow_mut().take();
