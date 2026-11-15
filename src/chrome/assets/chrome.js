@@ -9,6 +9,8 @@ const MOVE = 300, RESIZE = 220;
 const LEAVES = 3;
 const MONOGRAM = ['#d95c42', '#3b7ad6', '#2e9e5e', '#9c6bde', '#d9962e', '#3b99ad', '#d1547a', '#6b7380'];
 const ICONS = {
+  expand: '<path d="M9 4H4v5M15 4h5v5M4 15v5h5M20 15v5h-5" stroke-width="1.7"/>',
+  collapse: '<path d="M4 9h5V4M20 9h-5V4M9 20v-5H4M15 20v-5h5" stroke-width="1.7"/>',
   plus: '<path d="M12 5v14M5 12h14" stroke-width="1.9"/>',
   search: '<circle cx="11" cy="11" r="6.5" stroke-width="1.9"/><path d="M20 20l-4.2-4.2" stroke-width="1.9"/>',
   spark: '<path d="M11 2.5l1.9 5.6 5.6 1.9-5.6 1.9L11 17.5l-1.9-5.6L3.5 10l5.6-1.9z" fill="currentColor" stroke="none"/><path d="M18.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z" fill="currentColor" stroke="none" opacity=".7"/>',
@@ -43,6 +45,7 @@ const S = {
   systemDark: null,
   surface: 'reading',
   overlay: null,
+  treeSide: 'tree',
   open: false,
   layer: 'none',
   hovered: null,
@@ -867,9 +870,70 @@ $('palette-results').addEventListener('click', (event) => {
 });
 $('palette').querySelector('.scrim').addEventListener('mousedown', () => closePalette());
 
+// ---------- current-tree sheet ----------
+
+function renderSheet(reveal) {
+  if (S.overlay !== 'tree') return;
+  const view = S.frame?.treeView;
+  if (!view) { closeOverlay(); return; }
+  $('tree-title').textContent = view.title;
+  $('tree-detail').textContent = view.detail;
+  $('tree-layer').style.width = `${view.width}px`;
+  $('tree-layer').style.height = `${view.height}px`;
+  $('tree-edges').setAttribute('width', view.width);
+  $('tree-edges').setAttribute('height', view.height);
+  $('tree-edges').innerHTML = view.edges.map((e) => `<path class="${e.kind}" d="M${e.c[0]} C${e.c[1]} ${e.c[2]} ${e.c[3]}"/>`).join('');
+  $('tree-nodes').innerHTML = view.tiles.map((t) => {
+    const v = visit(t.id);
+    return `<button class="tree-tile${t.path ? ' path' : ''}${t.id === current() ? ' current' : ''}${markClass(v)}" data-id="${t.id}" title="${esc(v.label)}" style="left:${t.x-t.w/2}px;top:${t.y-t.s/2}px;width:${t.w}px;height:${t.s}px">${markedFav(v, 16)}<span class="t">${esc(v.label)}</span></button>`;
+  }).join('');
+  $('tree-list').innerHTML = view.rows.map((r) => {
+    const v = visit(r.id);
+    return `<button class="tree-row${r.path ? ' path' : ''}${r.id === current() ? ' current' : ''}${markClass(v)}" data-id="${r.id}" style="padding-left:${8+r.depth*22}px">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.when)}</span></button>`;
+  }).join('');
+  setTreeSide(S.treeSide, reveal);
+}
+
+function setTreeSide(side, reveal = true) {
+  S.treeSide = side;
+  $('tree-board').hidden = side !== 'tree';
+  $('tree-list').hidden = side !== 'list';
+  for (const button of $('tree-side').children) {
+    const selected = button.dataset.side === side;
+    button.classList.toggle('on', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  }
+  if (reveal) {
+    const body = $(side === 'tree' ? 'tree-board' : 'tree-list');
+    const selected = body.querySelector('.current');
+    if (selected) {
+      const a = selected.getBoundingClientRect(), b = body.getBoundingClientRect();
+      body.scrollLeft += a.left - b.left - (b.width-a.width)/2;
+      body.scrollTop += a.top - b.top - (b.height-a.height)/2;
+    }
+  }
+}
+
+$('tree-side').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-side]');
+  if (button) setTreeSide(button.dataset.side);
+});
+$('tree-sheet').addEventListener('click', (event) => {
+  const page = event.target.closest('[data-id]');
+  if (page) activate(page.dataset.id);
+});
+$('tree-sheet').querySelector('.scrim').addEventListener('mousedown', closeOverlay);
+$('zoom-pin').innerHTML = icon('expand') + icon('collapse');
+$('zoom-pin').addEventListener('click', () => toggleOverlay('tree'));
+
 // ---------- surfaces ----------
 
 const OVERLAYS = {
+  tree: {
+    el: 'tree-sheet', button: 'zoom-pin', leavesStart: true,
+    available: () => !!S.frame?.treeView,
+    show(reveal) { renderSheet(reveal); },
+  },
   forest: {
     el: 'forest', button: 'forest-button',
     available: () => !!S.frame,
@@ -896,8 +960,10 @@ function setOverlay(kind) {
     $(previous.button).setAttribute('aria-pressed', 'false');
   }
   S.overlay = kind;
+  document.body.dataset.overlay = kind ?? '';
   const overlay = OVERLAYS[kind];
   if (overlay) {
+    if (overlay.leavesStart) setSurface('reading');
     hideCard();
     closePopover(false);
     $(overlay.el).hidden = false;
@@ -1132,6 +1198,7 @@ window.canopy = {
     animateStrip(previous === null && strip.shown.nodes.size === 0 ? 0 : MOVE);
     renderStart();
     renderForest();
+    renderSheet(false);
     if (S.card) {
       if (!visit(S.card)) hideCard();
       else showCard(S.card);
@@ -1164,6 +1231,7 @@ window.canopy = {
     setSurface('start');
   },
   toggleForest() { toggleOverlay('forest'); },
+  toggleTree() { toggleOverlay('tree'); },
   toast(kind, text) {
     if (kind === 'error') {
       S.errors.unshift(text);
@@ -1253,7 +1321,7 @@ window.canopy = {
   /// For tests: what the view shows, without reaching into the DOM.
   state() {
     return {
-      surface: S.surface, overlay: S.overlay, open: S.open, animating: !!strip.anim, card: S.card, layer: S.layer, palette: !!S.palette,
+      surface: S.surface, overlay: S.overlay, treeSide: S.treeSide, open: S.open, animating: !!strip.anim, card: S.card, layer: S.layer, palette: !!S.palette,
       reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported,
       dark: document.documentElement.classList.contains('dark'),
       nodes: [...strip.elements.keys()], rows: S.palette?.rows ?? [],

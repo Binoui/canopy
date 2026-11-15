@@ -14,16 +14,19 @@ const HEIGHT: f64 = 28.;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Pin {
     Waiting { count: usize },
+    Zoom,
 }
 
 impl Pin {
     pub(crate) fn kind(self) -> &'static str {
         match self {
             Self::Waiting { .. } => "waiting",
+            Self::Zoom => "zoom",
         }
     }
     fn width(self) -> f64 {
         match self {
+            Self::Zoom => HEIGHT,
             Self::Waiting { count } => {
                 7. + 16. + 7. + (count.to_string().len() as f64 * 6.5 + 10.) + 6.
             }
@@ -40,7 +43,10 @@ pub(crate) struct Pins {
 pub(crate) fn pins(forest: &ForestProjection, width: f64) -> Pins {
     let count = waiting::pages(forest).len();
     place(
-        (count > 0).then_some(Pin::Waiting { count }).into_iter(),
+        (count > 0)
+            .then_some(Pin::Waiting { count })
+            .into_iter()
+            .chain(forest.current().map(|_| Pin::Zoom)),
         width,
     )
 }
@@ -71,6 +77,15 @@ fn place(shown: impl DoubleEndedIterator<Item = Pin>, width: f64) -> Pins {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn zoom_is_rightmost_and_the_controls_do_not_overlap() {
+        let pins = place([Pin::Waiting { count: 3 }, Pin::Zoom].into_iter(), 800.);
+        let a = pins.placed[0].1;
+        let b = pins.placed[1].1;
+        assert!(a.x + a.w / 2. < b.x - b.w / 2.);
+        assert_eq!(b.x + b.w / 2., 792.);
+        assert_eq!(pins.room + CLEARANCE, a.x - a.w / 2.);
+    }
     #[test]
     fn pin_geometry_reserves_only_visible_controls_and_grows_with_count() {
         assert_eq!(

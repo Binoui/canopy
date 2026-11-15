@@ -279,6 +279,10 @@ impl HtmlChrome {
         self.inner.call("nextWaiting", &[]);
     }
 
+    pub fn toggle_tree(&self) {
+        self.inner.call("toggleTree", &[]);
+    }
+
     pub fn toggle_forest(&self) {
         self.inner.call("toggleForest", &[]);
     }

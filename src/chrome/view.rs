@@ -102,14 +102,13 @@ fn tree_view_value(forest: &ForestProjection) -> Value {
     let Some(view) = tree_view::tree_view(forest) else {
         return Value::Null;
     };
-    let tree = forest
-        .trees()
-        .iter()
-        .find(|t| Some(t.id) == forest.current().and_then(|id| forest.tree_of(id)))
-        .unwrap();
+    let current_tree = forest.current().and_then(|id| forest.tree_of(id));
+    let Some(tree) = forest.trees().iter().find(|t| Some(t.id) == current_tree) else {
+        return Value::Null;
+    };
     json!({
         "title": tree.title,
-        "detail": format!("{} pages · {} waiting", view.tiles.len(), waiting::pages(forest).len()),
+        "detail": format!("{} · {} waiting", plural(view.tiles.len(), "page"), waiting::pages(forest).len()),
         "width": view.width, "height": view.height,
         "tiles": view.tiles.iter().map(|t| json!({"id": t.id.to_string(), "x": t.rect.x, "y": t.rect.y, "w": t.rect.w, "s": t.rect.s, "path": t.on_path})).collect::<Vec<_>>(),
         "edges": view.edges.iter().map(|e| json!({"from": e.from.to_string(), "to": e.to.to_string(), "kind": match e.kind { EdgeKind::Path => "path", EdgeKind::Pending => "pending", EdgeKind::Plain => "plain" }, "c": e.curve})).collect::<Vec<_>>(),
