@@ -534,6 +534,7 @@ impl LivePage {
                             state.update_title();
                             state.restore_scroll();
                             if state.download_handover.get().is_none() {
+                                state.end_response();
                                 state.emit(PageEvent::Loading(false));
                             }
                             let enabled = state
@@ -1244,6 +1245,7 @@ impl NativeState {
 
     /// Response metadata belongs only to the current load ticket.
     fn end_response(&self) {
+        self.main_frame_post.set(None);
         self.download_handover.set(None);
         self.response_page.borrow_mut().take();
     }
