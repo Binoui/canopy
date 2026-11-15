@@ -927,7 +927,7 @@ fn hold_covers_until_ready() -> Result<()> {
             assert!(
                 colour == old
                     || colour == target
-                    || colour == [244, 245, 246]
+                    || colour == [246, 245, 244]
                     || colour == [255, 255, 255],
                 "no third page colour: {colour:?}"
             );
