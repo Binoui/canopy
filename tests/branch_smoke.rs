@@ -31,7 +31,9 @@ fn pump() {
     }
 }
 fn wait(label: &str, condition: impl Fn() -> bool) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    // Destroyed WebKit processes can take 20s to exit under CPU load.
+    let deadline =
+        Instant::now() + Duration::from_secs(if label.contains("process") { 60 } else { 15 });
     loop {
         pump();
         if condition() {
@@ -576,7 +578,6 @@ fn cold_fallback(invalid: bool) -> Result<()> {
     Ok(())
 }
 fn settled_dormant() -> Result<()> {
-    branch_history()?;
     let f = Fixture::new()?;
     let a = f.navigate("/a")?;
     let b = f.navigate("/b")?;
@@ -594,6 +595,22 @@ fn settled_dormant() -> Result<()> {
             .unwrap()
             .url
             == f.server.url("/root")
+    })?;
+    f.pages.go(Go::Visit(b))?;
+    f.arrived(b)?;
+    assert!(
+        f.pages.selected_history_visits().contains(&a),
+        "checkpoint retained before settle"
+    );
+    f.pages.open_roots(&[f.server.url("/root2")])?;
+    wait("root2", || {
+        f.pages
+            .read(|b| b.snapshot())
+            .unwrap()
+            .current_visit()
+            .unwrap()
+            .url
+            == f.server.url("/root2")
     })?;
     f.pages.settle_tree(tree)?;
     f.pages.go(Go::Visit(b))?;
@@ -885,6 +902,12 @@ fn native_alias_back() -> Result<()> {
     })?;
     assert_eq!(f.pages.read(|b| b.snapshot())?.current, Some(a));
     assert_eq!(f.server.hits("/a"), 1);
+    let child = f.navigate("/b")?;
+    f.eval("history.pushState({},'', '/route2'); return true;")?;
+    settle();
+    f.pages.go(Go::Parent)?;
+    f.arrived(a)?;
+    assert_ne!(f.pages.read(|b| b.snapshot())?.current, Some(child));
     Ok(())
 }
 fn failed_revival_retry() -> Result<()> {

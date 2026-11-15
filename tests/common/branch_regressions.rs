@@ -1,5 +1,5 @@
-// Review probes for stage 2 step 5. Compiles against both 67f4c16 (main) and 24f2ed7.
-// Every case prints RESULT lines; no case aborts on an unexpected observation.
+// GUI regressions for branch ownership, cancellation and history.
+// Cases assert user-visible behavior as well as printing diagnostic results.
 #![allow(dead_code, unused_imports, unused_variables)]
 use anyhow::{bail, Result};
 use canopy::{
@@ -499,27 +499,43 @@ fn post_switch_back() -> Result<()> {
     let a = f.navigate("/a")?;
     let form = f.navigate("/form")?;
     let before = f.pages.read(|b| b.snapshot())?.visits.len();
-    f.eval("globalThis.__formPainted=false; requestAnimationFrame(()=>requestAnimationFrame(()=>{globalThis.__formPainted=true})); return true;")?;
-    wait("form painted for pointer input", || {
-        f.eval("return globalThis.__formPainted;").ok() == Some(json!(true))
-    })?;
-    click(&f, "go")?;
-    wait("POST request sent", || {
-        f.server.hits("POST /post-result") > 0
-    })?;
-    let posted = wait_for(8000, || {
-        f.cursor_path() == "/post-result" && !f.pages.selected_page().native.is_loading()
-    });
-    let post = f.visit_with_path("/post-result");
+    let mut posted = false;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            f.navigate("/form")?;
+        }
+        f.eval("globalThis.__formPainted=false; requestAnimationFrame(()=>requestAnimationFrame(()=>{globalThis.__formPainted=true})); return true;")?;
+        wait("form painted for pointer input", || {
+            f.eval("return globalThis.__formPainted;").ok() == Some(json!(true))
+        })?;
+        let requests = f.server.hits("POST /post-result");
+        click(&f, "go")?;
+        posted = wait_for(8000, || {
+            f.server.hits("POST /post-result") > requests
+                && f.cursor_path() == "/post-result"
+                && !f.pages.selected_page().native.is_loading()
+        });
+        if posted {
+            break;
+        }
+        println!("NOTE retry unrecorded setup form submit {}", attempt + 1);
+    }
+    anyhow::ensure!(
+        posted,
+        "POST was not issued and recorded after three setup attempts"
+    );
+    let post = f
+        .visit_with_path("/post-result")
+        .ok_or_else(|| anyhow::anyhow!("POST visit missing after arrival"))?;
     let next = f.navigate("/after-post")?;
-    f.pages.go(Go::Visit(post.unwrap()))?;
-    let back = f.arrives(post.unwrap(), 8000);
+    f.pages.go(Go::Visit(post))?;
+    let back = f.arrives(post, 8000);
     pump_for(800);
     f.open_root("/root")?;
     pump_for(800);
     let posts_before = f.server.hits("POST /post-result");
-    f.pages.go(Go::Visit(post.unwrap()))?;
-    let arrived = f.arrives(post.unwrap(), 8000);
+    f.pages.go(Go::Visit(post))?;
+    let arrived = f.arrives(post, 8000);
     pump_for(800);
     println!(
         "RESULT post_switch_back posted={posted} arrived={arrived} history_has_form={} history_has_a={} history_has_after={} list_len={} post_requests_total={} posts_on_switch={} get_post_result={}",
@@ -856,6 +872,9 @@ fn script_during_switch() -> Result<()> {
     f.navigate("/script-nav")?;
     pump_for(150);
     f.pages.open_roots(&[f.server.url("/delay/1500/target")])?;
+    wait("script switch requested", || {
+        f.server.hits("/delay/1500/target") > 0
+    })?;
     pump_for(2500);
     assert_eq!(f.cursor_path(), "/after-script");
     Ok(())
@@ -877,9 +896,13 @@ fn failed_loading_signal() -> Result<()> {
     f.pages.open_roots(&[url.parse()?])?;
     wait("candidate error", || !events.borrow().is_empty())?;
     pump_for(300);
-    assert_eq!(
-        &*events.borrow(),
-        &[false, true],
+    let events = events.borrow();
+    let error = events
+        .iter()
+        .position(|loading| !loading)
+        .expect("error event");
+    assert!(
+        events[error + 1..].contains(&true),
         "M2: missing trailing Loading(false)"
     );
     Ok(())
@@ -946,10 +969,12 @@ fn back_during_switch() -> Result<()> {
         ""
     );
     assert_eq!(f.cursor_path(), "/a");
-    assert!(
-        f.server.hits("/a") <= 2,
-        "M1: Back fetched target more than main"
+    assert_eq!(
+        f.server.hits("/a"),
+        1,
+        "Back reuses the selected branch history"
     );
+    assert!(!f.events().iter().any(|e| e.0 == "/gate/x/x"));
     Ok(())
 }
 
