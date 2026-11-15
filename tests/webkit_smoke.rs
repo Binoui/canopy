@@ -29,6 +29,16 @@ fn main() -> Result<()> {
         .context("favicon pixels")?;
     icon.fill(0x2050ffff);
     let fixture = Fixture::start(icon.save_to_bufferv("png", &[])?)?;
+    canopy::browser::Browser::open(&directory.path().join("forest.sqlite3"))?.import_pages(
+        "chrome:Default",
+        &[],
+        &[canopy::browser::ImportedBookmark {
+            url: web_url(&fixture.url("/imported-bookmark"))?,
+            title: "Quokka atlas".into(),
+            folder: "Bookmarks bar".into(),
+            visits: 0,
+        }],
+    )?;
     let ui = Ui::new(directory.path())?;
     ui.window.show_all();
     ready(&ui)?;
@@ -531,12 +541,7 @@ fn main() -> Result<()> {
         other.import_pages(
             "chrome:Default",
             &[page("/imported-history", "Quokka field notes")],
-            &[canopy::browser::ImportedBookmark {
-                url: web_url(&fixture.url("/imported-bookmark"))?,
-                title: "Quokka atlas".into(),
-                folder: "Bookmarks bar".into(),
-                visits: 0,
-            }],
+            &[],
         )?;
     }
     let count = ui.snapshot()?.visits.len();

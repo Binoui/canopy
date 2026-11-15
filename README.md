@@ -86,7 +86,9 @@ canopy --import-chrome
 
 It reads `~/.config/google-chrome/Default`. Pass another profile folder after the flag to read that one instead, and add `--data-dir PATH` to import into a separate data folder. Chrome can stay open.
 
-**Ctrl+K** then shows **Bookmarks** and **From Chrome** results next to your forest. Opening one loads it like a typed address. Until Canopy has habits of its own, the new-tree page offers your busiest Chrome sites. Imported pages plant no trees and add no tabs.
+`--import-chrome` replaces the history for that profile and adds missing bookmarks to Canopy. Existing bookmarks keep their title, folder, and order. The upgrade copies previously imported bookmarks once. A bookmark removed in Canopy can return on re-import.
+
+**Ctrl+K** then shows **Bookmarks** and **From Chrome** results next to your forest. A bookmark always plants a new tree. Imported history opens like a typed address. Until Canopy has habits of its own, the new-tree page offers your busiest Chrome sites. Imported pages plant no trees and add no tabs.
 
 Cookies reach Canopy while it runs, or at its next start before it reloads your page or opens the addresses it was given. This keeps sites signed in when their sessions still work. Chrome's cookies replace matching Canopy cookies. Session cookies last until Canopy quits. Partitioned and expired cookies are skipped.
 
@@ -98,12 +100,15 @@ Running the command again refreshes imported pages and updates matching password
 
 The top row has one tab per open tree, in the order you started them. Trees that do not fit wait behind the arrow at the end of the row. A tree is named after what you searched for, or after its first page. Right-click a tab to give the tree a name of your own; an empty name goes back to the automatic one. Under the tabs, a strip shows the current tree: the path to the current page, with small buds for the other branches. Rest the pointer on the strip and it opens over the page with every branch. Rest it on a page in the strip to see a card with its title, site and a preview.
 
+The Bookmarks band shows up to sixteen top-level tiles, with folder chips to the right of its heading. Overflow tiles and chips open lists. Right-click a tile or list row to remove its bookmark.
+
 Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not affect them.
 
 - **Ctrl+K** or the **Search or go…** pill opens the palette. Type to search your forest and your saved text, or to go to an address. **Enter** opens the selected result. **Alt+Enter** opens it in a new tree. **Escape** closes the palette and gives the focus back to the page.
+- **Ctrl+D** bookmarks the current page or removes its bookmark, including while the new-tree page shows over it.
 - **Ctrl+L** opens the same palette with the current address selected.
 - **Ctrl+E** or the forest button opens every tree. Drag or scroll to pan, Ctrl+scroll to zoom, and use **Titles** to switch between pills and icons. Click a page to restore it.
-- **Ctrl+T** or **+** opens the new-tree page. Type immediately to search in a new tree, or click its search field. Pinned trees appear in a stable three-column band above frequent pages and usual paths from your history. A pinned card restores the tree where you left it, even after you settle it. A usual path loads its first page as a root, then its second page as a child. **Escape** returns to your page.
+- **Ctrl+T** or **+** opens the new-tree page. Type immediately to search in a new tree, or click its search field. Pinned trees appear in a stable three-column band above bookmarks, frequent pages and usual paths from your history. A pinned card restores the tree where you left it, even after you settle it. A usual path loads its first page as a root, then its second page as a child. **Escape** returns to your page.
 - Right-click a tree tab for **Rename**, **Pin tree** or **Unpin tree**, and **Settle tree**. Pinned tabs show a pin mark. Right-click a pinned card to unpin it. Pinning and settling are independent.
 - **Ctrl+W**, a middle click on a tab, or the **×** on a tab settles a tree. A settled tree leaves the tabs and keeps every page. It waits under **Settled** in the forest view, and opening any of its pages brings its tab back. With the new-tree page, the forest view or the palette open, **Ctrl+W** closes that instead.
 - **Ctrl+1** to **Ctrl+9** switch to a tab. Shift is also accepted for layouts such as AZERTY.

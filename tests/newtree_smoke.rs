@@ -90,6 +90,11 @@ fn main() -> Result<()> {
             },
         )?;
     }
+    assert!(text(&ui, "#start-content").contains("Ctrl+D bookmarks the page you are on."));
+    key("ctrl+d")?;
+    wait("no current page toast", || {
+        toast_text(&ui).is_some_and(|t| t == "No page to bookmark")
+    })?;
     let mut roots = Vec::new();
     for name in ["Reading", "Recipes", "Weekend"] {
         ui.pages.selected_page().navigate(
@@ -111,6 +116,8 @@ fn main() -> Result<()> {
             pinned: true,
         });
     }
+    ctrl_d(&ui)?;
+    bookmarks(&ui, directory.path(), &format!("http://{address}"))?;
     let root = roots[1];
     ui.pages.selected_page().navigate(
         web_url(&format!("http://{address}/recipes-child"))?,
@@ -324,5 +331,212 @@ fn main() -> Result<()> {
     wait("placeholder leaves", || !visible(&ui, "#strip-placeholder"))?;
     println!("PASS frequent tile plants and all-settled placeholder clears on card click.");
     ui.window.close();
+    Ok(())
+}
+
+fn ctrl_d(ui: &Ui) -> Result<()> {
+    let snapshot = ui.snapshot()?;
+    let current = snapshot.current_visit().unwrap();
+    for context in ["page", "chrome", "start"] {
+        match context {
+            "page" => ui.pages.selected_page().native.grab_focus(),
+            "chrome" => {
+                key("F6")?;
+                wait("chrome has keyboard", || ui.chrome.native().has_focus())?;
+            }
+            _ => start_page(ui)?,
+        }
+        key("ctrl+d")?;
+        wait("Bookmarked toast", || {
+            toast_text(ui).is_some_and(|t| t == "Bookmarked")
+        })?;
+        let saved = ui.pages.read(|b| b.bookmarks())?;
+        assert_eq!(saved.len(), 1);
+        assert_eq!(
+            (&saved[0].url, &saved[0].title),
+            (&current.url, &current.title)
+        );
+        key("ctrl+d")?;
+        wait("Bookmark removed toast", || {
+            toast_text(ui).is_some_and(|t| t == "Bookmark removed")
+        })?;
+        assert!(ui.pages.read(|b| b.bookmarks())?.is_empty());
+        assert_eq!(ui.snapshot()?.current, snapshot.current);
+        assert_eq!(ui.snapshot()?.visits.len(), snapshot.visits.len());
+        if context == "start" {
+            key("Escape")?;
+        }
+    }
+    println!("PASS real Ctrl+D adds/removes the stored URL and title with page, chrome and start focus without navigation.");
+    Ok(())
+}
+
+fn bookmarks(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
+    use canopy::browser::{Browser, ImportedBookmark};
+    let mut browser = Browser::open(&data.join("forest.sqlite3"))?;
+    let make = |path: &str, title: &str, folder: &str, visits| -> Result<ImportedBookmark> {
+        Ok(ImportedBookmark {
+            url: web_url(&format!("{base}/{path}"))?,
+            title: title.into(),
+            folder: folder.into(),
+            visits,
+        })
+    };
+    let mut imported = Vec::new();
+    for i in 0..17 {
+        imported.push(make(
+            &format!("bookmark-{i}"),
+            if i == 0 {
+                ""
+            } else {
+                "Bookmark with a very long title that should be cut"
+            },
+            "Bookmarks bar",
+            100 - i,
+        )?);
+    }
+    for folder in ["Work", "Reading", "Weekend"] {
+        imported.push(make(
+            &format!("folder-{folder}"),
+            folder,
+            &format!("Bookmarks bar › {folder}"),
+            1,
+        )?);
+    }
+    browser.import_pages("test", &[], &imported)?;
+    ui.dispatch(ChromeIntent::SetTheme(ThemeMode::Dark));
+    start_page(ui)?;
+    wait("bookmarks rendered", || {
+        chrome(ui, "canopy.state().start.bookmarks.tiles.length").is_ok_and(|v| v == 15)
+    })?;
+    assert_eq!(
+        chrome(
+            ui,
+            "document.querySelectorAll('[data-start=bookmark]').length"
+        )?,
+        15
+    );
+    assert_eq!(chrome(ui, "new Set([...document.querySelectorAll('[data-start=bookmark]')].map(e=>e.offsetTop)).size")?, 2);
+    assert!(text(ui, "[data-start=bookmark] .label").contains("127.0.0.1"));
+    assert_eq!(text(ui, "[data-start=more] .label"), "2 more");
+    for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        ui.dispatch(ChromeIntent::SetTheme(mode));
+        pump(200);
+        shots(
+            ui,
+            if mode == ThemeMode::Dark {
+                "bookmarks-dark"
+            } else {
+                "bookmarks-light"
+            },
+        )?;
+        click_chrome(ui, "[data-start=folder]")?;
+        assert_eq!(
+            chrome(
+                ui,
+                "document.querySelectorAll('#popover [data-start=bookmark]').length"
+            )?,
+            1
+        );
+        shots(
+            ui,
+            if mode == ThemeMode::Dark {
+                "folder-dark"
+            } else {
+                "folder-light"
+            },
+        )?;
+        key("Escape")?;
+    }
+    click_chrome(ui, "[data-start=more]")?;
+    assert_eq!(
+        chrome(
+            ui,
+            "document.querySelectorAll('#popover [data-start=bookmark]').length"
+        )?,
+        2
+    );
+    key("Escape")?;
+    let before_tile = ui.snapshot()?.visits.len();
+    click_chrome(ui, "[data-start=bookmark]")?;
+    wait("tile bookmark plants", || {
+        ui.snapshot().unwrap().visits.len() == before_tile + 1
+            && !ui.pages.selected_page().native.is_loading()
+    })?;
+    assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
+    start_page(ui)?;
+    let count = ui.snapshot()?.visits.len();
+    click_chrome(ui, "[data-start=folder]")?;
+    click_chrome(ui, "#popover [data-start=bookmark]")?;
+    wait("folder bookmark opens", || {
+        ui.snapshot().unwrap().visits.len() == count + 1
+            && !ui.pages.selected_page().native.is_loading()
+    })?;
+    let chosen = ui.snapshot()?.current_visit().unwrap().url.clone();
+    assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
+    start_page(ui)?;
+    click_chrome(ui, "[data-start=folder]")?;
+    click_chrome(ui, "#popover [data-start=bookmark]")?;
+    wait("existing address still plants", || {
+        ui.snapshot().unwrap().visits.len() == count + 2
+            && !ui.pages.selected_page().native.is_loading()
+    })?;
+    assert_eq!(ui.snapshot()?.current_visit().unwrap().url, chosen);
+    assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
+    start_page(ui)?;
+    click_chrome(ui, "[data-start=folder]")?;
+    menu(ui, "#popover [data-start=bookmark]")?;
+    assert_eq!(text(ui, "#popover"), "Remove bookmark");
+    click_chrome(ui, "[data-remove-bookmark]")?;
+    wait("folder bookmark removed", || {
+        browser.bookmarks().unwrap().len() == 19
+    })?;
+    menu(ui, "[data-start=bookmark]")?;
+    click_chrome(ui, "[data-remove-bookmark]")?;
+    wait("tile removed", || browser.bookmarks().unwrap().len() == 18)?;
+    key("ctrl+k")?;
+    type_text("folder-Weekend")?;
+    wait("bookmark palette group", || {
+        visible(ui, "#palette [data-kind=bookmark]")
+    })?;
+    assert_eq!(
+        chrome(
+            ui,
+            "document.querySelectorAll('#palette [data-kind=bookmark]').length"
+        )?,
+        1
+    );
+    assert!(text(ui, "#palette-results").contains("Bookmarks"));
+    key("Escape")?;
+    for i in 0..10 {
+        browser.import_pages(
+            "test",
+            &[],
+            &[make(
+                &format!("overflow-{i}"),
+                "Overflow",
+                &format!("Bookmarks bar › Extra folder {i}"),
+                0,
+            )?],
+        )?;
+    }
+    ui.dispatch(ChromeIntent::SetTheme(ThemeMode::Dark));
+    start_page(ui)?;
+    wait("folder overflow", || visible(ui, "[data-start=folders]"))?;
+    click_chrome(ui, "[data-start=folders]")?;
+    assert!(visible(ui, "#popover [data-start=folder]"));
+    click_chrome(ui, "#popover [data-start=folder]")?;
+    assert!(visible(ui, "#popover [data-start=bookmark]"));
+    browser.import_pages(
+        "test",
+        &[],
+        &[make("repaint", "Repaint", "Bookmarks bar", 0)?],
+    )?;
+    ui.dispatch(ChromeIntent::SetTheme(ThemeMode::Light));
+    pump(300);
+    assert!(visible(ui, "#popover [data-start=bookmark]"));
+    key("Escape")?;
+    key("Escape")?;
+    println!("PASS bookmark grid, overflow, folder lists, palette, always planting roots, tile and row removal, folder overflow, dark/light shots at 900 by 600.");
     Ok(())
 }
