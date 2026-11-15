@@ -50,6 +50,7 @@ impl Ui {
         window.add(&scroller);
         let pages = Pages::mount(&fixed, browser, &data_dir.join("profile"))?;
         let chrome = HtmlChrome::mount(&fixed, pages.favicons())?;
+        pages.set_chrome(&chrome.native());
         {
             use webkit2gtk::{WebContextExt, WebViewExt};
             let confined = pages.sandbox_enabled()

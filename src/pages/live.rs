@@ -131,7 +131,6 @@ struct NativeState {
     traversal: RefCell<Option<(LoadTicket, BackForwardListItem)>>,
     /// Where to scroll once a visit reloaded from the network finishes loading.
     pending_scroll: Cell<Option<(VisitId, i64)>>,
-    restoration_viewport: Cell<Option<(i32, i32)>>,
     /// The address of the main frame's last response that has not become a page, and the
     /// page its file belongs to if it becomes a download instead. WebKit may report that
     /// load as failed before it reports the download, and the navigation is forgotten then.
@@ -411,7 +410,6 @@ impl LivePage {
             history_cursor: RefCell::new(None),
             traversal: RefCell::new(None),
             pending_scroll: Cell::new(None),
-            restoration_viewport: Cell::new(None),
             response_page: RefCell::new(None),
             download_handover: Cell::new(false),
             reload_candidate: RefCell::new(None),
@@ -803,6 +801,7 @@ impl LivePage {
             })
         });
         signals.push((native.clone().upcast(), favicon));
+        state.owner().register_view(&native);
         Ok(Self {
             native,
             state,
@@ -1059,52 +1058,6 @@ impl LivePage {
                 ))
             }
         }
-    }
-
-    pub(super) fn follow_container_bounds(&self, container: &gtk::Fixed) {
-        let weak = Rc::downgrade(&self.state);
-        let signal = container.connect_size_allocate(move |_, allocation| {
-            if let Some(state) = weak.upgrade() {
-                let width = allocation.width().max(1);
-                let height = (allocation.height() - super::CHROME_HEIGHT as i32).max(1);
-                state.restoration_viewport.set(Some((width, height)));
-                state.native.size_allocate(&gtk::Allocation::new(
-                    0,
-                    super::CHROME_HEIGHT as i32,
-                    width,
-                    height,
-                ));
-            }
-        });
-        self.signals
-            .borrow_mut()
-            .push((container.clone().upcast(), signal));
-        self.state.restoration_viewport.set(Some((
-            container.allocated_width(),
-            container.allocated_height() - super::CHROME_HEIGHT as i32,
-        )));
-        self.set_bounds(
-            0.,
-            super::CHROME_HEIGHT,
-            container.allocated_width() as f64,
-            container.allocated_height() as f64 - super::CHROME_HEIGHT,
-        );
-    }
-
-    /// Places the page in its container, in logical pixels.
-    pub fn set_bounds(&self, x: f64, y: f64, width: f64, height: f64) {
-        if self.state.restoration_viewport.get().is_some() {
-            self.state.restoration_viewport.set(Some((
-                width.max(1.).round() as i32,
-                height.max(1.).round() as i32,
-            )));
-        }
-        self.native.size_allocate(&gtk::Allocation::new(
-            x.round() as i32,
-            y.round() as i32,
-            width.max(1.).round() as i32,
-            height.max(1.).round() as i32,
-        ));
     }
 
     pub fn focus(&self) {
@@ -2003,11 +1956,12 @@ impl NativeState {
         };
         if self.ticket().is_some_and(|ticket| ticket.visit == visit) {
             self.pending_scroll.set(None);
-            let viewport = self
-                .restoration_viewport
-                .get()
-                .map(|(width, height)| format!("[{width},{height}]"))
-                .unwrap_or_else(|| "null".into());
+            let (width, height) = self.owner().viewport.get();
+            let viewport = format!(
+                "[{},{}]",
+                width.max(1),
+                (height - super::CHROME_HEIGHT as i32).max(1)
+            );
             let script = format!(
                 "JSON.stringify(globalThis.__canopyMemory?.restoreScroll({y}, {viewport}) ?? null)"
             );

@@ -155,6 +155,9 @@ pub struct Pages {
     context: Rc<native::PageContext>,
     branches: Branches,
     container: gtk::Fixed,
+    viewport: Cell<(i32, i32)>,
+    views: RefCell<Vec<glib::WeakRef<webkit2gtk::WebView>>>,
+    chrome: RefCell<Option<glib::WeakRef<webkit2gtk::WebView>>>,
     commands: RefCell<std::collections::VecDeque<Command>>,
     #[cfg(feature = "gui-smoke")]
     checkpoint: RefCell<Option<live::Checkpoint>>,
@@ -180,6 +183,9 @@ impl Pages {
                 candidate_saved: RefCell::new(None),
             },
             container: container.clone(),
+            viewport: Cell::new((container.allocated_width(), container.allocated_height())),
+            views: RefCell::new(Vec::new()),
+            chrome: RefCell::new(None),
             commands: RefCell::new(std::collections::VecDeque::new()),
             #[cfg(feature = "gui-smoke")]
             checkpoint: RefCell::new(None),
@@ -190,8 +196,14 @@ impl Pages {
             observer: RefCell::new(None),
             start: Cell::new(None),
         });
+        let weak = Rc::downgrade(&pages);
+        container.connect_size_allocate(move |_, a| {
+            if let Some(pages) = weak.upgrade() {
+                pages.resize(a.width() as f64, a.height() as f64);
+            }
+        });
         let page = LivePage::new(container, Rc::downgrade(&pages), &pages.context)?;
-        page.follow_container_bounds(container);
+
         *pages.branches.live.borrow_mut() = Some(Rc::new(page));
         let weak = Rc::downgrade(&pages);
         pages.context.observe(move |event| {
@@ -414,7 +426,7 @@ impl Pages {
         };
         *self.branches.candidate_saved.borrow_mut() = saved;
         page.native.hide();
-        page.follow_container_bounds(&self.container);
+
         let page = Rc::new(page);
         *self.branches.candidate.borrow_mut() = Some(page.clone());
         Ok(page)
@@ -432,7 +444,7 @@ impl Pages {
             &self.context,
         )?);
         page.native.hide();
-        page.follow_container_bounds(&self.container);
+
         *self.branches.candidate.borrow_mut() = Some(page.clone());
         page.restore(visit)
     }
@@ -710,7 +722,7 @@ impl Pages {
                     self.me.clone(),
                     &self.context,
                 )?);
-                page.follow_container_bounds(&self.container);
+
                 let previous = self.branches.live.borrow_mut().replace(page.clone());
                 drop(previous);
                 page.show();
@@ -828,10 +840,63 @@ impl Pages {
             page.focus();
         }
     }
+    /// Every view uses the current content rectangle; page churn cannot size the chrome.
+    fn place_view(&self, view: &webkit2gtk::WebView) {
+        let (width, height) = self.viewport.get();
+        let rect = gtk::Allocation::new(
+            0,
+            CHROME_HEIGHT as i32,
+            width.max(1),
+            (height - CHROME_HEIGHT as i32).max(1),
+        );
+        if view.allocation() != rect {
+            view.size_allocate(&rect);
+        }
+        if let Some(window) = self
+            .chrome
+            .borrow()
+            .as_ref()
+            .and_then(|weak| weak.upgrade())
+            .and_then(|chrome| chrome.window())
+        {
+            window.raise();
+        }
+    }
+
+    fn register_view(&self, view: &webkit2gtk::WebView) {
+        self.views.borrow_mut().push(view.downgrade());
+        for map in [false, true] {
+            let weak = self.me.clone();
+            let place = move |view: &webkit2gtk::WebView| {
+                if let Some(pages) = weak.upgrade() {
+                    pages.place_view(view);
+                }
+            };
+            if map {
+                view.connect_map(place);
+            } else {
+                view.connect_show(place);
+            }
+        }
+        self.place_view(view);
+    }
+
+    pub(crate) fn set_chrome(&self, chrome: &webkit2gtk::WebView) {
+        *self.chrome.borrow_mut() = Some(chrome.downgrade());
+    }
+
     pub fn resize(&self, width: f64, height: f64) {
-        let selected = self.branches.live.borrow().clone();
-        if let Some(page) = selected {
-            page.set_bounds(0., CHROME_HEIGHT, width, height - CHROME_HEIGHT);
+        self.viewport
+            .set((width.round() as i32, height.round() as i32));
+        let views: Vec<_> = self
+            .views
+            .borrow()
+            .iter()
+            .filter_map(|w| w.upgrade())
+            .collect();
+        self.views.borrow_mut().retain(|w| w.upgrade().is_some());
+        for view in views {
+            self.place_view(&view);
         }
     }
     pub fn apply_cookie_batches(
@@ -918,7 +983,7 @@ impl Pages {
             ),
         };
         page.native.show();
-        page.follow_container_bounds(container);
+
         let page = Rc::new(page);
         *self.branches.live.borrow_mut() = Some(page.clone());
         #[cfg(feature = "gui-smoke")]
