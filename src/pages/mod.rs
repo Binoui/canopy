@@ -594,30 +594,38 @@ impl Pages {
                 ) && !presented.replace(true)
                 {
                     let finish = painted.clone();
-                    glib::idle_add_local_once(move || finish());
+                    glib::timeout_add_local_once(std::time::Duration::ZERO, move || finish());
                 }
             }
             Some(false.to_value())
         });
-        let target = view.downgrade();
-        let mut signal = Some(id);
         view.queue_draw();
-        glib::timeout_add_local(std::time::Duration::from_millis(8), move || {
+        Self::probe_picture(view.downgrade(), surface, probing, shown, id);
+    }
+
+    fn probe_picture(
+        target: glib::WeakRef<webkit2gtk::WebView>,
+        surface: gtk::cairo::Surface,
+        probing: Rc<Cell<bool>>,
+        shown: Rc<Cell<bool>>,
+        signal: glib::SignalHandlerId,
+    ) {
+        glib::timeout_add_local_once(std::time::Duration::from_millis(32), move || {
             let Some(view) = target.upgrade() else {
-                return glib::ControlFlow::Break;
+                return;
             };
-            if !shown.get() {
-                return glib::ControlFlow::Continue;
+            if view.parent().is_none() {
+                view.disconnect(signal);
+                return;
             }
             probing.set(true);
-            let ready = Self::picture_ready(&view, &surface);
+            let ready = shown.get() && Self::picture_ready(&view, &surface);
             probing.set(false);
             if ready {
-                view.disconnect(signal.take().expect("presentation signal"));
+                view.disconnect(signal);
                 view.queue_draw();
-                glib::ControlFlow::Break
             } else {
-                glib::ControlFlow::Continue
+                Self::probe_picture(target, surface, probing, shown, signal);
             }
         });
     }
