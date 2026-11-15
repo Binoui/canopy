@@ -37,6 +37,12 @@ fn press(ui: &Ui, selector: &str) -> Result<()> {
     Ok(())
 }
 
+fn held_back(ui: &Ui) -> Result<()> {
+    wait("a frame is held back while the button is down", || {
+        chrome(ui, "canopy.state().deferred.includes('present')").is_ok_and(|held| held == true)
+    })
+}
+
 fn release() -> Result<()> {
     xdo(&["mouseup", "1"])?;
     pump(600);
@@ -86,6 +92,7 @@ fn main() -> Result<()> {
     for title in ["First refresh", "Second refresh", "Last refresh"] {
         rename(&ui, gamma, title);
     }
+    held_back(&ui)?;
     let held = !text(&ui, "#tab-row").contains("Last refresh");
     release()?;
     let tab = ui.snapshot()?.current == Some(alpha);
@@ -102,6 +109,7 @@ fn main() -> Result<()> {
     })?;
     press(&ui, "#popover [data-tab-action='pin']")?;
     rename(&ui, gamma, "Menu refresh");
+    held_back(&ui)?;
     release()?;
     let menu = ui
         .pages
@@ -125,6 +133,7 @@ fn main() -> Result<()> {
     press(&ui, &format!("[data-start=tree][data-id='{beta}']"))?;
     rename(&ui, beta, "Card refresh");
     chrome(&ui, "canopy.icons(1000)")?;
+    held_back(&ui)?;
     release()?;
     let card = ui.snapshot()?.current == Some(beta);
     println!("pinned card click across refresh: {card}");

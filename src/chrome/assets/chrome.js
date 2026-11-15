@@ -1515,12 +1515,11 @@ window.canopy = {
     S.systemDark = dark;
     applyTheme();
   },
-  /// For tests: received state, including start data awaiting a safe repaint.
+  /// For tests: what the view shows, without reaching into the DOM. `deferred` names the
+  /// calls held back while a button is down.
   state() {
-    const pending = [...refresh.pending].reverse().find(([kind]) => kind === 'start' || kind === 'present');
-    const start = pending ? (pending[0] === 'start' ? pending[1].args[0] : pending[1].args[0].start) : S.frame?.start;
     return {
-      start,
+      start: S.frame?.start, deferred: [...refresh.pending.keys()],
       surface: S.surface, overlay: S.overlay, treeSide: S.treeSide, open: S.open, animating: !!strip.anim, card: S.card, layer: S.layer, palette: !!S.palette,
       reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported, logins: loginNames(), save: S.save, locked: S.locked,
       dark: document.documentElement.classList.contains('dark'),
