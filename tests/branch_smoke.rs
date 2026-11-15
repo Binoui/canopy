@@ -695,9 +695,17 @@ fn chrome_after_switch() -> Result<()> {
         wait("settings pointer", || {
             common::visible(&ui, "#popover #theme-mode")
         })?;
+        common::click_chrome(&ui, "#theme-mode [data-mode='light']")?;
+        wait("settings receives pointer", || {
+            ui.pages
+                .read(|b| b.theme_mode())
+                .is_ok_and(|m| m == canopy::browser::ThemeMode::Light)
+        })?;
         common::key("Escape")?;
         common::key("ctrl+l")?;
-        wait("palette keyboard", || common::visible(&ui, "#palette"))?;
+        wait("palette keyboard", || {
+            common::chrome_focused(&ui, "#palette-input")
+        })?;
         common::key("Escape")?;
     }
     ui.window.close();
@@ -767,6 +775,56 @@ fn release_commands() -> Result<()> {
     assert_eq!(f.server.hits("/second"), 1);
     Ok(())
 }
+fn native_alias_back() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.navigate("/a")?;
+    f.eval("history.pushState({},'', '/route'); return true;")?;
+    settle();
+    f.pages.go(Go::Parent)?;
+    wait("actual alias Back", || {
+        f.pages.selected_page().native.uri().as_deref() == Some(f.server.url("/a").as_str())
+    })?;
+    assert_eq!(f.pages.read(|b| b.snapshot())?.current, Some(a));
+    assert_eq!(f.server.hits("/a"), 1);
+    Ok(())
+}
+fn failed_revival_retry() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.navigate("/a")?;
+    let b = f.navigate("/b")?;
+    f.pages.open_roots(&[f.server.url("/root")])?;
+    wait("root", || {
+        f.pages
+            .read(|b| b.snapshot())
+            .unwrap()
+            .current_visit()
+            .unwrap()
+            .url
+            .path()
+            == "/root"
+    })?;
+    settle();
+    let root = f.pages.read(|b| b.snapshot())?.current;
+    let errors = Rc::new(std::cell::Cell::new(0));
+    let observed = errors.clone();
+    f.pages.observe(move |event| {
+        if matches!(event, PageEvent::Error(_)) {
+            observed.set(observed.get() + 1)
+        }
+    });
+    f.server.refused.store(true, Ordering::Relaxed);
+    f.pages.go(Go::Visit(b))?;
+    wait("revival error", || errors.get() > 0)?;
+    assert_eq!(f.pages.read(|b| b.snapshot())?.current, root);
+    f.server.refused.store(false, Ordering::Relaxed);
+    f.pages.go(Go::Visit(b))?;
+    f.arrived(b)?;
+    assert!(
+        f.pages.selected_history_visits().contains(&a),
+        "failed revival retains its checkpoint for retry"
+    );
+    Ok(())
+}
 fn main() -> Result<()> {
     let environment = tempfile::tempdir()?;
     let home = environment.path().join("home");
@@ -786,6 +844,8 @@ fn main() -> Result<()> {
     type Case = (&'static str, fn() -> Result<()>);
     let cases: &[Case] = &[
         ("branch_history", branch_history),
+        ("native_alias_back", native_alias_back),
+        ("failed_revival_retry", failed_revival_retry),
         ("release_commands", release_commands),
         ("overlapping_ancestors", overlapping_ancestors),
         ("owner_fork_queue_scroll", owner_fork_queue_scroll),

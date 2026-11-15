@@ -254,22 +254,19 @@ impl LivePage {
         self.native.grab_focus();
         self.state.restore_scroll();
     }
-    pub(super) fn back_visit(&self) -> Result<Option<VisitId>> {
+    pub(super) fn native_back(&self) -> bool {
         let back = self.native.back_forward_list().and_then(|l| l.back_item());
-        if let Some(item) = back {
-            if let Some(visit) = self
-                .state
+        back.and_then(|item| {
+            self.state
                 .history
                 .borrow()
                 .iter()
                 .find(|e| e.item == item)
                 .map(|e| e.visit)
-            {
-                if self.state.native_history_allowed(visit) {
-                    return Ok(Some(visit));
-                }
-            }
-        }
+        })
+        .is_some_and(|visit| self.state.native_history_allowed(visit))
+    }
+    pub(super) fn back_visit(&self) -> Result<Option<VisitId>> {
         let Some(visit) = self.current_visit() else {
             return Ok(None);
         };
@@ -321,6 +318,9 @@ impl LivePage {
         );
         native.set_size_request(200, 200);
         container.put(&native, 0, 0);
+        if container.is_realized() {
+            native.realize();
+        }
         if matches!(initial, InitialPage::Home) {
             native.load_html(HOME, None);
         }
@@ -1529,14 +1529,13 @@ impl NativeState {
         let Some(uri) = action.request().and_then(|request| request.uri()) else {
             return false;
         };
+        if uri == "about:blank" {
+            return false;
+        }
         if self.navigation.borrow().pending_ticket().is_none()
             && matches!(*self.issue.borrow(), Issue::Idle)
         {
             self.foreground_requested();
-        }
-
-        if uri == "about:blank" {
-            return false;
         }
         let Ok(url) = web_url(&uri) else {
             // Frames load about:, blob: and data: documents all the time; only a link the

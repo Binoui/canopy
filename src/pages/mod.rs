@@ -520,10 +520,18 @@ impl Pages {
         let before = page.pending_ticket();
         let result = match go {
             Go::Visit(visit) => self.route(visit),
-            Go::Parent => match page.back_visit()? {
-                Some(visit) => self.route(visit),
-                None => Ok(()),
-            },
+            Go::Parent => {
+                if page.native_back() {
+                    self.cancel_candidate();
+                    page.native.go_back();
+                    Ok(())
+                } else {
+                    match page.back_visit()? {
+                        Some(visit) => self.route(visit),
+                        None => Ok(()),
+                    }
+                }
+            }
             Go::Tree(tree) => {
                 let visit = self.read(|b| b.tree_target(tree))?;
                 self.route(visit)

@@ -82,7 +82,7 @@ pending visit reuses it. A cancelled or failed revival retains its checkpoint.
 
 After promotion, the previous view cancels pending navigation through failed-load
 resolution, captures scroll with a 500 ms limit, serializes and is destroyed. The
-selected page stays usable. Go commands arriving during release enter a FIFO; path
+selected page stays usable. Navigation, reload and settle commands arriving during release enter a FIFO; path
 and branch-palette continuations travel with queued commands. They drain when
 release completes. Focus, resizing, cookies and downloads continue directly.
 A failed checkpoint drops the lane, leaving its visits available cold. Settling a

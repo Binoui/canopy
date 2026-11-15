@@ -448,9 +448,17 @@ fn in_flight() -> Result<()> {
     wait("slow requested", || f.server.hits("/slow") > 0)?;
     assert!(f.pages.has_pending_continuation());
     f.release()?;
-    assert!(!f.pages.has_pending_continuation());
-    f.server.held.store(false, Ordering::Relaxed);
+    assert!(
+        f.pages.has_pending_continuation(),
+        "releasing the selected view must preserve the candidate's continuation"
+    );
     assert!(!f.revive(a)?);
+    f.pages.go(Go::Visit(a))?;
+    assert!(
+        !f.pages.has_pending_continuation(),
+        "replacing the candidate cancels its own continuation"
+    );
+    f.server.held.store(false, Ordering::Relaxed);
     settle();
     assert_eq!(f.server.hits("/never"), 0);
     assert_eq!(f.pages.read(|b| b.snapshot())?.visits.len(), 1);
