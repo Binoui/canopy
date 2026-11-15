@@ -1146,7 +1146,7 @@ function suggestedBand(start) {
   return '<section>' + bandHead('Suggested', 'From your history', 'spark') + '<div class="sg-row">' + start.suggested.map((s) => {
     const g = s.glyph;
     const glyph = s.kind === 'tree' ? miniHtml(g.mini) : s.kind === 'path' ? fav(g.first, true, 14) + '<i>→</i>' + fav(g.second, true, 14) : fav(g.url, true, 16);
-    return `<div class="sg"><button class="sg-main" data-start="suggestion" data-id="${esc(s.key)}" title="${esc(s.tip)}"><span class="sg-glyph ${s.kind}">${glyph}</span><span class="sg-text"><span class="sg-title">${esc(s.title)}</span><span class="sg-why">${esc(s.why)}</span></span></button><span class="sg-actions"><button class="sg-act" data-start="keep" data-id="${esc(s.key)}" title="Keep" aria-label="Keep">${icon('bookmark')}</button><button class="sg-act" data-start="decline" data-id="${esc(s.key)}" title="Stop suggesting this" aria-label="Stop suggesting this">${icon('close')}</button></span></div>`;
+    return `<div class="sg" style="grid-column:${s.slot + 1}"><button class="sg-main" data-start="suggestion" data-id="${esc(s.key)}" title="${esc(s.tip)}"><span class="sg-glyph ${s.kind}">${glyph}</span><span class="sg-text"><span class="sg-title">${esc(s.title)}</span><span class="sg-why">${esc(s.why)}</span></span></button><span class="sg-actions"><button class="sg-act" data-start="keep" data-id="${esc(s.key)}" title="Keep" aria-label="Keep">${icon('bookmark')}</button><button class="sg-act" data-start="decline" data-id="${esc(s.key)}" title="Stop suggesting this" aria-label="Stop suggesting this">${icon('close')}</button></span></div>`;
   }).join('') + '</div></section>';
 }
 

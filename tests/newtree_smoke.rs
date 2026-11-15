@@ -690,6 +690,9 @@ fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
         chrome(ui, "canopy.state().start.suggested[0].title").is_ok_and(|v| v == "New arrival")
     })?;
     let chosen = web_url(&format!("{base}/challenger"))?;
+    let lefts =
+        "[...document.querySelectorAll('.sg')].map(e=>Math.round(e.getBoundingClientRect().left))";
+    let before = chrome(ui, lefts)?;
     hover_chrome(ui, ".sg-main")?;
     click_chrome(ui, "[data-start=keep]")?;
     wait("Keep page bookmarks", || {
@@ -698,6 +701,11 @@ fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
     wait("Keep removes without filling", || {
         chrome(ui, "canopy.state().start.suggested.length").is_ok_and(|v| v == 2)
     })?;
+    assert_eq!(
+        chrome(ui, lefts)?,
+        serde_json::json!([before[1], before[2]]),
+        "the chips that stay keep their places"
+    );
     let declined: canopy::suggest::SuggestionKey =
         chrome(ui, "canopy.state().start.suggested[0].key")?
             .as_str()

@@ -24,7 +24,24 @@ pub(super) fn value(frame: &ChromeFrame, frozen: &[crate::suggest::Suggestion]) 
             })
         })
         .collect();
-    json!({"pinned": pinned, "bookmarks": bookmarks(&frame.bookmarks), "suggested": frozen.iter().filter(|s| crate::suggest::admits(&frame.forest, &frame.bookmarks, &frame.declined, s)).map(|s| chip(&frame.forest, s)).collect::<Vec<_>>()})
+    json!({"pinned": pinned, "bookmarks": bookmarks(&frame.bookmarks), "suggested": suggested(frame, frozen)})
+}
+
+/// The chips still on offer, each in the place it had when the band was ranked, so the
+/// ones that stay never slide under the pointer when one leaves.
+fn suggested(frame: &ChromeFrame, frozen: &[crate::suggest::Suggestion]) -> Vec<Value> {
+    frozen
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| {
+            crate::suggest::admits(&frame.forest, &frame.bookmarks, &frame.declined, s)
+        })
+        .map(|(slot, s)| {
+            let mut chip = chip(&frame.forest, s);
+            chip["slot"] = json!(slot);
+            chip
+        })
+        .collect()
 }
 
 fn mini_value(mini: &tree_view::Miniature) -> Value {
@@ -40,6 +57,36 @@ mod tests {
         browser::{Browser, ThemeMode},
         forest::ForestProjection,
     };
+
+    #[test]
+    fn a_chip_that_leaves_does_not_move_the_ones_that_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let browser = Browser::open(&dir.path().join("forest.sqlite3")).unwrap();
+        let page = |path: &str| crate::suggest::Suggestion::Page {
+            url: url::Url::parse(&format!("https://example.org/{path}")).unwrap(),
+            title: path.into(),
+            why: crate::suggest::PageWhy::ThisWeek(2),
+        };
+        let frozen = [page("a"), page("b"), page("c")];
+        let frame = ChromeFrame {
+            forest: ForestProjection::from_snapshot(
+                browser.snapshot().unwrap(),
+                browser.tree_states().unwrap(),
+            )
+            .unwrap(),
+            loaded: Default::default(),
+            capture_enabled: true,
+            theme: ThemeMode::Dark,
+            declined: [frozen[0].key()].into(),
+            bookmarks: vec![],
+            files: vec![],
+        };
+        let start = value(&frame, &frozen);
+        assert_eq!(start["suggested"].as_array().unwrap().len(), 2);
+        assert_eq!(start["suggested"][0]["title"], "b");
+        assert_eq!(start["suggested"][0]["slot"], 1);
+        assert_eq!(start["suggested"][1]["slot"], 2);
+    }
 
     #[test]
     fn cards_follow_pin_order_and_roots_without_events_show_only_the_page_count() {
