@@ -131,3 +131,8 @@ When a saved capture identifies a more precise citation URL, its visit is routed
 first. The existing ticket continuation then opens that citation as a child in the
 routed branch, preserving both the capture branch and the previously selected branch.
 The URL comparison chooses capture content only; branch ownership still uses visits.
+
+Foreground cancellation keeps an issued native load in a draining state until
+Finished. A delayed Started from that cancelled load cannot become a new native
+request or cancel the candidate. A subsequent user load queues behind that drain
+with its own ticket. This includes a load waiting for beforeunload to return.

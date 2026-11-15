@@ -114,6 +114,7 @@ impl Server {
                 thread::sleep(Duration::from_millis(ms.parse().unwrap_or(0)));
                 respond(stream, "200 OK", "", &page_body(&path));
             }
+            ["heavy"] => respond(stream, "200 OK", "", "<!doctype html><title>heavy</title><script>addEventListener('beforeunload',()=>{let t=Date.now();while(Date.now()-t<1000){}})</script>"),
             ["iframe-pulse"] => respond(stream, "200 OK", "", "<!doctype html><title>pulse</title><body style='height:4000px'><iframe id=f src='/frame/0' width=100 height=50></iframe><script>let n=0;setInterval(()=>{document.getElementById('f').src='/frame/'+(++n)},150)</script></body>"),
             ["iframe-once"] => respond(stream, "200 OK", "", "<!doctype html><title>once</title><body style='height:4000px'><script>setTimeout(()=>{const f=document.createElement('iframe');f.src='/frame/once';document.body.appendChild(f)},700)</script></body>"),
             ["hash-pulse"] => respond(stream, "200 OK", "", "<!doctype html><title>hash</title><body style='height:4000px'><script>let n=0;setInterval(()=>{location.hash='h'+(++n)},150)</script></body>"),
@@ -1056,9 +1057,36 @@ fn arrival_once() -> Result<()> {
     assert_eq!(f.pages.read(|br| br.tree_target(f.tree(a)))?, b);
     Ok(())
 }
+fn unload_during_switch() -> Result<()> {
+    for _ in 0..5 {
+        let f = Fixture::new()?;
+        let heavy = f.navigate("/heavy")?;
+        f.pages.go(Go::Address {
+            url: f.server.url("/third"),
+            target: NavigationTarget::ChildOf(heavy),
+        })?;
+        pump_for(300);
+        assert_eq!(f.server.hits("/third"), 0);
+        let before = f.events().len();
+        f.open_root("/next")?;
+        pump_for(300);
+        assert_eq!(
+            f.visits_with_path("/third"),
+            0,
+            "S2: retiring unload committed"
+        );
+        assert_eq!(
+            f.events().len(),
+            before + 1,
+            "S2: unload changed arrival log"
+        );
+    }
+    Ok(())
+}
 type Case = (&'static str, fn() -> Result<()>);
 pub fn cases() -> Vec<Case> {
     vec![
+        ("unload_during_switch", unload_during_switch),
         ("tls_candidate_failure", tls_candidate_failure),
         ("arrival_once", arrival_once),
         ("saved_citation_routing", saved_citation_routing),

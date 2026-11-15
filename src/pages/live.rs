@@ -74,6 +74,7 @@ enum Issue {
         decided: bool,
     },
     Loading(LoadTicket),
+    Cancelling(LoadTicket),
     Retiring {
         ticket: LoadTicket,
         next: (LoadTicket, Url),
@@ -95,7 +96,7 @@ impl Issue {
                 *self = Self::Issued { ticket, decided };
                 None
             }
-            Self::Idle => None,
+            Self::Idle | Self::Cancelling(_) => None,
         }
     }
 }
@@ -235,7 +236,8 @@ impl LivePage {
         if let Some(ticket) = self.pending_ticket() {
             state.navigation.borrow_mut().failed(ticket);
         }
-        *state.issue.borrow_mut() = Issue::Idle;
+        let draining = state.active_ticket().filter(|_| self.native.is_loading());
+        *state.issue.borrow_mut() = draining.map(Issue::Cancelling).unwrap_or(Issue::Idle);
         state.issued.borrow_mut().take();
         state.traversal.borrow_mut().take();
         state.same_document_request.borrow_mut().take();
@@ -413,6 +415,9 @@ impl LivePage {
                     let url = native.uri().and_then(|uri| web_url(&uri).ok());
                     match event {
                         LoadEvent::Started => {
+                            if matches!(*state.issue.borrow(), Issue::Cancelling(_)) {
+                                return;
+                            }
                             state.foreground_requested();
                             state.main_frame_post.set(None);
                             if matches!(*state.issue.borrow(), Issue::Issued { decided: false, .. })
@@ -1194,6 +1199,7 @@ impl NativeState {
             Issue::Idle => None,
             Issue::Issued { ticket, .. }
             | Issue::Loading(ticket)
+            | Issue::Cancelling(ticket)
             | Issue::Retiring { ticket, .. } => Some(ticket),
         }
     }
@@ -1228,7 +1234,9 @@ impl NativeState {
 
     fn loading_ticket(&self) -> Option<LoadTicket> {
         match *self.issue.borrow() {
-            Issue::Loading(ticket) | Issue::Retiring { ticket, .. } => Some(ticket),
+            Issue::Loading(ticket) | Issue::Cancelling(ticket) | Issue::Retiring { ticket, .. } => {
+                Some(ticket)
+            }
             _ => None,
         }
     }
@@ -1352,6 +1360,13 @@ impl NativeState {
             let mut issue = self.issue.borrow_mut();
             if let Issue::Retiring { next, .. } = &mut *issue {
                 *next = (requested, url);
+                return;
+            }
+            if let Issue::Cancelling(ticket) = *issue {
+                *issue = Issue::Retiring {
+                    ticket,
+                    next: (requested, url),
+                };
                 return;
             }
         }
