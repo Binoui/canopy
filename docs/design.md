@@ -114,8 +114,8 @@ surface in this step.
 Starting a candidate fails all pending foreground work in the old view and invalidates
 its asynchronous link decisions. The old committed document remains usable. Main-frame
 Started for another document cancels the candidate; same-document changes (pushState,
-replaceState and fragments) and subframe policy decisions do not. Settling cancels only a candidate targeting that tree. Settling the last tree
-creates a fresh home view, so the next branch cannot inherit settled history. Release
+replaceState and fragments) and subframe policy decisions do not. Settling cancels
+only a candidate targeting that tree. Settling the last tree creates a fresh home view, so the next branch cannot inherit settled history. Release
 keeps a valid checkpoint when its current entry belongs to an open tree.
 
 A restored POST that is current at initial revival is fetched by GET. Its duplicate
@@ -137,10 +137,12 @@ first. The existing ticket continuation then opens that citation as a child in t
 routed branch, preserving both the capture branch and the previously selected branch.
 The URL comparison chooses capture content only; branch ownership still uses visits.
 
-Foreground cancellation keeps an issued native load in a draining state until
-Finished. A delayed Started from that cancelled load cannot become a new native
-request or cancel the candidate. A subsequent user load queues behind that drain
-with its own ticket. This includes a load waiting for beforeunload to return.
+Foreground cancellation returns a request that has not passed policy immediately
+to Idle: WebKit sends no Finished when that policy-phase request is stopped.
+A policy-accepted or already started load is drained through Finished instead.
+Its delayed Started cannot become a new native request or cancel the candidate.
+A subsequent user load queues behind that drain with its own ticket. This includes
+a policy-accepted load waiting for beforeunload to return.
 
 The chrome has a persistent GTK size request matching its window width and current
 cover height. GtkFixed can therefore reallocate children when page views are added
