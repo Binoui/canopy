@@ -174,9 +174,11 @@ pub(super) fn migrate(tx: &Transaction<'_>) -> Result<()> {
         ))
     })?;
     let mut old = Vec::new();
+    let mut copied = Vec::new();
     for row in rows {
-        let (url, title, folder, visits) = row?;
-        if let Ok(url) = crate::address::web_url(&url) {
+        let (raw, title, folder, visits) = row?;
+        if let Ok(url) = crate::address::web_url(&raw) {
+            copied.push(raw);
             old.push(ImportedBookmark {
                 url,
                 title,
@@ -187,6 +189,15 @@ pub(super) fn migrate(tx: &Transaction<'_>) -> Result<()> {
     }
     drop(stmt);
     append_imported(tx, &old, now_ms()?)?;
-    tx.execute_batch("DELETE FROM imported_pages WHERE folder IS NOT NULL AND visits=0 AND typed=0 AND last_visit IS NULL; ALTER TABLE imported_pages DROP COLUMN folder; PRAGMA user_version=10;")?;
+    // Only a row that became a bookmark may go: a bookmark that is not a web address has
+    // no place in the new table, and its imported row is all that is left of it.
+    for raw in &copied {
+        tx.execute(
+            "DELETE FROM imported_pages
+             WHERE url=?1 AND visits=0 AND typed=0 AND last_visit IS NULL",
+            [raw],
+        )?;
+    }
+    tx.execute_batch("ALTER TABLE imported_pages DROP COLUMN folder; PRAGMA user_version=10;")?;
     Ok(())
 }

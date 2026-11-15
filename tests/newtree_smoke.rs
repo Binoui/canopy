@@ -188,11 +188,21 @@ fn main() -> Result<()> {
         )?;
     }
     println!("PASS empty page, placeholder, headings, pin order, three columns, waiting count and last-page rings.");
-    click_chrome(&ui, &format!(".pinned-card[data-id='{root}']"))?;
+    let other = *roots.iter().find(|id| **id != root).unwrap();
+    let (x, y) = chrome_point(&ui, &format!(".pinned-card[data-id='{root}']"))?;
+    move_to(x, y)?;
+    xdo(&["mousedown", "1"])?;
+    ui.dispatch(ChromeIntent::RenameTree(tree(&ui, other), "Held".into()));
+    wait("a refresh while the button is down", || {
+        chrome(&ui, "canopy.state().start.pinned.some(t=>t.title==='Held')")
+            .is_ok_and(|held| held == true)
+    })?;
+    xdo(&["mouseup", "1"])?;
     wait("settled card reopens last page", || {
         ui.snapshot().unwrap().current == Some(last)
             && !ui.pages.selected_page().native.is_loading()
     })?;
+    ui.dispatch(ChromeIntent::RenameTree(tree(&ui, other), String::new()));
     wait("reopened tab", || {
         visible(&ui, &format!(".tab[data-id='{root}']"))
     })?;
