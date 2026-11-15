@@ -251,17 +251,19 @@ impl LivePage {
         self.native.show();
         self.state.restore_scroll();
     }
-    pub(super) fn native_back(&self) -> bool {
-        let back = self.native.back_forward_list().and_then(|l| l.back_item());
-        back.and_then(|item| {
-            self.state
-                .history
-                .borrow()
-                .iter()
-                .find(|e| e.item == item)
-                .map(|e| e.visit)
+    pub(super) fn native_back(&self) -> Option<BackForwardListItem> {
+        let list = self.native.back_forward_list()?;
+        let mut items = list.back_list();
+        // WebKit returns nearest first; frame and pushState entries share a document.
+        items.sort_by_key(|item| {
+            (1..=list.length()).find(|n| list.nth_item(-(*n as i32)).as_ref() == Some(item)).unwrap_or(u32::MAX)
+        });
+        items.into_iter().find(|item| {
+            self.state.history.borrow().iter().any(|e| {
+                e.item == *item && e.document != self.state.history_document.get()
+                    && self.state.native_history_allowed(e.visit)
+            })
         })
-        .is_some_and(|visit| self.state.native_history_allowed(visit))
     }
     pub(super) fn back_visit(&self) -> Result<Option<VisitId>> {
         let Some(visit) = self.current_visit() else {

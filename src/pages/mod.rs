@@ -527,9 +527,9 @@ impl Pages {
         let result = match go {
             Go::Visit(visit) => self.route(visit),
             Go::Parent => {
-                if page.native_back() {
+                if let Some(item) = page.native_back() {
                     self.cancel_candidate();
-                    page.native.go_back();
+                    page.native.go_to_back_forward_list_item(&item);
                     Ok(())
                 } else {
                     match page.back_visit()? {
