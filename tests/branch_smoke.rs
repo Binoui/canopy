@@ -1,6 +1,8 @@
 #![allow(dead_code, unused_imports)]
 use anyhow::{bail, Result};
 mod common;
+#[path = "common/branch_regressions.rs"]
+mod regressions;
 use canopy::{
     browser::{Browser, NavigationTarget, VisitId},
     pages::{Go, PageEvent, Pages},
@@ -460,6 +462,10 @@ fn replacement(same: bool) -> Result<()> {
         assert_eq!(f.pages.read(|b| b.snapshot())?.current, root);
         assert!(f.pages.read(|b| b.visit(q))?.opened_at.is_none());
     }
+    drop(old);
+    wait("one web process after activation", || {
+        web_process_count() == 1
+    })?;
     Ok(())
 }
 fn failed_switch() -> Result<()> {
@@ -570,6 +576,7 @@ fn cold_fallback(invalid: bool) -> Result<()> {
     Ok(())
 }
 fn settled_dormant() -> Result<()> {
+    branch_history()?;
     let f = Fixture::new()?;
     let a = f.navigate("/a")?;
     let b = f.navigate("/b")?;
@@ -952,7 +959,8 @@ fn main() -> Result<()> {
         ("services_after_switches", services_after_switches),
         ("chrome_after_switch", chrome_after_switch),
     ];
-    for (name, run) in cases {
+    let all: Vec<_> = cases.iter().copied().chain(regressions::cases()).collect();
+    for (name, run) in all {
         if only.as_ref().is_some_and(|s| s != name) {
             continue;
         }

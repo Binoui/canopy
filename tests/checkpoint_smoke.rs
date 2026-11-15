@@ -447,12 +447,6 @@ fn in_flight() -> Result<()> {
         .open_path(f.server.url("/slow"), f.server.url("/never"))?;
     wait("slow requested", || f.server.hits("/slow") > 0)?;
     assert!(f.pages.has_pending_continuation());
-    f.release()?;
-    assert!(
-        f.pages.has_pending_continuation(),
-        "releasing the selected view must preserve the candidate's continuation"
-    );
-    assert!(!f.revive(a)?);
     f.pages.go(Go::Visit(a))?;
     assert!(
         !f.pages.has_pending_continuation(),

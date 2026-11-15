@@ -127,3 +127,8 @@ name = "branch_smoke"
 path = "tests/branch_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
+[[test]]
+name = "review_probe"
+path = "tests/review_probe.rs"
+harness = false
+required-features = ["gui-smoke"]

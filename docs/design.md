@@ -94,7 +94,7 @@ them back. Its landing uses the same routing.
 A checkpoint owns session bytes, native-order entry bindings and current position,
 without native objects. Revival validates every position, URL and stored visit URL
 before rebinding the newly created item objects. Invalid bindings, absent targets,
-and POST targets fall back to cold GET. Restored POST entries require GET before
+fall back to cold GET. Restored POST entries require GET before
 native traversal. No checkpoint is written to SQLite. Restart creates only the
 cursor's cold page and restores stored scroll.
 
@@ -108,3 +108,21 @@ The next step may retain several live lanes under a measured memory budget. It
 must preserve this routing and selection transaction while replacing release at
 every switch with budget-driven release. There is no presence marker or reopening
 surface in this step.
+
+### Switch cancellation and page Back
+
+Starting a candidate fails all pending foreground work in the old view and invalidates
+its asynchronous link decisions. The old committed document remains usable. Main-frame
+Started and same-document navigation cancel the candidate; subframe policy decisions
+do not. Settling cancels only a candidate targeting that tree. Settling the last tree
+creates a fresh home view, so the next branch cannot inherit settled history. Release
+keeps a valid checkpoint when its current entry belongs to an open tree.
+
+A restored current POST uses the same refusal-and-GET path as other restored POST
+entries. It retains the back list without resubmission; the replacement GET drops
+forward entries. Back skips frame entries and duplicate visits introduced by this GET.
+It selects the nearest previous page visit; if none exists, native alias entries can
+still traverse without a network load. Saved captures route by their visit identity.
+A citation uses its parent's current view only when that parent is the current document;
+otherwise it opens a fresh branch with that parent. Failed candidates emit the error
+and Loading(false), allowing chrome to refresh.
