@@ -304,16 +304,14 @@ body[data-overlay="tree"] #pins .pin:not(.on) { visibility: hidden; }
 .pinned-card .mt-node.last .fav { box-shadow: 0 0 0 1px var(--tile), 0 0 0 2.5px var(--green); }
 
 .pinned-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.pinned-card { display: flex; flex-direction: column; align-items: stretch; gap: 3px; padding: 11px 11px 9px; border: 1px solid var(--tile-border); border-radius: 11px; background: var(--tile); text-align: left; }
-.pinned-card:focus-visible { border-color: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+.pinned-card { display: flex; flex-direction: column; align-items: stretch; gap: 3px; min-width: 0; overflow: hidden; padding: 11px 11px 9px; border: 1px solid var(--tile-border); border-radius: 11px; background: var(--tile); text-align: left; }
+.pinned-card:hover, .pinned-card:focus-visible { border-color: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
 .pc-tree { height: 58px; margin-bottom: 6px; }
 .pc-foot { display: flex; align-items: center; gap: 6px; }
 .pc-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
 .pc-foot .pc-name { flex: 1; }
 .pc-meta { font-size: 11px; color: var(--muted); display: block; }
 
-.pinned-card { min-width: 0; overflow: hidden; }
-.pinned-card:hover { border-color: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
 .start-tiles { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); }
 .start-tile { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 7px 2px 6px; border-radius: 10px; color: var(--muted); font-size: 11px; min-width: 0; }
 .start-tile:hover { background: var(--hover); }
