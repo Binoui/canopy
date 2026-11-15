@@ -1056,9 +1056,21 @@ fn main() -> Result<()> {
         if !only.is_empty() && !only.iter().any(|o| o == name) {
             continue;
         }
-        match run() {
-            Ok(()) => println!("DONE {name}"),
-            Err(error) => return Err(error.context(format!("round3 {name}"))),
+        for attempt in 0..3 {
+            match run() {
+                Ok(()) => {
+                    println!("DONE {name}");
+                    break;
+                }
+                Err(error)
+                    if attempt < 2
+                        && (error.to_string().starts_with("setup submit ")
+                            || error.to_string() == "setup POST visit not recorded") =>
+                {
+                    println!("NOTE {name}: retry fresh fixture after known unrecorded setup submission: {error}");
+                }
+                Err(error) => return Err(error.context(format!("round3 {name}"))),
+            }
         }
         pump_for(300);
     }
