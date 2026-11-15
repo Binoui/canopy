@@ -1182,7 +1182,7 @@ const START = {
 };
 
 function renderStart() {
-  if (!S.frame) return;
+  if (!S.frame || S.startPressed) return;
   const paint = JSON.stringify([S.frame.start, S.frame.shortcuts, S.frame.paths, S.rev]);
   if (S.startPaint === paint) return;
   S.startPaint = paint;
@@ -1529,6 +1529,15 @@ window.canopy = {
 
 $('start-search').insertAdjacentHTML('afterbegin', icon('search'));
 $('start-search').addEventListener('click', () => openPalette({ scope: null, text: '' }));
+// A repaint between press and release would replace the pressed element and lose the click.
+$('start-content').addEventListener('mousedown', () => { S.startPressed = true; });
+for (const type of ['mouseup', 'blur']) {
+  window.addEventListener(type, () => {
+    if (!S.startPressed) return;
+    S.startPressed = false;
+    setTimeout(renderStart);
+  });
+}
 for (const container of [$('start-content'), $('popover')]) {
   container.addEventListener('click', (event) => {
     const el = event.target.closest('[data-start]');
