@@ -249,7 +249,8 @@ pub fn cover(ui: &Ui) -> Option<i64> {
 
 /// Hovers the strip and waits until it has opened and its nodes settled.
 pub fn open_strip(ui: &Ui) -> Result<()> {
-    let (x, y) = page_point(ui, ui.window.allocated_width() - 60, 42 + 26)?;
+    let (left, _, width, _) = rect(ui, "#strip-clip")?;
+    let (x, y) = page_point(ui, (left + width - 24.) as i32, 42 + 26)?;
     move_to(x, y)?;
     wait("strip open", || strip_height(ui) == 120)?;
     pump(350);
@@ -257,7 +258,8 @@ pub fn open_strip(ui: &Ui) -> Result<()> {
 }
 
 pub fn leave_strip(ui: &Ui) -> Result<()> {
-    let (x, y) = page_point(ui, ui.window.allocated_width() - 60, 600)?;
+    let (left, _, width, _) = rect(ui, "#strip-clip")?;
+    let (x, y) = page_point(ui, (left + width - 24.) as i32, 600)?;
     move_to(x, y)?;
     wait("strip closed", || strip_height(ui) == 52)?;
     pump(300);

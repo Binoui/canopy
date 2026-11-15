@@ -82,7 +82,11 @@ function fav(url, opened, size) {
     + `<b style="font-size:${Math.round(size * 0.62)}px">${letter}</b>`
     + `<img src="${src}" alt="" onload="this.parentNode.style.background='none';this.previousSibling.style.visibility='hidden'" onerror="this.remove()"></span>`;
 }
-const visitFav = (v, size) => fav(v.url, !v.queued, size);
+const waitState = (v) => v.queued ? (v.loaded ? 'loaded' : 'unloaded') : null;
+const markClass = (v) => waitState(v) === 'loaded' ? ' pending loaded' : waitState(v) ? ' pending' : '';
+const visitFav = (v, size) => fav(v.url, waitState(v) !== 'unloaded', size);
+const markedFav = (v, size) => `<span class="mk">${visitFav(v, size)}`
+  + (waitState(v) ? `<i class="pending-dot${waitState(v) === 'loaded' ? ' loaded' : ''}"></i>` : '') + '</span>';
 
 // ---------- timers and layers, as the GTK chrome's presentation state machine ----------
 
@@ -315,7 +319,7 @@ function buildStrip(layout) {
       nodes.appendChild(el);
       strip.elements.set(n.id, el);
     }
-    el.className = `node ${n.kind}` + (n.kind === 'tile' && n.s < 24 ? ' sm' : '') + (v.queued ? ' pending' : '');
+    el.className = `node ${n.kind}` + (n.kind === 'tile' && n.s < 24 ? ' sm' : '') + markClass(v);
     el.setAttribute('aria-label', `${v.label}, ${v.site}`);
     const html = n.kind === 'bud' ? ''
       : n.kind === 'pill'
@@ -337,6 +341,7 @@ function buildStrip(layout) {
       dot.remove();
       strip.dots.delete(n.id);
     }
+    if (dot) dot.classList.toggle('loaded', waitState(v) === 'loaded');
     let badge = strip.badges.get(n.id);
     if (n.hidden.length) {
       if (!badge) {
@@ -419,7 +424,7 @@ function step(now, t) {
 
 function drawStrip() {
   const shown = strip.shown;
-  const width = window.innerWidth;
+  const width = stripRoom();
   const openness = clamp((shown.height - REST) / (OPEN - REST), 0, 1);
   $('strip').style.height = `${shown.height}px`;
   $('strip-clip').style.height = `${shown.height}px`;
@@ -571,6 +576,66 @@ function renderCard(preview) {
   }));
 }
 
+// ---------- waiting pages and pinned controls ----------
+
+const stripRoom = () => S.strip?.room ?? 0;
+
+function applyStrip(layouts) {
+  S.strip = layouts;
+  S.manualPan = null;
+  $('strip-clip').style.width = `${layouts.room}px`;
+  placePins();
+}
+
+function placePins() {
+  const placed = new Map((S.strip?.pins ?? []).map((p) => [p.kind, p]));
+  for (const el of $('pins').children) {
+    const p = placed.get(el.dataset.pin);
+    el.hidden = !p;
+    if (p) Object.assign(el.style, { left: `${p.x - p.w / 2}px`, top: `${p.y - p.s / 2}px`, width: `${p.w}px`, height: `${p.s}px` });
+  }
+}
+
+function renderWaitingPin() {
+  const ids = S.frame?.waiting.ids ?? [];
+  const next = visit(ids[0]);
+  $('waiting-pin').innerHTML = next ? markedFav(next, 16) + `<span class="count">${ids.length}</span>` : '';
+  $('waiting-pin').title = next ? `Next waiting page: ${next.label} · Ctrl+Tab` : '';
+}
+
+function openNextWaiting(id = S.frame?.waiting.ids[0]) {
+  if (!id) { canopy.toast('info', 'No waiting pages in this tree'); return; }
+  closeReader();
+  closePalette(false);
+  closePopover(false);
+  activate(id);
+}
+
+function enterWaitingPin() {
+  cancel('waitingClose');
+  if (S.layer !== 'none' || S.popover) return;
+  schedule('waitingOpen', 120, () => {
+    if (S.layer !== 'none' || S.popover || !S.frame?.waiting.ids.length) return;
+    cancel('open');
+    if (S.open) setOpen(false);
+    openPopover('waiting', $('waiting-pin'), null);
+  });
+}
+
+function leaveWaitingPin() {
+  cancel('waitingOpen');
+  const popover = S.popover;
+  if (popover?.kind === 'waiting') schedule('waitingClose', 220, () => {
+    if (S.popover === popover) closePopover(false);
+  });
+}
+
+$('waiting-pin').addEventListener('click', () => openNextWaiting());
+$('waiting-pin').addEventListener('mouseenter', enterWaitingPin);
+$('waiting-pin').addEventListener('mouseleave', leaveWaitingPin);
+$('popover').addEventListener('mouseenter', () => cancel('waitingClose'));
+$('popover').addEventListener('mouseleave', leaveWaitingPin);
+
 // ---------- popovers: Memory menu, hidden pages, trees that do not fit, a tree's name ----------
 
 /// Opens a menu under `anchor`, or under `below` when the anchor sits on top of something
@@ -605,7 +670,17 @@ function visitRow(v) {
 function renderPopover() {
   const popover = $('popover');
   const { kind, data } = S.popover;
-  if (kind === 'hidden') {
+  popover.classList.toggle('waiting', kind === 'waiting');
+  if (kind === 'waiting') {
+    const { ids, order } = S.frame.waiting;
+    if (!ids.length) { closePopover(false); return; }
+    popover.innerHTML = `<div class="pop-head"><span class="menu-heading grow">Waiting in this tree · ${ids.length}</span><span class="menu-detail">${esc(order)}</span></div>`
+      + ids.map((id, i) => {
+        const v = visit(id);
+        return `<button class="menu-row${i === 0 ? ' next' : ''}" data-id="${id}">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.when)}</span>${i === 0 ? '<kbd>Ctrl Tab</kbd>' : ''}</button>`;
+      }).join('');
+    popover.querySelectorAll('[data-id]').forEach((row) => row.addEventListener('click', () => openNextWaiting(row.dataset.id)));
+  } else if (kind === 'hidden') {
     popover.innerHTML = data.map(visit).filter(Boolean).map(visitRow).join('');
     popover.querySelectorAll('[data-id]').forEach((row) => row.addEventListener('click', () => {
       closePopover();
@@ -905,9 +980,9 @@ function renderForest() {
     if (!v) return '';
     maxX = Math.max(maxX, n.x + n.w / 2);
     maxY = Math.max(maxY, n.y + n.s / 2);
-    const cls = `forest-node${n.settled ? ' settled' : ''}${S.forestLabels ? '' : ' icon-only'}${path.has(n.id) ? ' path' : ''}${v.queued ? ' pending' : ''}`;
+    const cls = `forest-node${n.settled ? ' settled' : ''}${S.forestLabels ? '' : ' icon-only'}${path.has(n.id) ? ' path' : ''}${markClass(v)}`;
     return `<button class="${cls}" data-id="${n.id}" title="${esc(v.label)}" style="left:${n.x - n.w / 2}px;top:${n.y - n.s / 2}px;width:${n.w}px;height:${n.s}px">`
-      + visitFav(v, 16) + (S.forestLabels ? `<span>${esc(v.label)}</span>` : '') + '</button>';
+      + markedFav(v, 16) + (S.forestLabels ? `<span>${esc(v.label)}</span>` : '') + '</button>';
   }).join('');
   const heads = layout.heads.map((h) => `<button class="forest-head${h.settled ? ' settled' : ''}" data-id="${h.id}" style="top:${h.y}px"><b>${esc(h.title)}</b><span>${esc(h.detail)}</span></button>`).join('');
   const edges = layout.nodes.map((b) => {
@@ -1044,8 +1119,8 @@ window.canopy = {
   present(frame) {
     const previous = current();
     S.frame = frame;
-    S.strip = frame.strip;
-    S.manualPan = null;
+    applyStrip(frame.strip);
+    renderWaitingPin();
     applyTheme();
     if (frame.current !== previous) {
       setOverlay(null);
@@ -1065,8 +1140,8 @@ window.canopy = {
     syncLayer();
   },
   strip(layouts) {
-    S.strip = layouts;
-    S.manualPan = null;
+    applyStrip(layouts);
+    renderWaitingPin();
     animateStrip(0);
     fitTabs();
   },
@@ -1074,10 +1149,13 @@ window.canopy = {
     S.rev = revision;
     if (!S.frame) return;
     renderTabs();
+    renderWaitingPin();
+    if (S.popover?.kind === 'waiting') renderPopover();
     buildStrip(strip.target ?? targetLayout());
     renderStart();
     renderForest();
   },
+  nextWaiting() { openNextWaiting(); },
   openPalette(options) { openPalette(options); },
   newTree() {
     intent('cancel');
@@ -1179,6 +1257,7 @@ window.canopy = {
       reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported,
       dark: document.documentElement.classList.contains('dark'),
       nodes: [...strip.elements.keys()], rows: S.palette?.rows ?? [],
+      waiting: S.frame?.waiting.ids ?? [], pins: (S.strip?.pins ?? []).map((p) => p.kind), room: S.strip?.room ?? null,
     };
   },
 };
@@ -1244,7 +1323,7 @@ stripEl.addEventListener('wheel', (event) => {
   if (!layout) return;
   event.preventDefault();
   const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-  const min = Math.min(window.innerWidth - layout.width, 0);
+  const min = Math.min(stripRoom() - layout.width, 0);
   S.manualPan = clamp((S.manualPan ?? strip.shown.pan) - delta, min, 0);
   strip.shown.pan = S.manualPan;
   drawStrip();

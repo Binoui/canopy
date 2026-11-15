@@ -238,6 +238,7 @@ impl Ui {
                 })
                 .collect();
             Ok(ChromeFrame {
+                loaded: Default::default(),
                 forest,
                 capture_enabled: browser.capture_enabled()?,
                 theme: browser.theme_mode()?,
@@ -305,6 +306,7 @@ impl Ui {
             Shortcut::SettleTree => self.chrome.settle_current(),
             Shortcut::NewTree => self.chrome.new_tree(),
             Shortcut::Forest => self.chrome.toggle_forest(),
+            Shortcut::NextWaiting => self.chrome.next_waiting(),
             Shortcut::Reload => self.report(self.pages.reload()),
             Shortcut::RememberSelection => self.report(self.pages.remember_selection()),
             Shortcut::Quit => self.window.close(),
@@ -330,6 +332,7 @@ enum Shortcut {
     NewTree,
     SettleTree,
     Forest,
+    NextWaiting,
     Reload,
     RememberSelection,
     Quit,
@@ -388,6 +391,7 @@ impl Shortcut {
             (Modifiers::CONTROL, key::t, Self::NewTree),
             (Modifiers::CONTROL, key::w, Self::SettleTree),
             (Modifiers::CONTROL, key::e, Self::Forest),
+            (Modifiers::CONTROL, key::Tab, Self::NextWaiting),
             (Modifiers::CONTROL, key::r, Self::Reload),
             (Modifiers::CONTROL_SHIFT, key::r, Self::Reload),
             (Modifiers::NONE, key::F5, Self::Reload),
@@ -580,6 +584,7 @@ mod shortcut_tests {
             (key::t, Modifiers::CONTROL, Shortcut::NewTree),
             (key::w, Modifiers::CONTROL, Shortcut::SettleTree),
             (key::e, Modifiers::CONTROL, Shortcut::Forest),
+            (key::Tab, Modifiers::CONTROL, Shortcut::NextWaiting),
             (key::r, Modifiers::CONTROL, Shortcut::Reload),
             (key::r, Modifiers::CONTROL_SHIFT, Shortcut::Reload),
             (key::F5, Modifiers::NONE, Shortcut::Reload),
