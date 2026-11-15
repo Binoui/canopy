@@ -529,6 +529,7 @@ fn post_switch_back() -> Result<()> {
         "S3: POST revival lost back list"
     );
     assert!(f.history().contains(&a));
+    assert!(!f.history().contains(&next), "GET drops forward entries");
     assert_eq!(f.server.hits("POST /post-result"), posts_before);
     assert_eq!(f.server.hits("GET /post-result"), 1);
     f.pages.go(Go::Parent)?;
@@ -972,9 +973,87 @@ fn saved_citation_routing() -> Result<()> {
     assert!(f.arrives(b, 6000));
     Ok(())
 }
+fn tls_candidate_failure() -> Result<()> {
+    struct ServerProcess(std::process::Child);
+    impl Drop for ServerProcess {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let f = Fixture::new()?;
+    let a = f.navigate("/a")?;
+    let key = f.dir.join("key.pem");
+    let cert = f.dir.join("cert.pem");
+    assert!(std::process::Command::new("openssl")
+        .args([
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-days",
+            "1",
+            "-subj",
+            "/CN=localhost",
+            "-keyout"
+        ])
+        .arg(&key)
+        .arg("-out")
+        .arg(&cert)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?
+        .success());
+    let socket = TcpListener::bind("127.0.0.1:0")?;
+    let address = socket.local_addr()?;
+    drop(socket);
+    let _server = ServerProcess(
+        std::process::Command::new("openssl")
+            .args(["s_server", "-accept", &address.to_string(), "-cert"])
+            .arg(&cert)
+            .arg("-key")
+            .arg(&key)
+            .arg("-www")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?,
+    );
+    wait("TLS fixture listening", || {
+        std::net::TcpStream::connect(address).is_ok()
+    })?;
+    f.pages
+        .open_roots(&[format!("https://{address}/").parse()?])?;
+    wait("TLS certificate rejected", || {
+        f.errors
+            .borrow()
+            .iter()
+            .any(|e| e.contains("HTTPS certificate rejected"))
+    })?;
+    assert_eq!(f.cursor(), Some(a));
+    wait("TLS candidate released", || web_process_count() == 1)?;
+    Ok(())
+}
+fn arrival_once() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.navigate("/a")?;
+    let b = f.navigate("/b")?;
+    let before = f.events().len();
+    f.open_root("/r")?;
+    pump_for(300);
+    assert_eq!(f.events().len(), before + 1);
+    f.pages.go(Go::Visit(b))?;
+    f.arrived(b)?;
+    pump_for(300);
+    assert_eq!(f.events().len(), before + 2);
+    assert_eq!(f.pages.read(|br| br.tree_target(f.tree(a)))?, b);
+    Ok(())
+}
 type Case = (&'static str, fn() -> Result<()>);
 pub fn cases() -> Vec<Case> {
     vec![
+        ("tls_candidate_failure", tls_candidate_failure),
+        ("arrival_once", arrival_once),
         ("saved_citation_routing", saved_citation_routing),
         ("back_switch_requests", back_during_switch),
         ("click_during_switch", click_during_switch),
