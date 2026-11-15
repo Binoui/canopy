@@ -74,8 +74,10 @@ current open tree, or routes the forest parent when no eligible item exists.
 
 Candidates load hidden, without focus. Their successful commit writes the cursor,
 tree target and arrival once, in Browser's transaction, and synchronously promotes
-the candidate. The old widget is then hidden, the candidate shown and focused, and
-Ui raises chrome on its event. A failure before commit reports the normal error
+the candidate. The old widget is then hidden and the candidate shown. It takes
+focus only when the previous page held it, preserving an active chrome editor.
+Ui raises chrome on its event. Candidates are realized while hidden, so their
+native windows exist before the chrome is raised. A failure before commit reports the normal error
 and preserves the old selected page and cursor. A retry routes normally. A second
 request cancels the candidate by its own ticket and destroys it; selecting the same
 pending visit reuses it. A cancelled or failed revival retains its checkpoint.

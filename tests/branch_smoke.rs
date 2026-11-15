@@ -708,6 +708,25 @@ fn chrome_after_switch() -> Result<()> {
         })?;
         common::key("Escape")?;
     }
+    server.held.store(true, Ordering::Relaxed);
+    ui.pages.open_roots(&[server.url("/slow")])?;
+    wait("hidden candidate", || server.hits("/slow") > 0)?;
+    common::key("ctrl+l")?;
+    wait("editing palette", || {
+        common::chrome_focused(&ui, "#palette-input")
+    })?;
+    server.held.store(false, Ordering::Relaxed);
+    wait("candidate shown", || {
+        ui.snapshot()
+            .unwrap()
+            .current_visit()
+            .is_some_and(|v| v.url.path() == "/slow")
+            && !ui.pages.selected_page().native.is_loading()
+    })?;
+    assert!(
+        common::chrome_focused(&ui, "#palette-input"),
+        "switch must preserve an active chrome editor"
+    );
     ui.window.close();
     Ok(())
 }

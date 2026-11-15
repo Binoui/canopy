@@ -251,7 +251,6 @@ impl LivePage {
     }
     pub(super) fn show(&self) {
         self.native.show();
-        self.native.grab_focus();
         self.state.restore_scroll();
     }
     pub(super) fn native_back(&self) -> bool {

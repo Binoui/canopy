@@ -429,6 +429,7 @@ impl Pages {
         self.branches.candidate.borrow_mut().take();
         self.branches.candidate_saved.borrow_mut().take();
         let old = self.branches.live.borrow_mut().replace(candidate.clone());
+        let focus = old.as_ref().is_some_and(|page| page.native.has_focus());
         if let Some(old) = old {
             old.native.hide();
             self.releasing.set(true);
@@ -479,6 +480,9 @@ impl Pages {
             });
         }
         candidate.show();
+        if focus {
+            candidate.focus();
+        }
     }
 
     fn receive_view(&self, view: crate::browser::ViewId, empty: bool, event: PageEvent) {
