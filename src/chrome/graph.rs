@@ -335,7 +335,7 @@ fn square(x: f64, y: f64, s: f64) -> Rect {
     Rect { x, y, s, w: s }
 }
 
-fn edge_kind(forest: &ForestProjection, id: VisitId) -> EdgeKind {
+pub(crate) fn edge_kind(forest: &ForestProjection, id: VisitId) -> EdgeKind {
     match forest.visit(id).map(|visit| &visit.state) {
         Some(VisitState::Queued) => EdgeKind::Pending,
         _ => EdgeKind::Plain,

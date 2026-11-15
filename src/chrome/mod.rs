@@ -12,6 +12,7 @@ mod forest_layout;
 pub(crate) mod graph;
 mod palette;
 mod pins;
+mod tree_view;
 mod view;
 mod waiting;
 
