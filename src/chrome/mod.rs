@@ -119,6 +119,11 @@ pub enum ChromeIntent {
     OpenFile(i64),
     /// Open the folder a downloaded file was saved in.
     OpenFileFolder(i64),
+    /// Fill one of the saved logins of offer number `offer` into the page.
+    FillLogin {
+        offer: u64,
+        index: usize,
+    },
 }
 
 pub enum Toast {
@@ -285,6 +290,19 @@ impl HtmlChrome {
 
     pub fn toggle_forest(&self) {
         self.inner.call("toggleForest", &[]);
+    }
+
+    /// Offers these saved accounts for the sign-in fields on the page. No account takes
+    /// the offer away. `offer` comes back with the choice, so a choice made on an offer
+    /// that has since been replaced can be told apart.
+    pub fn offer_logins(&self, offer: u64, usernames: &[&str]) {
+        self.inner
+            .call("logins", &[json!({ "offer": offer, "names": usernames })]);
+    }
+
+    /// Fills the only offered login, or opens the list when there are several.
+    pub fn fill_login(&self) {
+        self.inner.call("fillLogin", &[]);
     }
 
     pub fn toast(&self, toast: Toast) {
@@ -553,6 +571,10 @@ impl Inner {
             "remember" => ChromeIntent::RememberSelection,
             "open-file" => ChromeIntent::OpenFile(message["file"].as_i64()?),
             "open-file-folder" => ChromeIntent::OpenFileFolder(message["file"].as_i64()?),
+            "fill-login" => ChromeIntent::FillLogin {
+                offer: message["offer"].as_u64()?,
+                index: index()?,
+            },
             "cancel" => ChromeIntent::CancelContinuation,
             "path" => ChromeIntent::OpenPath(suggestions.paths.get(index()?)?.clone()),
             "shortcut" => ChromeIntent::Navigate {

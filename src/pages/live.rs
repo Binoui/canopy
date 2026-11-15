@@ -15,6 +15,8 @@ use webkit2gtk::{
     ResponsePolicyDecisionExt, URIRequestExt, UserContentInjectedFrames, UserContentManagerExt,
     UserScript, UserScriptInjectionTime, WebViewExt,
 };
+#[path = "login_fields.rs"]
+mod login_fields;
 #[path = "mouse.rs"]
 mod mouse;
 
@@ -284,6 +286,10 @@ impl LivePage {
                 }),
             ));
         }
+        signals.push((
+            manager.clone().upcast(),
+            login_fields::setup(&manager, &state),
+        ));
         {
             let weak = Rc::downgrade(&state);
             signals.push((
@@ -366,6 +372,8 @@ impl LivePage {
                                     Err(error) => state.emit(PageEvent::Error(error.to_string())),
                                 }
                             }
+                            // The new document reports its own sign-in fields.
+                            state.emit(PageEvent::LoginFields(None));
                         }
                         LoadEvent::Finished => {
                             let next = state
@@ -381,6 +389,7 @@ impl LivePage {
                             state.update_title();
                             state.restore_scroll();
                             state.emit(PageEvent::Loading(false));
+                            state.look_for_login_fields();
                             let enabled = state
                                 .owner()
                                 .browser

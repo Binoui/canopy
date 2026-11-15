@@ -18,8 +18,15 @@ pub struct Login {
     pub last_used: i64,
 }
 
+/// A provider's own handle for one saved account.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LoginId(i64);
+
+impl LoginId {
+    pub fn new(value: i64) -> Self {
+        Self(value)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct SavedLogin {
@@ -52,6 +59,25 @@ impl From<rusqlite::Error> for LoginsError {
     }
 }
 type Result<T> = std::result::Result<T, LoginsError>;
+
+/// Where saved logins come from. The vault on this computer is one provider; a password
+/// manager the user already has can be another.
+pub trait LoginProvider {
+    /// The accounts saved for exactly this page's origin, most recently used first.
+    fn for_page(&self, page: &Url) -> Result<Vec<SavedLogin>>;
+    /// The password of an account `for_page` returned.
+    fn password(&self, login: &SavedLogin) -> Result<Secret>;
+}
+
+impl LoginProvider for Logins {
+    fn for_page(&self, page: &Url) -> Result<Vec<SavedLogin>> {
+        Logins::for_page(self, page)
+    }
+
+    fn password(&self, login: &SavedLogin) -> Result<Secret> {
+        Logins::password(self, login)
+    }
+}
 
 pub struct Logins {
     db: Connection,

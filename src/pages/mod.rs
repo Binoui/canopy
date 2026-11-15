@@ -2,9 +2,11 @@ mod live;
 mod native;
 
 use crate::{
+    address::WebOrigin,
     browser::{Browser, Landing, LoadTicket, NavigationTarget, ThemeMode, TreeId, VisitId},
     chrome::{Favicons, CHROME_HEIGHT},
     forest::ForestProjection,
+    secret::Secret,
 };
 use anyhow::Result;
 use live::LivePage;
@@ -32,7 +34,11 @@ pub enum PageEvent {
     Error(String),
     Remembered(i64),
     Download(DownloadEvent),
-    OpenBranchPalette { visit: VisitId },
+    OpenBranchPalette {
+        visit: VisitId,
+    },
+    /// The page on screen shows sign-in fields, at this address, or stopped showing any.
+    LoginFields(Option<Url>),
 }
 
 enum Continuation {
@@ -470,6 +476,22 @@ impl Pages {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("No selected page."))?;
         page.remember_selection()
+    }
+    /// Types a saved login into the selected page, if it is still on `origin`.
+    pub fn fill_login(
+        &self,
+        origin: &WebOrigin,
+        username: &str,
+        password: &Secret,
+        done: impl FnOnce(Result<()>) + 'static,
+    ) -> Result<()> {
+        let page = self
+            .live
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No selected page."))?;
+        page.fill_login(origin, username, password, done);
+        Ok(())
     }
     pub fn set_capture_enabled(&self, enabled: bool) -> Result<()> {
         let page = self

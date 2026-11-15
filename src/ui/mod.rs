@@ -1,5 +1,5 @@
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     path::Path,
     rc::{Rc, Weak},
 };
@@ -15,6 +15,7 @@ use crate::{
         Toast,
     },
     forest::ForestProjection,
+    logins::{LoginProvider, Logins, SavedLogin},
     pages::{DownloadEvent, Go, PageEvent, Pages},
 };
 
@@ -28,6 +29,10 @@ pub struct Ui {
     cookie_monitor: gio::FileMonitor,
     draining_cookies: Cell<bool>,
     cookies_pending: Cell<bool>,
+    /// Where saved logins are read from. `None` when the vault could not be opened.
+    logins: RefCell<Option<Box<dyn LoginProvider>>>,
+    /// The accounts offered for the page on screen, and the number of that offer.
+    offered: RefCell<(u64, Vec<SavedLogin>)>,
 }
 
 impl Ui {
@@ -68,6 +73,14 @@ impl Ui {
         inbox.prepare()?;
         let cookie_monitor = gio::File::for_path(inbox.directory())
             .monitor_directory(gio::FileMonitorFlags::NONE, None::<&gio::Cancellable>)?;
+        // Opening the vault reads no secret; the keyring is only asked when a login is filled.
+        let logins: Option<Box<dyn LoginProvider>> = match Logins::open(data_dir) {
+            Ok(vault) => Some(Box::new(vault)),
+            Err(error) => {
+                eprintln!("Canopy: saved logins are unavailable. {error}");
+                None
+            }
+        };
         let ui = Rc::new_cyclic(|me: &Weak<Ui>| {
             let host: Weak<dyn ChromeHost> = me.clone();
             chrome.attach(host);
@@ -81,6 +94,8 @@ impl Ui {
                 cookie_monitor,
                 draining_cookies: Cell::new(false),
                 cookies_pending: Cell::new(false),
+                logins: RefCell::new(logins),
+                offered: RefCell::default(),
             }
         });
         let weak = Rc::downgrade(&ui);
@@ -106,6 +121,7 @@ impl Ui {
                     .chrome
                     .toast(Toast::Info("Selection remembered on this computer.".into())),
                 PageEvent::Download(event) => ui.chrome.toast(download_toast(event)),
+                PageEvent::LoginFields(page) => ui.offer_logins(page.as_ref()),
                 PageEvent::OpenBranchPalette { visit } => {
                     ui.refresh();
                     ui.chrome
@@ -310,6 +326,7 @@ impl Ui {
             Shortcut::NextWaiting => self.chrome.next_waiting(),
             Shortcut::Reload => self.report(self.pages.reload()),
             Shortcut::RememberSelection => self.report(self.pages.remember_selection()),
+            Shortcut::FillLogin => self.chrome.fill_login(),
             Shortcut::Quit => self.window.close(),
             Shortcut::Tree(index) => {
                 let tree = self.chrome.tab(index);
@@ -337,6 +354,7 @@ enum Shortcut {
     NextWaiting,
     Reload,
     RememberSelection,
+    FillLogin,
     Quit,
     Tree(usize),
     Back,
@@ -399,6 +417,7 @@ impl Shortcut {
             (Modifiers::CONTROL_SHIFT, key::r, Self::Reload),
             (Modifiers::NONE, key::F5, Self::Reload),
             (Modifiers::CONTROL, key::s, Self::RememberSelection),
+            (Modifiers::CONTROL_SHIFT, key::l, Self::FillLogin),
             (Modifiers::CONTROL, key::q, Self::Quit),
             (Modifiers::ALT, key::Left, Self::Back),
             (Modifiers::NONE, key::F6, Self::ToggleFocus),
@@ -461,6 +480,7 @@ impl ChromeHost for Ui {
             ChromeIntent::RememberSelection => self.pages.remember_selection(),
             ChromeIntent::OpenFile(id) => ui.open_file(id, false),
             ChromeIntent::OpenFileFolder(id) => ui.open_file(id, true),
+            ChromeIntent::FillLogin { offer, index } => ui.fill_login(offer, index),
         };
         self.report(result);
     }
@@ -506,6 +526,60 @@ impl Ui {
                 Ok(())
             }
         }
+    }
+}
+
+impl Ui {
+    /// Reads saved logins from `provider` from now on.
+    pub fn set_login_provider(&self, provider: Box<dyn LoginProvider>) {
+        *self.logins.borrow_mut() = Some(provider);
+        self.offer_logins(None);
+    }
+
+    /// Offers the accounts saved for `page`, which shows sign-in fields. `None`, or a page
+    /// with no saved account, takes the offer away.
+    fn offer_logins(&self, page: Option<&Url>) {
+        let logins = match (page, self.logins.borrow().as_ref()) {
+            // A vault that cannot be read offers nothing; filling is where errors are shown.
+            (Some(page), Some(provider)) => provider.for_page(page).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        let offer = {
+            let mut offered = self.offered.borrow_mut();
+            if logins.is_empty() && offered.1.is_empty() {
+                return;
+            }
+            *offered = (offered.0 + 1, logins);
+            offered.0
+        };
+        let offered = self.offered.borrow();
+        let names: Vec<&str> = offered.1.iter().map(|l| l.username.as_str()).collect();
+        self.chrome.offer_logins(offer, &names);
+    }
+
+    /// Fills the account the user picked from offer number `offer`.
+    fn fill_login(&self, offer: u64, index: usize) -> Result<()> {
+        use anyhow::Context;
+        let login = {
+            let offered = self.offered.borrow();
+            (offered.0 == offer)
+                .then(|| offered.1.get(index).cloned())
+                .flatten()
+                .context("That login is no longer offered for this page.")?
+        };
+        let password = self
+            .logins
+            .borrow()
+            .as_ref()
+            .context("Saved logins are unavailable.")?
+            .password(&login)?;
+        let weak = self.me.clone();
+        self.pages
+            .fill_login(&login.origin, &login.username, &password, move |result| {
+                if let (Some(ui), Err(error)) = (weak.upgrade(), result) {
+                    ui.report_error(&error.to_string());
+                }
+            })
     }
 }
 
@@ -593,6 +667,7 @@ mod shortcut_tests {
             (key::r, Modifiers::CONTROL_SHIFT, Shortcut::Reload),
             (key::F5, Modifiers::NONE, Shortcut::Reload),
             (key::s, Modifiers::CONTROL, Shortcut::RememberSelection),
+            (key::l, Modifiers::CONTROL_SHIFT, Shortcut::FillLogin),
             (key::q, Modifiers::CONTROL, Shortcut::Quit),
             (key::Left, Modifiers::ALT, Shortcut::Back),
             (key::F6, Modifiers::NONE, Shortcut::ToggleFocus),
