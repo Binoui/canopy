@@ -1,8 +1,6 @@
-use std::{
-    io::{Read, Write},
-    net::TcpListener,
-    thread,
-};
+#[path = "common/http.rs"]
+mod http;
+use std::{io::Write, net::TcpListener, thread};
 
 use anyhow::Result;
 use canopy::{address::web_url, browser::NavigationTarget, ui::Ui};
@@ -21,9 +19,8 @@ fn main() -> Result<()> {
         let mut loads = 0;
         while loads < 3 {
             let (mut stream, _) = listener.accept()?;
-            let mut request = [0; 4096];
-            let size = stream.read(&mut request)?;
-            if request[..size].starts_with(b"GET / HTTP/") {
+            let request = http::request(&mut stream)?;
+            if request.starts_with(b"GET / HTTP/") {
                 loads += 1;
             }
             let body = format!(

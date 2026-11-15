@@ -1,3 +1,5 @@
+#[path = "common/http.rs"]
+mod http;
 use anyhow::{bail, Result};
 use canopy::{
     browser::{Browser, NavigationTarget},
@@ -6,7 +8,7 @@ use canopy::{
 use gtk::prelude::*;
 use std::{
     cell::RefCell,
-    io::{Read, Write},
+    io::Write,
     net::TcpListener,
     rc::Rc,
     sync::{
@@ -52,9 +54,8 @@ fn main() -> Result<()> {
         stream
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
-        let mut request = [0; 8192];
-        let n = stream.read(&mut request).unwrap();
-        if String::from_utf8_lossy(&request[..n]).contains("GET /file ") {
+        let request = http::request(&mut stream).unwrap();
+        if String::from_utf8_lossy(&request).contains("GET /file ") {
             stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=held.bin\r\nContent-Length: 131072\r\nConnection: close\r\n\r\n").unwrap();
             stream.write_all(&vec![42; 65536]).unwrap();
             stream.flush().unwrap();

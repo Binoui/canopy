@@ -1,6 +1,8 @@
+#[path = "common/http.rs"]
+mod http;
 use std::{
     cell::RefCell,
-    io::{Read, Write},
+    io::Write,
     net::TcpListener,
     path::Path,
     process::Command,
@@ -221,17 +223,9 @@ impl Fixture {
                     continue;
                 };
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                let mut request = Vec::new();
-                let mut buffer = [0; 4096];
-                while let Ok(n) = stream.read(&mut buffer) {
-                    if n == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&buffer[..n]);
-                    if request.ends_with(b"\r\n\r\n") {
-                        break;
-                    }
-                }
+                let Ok(request) = http::request(&mut stream) else {
+                    continue;
+                };
                 let request = String::from_utf8_lossy(&request);
                 let path = request.split_whitespace().nth(1).unwrap_or("/");
                 let (headers, body) = match path {
