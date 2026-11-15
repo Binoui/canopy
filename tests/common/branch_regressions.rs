@@ -396,7 +396,7 @@ fn background_navigation_after(page: &str, after: u64) -> Result<()> {
         f.server.hits("/frame/once") + (0..40).map(|i| f.server.hits(&format!("/frame/{i}"))).sum::<usize>(),
         f.errors()
     );
-    assert!(arrived, "B1: frame navigation cancelled switch");
+    assert!(arrived, "frame navigation cancelled switch");
     Ok(())
 }
 
@@ -897,7 +897,7 @@ fn failed_loading_signal() -> Result<()> {
         .expect("error event");
     assert!(
         events[error + 1..].contains(&true),
-        "M2: missing trailing Loading(false)"
+        "missing trailing Loading(false)"
     );
     Ok(())
 }

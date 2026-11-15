@@ -403,7 +403,7 @@ fn web_process_count() -> usize {
     count
 }
 
-// --- Round 2 probes -----------------------------------------------------------
+// Native navigation and response probes.
 
 fn loading(f: &Fixture) -> bool {
     f.pages.selected_page().native.is_loading()
