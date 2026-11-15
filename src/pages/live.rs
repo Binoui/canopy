@@ -134,10 +134,10 @@ struct NativeState {
     /// The address of the main frame's last response that has not become a page, and the
     /// page its file belongs to if it becomes a download instead. WebKit may report that
     /// load as failed before it reports the download, and the navigation is forgotten then.
-    response_page: RefCell<Option<(Url, Option<VisitId>)>>,
-    download_handover: Cell<bool>,
+    response_page: RefCell<Option<(LoadTicket, Url, Option<VisitId>)>>,
+    download_handover: Cell<Option<LoadTicket>>,
     reload_candidate: RefCell<Option<Url>>,
-    main_frame_post: Cell<Option<bool>>,
+    main_frame_post: Cell<Option<(LoadTicket, bool)>>,
     #[cfg(feature = "gui-smoke")]
     revival_refusals: Cell<usize>,
 }
@@ -224,6 +224,7 @@ impl LivePage {
     }
     pub(super) fn cancel_foreground(&self) {
         let state = &self.state;
+        state.end_response();
         state
             .owner()
             .discard_view_continuation(&state.navigation.borrow());
@@ -257,7 +258,7 @@ impl LivePage {
     }
 
     pub(super) fn awaiting_download(&self) -> bool {
-        self.state.download_handover.get()
+        self.state.download_handover.get().is_some()
     }
 
     pub(super) fn requires_get(&self, visit: VisitId) -> bool {
@@ -411,7 +412,7 @@ impl LivePage {
             traversal: RefCell::new(None),
             pending_scroll: Cell::new(None),
             response_page: RefCell::new(None),
-            download_handover: Cell::new(false),
+            download_handover: Cell::new(None),
             reload_candidate: RefCell::new(None),
             main_frame_post: Cell::new(None),
             #[cfg(feature = "gui-smoke")]
@@ -446,6 +447,7 @@ impl LivePage {
                                 return;
                             }
                             state.foreground_requested();
+                            state.end_response();
                             state.main_frame_post.set(None);
                             if matches!(*state.issue.borrow(), Issue::Issued { decided: false, .. })
                             {
@@ -531,7 +533,7 @@ impl LivePage {
                             state.complete_same_document();
                             state.update_title();
                             state.restore_scroll();
-                            if !state.download_handover.get() {
+                            if state.download_handover.get().is_none() {
                                 state.emit(PageEvent::Loading(false));
                             }
                             let enabled = state
@@ -590,22 +592,8 @@ impl LivePage {
                     }
                     // A response turned into a download ends the page load this way; the page
                     // the user was reading stays.
-                    if error.matches(PolicyError::FrameLoadInterruptedByPolicyChange) {
-                        state.download_handover.set(true);
-                        // Handover normally completes in download-started. Give failures
-                        // that never produce that signal a bounded exit as well.
-                        let weak = Rc::downgrade(&state);
-                        glib::timeout_add_local_once(
-                            std::time::Duration::from_secs(30),
-                            move || {
-                                if let Some(state) = Pages::enter_native(&weak) {
-                                    if state.download_handover.replace(false) {
-                                        state.emit(PageEvent::Loading(false));
-                                    }
-                                }
-                            },
-                        );
-                    } else if !cancelled {
+                    if !error.matches(PolicyError::FrameLoadInterruptedByPolicyChange) && !cancelled
+                    {
                         state.emit(PageEvent::Error(format!(
                             "Could not load this page. {}",
                             error.message()
@@ -758,9 +746,11 @@ impl LivePage {
                     let Some(state) = Pages::enter_native(&weak) else {
                         return;
                     };
-                    state
-                        .main_frame_post
-                        .set(Some(request.http_method().as_deref() == Some("POST")));
+                    state.main_frame_post.set(
+                        state.loading_ticket().map(|ticket| {
+                            (ticket, request.http_method().as_deref() == Some("POST"))
+                        }),
+                    );
                     let weak = Rc::downgrade(&state);
                     // The typed binding treats the absent redirect response as non-null.
                     resource.connect_local("sent-request", false, move |values| {
@@ -775,7 +765,9 @@ impl LivePage {
                             if state.native.main_resource().as_ref() == Some(&resource) {
                                 state
                                     .main_frame_post
-                                    .set(Some(request.http_method().as_deref() == Some("POST")));
+                                    .set(state.loading_ticket().map(|ticket| {
+                                        (ticket, request.http_method().as_deref() == Some("POST"))
+                                    }));
                             }
                         }
                         None
@@ -789,11 +781,18 @@ impl LivePage {
                 let page = state
                     .download_page(source)
                     .or_else(|| state.owner().read(|b| b.snapshot()).ok()?.current);
-                if state.download_handover.replace(false) {
+                if let Some(ticket) = state.download_handover.take() {
+                    let generation = state.load_generation.get();
                     let weak = Rc::downgrade(&state);
                     glib::idle_add_local_once(move || {
                         if let Some(state) = Pages::enter_native(&weak) {
-                            state.emit(PageEvent::Loading(false));
+                            if state.load_generation.get() == generation
+                                && state
+                                    .loading_ticket()
+                                    .is_none_or(|current| current == ticket)
+                            {
+                                state.emit(PageEvent::Loading(false));
+                            }
                         }
                     });
                 }
@@ -830,6 +829,7 @@ impl LivePage {
     }
 
     fn detach(&self) {
+        self.state.end_response();
         if self.state.lifecycle.replace(Lifecycle::Released) == Lifecycle::Released {
             return;
         }
@@ -1242,6 +1242,12 @@ impl NativeState {
         }
     }
 
+    /// Response metadata belongs only to the current load ticket.
+    fn end_response(&self) {
+        self.download_handover.set(None);
+        self.response_page.borrow_mut().take();
+    }
+
     fn loading_ticket(&self) -> Option<LoadTicket> {
         match *self.issue.borrow() {
             Issue::Loading(ticket) | Issue::Cancelling(ticket) | Issue::Retiring { ticket, .. } => {
@@ -1361,6 +1367,7 @@ impl NativeState {
 
     fn load(self: &Rc<Self>, url: Url) {
         self.foreground_requested();
+        self.end_response();
         // Every caller registers its intent first; an address with no attempt has no visit to
         // commit to.
         let Some(requested) = self.navigation.borrow().pending_ticket() else {
@@ -1548,14 +1555,17 @@ impl NativeState {
                         .browser
                         .borrow()
                         .download_page(&self.navigation.borrow(), Some(&url));
-                    (url, page.ok().flatten())
+                    (self.loading_ticket(), url, page.ok().flatten())
                 });
-                self.response_page.replace(noted);
+                self.response_page.replace(
+                    noted.and_then(|(ticket, url, page)| ticket.map(|ticket| (ticket, url, page))),
+                );
             }
             if response.is_mime_type_supported() {
                 return false;
             }
             if main {
+                self.download_handover.set(self.loading_ticket());
                 decision.download();
             } else {
                 decision.ignore();
@@ -1889,7 +1899,11 @@ impl NativeState {
                     .rev()
                     .find(|entry| entry.document == self.history_document.get())
             });
-        let method = self.main_frame_post.take();
+        let method = self
+            .main_frame_post
+            .take()
+            .filter(|(ticket, _)| Some(*ticket) == self.loading_ticket())
+            .map(|(_, post)| post);
         let post = method.unwrap_or_else(|| previous.is_some_and(|entry| entry.post));
         let needs_get = method.is_none() && previous.is_some_and(|entry| entry.needs_get);
         history.retain(|entry| entry.item != current && live.contains(&entry.item));
@@ -1971,12 +1985,13 @@ impl NativeState {
 
     /// The page a download from `source` that starts now belongs to.
     fn download_page(&self, source: Option<&Url>) -> Option<VisitId> {
-        let noted = self
-            .response_page
-            .borrow_mut()
-            .take_if(|(url, _)| Some(&*url) == source);
+        let noted = self.response_page.borrow_mut().take_if(|(ticket, url, _)| {
+            Some(&*url) == source
+                && (self.loading_ticket() == Some(*ticket)
+                    || self.download_handover.get() == Some(*ticket))
+        });
         match noted {
-            Some((_, page)) => page,
+            Some((_, _, page)) => page,
             None => {
                 let page = self
                     .owner()
