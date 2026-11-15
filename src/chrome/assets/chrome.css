@@ -44,6 +44,14 @@ svg.icon { width: 14px; height: 14px; flex: none; fill: none; stroke: currentCol
   position: absolute; left: 0; right: 0; top: 0; height: var(--header);
   display: flex; align-items: flex-end; gap: 2px; padding: 0 6px 0 8px; background: var(--chrome);
 }
+.label-button {
+  align-self: center; flex: none; display: flex; align-items: center; gap: 7px; height: 28px; padding: 0 10px 0 8px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg); font-weight: 500;
+}
+.label-button:hover { border-color: var(--line); }
+.label-button svg.icon { width: 15px; height: 15px; color: var(--green-ink); }
+.label-button.on { background: var(--green-soft); border-color: transparent; color: var(--green-ink); }
+.tabs-divider { align-self: center; flex: none; width: 1px; height: 18px; margin: 0 5px 0 6px; background: var(--border); }
 #tab-row { display: flex; align-items: flex-end; gap: 2px; min-width: 0; height: 100%; }
 .tab {
   position: relative; display: flex; align-items: center; gap: 7px; height: 32px; max-width: 200px;
@@ -201,6 +209,12 @@ kbd { font: 500 10.5px "Inter", sans-serif; color: var(--faint); border: 1px sol
 .palette-foot { border-top: 1px solid var(--border); padding: 8px 14px; font-size: 11px; color: var(--faint); word-spacing: 2px; }
 
 /* ---------- surfaces: new tree, forest ---------- */
+.overlay { position: absolute; left: 0; right: 0; top: var(--header); bottom: 0; }
+.forest-pop {
+  position: absolute; left: 50%; top: 22px; bottom: 22px; width: min(1180px, calc(100% - 44px)); transform: translateX(-50%);
+  overflow: hidden; background: var(--bg); border: 1px solid var(--border); border-radius: 13px;
+  box-shadow: 0 1px 2px var(--shadow), 0 10px 30px var(--shadow);
+}
 .surface { position: absolute; left: 0; right: 0; top: calc(var(--header) + var(--rest)); bottom: 0; background: var(--bg); overflow: hidden; }
 .dapple::before {
   content: ""; position: absolute; inset: 0; pointer-events: none;
