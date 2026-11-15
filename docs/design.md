@@ -224,6 +224,11 @@ rather than an empty transparent/grey/white frame, the image handler is removed.
 No timer reveals an empty backing store: both 300 ms and 1000 ms cutoffs failed
 pixel sampling under load. A renderer that never supplies a snapshot retains the
 outgoing picture. This deliberately favours a continuous picture over a deadline.
+Smoke instrumentation reports the outgoing view's identity at Holding, Checkpointing
+and Released. Exact container counts are captured in the Released callback, before
+queued commands are drained; the tests enforce a 1000 ms frame budget plus the
+checkpoint reader's 500 ms limit. A missing completion fails that bound rather
+than waiting for a count to fall and potentially hiding a leak.
 Pages derives the content rectangle from the host window even when a late Fixed
 allocation still reflects the old child requests, preventing a shrink from being
 undone by the Fixed's own size-allocate signal.

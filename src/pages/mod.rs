@@ -171,6 +171,23 @@ struct Branches {
     candidate_saved: RefCell<Option<(usize, live::Checkpoint)>>,
 }
 
+#[cfg(feature = "gui-smoke")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReleasePhase {
+    Holding,
+    Checkpointing,
+    Released,
+}
+#[cfg(feature = "gui-smoke")]
+#[derive(Clone, Copy, Debug)]
+pub struct ReleaseEvent {
+    pub view: crate::browser::ViewId,
+    pub widget: usize,
+    pub phase: ReleasePhase,
+}
+#[cfg(feature = "gui-smoke")]
+type ReleaseObserver = Rc<dyn Fn(ReleaseEvent)>;
+
 pub struct Pages {
     me: Weak<Pages>,
     browser: RefCell<Browser>,
@@ -187,6 +204,8 @@ pub struct Pages {
     before_revival: RefCell<Option<Rc<dyn Fn()>>>,
     #[cfg(feature = "gui-smoke")]
     placement_observer: RefCell<Option<PlacementObserver>>,
+    #[cfg(feature = "gui-smoke")]
+    release_observer: RefCell<Option<ReleaseObserver>>,
     releasing: Cell<bool>,
     continuation: RefCell<Option<PendingContinuation>>,
     observer: RefCell<Option<Observer>>,
@@ -217,6 +236,8 @@ impl Pages {
             before_revival: RefCell::new(None),
             #[cfg(feature = "gui-smoke")]
             placement_observer: RefCell::new(None),
+            #[cfg(feature = "gui-smoke")]
+            release_observer: RefCell::new(None),
             releasing: Cell::new(false),
             continuation: RefCell::new(None),
             observer: RefCell::new(None),
@@ -521,6 +542,8 @@ impl Pages {
         let focus = old.as_ref().is_some_and(|page| page.native.has_focus());
         if let Some(old) = old {
             self.releasing.set(true);
+            #[cfg(feature = "gui-smoke")]
+            self.release_event(&old, ReleasePhase::Holding);
             if let Some(window) = old.native.window() {
                 window.set_pass_through(true);
             }
@@ -701,6 +724,14 @@ impl Pages {
     }
 
     fn release_picture(&self, old: Rc<LivePage>) {
+        #[cfg(feature = "gui-smoke")]
+        self.release_event(&old, ReleasePhase::Checkpointing);
+        #[cfg(feature = "gui-smoke")]
+        let event = ReleaseEvent {
+            view: old.view(),
+            widget: old.native.as_ptr() as usize,
+            phase: ReleasePhase::Released,
+        };
         old.native.set_child_visible(false);
         let weak = self.me.clone();
         let pending = old.clone();
@@ -722,6 +753,8 @@ impl Pages {
                     }
                 }
                 pages.releasing.set(false);
+                #[cfg(feature = "gui-smoke")]
+                pages.emit_release(event);
                 loop {
                     let command = pages.commands.borrow_mut().pop_front();
                     let Some(command) = command else { break };
@@ -1101,6 +1134,28 @@ impl Pages {
             if let Some(observer) = observer {
                 observer(view);
             }
+        }
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn observe_release(&self, observer: impl Fn(ReleaseEvent) + 'static) {
+        *self.release_observer.borrow_mut() = Some(Rc::new(observer));
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    fn release_event(&self, page: &LivePage, phase: ReleasePhase) {
+        self.emit_release(ReleaseEvent {
+            view: page.view(),
+            widget: page.native.as_ptr() as usize,
+            phase,
+        });
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    fn emit_release(&self, event: ReleaseEvent) {
+        let observer = self.release_observer.borrow().clone();
+        if let Some(observer) = observer {
+            observer(event);
         }
     }
 

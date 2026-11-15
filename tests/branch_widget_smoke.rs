@@ -434,7 +434,45 @@ fn ui_tab_collapse() -> Result<()> {
 }
 
 fn geometry(u: &U) -> Result<()> {
-    let a = u.ui.pages.selected_page().native.allocation();
+    let native = u.ui.pages.selected_page().native.clone();
+    let clock = Instant::now();
+    let allocations = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let history = allocations.clone();
+    let allocation_signal = native.connect_size_allocate(move |_, a| {
+        history.borrow_mut().push((clock.elapsed().as_millis(), *a))
+    });
+    let presses = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let clicks = presses.clone();
+    let press_signal = native.connect_button_press_event(move |view, event| {
+        clicks.borrow_mut().push((
+            "page",
+            clock.elapsed().as_millis(),
+            event.position(),
+            view.allocation(),
+            view.allocation(),
+        ));
+        glib::Propagation::Proceed
+    });
+    let mut other_presses = Vec::new();
+    for (label, target) in [
+        ("window", u.ui.window.clone().upcast::<gtk::Widget>()),
+        ("chrome", u.ui.chrome.native().upcast::<gtk::Widget>()),
+    ] {
+        let clicks = presses.clone();
+        let page = native.clone();
+        let handler = target.connect_button_press_event(move |widget, event| {
+            clicks.borrow_mut().push((
+                label,
+                clock.elapsed().as_millis(),
+                event.position(),
+                page.allocation(),
+                widget.allocation(),
+            ));
+            glib::Propagation::Proceed
+        });
+        other_presses.push((target, handler));
+    }
+    let a = native.allocation();
     assert_eq!(
         (a.x(), a.y(), a.width(), a.height()),
         (
@@ -465,11 +503,15 @@ fn geometry(u: &U) -> Result<()> {
     key("Escape")?;
     if let Some(original) = u.cursor() {
         eval(&u.ui, "scrollTo(0,0);document.getElementById('fork').style.cssText='display:block;margin-top:150px;height:60px';JSON.stringify(true)")?;
+        let click_at = clock.elapsed().as_millis();
         u.page_click("fork", "1")?;
-        anyhow::ensure!(
-            u.until(6000, || u.cursor_path() == "/d" && !u.loading()),
-            "page follows a real link after placement"
+        let followed = u.until(6000, || u.cursor_path() == "/d" && !u.loading());
+        println!(
+            "PLACEMENT_CLICK start={click_at} followed={followed} presses={:?} allocations={:?}",
+            presses.borrow(),
+            allocations.borrow()
         );
+        anyhow::ensure!(followed, "page follows a real link after placement");
         let (x, y) = page_point(&u.ui, u.ui.window.allocated_width() / 2, 400)?;
         move_to(x, y)?;
         xdo(&["click", "5"])?;
@@ -485,6 +527,11 @@ fn geometry(u: &U) -> Result<()> {
             "return after checking placed page input"
         );
     }
+    for (widget, signal) in other_presses {
+        widget.disconnect(signal);
+    }
+    native.disconnect(allocation_signal);
+    native.disconnect(press_signal);
     Ok(())
 }
 

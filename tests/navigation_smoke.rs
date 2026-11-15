@@ -275,7 +275,10 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
             ui.pages
                 .selected_page()
                 .navigate(server.url("/next")?, NavigationTarget::ChildOf(a))?;
+            let issued = Instant::now();
+            let was_loading = ui.pages.selected_page().native.is_loading();
             pump(300);
+            eprintln!("JANK elapsed_ms={} loading_at_issue={was_loading} loading_now={} started={} uri={:?}", issued.elapsed().as_millis(), ui.pages.selected_page().native.is_loading(), started.get(), ui.pages.selected_page().native.uri());
             assert!(ui.pages.selected_page().native.is_loading());
             assert!(!started.get(), "replacement must precede Started");
             ui.pages

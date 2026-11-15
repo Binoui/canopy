@@ -7,7 +7,7 @@ mod common;
 mod regressions;
 use canopy::{
     browser::{Browser, NavigationTarget, VisitId},
-    pages::{Go, PageEvent, Pages},
+    pages::{Go, PageEvent, Pages, ReleasePhase},
 };
 use gtk::prelude::*;
 use javascriptcore::ValueExt;
@@ -276,12 +276,120 @@ fn web_process_count() -> usize {
     count
 }
 
+type ReleaseSamples = Rc<RefCell<Vec<(ReleasePhase, Instant, Vec<usize>)>>>;
+
+struct ReleaseWatch {
+    widget: usize,
+    events: ReleaseSamples,
+}
+impl ReleaseWatch {
+    fn new(f: &Fixture, view: &webkit2gtk::WebView) -> Self {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let recorded = events.clone();
+        let widget = view.as_ptr() as usize;
+        let fixed = f.fixed.clone();
+        let clock = Instant::now();
+        f.pages.observe_release(move |event| {
+            let children: Vec<_> = fixed
+                .children()
+                .iter()
+                .map(|w| w.as_ptr() as usize)
+                .collect();
+            eprintln!(
+                "RELEASE t={}ms view={:?} widget={:#x} phase={:?} children={children:x?}",
+                clock.elapsed().as_millis(),
+                event.view,
+                event.widget,
+                event.phase
+            );
+            if event.widget == widget {
+                recorded
+                    .borrow_mut()
+                    .push((event.phase, Instant::now(), children));
+            }
+        });
+        Self {
+            widget: view.as_ptr() as usize,
+            events,
+        }
+    }
+    fn assert_finished(&self, f: &Fixture) -> Result<()> {
+        eprintln!(
+            "COUNT_POINT outgoing={:#x} children={:x?} phases={:?}",
+            self.widget,
+            f.fixed
+                .children()
+                .iter()
+                .map(|w| w.as_ptr() as usize)
+                .collect::<Vec<_>>(),
+            self.events
+                .borrow()
+                .iter()
+                .map(|(p, _, _)| p)
+                .collect::<Vec<_>>()
+        );
+        let started = self
+            .events
+            .borrow()
+            .iter()
+            .find(|(phase, _, children)| {
+                *phase == ReleasePhase::Holding && children.contains(&self.widget)
+            })
+            .map(|(_, t, _)| *t)
+            .expect("outgoing view began its hold");
+        // A one-second frame budget plus the checkpoint reader's 500 ms limit.
+        let deadline = started + Duration::from_millis(1500);
+        loop {
+            if let Some((_, ended, children)) = self
+                .events
+                .borrow()
+                .iter()
+                .find(|(phase, _, _)| *phase == ReleasePhase::Released)
+            {
+                assert!(
+                    *ended <= deadline,
+                    "hold and release exceeded their hard bound"
+                );
+                eprintln!(
+                    "RELEASE_DONE outgoing={:#x} elapsed_ms={}",
+                    self.widget,
+                    ended.duration_since(started).as_millis()
+                );
+                assert_eq!(
+                    children.len(),
+                    1,
+                    "release completion leaves exactly one widget"
+                );
+                assert!(
+                    !children.contains(&self.widget),
+                    "the outgoing widget is removed at release completion"
+                );
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                bail!(
+                    "hold and release did not finish within 1500 ms; outgoing={:#x}, children={:?}",
+                    self.widget,
+                    f.fixed
+                        .children()
+                        .iter()
+                        .map(|w| (w.as_ptr() as usize, w.allocation(), w.is_mapped()))
+                        .collect::<Vec<_>>()
+                );
+            }
+            pump();
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+}
+
 fn branch_history() -> Result<()> {
     let f = Fixture::new()?;
     let a = f.navigate("/a")?;
     let b = f.navigate("/b")?;
     wait("one source web process", || web_process_count() == 1)?;
     let old = f.pages.selected_page().native.downgrade();
+    let released = ReleaseWatch::new(&f, &f.pages.selected_page().native);
     f.pages.open_roots(&[f.server.url("/root")])?;
     wait("root", || {
         f.pages
@@ -290,7 +398,11 @@ fn branch_history() -> Result<()> {
             .current_visit()
             .is_some_and(|v| v.url == f.server.url("/root"))
     })?;
-    wait("previous view destroyed", || old.upgrade().is_none())?;
+    released.assert_finished(&f)?;
+    assert!(
+        old.upgrade().is_none(),
+        "released native widget is destroyed"
+    );
     assert_eq!(
         f.fixed.children().len(),
         1,
@@ -431,6 +543,7 @@ fn replacement(same: bool) -> Result<()> {
     let painted = pixel(&f);
     assert_eq!(painted, [210, 30, 50]);
     let old = f.pages.selected_page().native.clone();
+    let released = ReleaseWatch::new(&f, &old);
     f.pages.go(Go::Visit(q))?;
     wait("candidate request", || f.server.hits("/slow") > 0)?;
     assert_eq!(f.pages.read(|b| b.snapshot())?.current, Some(a));
@@ -478,9 +591,7 @@ fn replacement(same: bool) -> Result<()> {
         assert!(f.pages.read(|b| b.visit(q))?.opened_at.is_none());
     }
     drop(old);
-    wait("outgoing picture released", || {
-        f.fixed.children().len() == 1
-    })?;
+    released.assert_finished(&f)?;
     assert_eq!(
         f.fixed.children().len(),
         1,
