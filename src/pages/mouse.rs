@@ -9,13 +9,13 @@ use gtk::{
 };
 use webkit2gtk::{SettingsExt, WebView, WebViewExt};
 
-pub(super) fn setup(webview: &WebView) {
+pub(super) fn setup(webview: &WebView) -> Vec<glib::SignalHandlerId> {
     webview.add_events(EventMask::BUTTON1_MOTION_MASK | EventMask::BUTTON_PRESS_MASK);
 
     let bf_state = BackForwardState(Rc::new(RefCell::new(0)));
 
     let bf_state_c = bf_state.clone();
-    webview.connect_button_press_event(move |webview, event| {
+    let press = webview.connect_button_press_event(move |webview, event| {
         let mut inhibit = false;
         match event.button() {
             8 => {
@@ -51,7 +51,7 @@ pub(super) fn setup(webview: &WebView) {
     });
 
     let bf_state_c = bf_state.clone();
-    webview.connect_button_release_event(move |webview, event| {
+    let release = webview.connect_button_release_event(move |webview, event| {
         let mut inhibit = false;
         match event.button() {
             8 => {
@@ -84,6 +84,7 @@ pub(super) fn setup(webview: &WebView) {
             gtk::glib::Propagation::Proceed
         }
     });
+    vec![press, release]
 }
 
 fn create_js_mouse_event(

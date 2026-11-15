@@ -55,3 +55,76 @@ The first milestone checks navigation, forks and resuming after a restart.
 The minimap, the graph layout, page extraction, summaries and the agent wait for a later milestone. The live page has no generic trait. Moving to Servo or CEF will mean revisiting the rendering and profile integration.
 
 In-app changes inside web applications remain a separate case. The MVP does not promise to turn every JavaScript state change into a visit.
+
+## In-memory page checkpoints
+
+The per-branch rollout will call the private checkpoint lifecycle in Pages. Its
+only current callers are GUI probes. A checkpoint owns serialized WebKit session
+bytes, entry records in native list order, and the current position. Each entry
+records its visit, document group, native URL, stored visit URL, and whether its
+request used POST. The two URLs allow a pushState entry to alias a visit without
+changing that visit's stored address. Checkpoints contain no native objects and
+never enter SQLite or logs.
+
+Release takes the selected page out of its slot, cancels its pending navigation
+and queued capabilities, and stops loading before asking its isolated script
+world for the displayed document's URL and scroll. The pending completion owns the source view.
+The answer saves scroll only for the same valid document and URL. A 500 ms GLib
+timeout cancels the query and completes release if the web process does not answer.
+The main loop must be serviced for either completion to run. A hung main loop has
+no wall-clock guarantee. On timeout, the most recent SQLite and WebKit values can
+still miss recent scrolling. The query measures scroll when the web process handles
+it, so scrolling between the release request and that answer can enter the snapshot.
+
+Pending navigation cancellation uses Navigation::failed. Checkpointing discards
+only a continuation owned by that view and checks the native list after the query. An unbound item, missing position, duplicate binding, or
+stale binding makes checkpointing fail. Entries without a Canopy visit, including
+about:blank and blob: documents, also make checkpointing fail. Release still destroys
+the view and permits a cold restore from SQLite. No form or script state survives.
+
+Release disconnects handlers, clears item references, unparents the view, and
+destroys it. The lifecycle gate rejects native and capture callbacks during the
+scroll query and after release. The query completion alone can save the final
+scroll. Weak references and load and document generations also reject late work. Callers hold no selected
+slot borrow while calling observers. During the release wait, the slot is empty.
+Resize and focus tolerate that state. Navigation and capture requests return an
+error. Revival waits for release to complete before mounting a replacement.
+
+Revival creates a fresh Navigation and view without loading HOME. Restoring the
+session starts no load. Validation checks list length, current position, native
+URLs, and stored visit URLs before rebinding every position. A mismatch or absent
+target takes the cold path. Alias-only targets reload their stored URL cold.
+The saved current entry wins over another entry showing the same visit and URL.
+SQLite scroll applies only when reviving the entry current at checkpoint time.
+Revived views follow their container allocation. Their scroll helper waits for
+two consecutive rendered frames with the same size before applying SQLite scroll, because
+WebKit can finish loading before receiving GTK's final viewport. The wait ends after
+30 frames even if the size keeps changing. Normal live-view
+restoration keeps its existing timing. Other entries retain WebKit's scroll,
+captured when the document was left.
+Native back and forward retain the open-tree restriction.
+
+A revival never resends a form. A POST target in a checkpoint takes the cold path
+with GET. Other restored POST entries remain ineligible for native traversal until
+loaded again in this view. Native Back or Forward to one of those entries is refused
+once and replaced by a GET of its stored visit address. The replacement excludes
+that native entry, so it cannot select the same refused entry again. A main-frame
+request supplies one method value, refreshed on redirects and consumed when its entry is bound. A GET reload
+refreshes an existing item's method. New same-document entries inherit the main
+document's method, including entries added by iframe navigation. Iframe decisions
+retain WebKit's behavior.
+Ordinary views retain WebKit's existing form navigation, including cached state and
+POST resubmission when the page cache has evicted a result. Pages ignore
+window.close() so page script cannot destroy the browser's page view.
+
+Commands that need a selected page check the slot before changing the forest.
+Startup can queue a landing without a page. Resume preserves that landing until a
+page is available. Policy decisions during release are refused while the final
+scroll query checks both the URL and the isolated world's document epoch.
+
+### Next PR
+
+A hidden revived view restores scroll only after it is shown. Its first visible
+frames can show the top. Revival refuses while a release is pending, so the old
+page cannot yet remain on screen until the revived page commits. Release can take
+500 ms, during which commands requiring a selected page fail.

@@ -179,6 +179,9 @@ fn main() -> Result<()> {
     }
     ui.window.close();
     for case in [
+        "close_request",
+        "post_back",
+        "post_revival",
         "samedoc_fail",
         "failed_commit",
         "spa_reload",
@@ -459,6 +462,9 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
 
 fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -> Result<()> {
     if ![
+        "close_request",
+        "post_back",
+        "post_revival",
         "samedoc_fail",
         "failed_commit",
         "spa_reload",
@@ -479,6 +485,64 @@ fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -
         .navigate(server.url("/long")?, NavigationTarget::Root)?;
     let a = arrived(ui, "/long")?;
     match case {
+        "close_request" => {
+            eval(ui, "window.close(); JSON.stringify(true)")?;
+            assert!(
+                ui.pages.selected_page().native.parent().is_some(),
+                "window.close cannot destroy the page"
+            );
+            ui.pages.go(canopy::pages::Go::Address {
+                url: server.url("/next")?,
+                target: NavigationTarget::ChildOf(a),
+            })?;
+            arrived(ui, "/next")?;
+        }
+        "post_back" | "post_revival" => {
+            let before = server.hits("POST /post");
+            let gets = server.hits("GET /post");
+            eval(ui, "const f=document.createElement('form'); f.method='POST'; f.action='/post'; document.body.append(f); f.submit(); JSON.stringify(true)")?;
+            let post = arrived(ui, "/post")?;
+            let posts = server.hits("POST /post");
+            assert_eq!(posts, before + 1);
+            for path in ["/next", "/third", "/long"] {
+                ui.pages.go(canopy::pages::Go::Address {
+                    url: server.url(path)?,
+                    target: NavigationTarget::ChildOf(post),
+                })?;
+                arrived(ui, path)?;
+            }
+            if case == "post_revival" {
+                let fixed = ui
+                    .pages
+                    .selected_page()
+                    .native
+                    .parent()
+                    .unwrap()
+                    .downcast::<gtk::Fixed>()
+                    .unwrap();
+                let weak = ui.pages.selected_page().native.downgrade();
+                ui.pages.release_selected_page();
+                wait("POST checkpoint released", || {
+                    weak.upgrade().is_none() && ui.pages.checkpoint_size().is_some()
+                })?;
+                assert!(
+                    ui.pages.revive_selected_page(&fixed, post)?,
+                    "POST target must restore cold"
+                );
+            } else {
+                ui.pages.go(canopy::pages::Go::Visit(post))?;
+            }
+            arrived(ui, "/post")?;
+            assert_eq!(
+                server.hits("POST /post"),
+                posts + usize::from(case == "post_back"),
+                "only a revival must not resend POST"
+            );
+            assert_eq!(
+                server.hits("GET /post"),
+                gets + usize::from(case == "post_revival")
+            );
+        }
         "failed_commit" => {
             let finished = Rc::new(Cell::new(false));
             let seen = finished.clone();
@@ -811,6 +875,12 @@ impl Server {
                     };
                     let request = String::from_utf8_lossy(&request[..size]);
                     let path = request.split_whitespace().nth(1).unwrap_or("/").to_owned();
+                    let method = request.split_whitespace().next().unwrap_or("GET");
+                    *counted
+                        .lock()
+                        .unwrap()
+                        .entry(format!("{method} {path}"))
+                        .or_insert(0) += 1;
                     *counted.lock().unwrap().entry(path.clone()).or_insert(0) += 1;
                     if path == "/slow" {
                         thread::sleep(std::time::Duration::from_millis(1000));
@@ -819,6 +889,7 @@ impl Server {
                         thread::sleep(Duration::from_secs(3));
                     }
                     let (status, body) = match path.as_str() {
+                    "/post" => ("200 OK", "<!doctype html><title>Post result</title>result"),
                     "/heavy" => ("200 OK", "<!doctype html><title>Heavy</title><script>addEventListener('beforeunload', () => { const t=Date.now(); while(Date.now()-t<1000) {} });</script>"),
                     "/imgpage" => ("200 OK", "<!doctype html><title>Image page</title><img src='/slowimg'>"),
                     "/slowimg" => ("200 OK", ""),

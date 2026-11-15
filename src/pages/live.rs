@@ -32,10 +32,39 @@ const HELPER: &str = include_str!("../capture.js");
 const SCROLLED: &str = "canopyScrolled";
 use super::{PageEvent, Pages};
 
+#[derive(Clone)]
+pub(super) struct CheckpointEntry {
+    pub(super) visit: VisitId,
+    pub(super) document: u64,
+    pub(super) post: bool,
+    pub(super) uri: Url,
+    pub(super) stored_url: Url,
+}
+
+// The per-branch PR calls the checkpoint lifecycle.
+#[cfg_attr(not(feature = "gui-smoke"), allow(dead_code))]
+pub(super) struct Checkpoint {
+    pub(super) bytes: glib::Bytes,
+    pub(super) entries: Vec<CheckpointEntry>,
+    pub(super) current: usize,
+}
+
+pub(super) enum Revival {
+    History,
+    Cold,
+}
+
+enum InitialPage {
+    Home,
+    Session,
+}
+
 struct HistoryEntry {
     item: BackForwardListItem,
     visit: VisitId,
     document: u64,
+    post: bool,
+    needs_get: bool,
 }
 
 enum Issue {
@@ -71,8 +100,16 @@ impl Issue {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Lifecycle {
+    Live,
+    CapturingScroll,
+    Released,
+}
+
 struct NativeState {
     native: webkit2gtk::WebView,
+    lifecycle: Cell<Lifecycle>,
     pages: Weak<Pages>,
     navigation: RefCell<Navigation>,
     issue: RefCell<Issue>,
@@ -93,11 +130,15 @@ struct NativeState {
     traversal: RefCell<Option<(LoadTicket, BackForwardListItem)>>,
     /// Where to scroll once a visit reloaded from the network finishes loading.
     pending_scroll: Cell<Option<(VisitId, i64)>>,
+    restoration_viewport: Cell<Option<(i32, i32)>>,
     /// The address of the main frame's last response that has not become a page, and the
     /// page its file belongs to if it becomes a download instead. WebKit may report that
     /// load as failed before it reports the download, and the navigation is forgotten then.
     response_page: RefCell<Option<(Url, Option<VisitId>)>>,
     reload_candidate: RefCell<Option<Url>>,
+    main_frame_post: Cell<Option<bool>>,
+    #[cfg(feature = "gui-smoke")]
+    revival_refusals: Cell<usize>,
 }
 
 struct NativeCallback {
@@ -116,6 +157,9 @@ impl std::ops::Deref for NativeCallback {
 impl Pages {
     fn enter_native(weak: &Weak<NativeState>) -> Option<NativeCallback> {
         let state = weak.upgrade()?;
+        if state.lifecycle.get() != Lifecycle::Live {
+            return None;
+        }
         let owner = state.pages.upgrade()?;
         // A reentrant observer can release the window; its owner must outlive this callback.
         Some(NativeCallback {
@@ -128,12 +172,12 @@ impl Pages {
 pub(super) struct LivePage {
     pub(super) native: webkit2gtk::WebView,
     state: Rc<NativeState>,
+    signals: RefCell<Vec<(glib::Object, glib::SignalHandlerId)>>,
 }
 
 impl Drop for LivePage {
     fn drop(&mut self) {
-        // GTK's parent retains the widget after the engine releases its handles.
-        unsafe { self.native.destroy() };
+        self.detach();
     }
 }
 
@@ -145,7 +189,16 @@ impl LivePage {
     pub fn new(
         container: &gtk::Fixed,
         pages: Weak<Pages>,
+        context: &Rc<super::native::PageContext>,
+    ) -> Result<Self> {
+        Self::build(container, pages, context, InitialPage::Home)
+    }
+
+    fn build(
+        container: &gtk::Fixed,
+        pages: Weak<Pages>,
         context: &Rc<crate::pages::native::PageContext>,
+        initial: InitialPage,
     ) -> Result<Self> {
         use webkit2gtk::{InputMethodContextExt, SettingsExt};
         let native = webkit2gtk::WebView::builder()
@@ -168,11 +221,18 @@ impl LivePage {
         settings.set_enable_page_cache(true);
         settings.set_user_agent(None);
         settings.set_enable_developer_extras(cfg!(debug_assertions));
-        native.connect_close(|view| unsafe { view.destroy() });
-        mouse::setup(&native);
+        let mut signals = Vec::new();
+        signals.push((native.clone().upcast(), native.connect_close(|_| {})));
+        signals.extend(
+            mouse::setup(&native)
+                .into_iter()
+                .map(|id| (native.clone().upcast(), id)),
+        );
         native.set_size_request(200, 200);
         container.put(&native, 0, 0);
-        native.load_html(HOME, None);
+        if matches!(initial, InitialPage::Home) {
+            native.load_html(HOME, None);
+        }
         native.show_all();
         native.grab_focus();
         let manager = native
@@ -188,6 +248,7 @@ impl LivePage {
         ));
         let state = Rc::new(NativeState {
             native: native.clone(),
+            lifecycle: Cell::new(Lifecycle::Live),
             pages,
             navigation: RefCell::new(Navigation::default()),
             issue: RefCell::new(Issue::Idle),
@@ -202,288 +263,661 @@ impl LivePage {
             history_cursor: RefCell::new(None),
             traversal: RefCell::new(None),
             pending_scroll: Cell::new(None),
+            restoration_viewport: Cell::new(None),
             response_page: RefCell::new(None),
             reload_candidate: RefCell::new(None),
+            main_frame_post: Cell::new(None),
+            #[cfg(feature = "gui-smoke")]
+            revival_refusals: Cell::new(0),
         });
         manager.register_script_message_handler_in_world(SCROLLED, WORLD);
         {
             let weak = Rc::downgrade(&state);
-            manager.connect_script_message_received(Some(SCROLLED), move |_, message| {
-                if let (Some(state), Some(value)) = (Pages::enter_native(&weak), message.js_value())
-                {
-                    state.scrolled(&value.to_str());
-                }
-            });
+            signals.push((
+                manager.clone().upcast(),
+                manager.connect_script_message_received(Some(SCROLLED), move |_, message| {
+                    if let (Some(state), Some(value)) =
+                        (Pages::enter_native(&weak), message.js_value())
+                    {
+                        state.scrolled(&value.to_str());
+                    }
+                }),
+            ));
         }
         {
             let weak = Rc::downgrade(&state);
-            native.connect_load_changed(move |native, event| {
-                let Some(state) = Pages::enter_native(&weak) else {
-                    return;
-                };
-                let url = native.uri().and_then(|uri| web_url(&uri).ok());
-                match event {
-                    LoadEvent::Started => {
-                        if matches!(*state.issue.borrow(), Issue::Issued { decided: false, .. }) {
-                            return;
+            signals.push((
+                native.clone().upcast(),
+                native.connect_load_changed(move |native, event| {
+                    let Some(state) = Pages::enter_native(&weak) else {
+                        return;
+                    };
+                    let url = native.uri().and_then(|uri| web_url(&uri).ok());
+                    match event {
+                        LoadEvent::Started => {
+                            state.main_frame_post.set(None);
+                            if matches!(*state.issue.borrow(), Issue::Issued { decided: false, .. })
+                            {
+                                return;
+                            }
+                            // Policy also reports iframe reloads; Started belongs to the main frame.
+                            let reload = state.reload_candidate.borrow_mut().take();
+                            if reload.is_some()
+                                && state.navigation.borrow().pending_ticket().is_none()
+                            {
+                                let result = state
+                                    .owner()
+                                    .browser
+                                    .borrow_mut()
+                                    .reload(&mut state.navigation.borrow_mut());
+                                if let Some(ticket) = state.navigation.borrow().pending_ticket() {
+                                    *state.issue.borrow_mut() = Issue::Issued {
+                                        ticket,
+                                        decided: true,
+                                    };
+                                }
+                                state.report(result.map(|_| ()));
+                            }
+
+                            state.same_document_request.borrow_mut().take();
+                            state.traversal.borrow_mut().take();
+                            let issued = state.issued.borrow_mut().take();
+                            if let Some(url) = issued.or(url) {
+                                state.start_attempt(url);
+                                state.emit(PageEvent::Loading(true));
+                            }
                         }
-                        // Policy also reports iframe reloads; Started belongs to the main frame.
-                        let reload = state.reload_candidate.borrow_mut().take();
-                        if reload.is_some() && state.navigation.borrow().pending_ticket().is_none()
-                        {
-                            let result = state
+                        LoadEvent::Redirected => {
+                            if let Some(url) = url {
+                                if let Some(ticket) = state.loading_ticket() {
+                                    state.navigation.borrow_mut().redirected(ticket, url);
+                                }
+                            }
+                        }
+                        LoadEvent::Committed => {
+                            *state.history_cursor.borrow_mut() = native
+                                .back_forward_list()
+                                .and_then(|list| list.current_item());
+                            let existing = state
+                                .history
+                                .borrow()
+                                .iter()
+                                .find(|entry| {
+                                    Some(&entry.item) == state.history_cursor.borrow().as_ref()
+                                })
+                                .map(|entry| entry.document);
+                            let traversal = state.back_forward_commit.replace(false);
+                            let existing = existing.filter(|_| traversal);
+                            let document = existing.unwrap_or_else(|| {
+                                let next = state.next_history_document.get() + 1;
+                                state.next_history_document.set(next);
+                                next
+                            });
+                            state.history_document.set(document);
+                            state.response_page.borrow_mut().take();
+                            if let Some(url) = url {
+                                let result = state.commit_attempt(url.clone());
+                                match result {
+                                    Ok(true) => {
+                                        state.bind_document();
+                                        state.emit(PageEvent::Changed);
+                                    }
+                                    Ok(false) => {}
+                                    Err(error) => state.emit(PageEvent::Error(error.to_string())),
+                                }
+                            }
+                        }
+                        LoadEvent::Finished => {
+                            let next = state
+                                .issue
+                                .borrow_mut()
+                                .finish(&mut state.navigation.borrow_mut());
+                            if let Some(next) = next {
+                                state.load(next);
+                                return;
+                            }
+
+                            state.complete_same_document();
+                            state.update_title();
+                            state.restore_scroll();
+                            state.emit(PageEvent::Loading(false));
+                            let enabled = state
                                 .owner()
                                 .browser
-                                .borrow_mut()
-                                .reload(&mut state.navigation.borrow_mut());
-                            if let Some(ticket) = state.navigation.borrow().pending_ticket() {
-                                *state.issue.borrow_mut() = Issue::Issued {
-                                    ticket,
-                                    decided: true,
-                                };
-                            }
-                            state.report(result.map(|_| ()));
-                        }
-
-                        state.same_document_request.borrow_mut().take();
-                        state.traversal.borrow_mut().take();
-                        let issued = state.issued.borrow_mut().take();
-                        if let Some(url) = issued.or(url) {
-                            state.start_attempt(url);
-                            state.emit(PageEvent::Loading(true));
-                        }
-                    }
-                    LoadEvent::Redirected => {
-                        if let Some(url) = url {
-                            if let Some(ticket) = state.loading_ticket() {
-                                state.navigation.borrow_mut().redirected(ticket, url);
-                            }
-                        }
-                    }
-                    LoadEvent::Committed => {
-                        *state.history_cursor.borrow_mut() = native
-                            .back_forward_list()
-                            .and_then(|list| list.current_item());
-                        let existing = state
-                            .history
-                            .borrow()
-                            .iter()
-                            .find(|entry| {
-                                Some(&entry.item) == state.history_cursor.borrow().as_ref()
-                            })
-                            .map(|entry| entry.document);
-                        let traversal = state.back_forward_commit.replace(false);
-                        let existing = existing.filter(|_| traversal);
-                        let document = existing.unwrap_or_else(|| {
-                            let next = state.next_history_document.get() + 1;
-                            state.next_history_document.set(next);
-                            next
-                        });
-                        state.history_document.set(document);
-                        state.response_page.borrow_mut().take();
-                        if let Some(url) = url {
-                            let result = state.commit_attempt(url.clone());
-                            match result {
-                                Ok(true) => {
-                                    state.bind_document();
-                                    state.emit(PageEvent::Changed);
-                                }
-                                Ok(false) => {}
-                                Err(error) => state.emit(PageEvent::Error(error.to_string())),
-                            }
-                        }
-                    }
-                    LoadEvent::Finished => {
-                        let next = state
-                            .issue
-                            .borrow_mut()
-                            .finish(&mut state.navigation.borrow_mut());
-                        if let Some(next) = next {
-                            state.load(next);
-                            return;
-                        }
-
-                        state.complete_same_document();
-                        state.update_title();
-                        state.restore_scroll();
-                        state.emit(PageEvent::Loading(false));
-                        let enabled = state
-                            .owner()
-                            .browser
-                            .borrow()
-                            .capture_enabled()
-                            .unwrap_or(false);
-                        if enabled {
-                            state.capture(CaptureKind::Page, false);
-                            if let Some(ticket) = state.ticket() {
-                                for seconds in [1, 3] {
-                                    let weak = Rc::downgrade(&state);
-                                    let ticket = ticket.clone();
-                                    glib::timeout_add_local_once(
-                                        std::time::Duration::from_secs(seconds),
-                                        move || {
-                                            if let Some(state) = Pages::enter_native(&weak) {
-                                                if state.valid(&ticket)
-                                                    && state
-                                                        .owner()
-                                                        .browser
-                                                        .borrow()
-                                                        .capture_enabled()
-                                                        .unwrap_or(false)
-                                                {
-                                                    state.capture(CaptureKind::Page, false);
+                                .borrow()
+                                .capture_enabled()
+                                .unwrap_or(false);
+                            if enabled {
+                                state.capture(CaptureKind::Page, false);
+                                if let Some(ticket) = state.ticket() {
+                                    for seconds in [1, 3] {
+                                        let weak = Rc::downgrade(&state);
+                                        let ticket = ticket.clone();
+                                        glib::timeout_add_local_once(
+                                            std::time::Duration::from_secs(seconds),
+                                            move || {
+                                                if let Some(state) = Pages::enter_native(&weak) {
+                                                    if state.valid(&ticket)
+                                                        && state
+                                                            .owner()
+                                                            .browser
+                                                            .borrow()
+                                                            .capture_enabled()
+                                                            .unwrap_or(false)
+                                                    {
+                                                        state.capture(CaptureKind::Page, false);
+                                                    }
                                                 }
-                                            }
-                                        },
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }),
+            ));
+        }
+        {
+            let weak = Rc::downgrade(&state);
+            signals.push((
+                native.clone().upcast(),
+                native.connect_load_failed(move |_, _, _uri, error| {
+                    let Some(state) = Pages::enter_native(&weak) else {
+                        return true;
+                    };
+                    let ticket = state.loading_ticket();
+                    if ticket.is_none() || ticket != state.navigation.borrow().pending_ticket() {
+                        return true;
+                    }
+                    let cancelled = error.matches(NetworkError::Cancelled);
+                    if let Some(ticket) = ticket {
+                        state.navigation.borrow_mut().failed(ticket);
+                    }
+                    // A response turned into a download ends the page load this way; the page
+                    // the user was reading stays.
+                    if error.matches(PolicyError::FrameLoadInterruptedByPolicyChange) {
+                        state.emit(PageEvent::Loading(false));
+                    } else if !cancelled {
+                        state.emit(PageEvent::Error(format!(
+                            "Could not load this page. {}",
+                            error.message()
+                        )));
+                        state.emit(PageEvent::Loading(false));
+                    }
+                    true
+                }),
+            ));
+        }
+        {
+            let weak = Rc::downgrade(&state);
+            signals.push((
+                native.clone().upcast(),
+                native.connect_load_failed_with_tls_errors(move |_, _uri, _, _| {
+                    if let Some(state) = Pages::enter_native(&weak) {
+                        let ticket = state.active_ticket();
+                        if ticket.is_none() || ticket != state.navigation.borrow().pending_ticket()
+                        {
+                            return true;
+                        }
+                        if let Some(ticket) = ticket {
+                            state.navigation.borrow_mut().failed(ticket);
+                        }
+                        state.emit(PageEvent::Error(
+                            "HTTPS certificate rejected. The connection was not opened.".into(),
+                        ));
+                        state.emit(PageEvent::Loading(false));
+                    }
+                    true
+                }),
+            ));
+        }
+        {
+            let weak = Rc::downgrade(&state);
+            signals.push((
+                native.clone().upcast(),
+                native.connect_title_notify(move |_| {
+                    if let Some(state) = Pages::enter_native(&weak) {
+                        state.update_title();
+                    }
+                }),
+            ));
+        }
+        if let Some(list) = native.back_forward_list() {
+            let weak = Rc::downgrade(&state);
+            signals.push((
+                list.clone().upcast(),
+                list.connect_local("changed", false, move |values| {
+                    let state = Pages::enter_native(&weak)?;
+                    let list: webkit2gtk::BackForwardList = values[0].get().unwrap();
+                    let added: Option<BackForwardListItem> = values[1].get().unwrap();
+                    let current = list.current_item();
+                    *state.history_cursor.borrow_mut() = current.clone();
+                    let removed: glib::Pointer = values[2].get().unwrap_or(std::ptr::null_mut());
+                    // WebKit keeps removed objects readable while our bindings retain them.
+                    unsafe {
+                        use glib::object::ObjectType;
+                        let mut node = removed as *mut glib::ffi::GList;
+                        while !node.is_null() {
+                            let item =
+                                (*node).data as *mut webkit2gtk::ffi::WebKitBackForwardListItem;
+                            state
+                                .history
+                                .borrow_mut()
+                                .retain(|entry| entry.item.as_ptr() != item);
+                            node = (*node).next;
+                        }
+                    }
+                    if added.is_some() && state.navigation.borrow().pending_ticket().is_none() {
+                        let document = state.navigation.borrow().current.clone();
+                        if let Some(document) = document {
+                            state.remember_entry(document.visit);
+                            if let Some(url) = state.native.uri().and_then(|uri| web_url(&uri).ok())
+                            {
+                                state.navigation.borrow_mut().same_document(url);
+                            }
+                            state.bind_document();
+                        }
+                    }
+                    let attempt = state.navigation.borrow().pending_ticket();
+                    let weak = Rc::downgrade(&state);
+                    glib::idle_add_local_once(move || {
+                        if let Some(state) = Pages::enter_native(&weak).filter(|state| {
+                            state.navigation.borrow().pending_ticket() == attempt
+                                && *state.history_cursor.borrow() == current
+                        }) {
+                            state.history_changed(added.is_some());
+                        }
+                    });
+                    None
+                }),
+            ));
+        }
+        {
+            let weak = Rc::downgrade(&state);
+            signals.push((
+                native.clone().upcast(),
+                native.connect_uri_notify(move |_| {
+                    let Some(state) = Pages::enter_native(&weak) else {
+                        return;
+                    };
+                    let attempt = state.navigation.borrow().pending_ticket();
+                    let weak = Rc::downgrade(&state);
+                    glib::idle_add_local_once(move || {
+                        if let Some(state) = Pages::enter_native(&weak)
+                            .filter(|state| state.navigation.borrow().pending_ticket() == attempt)
+                        {
+                            state.history_changed(false);
+                        }
+                    });
+                }),
+            ));
+        }
+        {
+            let weak = Rc::downgrade(&state);
+            signals.push((
+                native.clone().upcast(),
+                native.connect_is_loading_notify(move |_| {
+                    if let Some(state) = Pages::enter_native(&weak) {
+                        state.complete_same_document();
+                    }
+                }),
+            ));
+        }
+        {
+            let weak = Rc::downgrade(&state);
+            signals.push((
+                native.clone().upcast(),
+                native.connect_decide_policy(move |_, decision, kind| {
+                    if weak
+                        .upgrade()
+                        .is_some_and(|state| state.lifecycle.get() != Lifecycle::Live)
+                    {
+                        decision.ignore();
+                        return true;
+                    }
+                    Pages::enter_native(&weak).is_some_and(|state| state.decide(decision, kind))
+                }),
+            ));
+        }
+        {
+            let weak = Rc::downgrade(&state);
+            signals.push((
+                native.clone().upcast(),
+                native.connect_resource_load_started(move |native, resource, request| {
+                    if native.main_resource().as_ref() != Some(resource) {
+                        return;
+                    }
+                    let Some(state) = Pages::enter_native(&weak) else {
+                        return;
+                    };
+                    state
+                        .main_frame_post
+                        .set(Some(request.http_method().as_deref() == Some("POST")));
+                    let weak = Rc::downgrade(&state);
+                    // The typed binding treats the absent redirect response as non-null.
+                    resource.connect_local("sent-request", false, move |values| {
+                        // A panic here would cross the signal boundary and abort the browser.
+                        let (Some(Ok(resource)), Some(Ok(request))) = (
+                            values.first().map(|v| v.get::<webkit2gtk::WebResource>()),
+                            values.get(1).map(|v| v.get::<webkit2gtk::URIRequest>()),
+                        ) else {
+                            return None;
+                        };
+                        if let Some(state) = Pages::enter_native(&weak) {
+                            if state.native.main_resource().as_ref() == Some(&resource) {
+                                state
+                                    .main_frame_post
+                                    .set(Some(request.http_method().as_deref() == Some("POST")));
+                            }
+                        }
+                        None
+                    });
+                }),
+            ));
+        }
+        let weak = Rc::downgrade(&state);
+        let favicon = context.register_view(&native, move |source| {
+            Pages::enter_native(&weak).and_then(|state| state.download_page(source))
+        });
+        signals.push((native.clone().upcast(), favicon));
+        Ok(Self {
+            native,
+            state,
+            signals: RefCell::new(signals),
+        })
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub(super) fn revival_refusals(&self) -> usize {
+        self.state.revival_refusals.get()
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub(super) fn history_visits(&self) -> Vec<VisitId> {
+        self.state
+            .history
+            .borrow()
+            .iter()
+            .map(|e| e.visit)
+            .collect()
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub(super) fn forget_history_visit(&self, visit: VisitId) {
+        self.state.history.borrow_mut().retain(|e| e.visit != visit);
+    }
+
+    fn detach(&self) {
+        if self.state.lifecycle.replace(Lifecycle::Released) == Lifecycle::Released {
+            return;
+        }
+        let signals = self.signals.take();
+        for (object, id) in signals {
+            // GTK can destroy the widget before its owner releases the page.
+            let connected = unsafe {
+                glib::gobject_ffi::g_signal_handler_is_connected(object.as_ptr(), id.as_raw()) != 0
+            };
+            if connected {
+                object.disconnect(id);
+            }
+        }
+        self.state.history.borrow_mut().clear();
+        self.state.history_cursor.borrow_mut().take();
+        self.state.traversal.borrow_mut().take();
+        self.state.navigation.borrow_mut().clear();
+        if let Some(parent) = self
+            .native
+            .parent()
+            .and_then(|p| p.downcast::<gtk::Container>().ok())
+        {
+            parent.remove(&self.native);
+        }
+        unsafe {
+            self.native.destroy();
+        }
+    }
+
+    pub(super) fn capture_checkpoint_scroll(&self, done: impl FnOnce() + 'static) {
+        let state = &self.state;
+        if let Some(owner) = state.pages.upgrade() {
+            owner.discard_view_continuation(&state.navigation.borrow());
+        }
+        let ticket = state.navigation.borrow().current.clone();
+        state.lifecycle.set(Lifecycle::CapturingScroll);
+        let pending = state.navigation.borrow().pending_ticket();
+        if let Some(ticket) = pending {
+            state.navigation.borrow_mut().failed(ticket);
+        }
+        *state.issue.borrow_mut() = Issue::Idle;
+        state
+            .load_generation
+            .set(state.load_generation.get().wrapping_add(1));
+        state
+            .foreground_generation
+            .set(state.foreground_generation.get().wrapping_add(1));
+        state.same_document_request.borrow_mut().take();
+        state.traversal.borrow_mut().take();
+        state.issued.borrow_mut().take();
+        self.native.stop_loading();
+        if ticket.is_none() {
+            done();
+            return;
+        }
+        let completion = Rc::new(RefCell::new(Some(done)));
+        let timeout_completion = completion.clone();
+        let cancel = gio::Cancellable::new();
+        let timeout_cancel = cancel.clone();
+        let timeout =
+            glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+                timeout_cancel.cancel();
+                if let Some(done) = timeout_completion.borrow_mut().take() {
+                    done();
+                }
+            });
+        let state = Rc::downgrade(&self.state);
+        let owner = self.state.pages.clone();
+        self.native.evaluate_javascript(
+            "JSON.stringify({url:location.href,y:scrollY,epoch:globalThis.__canopyDocumentEpoch})",
+            Some(WORLD),
+            None,
+            Some(&cancel),
+            move |value| {
+                let Some(done) = completion.borrow_mut().take() else {
+                    return;
+                };
+                timeout.remove();
+                if let (Some(state), Some(owner), Some(ticket), Ok(value)) =
+                    (state.upgrade(), owner.upgrade(), ticket, value)
+                {
+                    if let Ok(value) = serde_json::from_str::<Value>(&value.to_str()) {
+                        if checkpoint_document_matches(&value, &ticket) {
+                            if let Some(y) = value["y"].as_f64().filter(|y| y.is_finite()) {
+                                if y != 0.
+                                    || owner
+                                        .browser
+                                        .borrow()
+                                        .scroll(ticket.visit)
+                                        .ok()
+                                        .flatten()
+                                        .is_some()
+                                {
+                                    let _ = owner.browser.borrow_mut().scroll_for_document(
+                                        &state.navigation.borrow(),
+                                        &ticket,
+                                        y.clamp(0., 1e8) as i64,
                                     );
                                 }
                             }
                         }
                     }
-                    _ => {}
                 }
-            });
+                done();
+            },
+        );
+    }
+
+    // The per-branch PR calls the checkpoint lifecycle.
+    #[cfg_attr(not(feature = "gui-smoke"), allow(dead_code))]
+    pub(super) fn checkpoint(&self) -> Result<Checkpoint> {
+        let state = &self.state;
+        let owner = state.pages.upgrade().context("Page owner was closed.")?;
+        let list = self
+            .native
+            .back_forward_list()
+            .context("No native history.")?;
+        let (items, current) = ordered_entries(&list)?;
+        let entries = {
+            let history = state.history.borrow();
+            anyhow::ensure!(
+                history.len() == items.len(),
+                "History binding count differs."
+            );
+            items
+                .iter()
+                .map(|item| {
+                    let mut matches = history.iter().filter(|e| e.item == *item);
+                    let entry = matches.next().context("Unbound history entry.")?;
+                    anyhow::ensure!(matches.next().is_none(), "Duplicate history binding.");
+                    Ok(CheckpointEntry {
+                        visit: entry.visit,
+                        document: entry.document,
+                        post: entry.post,
+                        uri: web_url(&item.uri().context("History entry has no URL.")?)?,
+                        stored_url: owner.browser.borrow().visit(entry.visit)?.url,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?
+        };
+        let bytes = self
+            .native
+            .session_state()
+            .and_then(|s| s.serialize())
+            .context("No session state.")?;
+        Ok(Checkpoint {
+            bytes,
+            entries,
+            current,
+        })
+    }
+
+    // The per-branch PR calls the checkpoint lifecycle.
+    #[cfg_attr(not(feature = "gui-smoke"), allow(dead_code))]
+    pub(super) fn revive(
+        container: &gtk::Fixed,
+        pages: Weak<Pages>,
+        context: &Rc<super::native::PageContext>,
+        saved: &Checkpoint,
+        visit: VisitId,
+    ) -> Result<(Self, Revival)> {
+        let page = Self::build(container, pages.clone(), context, InitialPage::Session)?;
+        let session = webkit2gtk::WebViewSessionState::new(&saved.bytes);
+        page.native.restore_session_state(&session);
+        let binding = (|| -> Result<Vec<HistoryEntry>> {
+            let shows_target = |e: &&CheckpointEntry| e.visit == visit && e.uri == e.stored_url;
+            let target = saved
+                .entries
+                .get(saved.current)
+                .filter(shows_target)
+                .or_else(|| saved.entries.iter().rev().find(shows_target))
+                .context("Visit has no traversable entry in checkpoint.")?;
+            anyhow::ensure!(!target.post, "POST target requires GET.");
+            let (items, current) =
+                ordered_entries(&page.native.back_forward_list().context("No history.")?)?;
+            let urls = items
+                .iter()
+                .map(|i| i.uri().and_then(|u| web_url(&u).ok()))
+                .collect::<Option<Vec<_>>>()
+                .context("Invalid history URL.")?;
+            let stored = saved
+                .entries
+                .iter()
+                .map(|e| {
+                    page.state
+                        .owner()
+                        .browser
+                        .borrow()
+                        .visit(e.visit)
+                        .map(|v| v.url)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            anyhow::ensure!(
+                valid_binding(saved, &urls, current, &stored),
+                "Invalid checkpoint binding."
+            );
+            Ok(items
+                .into_iter()
+                .zip(&saved.entries)
+                .map(|(item, e)| HistoryEntry {
+                    item,
+                    visit: e.visit,
+                    document: e.document,
+                    post: e.post,
+                    needs_get: e.post,
+                })
+                .collect())
+        })();
+        match binding {
+            Ok(history) => {
+                *page.state.history.borrow_mut() = history;
+                *page.state.history_cursor.borrow_mut() = page
+                    .native
+                    .back_forward_list()
+                    .and_then(|l| l.current_item());
+                page.state
+                    .next_history_document
+                    .set(saved.entries.iter().map(|e| e.document).max().unwrap_or(0));
+                Ok((page, Revival::History))
+            }
+            Err(_) => {
+                drop(page);
+                Ok((
+                    Self::build(container, pages, context, InitialPage::Session)?,
+                    Revival::Cold,
+                ))
+            }
         }
-        {
-            let weak = Rc::downgrade(&state);
-            native.connect_load_failed(move |_, _, _uri, error| {
-                let Some(state) = Pages::enter_native(&weak) else {
-                    return true;
-                };
-                let ticket = state.loading_ticket();
-                if ticket.is_none() || ticket != state.navigation.borrow().pending_ticket() {
-                    return true;
-                }
-                let cancelled = error.matches(NetworkError::Cancelled);
-                if let Some(ticket) = ticket {
-                    state.navigation.borrow_mut().failed(ticket);
-                }
-                // A response turned into a download ends the page load this way; the page
-                // the user was reading stays.
-                if error.matches(PolicyError::FrameLoadInterruptedByPolicyChange) {
-                    state.emit(PageEvent::Loading(false));
-                } else if !cancelled {
-                    state.emit(PageEvent::Error(format!(
-                        "Could not load this page. {}",
-                        error.message()
-                    )));
-                    state.emit(PageEvent::Loading(false));
-                }
-                true
-            });
-        }
-        {
-            let weak = Rc::downgrade(&state);
-            native.connect_load_failed_with_tls_errors(move |_, _uri, _, _| {
-                if let Some(state) = Pages::enter_native(&weak) {
-                    let ticket = state.active_ticket();
-                    if ticket.is_none() || ticket != state.navigation.borrow().pending_ticket() {
-                        return true;
-                    }
-                    if let Some(ticket) = ticket {
-                        state.navigation.borrow_mut().failed(ticket);
-                    }
-                    state.emit(PageEvent::Error(
-                        "HTTPS certificate rejected. The connection was not opened.".into(),
-                    ));
-                    state.emit(PageEvent::Loading(false));
-                }
-                true
-            });
-        }
-        {
-            let weak = Rc::downgrade(&state);
-            native.connect_title_notify(move |_| {
-                if let Some(state) = Pages::enter_native(&weak) {
-                    state.update_title();
-                }
-            });
-        }
-        if let Some(list) = native.back_forward_list() {
-            let weak = Rc::downgrade(&state);
-            list.connect_local("changed", false, move |values| {
-                let state = Pages::enter_native(&weak)?;
-                let list: webkit2gtk::BackForwardList = values[0].get().unwrap();
-                let added: Option<BackForwardListItem> = values[1].get().unwrap();
-                let current = list.current_item();
-                *state.history_cursor.borrow_mut() = current.clone();
-                let removed: glib::Pointer = values[2].get().unwrap_or(std::ptr::null_mut());
-                // WebKit keeps removed objects readable while our bindings retain them.
-                unsafe {
-                    use glib::object::ObjectType;
-                    let mut node = removed as *mut glib::ffi::GList;
-                    while !node.is_null() {
-                        let item = (*node).data as *mut webkit2gtk::ffi::WebKitBackForwardListItem;
-                        state
-                            .history
-                            .borrow_mut()
-                            .retain(|entry| entry.item.as_ptr() != item);
-                        node = (*node).next;
-                    }
-                }
-                if added.is_some() && state.navigation.borrow().pending_ticket().is_none() {
-                    let document = state.navigation.borrow().current.clone();
-                    if let Some(document) = document {
-                        state.remember_entry(document.visit);
-                        if let Some(url) = state.native.uri().and_then(|uri| web_url(&uri).ok()) {
-                            state.navigation.borrow_mut().same_document(url);
-                        }
-                        state.bind_document();
-                    }
-                }
-                let attempt = state.navigation.borrow().pending_ticket();
-                let weak = Rc::downgrade(&state);
-                glib::idle_add_local_once(move || {
-                    if let Some(state) = Pages::enter_native(&weak).filter(|state| {
-                        state.navigation.borrow().pending_ticket() == attempt
-                            && *state.history_cursor.borrow() == current
-                    }) {
-                        state.history_changed(added.is_some());
-                    }
-                });
-                None
-            });
-        }
-        {
-            let weak = Rc::downgrade(&state);
-            native.connect_uri_notify(move |_| {
-                let Some(state) = Pages::enter_native(&weak) else {
-                    return;
-                };
-                let attempt = state.navigation.borrow().pending_ticket();
-                let weak = Rc::downgrade(&state);
-                glib::idle_add_local_once(move || {
-                    if let Some(state) = Pages::enter_native(&weak)
-                        .filter(|state| state.navigation.borrow().pending_ticket() == attempt)
-                    {
-                        state.history_changed(false);
-                    }
-                });
-            });
-        }
-        {
-            let weak = Rc::downgrade(&state);
-            native.connect_is_loading_notify(move |_| {
-                if let Some(state) = Pages::enter_native(&weak) {
-                    state.complete_same_document();
-                }
-            });
-        }
-        {
-            let weak = Rc::downgrade(&state);
-            native.connect_decide_policy(move |_, decision, kind| {
-                Pages::enter_native(&weak).is_some_and(|state| state.decide(decision, kind))
-            });
-        }
-        let weak = Rc::downgrade(&state);
-        context.register_view(&native, move |source| {
-            Pages::enter_native(&weak).and_then(|state| state.download_page(source))
+    }
+
+    pub(super) fn follow_container_bounds(&self, container: &gtk::Fixed) {
+        let weak = Rc::downgrade(&self.state);
+        let signal = container.connect_size_allocate(move |_, allocation| {
+            if let Some(state) = weak.upgrade() {
+                let width = allocation.width().max(1);
+                let height = (allocation.height() - super::CHROME_HEIGHT as i32).max(1);
+                state.restoration_viewport.set(Some((width, height)));
+                state.native.size_allocate(&gtk::Allocation::new(
+                    0,
+                    super::CHROME_HEIGHT as i32,
+                    width,
+                    height,
+                ));
+            }
         });
-        Ok(Self { native, state })
+        self.signals
+            .borrow_mut()
+            .push((container.clone().upcast(), signal));
+        self.state.restoration_viewport.set(Some((
+            container.allocated_width(),
+            container.allocated_height() - super::CHROME_HEIGHT as i32,
+        )));
+        self.set_bounds(
+            0.,
+            super::CHROME_HEIGHT,
+            container.allocated_width() as f64,
+            container.allocated_height() as f64 - super::CHROME_HEIGHT,
+        );
     }
 
     /// Places the page in its container, in logical pixels.
     pub fn set_bounds(&self, x: f64, y: f64, width: f64, height: f64) {
+        if self.state.restoration_viewport.get().is_some() {
+            self.state.restoration_viewport.set(Some((
+                width.max(1.).round() as i32,
+                height.max(1.).round() as i32,
+            )));
+        }
         self.native.size_allocate(&gtk::Allocation::new(
             x.round() as i32,
             y.round() as i32,
@@ -535,6 +969,35 @@ impl LivePage {
             .borrow_mut()
             .restore(&mut self.state.navigation.borrow_mut(), id)?;
         self.state.load(url);
+        Ok(())
+    }
+
+    pub(super) fn restore_revived(&self, id: VisitId) -> Result<()> {
+        anyhow::ensure!(
+            self.state.lifecycle.get() == Lifecycle::Live,
+            "Page no longer live."
+        );
+        let url = self.state.owner().browser.borrow().visit(id)?.url;
+        let target = self.state.entry(id, &url);
+        let was_current = target.is_some()
+            && target
+                == self
+                    .native
+                    .back_forward_list()
+                    .and_then(|l| l.current_item());
+        self.restore(id)?;
+        if !was_current {
+            return Ok(());
+        }
+        let saved = self
+            .state
+            .owner()
+            .browser
+            .borrow()
+            .scroll(id)
+            .ok()
+            .flatten();
+        self.state.pending_scroll.set(saved.map(|y| (id, y)));
         Ok(())
     }
 
@@ -703,7 +1166,9 @@ impl NativeState {
     }
 
     fn emit(&self, event: PageEvent) {
-        self.owner().receive(event);
+        if self.lifecycle.get() == Lifecycle::Live {
+            self.owner().receive(event);
+        }
     }
 
     fn report(&self, result: Result<()>) {
@@ -713,7 +1178,8 @@ impl NativeState {
     }
 
     fn bind_document(&self) {
-        if let Some(document) = self.navigation.borrow().current.clone() {
+        let document = self.navigation.borrow().current.clone();
+        if let Some(document) = document {
             self.remember_entry(document.visit);
             self.native.evaluate_javascript(
                 &format!("globalThis.__canopyDocumentEpoch = {}", document.epoch),
@@ -961,6 +1427,33 @@ impl NativeState {
             ));
             return true;
         };
+        if action.navigation_type() == NavigationType::BackForward
+            && self.history.borrow().iter().any(|entry| {
+                entry.needs_get
+                    && Some(&entry.item) == self.history_cursor.borrow().as_ref()
+                    && entry.document != self.history_document.get()
+                    && entry.item.uri().as_deref() == Some(uri.as_str())
+            })
+        {
+            #[cfg(feature = "gui-smoke")]
+            self.revival_refusals.set(self.revival_refusals.get() + 1);
+            decision.ignore();
+            let visit = self.current_entry_visit();
+            if let Some(visit) = visit {
+                let result = self
+                    .owner()
+                    .browser
+                    .borrow_mut()
+                    .restore(&mut self.navigation.borrow_mut(), visit);
+                match result {
+                    Ok(url) => self.load(url),
+                    Err(error) => self.emit(PageEvent::Error(error.to_string())),
+                }
+            } else {
+                self.native.load_uri(url.as_str());
+            }
+            return true;
+        }
         if action.navigation_type() != NavigationType::Reload {
             self.reload_candidate.borrow_mut().take();
         }
@@ -1215,11 +1708,25 @@ impl NativeState {
         };
         let live = live_entries(&list);
         let mut history = self.history.borrow_mut();
+        let previous = history
+            .iter()
+            .find(|entry| entry.item == current)
+            .or_else(|| {
+                history
+                    .iter()
+                    .rev()
+                    .find(|entry| entry.document == self.history_document.get())
+            });
+        let method = self.main_frame_post.take();
+        let post = method.unwrap_or_else(|| previous.is_some_and(|entry| entry.post));
+        let needs_get = method.is_none() && previous.is_some_and(|entry| entry.needs_get);
         history.retain(|entry| entry.item != current && live.contains(&entry.item));
         history.push(HistoryEntry {
             item: current,
             visit,
             document: self.history_document.get(),
+            post,
+            needs_get,
         });
     }
 
@@ -1228,14 +1735,17 @@ impl NativeState {
         let list = self.native.back_forward_list()?;
         let current = list.current_item();
         let live = live_entries(&list);
-        self.history
-            .borrow()
-            .iter()
-            .rev()
+        let history = self.history.borrow();
+        let preferred = history.iter().filter(|entry| {
+            self.history_document.get() == 0 && Some(&entry.item) == current.as_ref()
+        });
+        preferred
+            .chain(history.iter().rev())
             .find(|entry| {
                 entry.visit == visit
+                    && !entry.needs_get
                     && entry.document != self.history_document.get()
-                    && Some(&entry.item) != current.as_ref()
+                    && (self.history_document.get() == 0 || Some(&entry.item) != current.as_ref())
                     && live.contains(&entry.item)
                     && entry.item.uri().as_deref() == Some(url.as_str())
             })
@@ -1271,8 +1781,14 @@ impl NativeState {
         };
         if self.ticket().is_some_and(|ticket| ticket.visit == visit) {
             self.pending_scroll.set(None);
-            let script =
-                format!("JSON.stringify(globalThis.__canopyMemory?.restoreScroll({y}) ?? null)");
+            let viewport = self
+                .restoration_viewport
+                .get()
+                .map(|(width, height)| format!("[{width},{height}]"))
+                .unwrap_or_else(|| "null".into());
+            let script = format!(
+                "JSON.stringify(globalThis.__canopyMemory?.restoreScroll({y}, {viewport}) ?? null)"
+            );
             self.evaluate(&script, |_, _| {});
         }
     }
@@ -1371,6 +1887,44 @@ impl NativeState {
             }
         });
     }
+}
+
+fn ordered_entries(
+    list: &webkit2gtk::BackForwardList,
+) -> Result<(Vec<BackForwardListItem>, usize)> {
+    let back = list.back_list().len();
+    let forward = list.forward_list().len();
+    let entries = (-(back as i32)..=forward as i32)
+        .map(|i| list.nth_item(i).context("Missing history position."))
+        .collect::<Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        entries.len() == list.length() as usize,
+        "Native history length differs."
+    );
+    anyhow::ensure!(
+        entries.get(back) == list.current_item().as_ref(),
+        "Native history cursor differs."
+    );
+    Ok((entries, back))
+}
+
+fn valid_binding(saved: &Checkpoint, urls: &[Url], current: usize, stored: &[Url]) -> bool {
+    !saved.entries.is_empty()
+        && saved.current == current
+        && current < urls.len()
+        && saved.entries.len() == urls.len()
+        && stored.len() == urls.len()
+        && saved
+            .entries
+            .iter()
+            .zip(urls)
+            .zip(stored)
+            .all(|((e, uri), stored)| e.uri == *uri && e.stored_url == *stored)
+}
+
+fn checkpoint_document_matches(value: &Value, document: &Document) -> bool {
+    value["url"].as_str() == Some(document.page_url.as_str())
+        && value["epoch"].as_u64() == Some(document.epoch)
 }
 
 fn live_entries(list: &webkit2gtk::BackForwardList) -> Vec<BackForwardListItem> {
@@ -1479,5 +2033,80 @@ mod attempt_tests {
             .unwrap();
         assert_eq!(browser.visit(a).unwrap().url, url("a"));
         assert_ne!(navigation.current.as_ref().unwrap().visit, a);
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    #[test]
+    fn same_url_checkpoint_scroll_requires_the_document_epoch() {
+        let mut navigation = Navigation::default();
+        let directory = tempfile::tempdir().unwrap();
+        let mut browser =
+            crate::browser::Browser::open(&directory.path().join("forest.sqlite3")).unwrap();
+        let visit = browser
+            .add_roots(&[Url::parse("https://example.org/").unwrap()])
+            .unwrap()[0];
+        let url = Url::parse("https://example.org/").unwrap();
+        navigation.publish(visit, url.clone());
+        let old = navigation.current.clone().unwrap();
+        navigation.publish(visit, url.clone());
+        let new = navigation.current.clone().unwrap();
+        let value = serde_json::json!({"url": url.as_str(), "y": 0, "epoch": new.epoch});
+        assert!(!checkpoint_document_matches(&value, &old));
+        assert!(checkpoint_document_matches(&value, &new));
+    }
+    use super::*;
+
+    #[test]
+    fn binding_requires_every_position_cursor_and_stored_visit_url() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut browser =
+            crate::browser::Browser::open(&directory.path().join("forest.sqlite3")).unwrap();
+        let a = Url::parse("https://example.org/a").unwrap();
+        let route = Url::parse("https://example.org/route").unwrap();
+        let b = Url::parse("https://example.org/b").unwrap();
+        let ids = browser.add_roots(&[a.clone(), b.clone()]).unwrap();
+        let mut saved = Checkpoint {
+            bytes: glib::Bytes::from_static(&[]),
+            entries: vec![
+                CheckpointEntry {
+                    visit: ids[0],
+                    document: 1,
+                    post: false,
+                    uri: a.clone(),
+                    stored_url: a.clone(),
+                },
+                CheckpointEntry {
+                    visit: ids[0],
+                    document: 1,
+                    post: false,
+                    uri: route.clone(),
+                    stored_url: a.clone(),
+                },
+                CheckpointEntry {
+                    visit: ids[1],
+                    document: 2,
+                    post: false,
+                    uri: b.clone(),
+                    stored_url: b.clone(),
+                },
+            ],
+            current: 1,
+        };
+        let urls = [a.clone(), route, b.clone()];
+        let stored = [a.clone(), a.clone(), b.clone()];
+        assert!(valid_binding(&saved, &urls, 1, &stored));
+        assert!(!valid_binding(&saved, &urls[..2], 1, &stored));
+        assert!(!valid_binding(&saved, &urls, 0, &stored));
+        assert!(!valid_binding(
+            &saved,
+            &[b.clone(), urls[1].clone(), a.clone()],
+            1,
+            &stored
+        ));
+        assert!(!valid_binding(&saved, &urls, 1, &[a.clone(), b, a]));
+        saved.current = 3;
+        assert!(!valid_binding(&saved, &urls, 3, &stored));
     }
 }

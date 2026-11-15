@@ -64,6 +64,14 @@ enum ContinuationEvent {
 }
 
 impl ContinuationState {
+    fn ticket(self) -> LoadTicket {
+        match self {
+            Self::Waiting(ticket) | Self::Committed { ticket, .. } | Self::Ready { ticket, .. } => {
+                ticket
+            }
+        }
+    }
+
     fn transition(mut self, event: ContinuationEvent) -> Option<Self> {
         match event {
             ContinuationEvent::Commit {
@@ -131,6 +139,11 @@ pub struct Pages {
     browser: RefCell<Browser>,
     context: Rc<native::PageContext>,
     live: RefCell<Option<Rc<LivePage>>>,
+    #[cfg(feature = "gui-smoke")]
+    checkpoint: RefCell<Option<live::Checkpoint>>,
+    #[cfg(feature = "gui-smoke")]
+    before_revival: RefCell<Option<Rc<dyn Fn()>>>,
+    releasing: Cell<bool>,
     continuation: RefCell<Option<PendingContinuation>>,
     observer: RefCell<Option<Observer>>,
     start: Cell<Option<StartPage>>,
@@ -144,6 +157,11 @@ impl Pages {
             browser: RefCell::new(browser),
             context,
             live: RefCell::new(None),
+            #[cfg(feature = "gui-smoke")]
+            checkpoint: RefCell::new(None),
+            #[cfg(feature = "gui-smoke")]
+            before_revival: RefCell::new(None),
+            releasing: Cell::new(false),
             continuation: RefCell::new(None),
             observer: RefCell::new(None),
             start: Cell::new(None),
@@ -172,6 +190,7 @@ impl Pages {
         Ok(pages)
     }
 
+    #[cfg(feature = "gui-smoke")]
     fn page(&self) -> Rc<LivePage> {
         self.live.borrow().as_ref().expect("mounted page").clone()
     }
@@ -230,7 +249,11 @@ impl Pages {
     }
 
     fn committed(self: &Rc<Self>, ticket: LoadTicket, visit: VisitId) {
-        let same_document = !self.page().native.is_loading();
+        let same_document = self
+            .live
+            .borrow()
+            .as_ref()
+            .is_some_and(|page| !page.native.is_loading());
         if let Some(ticket) = self.advance_continuation(ContinuationEvent::Commit {
             ticket,
             visit,
@@ -294,23 +317,27 @@ impl Pages {
     }
 
     pub fn go(&self, go: Go) -> Result<()> {
+        let page = self
+            .live
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No selected page."))?;
         if matches!(go, Go::Parent) {
             self.cancel_path_continuation();
         }
-        let page = self.page();
         let before = page.pending_ticket();
         let result = match go {
-            Go::Visit(visit) => self.page().restore(visit),
-            Go::Parent => self.page().back(),
+            Go::Visit(visit) => page.restore(visit),
+            Go::Parent => page.back(),
             Go::Tree(tree) => {
                 let visit = self.read(|b| b.tree_target(tree))?;
-                self.page().restore(visit)
+                page.restore(visit)
             }
-            Go::Address { url, target } => self.page().navigate(url, target),
-            Go::Citation(visit) => self.page().open_citation(visit),
+            Go::Address { url, target } => page.navigate(url, target),
+            Go::Citation(visit) => page.open_citation(visit),
             Go::Saved(id) => {
                 let capture = self.read(|b| b.capture(id))?;
-                self.page().open_saved(&capture)
+                page.open_saved(&capture)
             }
         };
         if page.pending_ticket().is_some() && page.pending_ticket() != before {
@@ -333,16 +360,19 @@ impl Pages {
         Ok(())
     }
     fn continue_with(&self, action: Continuation) {
-        *self.continuation.borrow_mut() =
-            self.page()
-                .pending_ticket()
-                .map(|ticket| PendingContinuation {
-                    state: ContinuationState::Waiting(ticket),
-                    action,
-                });
+        *self.continuation.borrow_mut() = self
+            .live
+            .borrow()
+            .as_ref()
+            .and_then(|page| page.pending_ticket())
+            .map(|ticket| PendingContinuation {
+                state: ContinuationState::Waiting(ticket),
+                action,
+            });
     }
 
     pub fn settle_tree(&self, tree: TreeId) -> Result<()> {
+        anyhow::ensure!(self.live.borrow().is_some(), "No selected page.");
         self.cancel_continuation();
         let landing = self.browser.borrow_mut().settle_tree(tree)?;
         self.receive(PageEvent::Changed);
@@ -350,7 +380,10 @@ impl Pages {
             Landing::Unchanged => Ok(()),
             Landing::Restore(visit) => self.go(Go::Visit(visit)),
             Landing::Start => {
-                self.page().blank();
+                let selected = self.live.borrow().clone();
+                if let Some(page) = selected {
+                    page.blank();
+                }
                 Ok(())
             }
         }
@@ -382,18 +415,27 @@ impl Pages {
         Ok(())
     }
     pub fn resume(&self) -> Result<()> {
+        if self.start.get().is_some() {
+            anyhow::ensure!(self.live.borrow().is_some(), "No selected page.");
+        }
         match self.start.take() {
             Some(StartPage::Reload) => self.reload(),
             Some(StartPage::Show(visit)) => self.go(Go::Visit(visit)),
             Some(StartPage::Blank) => {
                 self.cancel_continuation();
-                self.page().blank();
+                let selected = self.live.borrow().clone();
+                if let Some(page) = selected {
+                    page.blank();
+                }
                 Ok(())
             }
             None => Ok(()),
         }
     }
     pub fn open_roots(&self, urls: &[Url]) -> Result<()> {
+        if !urls.is_empty() && self.start.get().is_none() {
+            anyhow::ensure!(self.live.borrow().is_some(), "No selected page.");
+        }
         let roots = self.browser.borrow_mut().add_roots(urls)?;
         let Some(last) = roots.last().copied() else {
             return Ok(());
@@ -408,8 +450,12 @@ impl Pages {
         }
     }
     pub fn reload(&self) -> Result<()> {
+        let page = self
+            .live
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No selected page."))?;
         self.cancel_path_continuation();
-        let page = self.page();
         let before = page.pending_ticket();
         let result = page.reload();
         if page.pending_ticket().is_some() && page.pending_ticket() != before {
@@ -418,10 +464,20 @@ impl Pages {
         result
     }
     pub fn remember_selection(&self) -> Result<()> {
-        self.page().remember_selection()
+        let page = self
+            .live
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No selected page."))?;
+        page.remember_selection()
     }
     pub fn set_capture_enabled(&self, enabled: bool) -> Result<()> {
-        self.page().set_capture_enabled(enabled)
+        let page = self
+            .live
+            .borrow()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No selected page."))?;
+        page.set_capture_enabled(enabled)
     }
     pub fn set_theme(&self, mode: ThemeMode) -> Result<()> {
         self.browser.borrow_mut().set_theme_mode(mode)
@@ -430,11 +486,16 @@ impl Pages {
         self.browser.borrow_mut().rename_tree(tree, name)
     }
     pub fn focus(&self) {
-        self.page().focus();
+        let selected = self.live.borrow().clone();
+        if let Some(page) = selected {
+            page.focus();
+        }
     }
     pub fn resize(&self, width: f64, height: f64) {
-        self.page()
-            .set_bounds(0., CHROME_HEIGHT, width, height - CHROME_HEIGHT);
+        let selected = self.live.borrow().clone();
+        if let Some(page) = selected {
+            page.set_bounds(0., CHROME_HEIGHT, width, height - CHROME_HEIGHT);
+        }
     }
     pub fn apply_cookie_batches(
         &self,
@@ -443,17 +504,144 @@ impl Pages {
     ) {
         self.context.apply_cookie_batches(batches, done);
     }
+    // The per-branch PR calls the checkpoint lifecycle.
+    #[cfg_attr(not(feature = "gui-smoke"), allow(dead_code))]
+    fn checkpoint_and_release(
+        &self,
+        done: impl FnOnce(Result<live::Checkpoint>) + 'static,
+    ) -> Result<()> {
+        let page = self
+            .live
+            .borrow_mut()
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("No live page."))?;
+        self.releasing.set(true);
+        let weak = self.me.clone();
+        let finish = move |result| {
+            if let Some(pages) = weak.upgrade() {
+                pages.releasing.set(false);
+            }
+            done(result);
+        };
+        let pending = page.clone();
+        page.capture_checkpoint_scroll(move || finish(Self::release_page(pending)));
+        Ok(())
+    }
+
+    fn release_page(page: Rc<LivePage>) -> Result<live::Checkpoint> {
+        let saved = page.checkpoint();
+        drop(page);
+        saved
+    }
+
+    fn discard_view_continuation(&self, navigation: &crate::browser::Navigation) {
+        discard_continuation(&mut self.continuation.borrow_mut(), navigation);
+    }
+
     #[cfg(feature = "gui-smoke")]
     pub fn release_selected_page(&self) {
-        let page = self.live.borrow_mut().take();
-        drop(page);
+        let weak = self.me.clone();
+        let _ = self.checkpoint_and_release(move |saved| {
+            if let Some(pages) = weak.upgrade() {
+                *pages.checkpoint.borrow_mut() = saved.ok();
+            }
+        });
     }
     #[cfg(feature = "gui-smoke")]
     pub fn mount_selected_page(self: &Rc<Self>, container: &gtk::Fixed) -> Result<()> {
         let page = LivePage::new(container, Rc::downgrade(self), &self.context)?;
         let old = self.live.borrow_mut().replace(Rc::new(page));
-        drop(old);
+        if let Some(old) = old {
+            let pending = old.clone();
+            old.capture_checkpoint_scroll(move || {
+                let _ = Self::release_page(pending);
+            });
+        }
+        self.checkpoint.borrow_mut().take();
         Ok(())
+    }
+    // The per-branch PR calls the checkpoint lifecycle.
+    #[cfg_attr(not(feature = "gui-smoke"), allow(dead_code))]
+    fn revive_at(
+        &self,
+        container: &gtk::Fixed,
+        saved: Option<&live::Checkpoint>,
+        visit: VisitId,
+    ) -> Result<live::Revival> {
+        anyhow::ensure!(!self.releasing.get(), "Page release still pending.");
+        anyhow::ensure!(self.live.borrow().is_none(), "Page still live.");
+        let (page, cold) = match saved {
+            Some(saved) => {
+                LivePage::revive(container, self.me.clone(), &self.context, saved, visit)?
+            }
+            None => (
+                LivePage::new(container, self.me.clone(), &self.context)?,
+                live::Revival::Cold,
+            ),
+        };
+        page.follow_container_bounds(container);
+        let page = Rc::new(page);
+        *self.live.borrow_mut() = Some(page.clone());
+        #[cfg(feature = "gui-smoke")]
+        {
+            let observer = self.before_revival.borrow().clone();
+            if let Some(observer) = observer {
+                observer();
+            }
+        }
+        page.restore_revived(visit)?;
+        Ok(cold)
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn revive_selected_page(&self, container: &gtk::Fixed, visit: VisitId) -> Result<bool> {
+        let saved = self.checkpoint.borrow_mut().take();
+        self.revive_at(container, saved.as_ref(), visit)
+            .map(|outcome| matches!(outcome, live::Revival::Cold))
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn has_pending_continuation(&self) -> bool {
+        self.continuation.borrow().is_some()
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn before_revival_traversal(&self, observer: impl Fn() + 'static) {
+        *self.before_revival.borrow_mut() = Some(Rc::new(observer));
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn forget_history_visit(&self, visit: VisitId) {
+        self.page().forget_history_visit(visit);
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn revival_refusals(&self) -> usize {
+        self.page().revival_refusals()
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn selected_history_visits(&self) -> Vec<VisitId> {
+        self.page().history_visits()
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn checkpoint_size(&self) -> Option<usize> {
+        self.checkpoint.borrow().as_ref().map(|c| c.bytes.len())
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn corrupt_checkpoint(&self, kind: &str) {
+        let mut checkpoint = self.checkpoint.borrow_mut();
+        let saved = checkpoint.as_mut().expect("checkpoint");
+        match kind {
+            "length" => {
+                saved.entries.pop();
+            }
+            "position" => saved.current = usize::MAX,
+            "url" => saved.entries[0].stored_url = Url::parse("https://invalid.example/").unwrap(),
+            _ => panic!("unknown corruption"),
+        }
     }
     #[cfg(feature = "gui-smoke")]
     pub fn selected_page(&self) -> SelectedPage<'_> {
@@ -497,10 +685,48 @@ impl SelectedPage<'_> {
     }
 }
 
+fn discard_continuation(
+    pending: &mut Option<PendingContinuation>,
+    navigation: &crate::browser::Navigation,
+) {
+    if pending
+        .as_ref()
+        .is_some_and(|c| c.state.ticket().belongs_to(navigation))
+    {
+        pending.take();
+    }
+}
+
 #[cfg(test)]
 mod continuation_tests {
     use super::*;
     use crate::browser::Navigation;
+
+    #[test]
+    fn checkpoint_discards_only_the_owning_views_continuation() {
+        let mut source = Navigation::default();
+        let mut target = Navigation::default();
+        let url = Url::parse("https://example.org/").unwrap();
+        let source_ticket = source.native_request(url.clone());
+        let target_ticket = target.native_request(url.clone());
+        let directory = tempfile::tempdir().unwrap();
+        let mut browser = Browser::open(&directory.path().join("forest.sqlite3")).unwrap();
+        let visit = browser.add_roots(&[url]).unwrap()[0];
+        for ticket in [source_ticket, target_ticket] {
+            for state in [
+                ContinuationState::Waiting(ticket),
+                ContinuationState::Committed { ticket, visit },
+                ContinuationState::Ready { ticket, visit },
+            ] {
+                let mut pending = Some(PendingContinuation {
+                    state,
+                    action: Continuation::BranchPalette,
+                });
+                discard_continuation(&mut pending, &source);
+                assert_eq!(pending.is_none(), ticket == source_ticket);
+            }
+        }
+    }
 
     #[test]
     fn waiting_continuation_requires_its_own_attempt() {

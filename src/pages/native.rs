@@ -96,7 +96,7 @@ impl PageContext {
         &self,
         view: &webkit2gtk::WebView,
         page: impl Fn(Option<&Url>) -> Option<VisitId> + 'static,
-    ) {
+    ) -> glib::SignalHandlerId {
         let mut sources = self.sources.borrow_mut();
         sources.retain(|entry| entry.view.upgrade().is_some());
         sources.push(DownloadSource {
@@ -112,7 +112,7 @@ impl PageContext {
             if let (Some(uri), Some(surface)) = (page.uri(), page.favicon()) {
                 favicons.store(uri.to_string(), Some(&surface));
             }
-        });
+        })
     }
 
     pub fn observe(&self, callback: impl Fn(PageEvent) + 'static) {
