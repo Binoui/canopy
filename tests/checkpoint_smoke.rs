@@ -772,21 +772,15 @@ fn revived_post_with_iframe_history() -> Result<()> {
     );
     f.release()?;
     assert!(
-        f.revive(post)?,
-        "a POST document remains a cold target after iframe navigation"
+        !f.revive(post)?,
+        "a POST document retains its history and uses GET after iframe navigation"
     );
     assert_eq!(f.server.hits("POST /post"), 1);
     assert_eq!(f.server.hits("GET /post"), 1);
-    assert_eq!(
-        f.pages
-            .selected_page()
-            .native
-            .back_forward_list()
-            .unwrap()
-            .length(),
-        1
-    );
-    assert_eq!(f.pages.revival_refusals(), 0);
+    assert!(f.pages.selected_history_visits().contains(&a));
+    assert_eq!(f.pages.revival_refusals(), 1);
+    f.pages.go(Go::Parent)?;
+    f.arrived(a)?;
     Ok(())
 }
 fn resize_during_restore() -> Result<()> {

@@ -518,8 +518,8 @@ fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -
                     weak.upgrade().is_none() && ui.pages.checkpoint_size().is_some()
                 })?;
                 assert!(
-                    ui.pages.revive_selected_page(&fixed, post)?,
-                    "POST target must restore cold"
+                    !ui.pages.revive_selected_page(&fixed, post)?,
+                    "POST target must retain valid history and load by GET"
                 );
             } else {
                 ui.pages.go(canopy::pages::Go::Visit(post))?;
