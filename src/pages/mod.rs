@@ -546,7 +546,7 @@ impl Pages {
                     }
                 },
             );
-            glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+            glib::timeout_add_local_once(std::time::Duration::from_millis(1000), move || {
                 finish("cap")
             });
             candidate.show();

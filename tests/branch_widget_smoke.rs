@@ -743,6 +743,7 @@ fn page_picture_never_blanks() -> Result<()> {
 fn layout_stays_in_slot() -> Result<()> {
     let u = U::new()?;
     let a = u.root("/colour/a")?;
+    let child = u.nav("/colour/a-child")?;
     let b = u.root("/colour/b")?;
     pump(500);
     let bad = Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -761,7 +762,9 @@ fn layout_stays_in_slot() -> Result<()> {
         });
     });
     for i in 0..10 {
-        move_to(600, 40)?;
+        let (left, _, width, _) = rect(&u.ui, "#strip-clip")?;
+        let (x, y) = page_point(&u.ui, (left + width - 24.) as i32, 68)?;
+        move_to(x, y)?;
         pump(300);
         move_to(600, 600)?;
         pump(500);
@@ -773,7 +776,14 @@ fn layout_stays_in_slot() -> Result<()> {
         } else if i % 3 == 1 {
             key(if i % 2 == 0 { "ctrl+1" } else { "ctrl+2" })?;
         } else {
-            u.ui.pages.go(Go::Visit(if i % 2 == 0 { a } else { b }))?;
+            u.ui.pages.go(Go::Visit(child))?;
+            wait("child revived", || {
+                u.cursor() == Some(child) && !u.loading()
+            })?;
+            u.ui.pages.go(Go::Parent)?;
+            wait("Back reaches revived parent", || {
+                u.cursor() == Some(a) && !u.loading()
+            })?;
         }
         pump(700);
         assert_eq!(

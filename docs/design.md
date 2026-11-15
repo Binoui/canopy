@@ -213,7 +213,7 @@ Pages::select_candidate switches bookkeeping and keyboard focus at commit. It
 maps the incoming page under the outgoing native window, whose GDK input is made
 pass-through immediately. Only that outgoing picture is held. Two isolated-world
 animation frames after a body exists, followed by a rendered snapshot and 34 ms
-for presentation, release the picture through Pages::release_picture. A 300 ms
+for presentation, release the picture through Pages::release_picture. A 1000 ms
 cap bounds a stalled renderer. Release then checkpoints and destroys the outgoing
 view before draining the existing FIFO. Commands arriving during the picture hold
 use that same queue, so a second switch cannot leave a third picture mapped.
