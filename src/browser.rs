@@ -1,5 +1,9 @@
+mod bookmarks;
+mod history;
+pub use bookmarks::{Bookmark, BookmarkId, BookmarkToggle, ImportedBookmark};
+pub use history::{Arrival, ArrivalKind};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -48,7 +52,7 @@ pub struct VisitPreview {
     pub snippet: String,
 }
 
-/// A page known from another browser's history or bookmarks.
+/// A page known from another browser's history.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ImportedPage {
     pub url: Url,
@@ -57,28 +61,6 @@ pub struct ImportedPage {
     pub typed: usize,
     /// Milliseconds since the Unix epoch.
     pub last_visit: Option<i64>,
-    /// Where the page is bookmarked, as "Bookmarks bar › Folder", if it is.
-    pub folder: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Shortcut {
-    pub url: Url,
-    pub title: String,
-    pub visits: usize,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UsualPath {
-    pub first: Url,
-    pub second: Url,
-    pub visits: usize,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct StartSuggestions {
-    pub shortcuts: Vec<Shortcut>,
-    pub paths: Vec<UsualPath>,
 }
 
 /// Whether a tree has a tab. A settled tree keeps every page and reopens when one is visited.
@@ -110,8 +92,20 @@ pub enum Landing {
     Start,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct PinOrder(std::num::NonZeroI64);
+
+impl PinOrder {
+    fn from_sql(value: i64) -> Result<Self> {
+        anyhow::ensure!(value > 0, "Invalid pin order.");
+        Ok(Self(std::num::NonZeroI64::new(value).unwrap()))
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TreeState {
+    pub pin: Option<PinOrder>,
+    pub last_event_at: Option<i64>,
     pub root: TreeId,
     pub last_visit: VisitId,
     /// The name the user gave the tree. Without one, the tree is named after its pages.
@@ -271,6 +265,16 @@ pub struct Browser {
     connection: Connection,
 }
 
+fn migrate_pins(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        "ALTER TABLE tree_state ADD COLUMN pin_order INTEGER CHECK(pin_order > 0);
+                 CREATE UNIQUE INDEX tree_state_pin_order ON tree_state(pin_order)
+                    WHERE pin_order IS NOT NULL;
+                 PRAGMA user_version = 9;",
+    )?;
+    Ok(())
+}
+
 impl Browser {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -310,7 +314,7 @@ impl Browser {
              INSERT OR IGNORE INTO session(singleton, current_id) VALUES(1, NULL);",
         )?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version > 8 {
+        if version > 11 {
             bail!("This database comes from a newer version of Canopy.");
         }
         if version == 0 {
@@ -482,39 +486,30 @@ impl Browser {
             )?;
             transaction.commit()?;
         }
+        if version < 9 {
+            let transaction = connection.transaction()?;
+            migrate_pins(&transaction)?;
+            transaction.commit()?;
+        }
+        if version < 10 {
+            let tx = connection.transaction()?;
+            bookmarks::migrate(&tx)?;
+            tx.commit()?;
+        }
+        if version < 11 {
+            let tx = connection.transaction()?;
+            tx.execute_batch("CREATE TABLE declined_suggestions(key TEXT PRIMARY KEY NOT NULL); PRAGMA user_version=11;")?;
+            tx.commit()?;
+        }
         Ok(Self { connection })
     }
 
-    /// Replaces everything imported from `source` with `pages`, in one transaction.
     pub fn replace_imported(&mut self, source: &str, pages: &[ImportedPage]) -> Result<usize> {
-        let transaction = self.connection.transaction()?;
-        transaction.execute("DELETE FROM imported_pages WHERE source=?1", [source])?;
-        {
-            let mut insert = transaction.prepare(
-                "INSERT INTO imported_pages(source, url, title, visits, typed, last_visit, folder)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(source, url) DO UPDATE SET
-                    title=excluded.title, visits=excluded.visits, typed=excluded.typed,
-                    last_visit=excluded.last_visit, folder=excluded.folder",
-            )?;
-            for page in pages {
-                insert.execute(params![
-                    source,
-                    page.url.as_str(),
-                    page.title,
-                    page.visits as i64,
-                    page.typed as i64,
-                    page.last_visit,
-                    page.folder,
-                ])?;
-            }
-        }
-        transaction.commit()?;
+        self.import_pages(source, pages, &[])?;
         Ok(pages.len())
     }
 
-    /// Imported pages whose title or URL contains `query`: bookmarks first, then the pages
-    /// typed and visited most.
+    /// Imported pages whose title or URL contains `query`, typed and visited most first.
     pub fn search_imported(&self, query: &str, limit: usize) -> Result<Vec<ImportedPage>> {
         let query = query.trim();
         if query.is_empty() {
@@ -525,11 +520,11 @@ impl Browser {
             .replace('%', "\\%")
             .replace('_', "\\_");
         let mut statement = self.connection.prepare(
-            r"SELECT url, MAX(title), SUM(visits), SUM(typed), MAX(last_visit), MAX(folder)
+            r"SELECT url, MAX(title), SUM(visits), SUM(typed), MAX(last_visit)
               FROM imported_pages
               WHERE title LIKE ?1 ESCAPE '\' OR url LIKE ?1 ESCAPE '\'
               GROUP BY url
-              ORDER BY MAX(folder) IS NULL, SUM(typed) DESC, SUM(visits) DESC, MAX(last_visit) DESC
+              ORDER BY SUM(typed) DESC, SUM(visits) DESC, MAX(last_visit) DESC
               LIMIT ?2",
         )?;
         let rows =
@@ -542,10 +537,10 @@ impl Browser {
     }
 
     /// The most visited imported page of each of the busiest hosts.
-    fn imported_favorites(&self, limit: usize) -> Result<Vec<ImportedPage>> {
+    pub fn chrome_favorites(&self, limit: usize) -> Result<Vec<ImportedPage>> {
         let mut statement = self.connection.prepare(
-            "SELECT url, MAX(title), SUM(visits), SUM(typed), MAX(last_visit), MAX(folder)
-             FROM imported_pages GROUP BY url
+            "SELECT url, MAX(title), SUM(visits), SUM(typed), MAX(last_visit)
+             FROM imported_pages WHERE visits > 0 GROUP BY url
              ORDER BY SUM(typed) DESC, SUM(visits) DESC, url",
         )?;
         let mut hosts = HashSet::new();
@@ -553,7 +548,7 @@ impl Browser {
         let rows = statement.query_map([], imported_row)?;
         for row in rows {
             let Some(page) = row? else { continue };
-            if hosts.insert(page.url.host_str().unwrap_or_default().to_owned()) {
+            if hosts.insert(crate::suggest::site(&page.url).to_owned()) {
                 favorites.push(page);
                 if favorites.len() == limit {
                     break;
@@ -627,13 +622,31 @@ impl Browser {
 
     pub fn tree_states(&self) -> Result<Vec<TreeState>> {
         let mut statement = self.connection.prepare(
-            "SELECT t.root_id, t.last_visit_id, t.name, t.settled_at FROM tree_state t
-             JOIN visits v ON v.id=t.root_id ORDER BY v.created_at, v.rowid",
+            "WITH RECURSIVE members(root_id, visit_id) AS (
+    SELECT id, id FROM visits WHERE parent_id IS NULL
+    UNION ALL
+    SELECT m.root_id, v.id FROM visits v JOIN members m ON v.parent_id=m.visit_id
+), activity(root_id, latest_event_at) AS (
+    SELECT m.root_id, MAX(e.at)
+    FROM members m LEFT JOIN visit_events e ON e.visit_id=m.visit_id
+    GROUP BY m.root_id
+)
+SELECT t.root_id, t.last_visit_id, t.name, t.settled_at, t.pin_order,
+       a.latest_event_at
+FROM tree_state t
+JOIN visits r ON r.id=t.root_id
+LEFT JOIN activity a ON a.root_id=t.root_id
+ORDER BY r.created_at, r.rowid",
         )?;
         let mut rows = statement.query([])?;
         let mut states = Vec::new();
         while let Some(row) = rows.next()? {
             states.push(TreeState {
+                pin: row
+                    .get::<_, Option<i64>>(4)?
+                    .map(PinOrder::from_sql)
+                    .transpose()?,
+                last_event_at: row.get(5)?,
                 root: TreeId(row.get::<_, String>(0)?.parse()?),
                 last_visit: row.get::<_, String>(1)?.parse()?,
                 name: row.get(2)?,
@@ -643,6 +656,41 @@ impl Browser {
             });
         }
         Ok(states)
+    }
+
+    pub fn set_pinned(&mut self, tree: TreeId, pinned: bool) -> Result<()> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let order: Option<Option<i64>> = tx
+            .query_row(
+                "SELECT pin_order FROM tree_state WHERE root_id=?1",
+                [tree.root().to_string()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if order.is_none() || (pinned && order.flatten().is_some()) {
+            return Ok(());
+        }
+        if pinned {
+            let next: i64 = tx.query_row(
+                "SELECT COALESCE(MAX(pin_order), 0) FROM tree_state",
+                [],
+                |r| r.get(0),
+            )?;
+            let next = next.checked_add(1).context("Too many pinned trees.")?;
+            tx.execute(
+                "UPDATE tree_state SET pin_order=?2 WHERE root_id=?1 AND pin_order IS NULL",
+                params![tree.root().to_string(), next],
+            )?;
+        } else {
+            tx.execute(
+                "UPDATE tree_state SET pin_order=NULL WHERE root_id=?1",
+                [tree.root().to_string()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Takes `tree` out of the tabs and says where the window goes. Settling a settled tree
@@ -1325,84 +1373,6 @@ impl Browser {
         Ok(downloads)
     }
 
-    pub fn start_suggestions(&self) -> Result<StartSuggestions> {
-        let mut statement = self.connection.prepare(
-            "SELECT url, MAX(title), COUNT(*) FROM visits WHERE opened_at IS NOT NULL
-             GROUP BY url ORDER BY COUNT(*) DESC, MAX(opened_at) DESC, url LIMIT 6",
-        )?;
-        let shortcuts = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, usize>(2)?,
-                ))
-            })?
-            .map(|row| {
-                let (url, title, visits) = row?;
-                Ok(Shortcut {
-                    url: web_url(&url)?,
-                    title,
-                    visits,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        // Until Canopy has its own habits, the busiest imported sites fill the shortcuts.
-        let mut shortcuts = shortcuts;
-        if shortcuts.len() < 6 {
-            let hosts: HashSet<String> = shortcuts
-                .iter()
-                .map(|s| s.url.host_str().unwrap_or_default().to_owned())
-                .collect();
-            for page in self.imported_favorites(6)? {
-                if shortcuts.len() == 6 {
-                    break;
-                }
-                if hosts.contains(page.url.host_str().unwrap_or_default()) {
-                    continue;
-                }
-                shortcuts.push(Shortcut {
-                    url: page.url,
-                    title: page.title,
-                    visits: page.visits,
-                });
-            }
-        }
-        let mut statement = self.connection.prepare(
-            "SELECT p.url, c.url FROM visits c JOIN visits p ON c.parent_id=p.id
-             WHERE c.opened_at IS NOT NULL AND p.opened_at IS NOT NULL
-             ORDER BY c.opened_at, c.id",
-        )?;
-        let mut pairs: HashMap<(String, String), UsualPath> = HashMap::new();
-        for row in statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })? {
-            let (first, second) = row?;
-            let (first, second) = (web_url(&first)?, web_url(&second)?);
-            let key = (
-                first.host_str().unwrap_or_default().to_owned(),
-                second.host_str().unwrap_or_default().to_owned(),
-            );
-            let path = pairs.entry(key).or_insert_with(|| UsualPath {
-                first: first.clone(),
-                second: second.clone(),
-                visits: 0,
-            });
-            path.first = first;
-            path.second = second;
-            path.visits += 1;
-        }
-        let mut paths: Vec<_> = pairs.into_values().collect();
-        paths.sort_by(|a, b| {
-            b.visits
-                .cmp(&a.visits)
-                .then_with(|| a.first.as_str().cmp(b.first.as_str()))
-                .then_with(|| a.second.as_str().cmp(b.second.as_str()))
-        });
-        paths.truncate(3);
-        Ok(StartSuggestions { shortcuts, paths })
-    }
-
     pub fn set_theme_mode(&mut self, mode: ThemeMode) -> Result<()> {
         let value = match mode {
             ThemeMode::System => "system",
@@ -1539,7 +1509,6 @@ fn imported_row(row: &Row) -> rusqlite::Result<Option<ImportedPage>> {
         visits: row.get::<_, i64>(2)?.max(0) as usize,
         typed: row.get::<_, i64>(3)?.max(0) as usize,
         last_visit: row.get(4)?,
-        folder: row.get(5)?,
     }))
 }
 
@@ -1696,6 +1665,458 @@ mod tests {
     fn follow_child(browser: &mut TestBrowser, path: &str) -> VisitId {
         let parent = browser.current_id().unwrap().unwrap();
         follow(browser, path, NavigationTarget::ChildOf(parent))
+    }
+
+    fn historical_connection(version: i64) -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        let sql = include_str!("../tests/fixtures/schema-v8.sql");
+        connection.execute_batch(sql).unwrap();
+        if version >= 9 {
+            let tx = connection.unchecked_transaction().unwrap();
+            migrate_pins(&tx).unwrap();
+            tx.commit().unwrap();
+        }
+        if version >= 10 {
+            let tx = connection.unchecked_transaction().unwrap();
+            bookmarks::migrate(&tx).unwrap();
+            tx.commit().unwrap();
+        }
+        connection
+    }
+
+    #[test]
+    fn chrome_fill_survives_bookmarks_and_declines_ahead_of_it() {
+        let mut b = memory();
+        let pages: Vec<_> = (0..12)
+            .map(|i| ImportedPage {
+                url: web_url(&format!("https://site{i}.test/")).unwrap(),
+                title: format!("Site {i}"),
+                visits: 100 - i,
+                typed: 0,
+                last_visit: None,
+            })
+            .collect();
+        b.replace_imported("chrome", &pages).unwrap();
+        for page in &pages[..8] {
+            b.bookmark(&page.url, &page.title).unwrap();
+        }
+        b.decline(&crate::suggest::SuggestionKey::Page(pages[8].url.clone()))
+            .unwrap();
+        let bookmarks = b.bookmarks().unwrap();
+        let declined = b.declined().unwrap();
+        let chrome = b
+            .chrome_favorites(3 + bookmarks.len() + declined.len())
+            .unwrap();
+        let forest = crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap();
+        let result = crate::suggest::rank(
+            &crate::suggest::Inputs {
+                forest: &forest,
+                bookmarks: &bookmarks,
+                declined: &declined,
+                arrivals: &[],
+                chrome: &chrome,
+                left: None,
+            },
+            100,
+        );
+        assert_eq!(result.len(), 3);
+        assert!(result.iter().all(|s| s.why() == "Often in Chrome"));
+    }
+
+    #[test]
+    fn opens_a_real_version_10_database_and_declines_persist() {
+        let connection = historical_connection(10);
+        assert!(connection
+            .prepare("SELECT key FROM declined_suggestions")
+            .is_err());
+        let mut browser = Browser::with_connection(connection).unwrap();
+        let key = crate::suggest::SuggestionKey::Page(url("declined"));
+        browser.decline(&key).unwrap();
+        browser.decline(&key).unwrap();
+        let mut browser = Browser::with_connection(browser.connection).unwrap();
+        assert_eq!(browser.declined().unwrap(), HashSet::from([key]));
+        browser.bookmark(&url("kept"), "First title").unwrap();
+        browser.bookmark(&url("kept"), "Second title").unwrap();
+        assert_eq!(browser.bookmarks().unwrap().len(), 1);
+        assert_eq!(browser.bookmarks().unwrap()[0].title, "First title");
+    }
+
+    #[test]
+    fn seeded_history_pins_ranked_suggestions() {
+        let b = memory();
+        let now = 100 * crate::suggest::DAY;
+        for i in 1..=40_u128 {
+            let id = ulid::Ulid::from(i).to_string();
+            b.connection
+                .execute(
+                    "INSERT INTO visits(id,url,title,created_at,opened_at) VALUES(?1,?2,?3,?4,?4)",
+                    params![
+                        id,
+                        format!("https://seed{i}.test/"),
+                        format!("Seed {i}"),
+                        now - 10 * crate::suggest::DAY
+                    ],
+                )
+                .unwrap();
+            b.connection
+                .execute(
+                    "INSERT INTO tree_state(root_id,last_visit_id,settled_at) VALUES(?1,?1,?2)",
+                    params![id, now],
+                )
+                .unwrap();
+            for day in 1..=3 {
+                b.connection
+                    .execute(
+                        "INSERT INTO visit_events(visit_id,kind,at) VALUES(?1,'return',?2)",
+                        params![id, now - day * crate::suggest::DAY],
+                    )
+                    .unwrap();
+            }
+        }
+        let forest = crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap();
+        let arrivals = b.arrivals(&forest, 0).unwrap();
+        let result = crate::suggest::rank(
+            &crate::suggest::Inputs {
+                forest: &forest,
+                bookmarks: &[],
+                declined: &HashSet::new(),
+                arrivals: &arrivals,
+                chrome: &[],
+                left: b.last_event_tree(&forest).unwrap(),
+            },
+            now,
+        );
+        assert_eq!(
+            result
+                .iter()
+                .map(|s| (s.key().to_string(), s.why()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "tree 00000000000000000000000001".into(),
+                    "Opened 3 days in a row".into()
+                ),
+                (
+                    "tree 00000000000000000000000002".into(),
+                    "Opened 3 days in a row".into()
+                ),
+                (
+                    "tree 00000000000000000000000003".into(),
+                    "Opened 3 days in a row".into()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn history_counts_returns_but_never_reloads_and_finds_the_last_tree_outside_the_window() {
+        let mut b = memory();
+        let root = follow(&mut b, "root", NavigationTarget::Root);
+        let forest = crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap();
+        let before = b.arrivals(&forest, 0).unwrap().len();
+        let load = b.reload().unwrap().unwrap();
+        b.started(load.clone()).unwrap();
+        b.committed(load).unwrap();
+        assert_eq!(b.arrivals(&forest, 0).unwrap().len(), before);
+        let child = follow_child(&mut b, "child");
+        let load = b.restore(root).unwrap();
+        b.started(load.clone()).unwrap();
+        b.committed(load).unwrap();
+        let forest = crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap();
+        let arrivals = b.arrivals(&forest, 0).unwrap();
+        assert_eq!(arrivals.len(), before + 2);
+        assert_eq!(arrivals.last().unwrap().kind, ArrivalKind::Return);
+        assert_eq!(arrivals.last().unwrap().from, Some(child));
+        b.connection
+            .execute("UPDATE visit_events SET at=1", [])
+            .unwrap();
+        assert!(b.arrivals(&forest, 2).unwrap().is_empty());
+        assert_eq!(b.last_event_tree(&forest).unwrap(), Some(TreeId(root)));
+    }
+
+    #[test]
+    fn arrivals_skip_a_page_the_callers_forest_does_not_hold_yet() {
+        let mut b = memory();
+        follow(&mut b, "known", NavigationTarget::Root);
+        let forest = crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap();
+        let known = b.arrivals(&forest, 0).unwrap().len();
+        follow(&mut b, "newer", NavigationTarget::Root);
+        assert_eq!(b.arrivals(&forest, 0).unwrap().len(), known);
+        assert_eq!(b.last_event_tree(&forest).unwrap(), None);
+    }
+
+    #[test]
+    fn the_tree_just_left_follows_the_order_of_the_log_not_the_clock() {
+        let mut b = memory();
+        let old = follow(&mut b, "old", NavigationTarget::Root);
+        let recent = follow(&mut b, "recent", NavigationTarget::Root);
+        b.connection
+            .execute(
+                "UPDATE visit_events SET at=at+7200000 WHERE visit_id=?1",
+                [old.to_string()],
+            )
+            .unwrap();
+        let forest = crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(b.last_event_tree(&forest).unwrap(), Some(TreeId(recent)));
+    }
+
+    #[test]
+    fn opens_a_version_9_database_and_copies_chrome_bookmarks_once() {
+        let connection = historical_connection(9);
+        for (i, folder) in [
+            "Bookmarks bar",
+            "Bookmarks bar",
+            "Bookmarks bar › Work",
+            "Bookmarks bar › Work › Rust",
+            "Other bookmarks",
+            "Mobile bookmarks",
+        ]
+        .iter()
+        .enumerate()
+        {
+            connection.execute("INSERT INTO imported_pages(source,url,title,visits,typed,last_visit,folder) VALUES('chrome',?1,?2,?3,0,NULL,?4)", params![format!("https://example.org/{i}"), format!("Title {i}"), i as i64, folder]).unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO imported_pages(source,url,title,visits,typed,last_visit,folder)
+                 VALUES('chrome','file:///home/me/notes.html','Notes',0,0,NULL,'Bookmarks bar')",
+                [],
+            )
+            .unwrap();
+        let mut browser = Browser::with_connection(connection).unwrap();
+        let bookmarks = browser.bookmarks().unwrap();
+        assert_eq!(bookmarks.len(), 6);
+        assert_eq!(
+            browser
+                .connection
+                .query_row(
+                    "SELECT COUNT(*) FROM imported_pages WHERE url LIKE 'file:%'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1,
+            "a bookmark that is not a web address keeps its imported row"
+        );
+        assert_eq!(bookmarks[0].url.path(), "/1");
+        assert_eq!(bookmarks[1].url.path(), "/0");
+        assert_eq!(
+            bookmarks
+                .iter()
+                .map(|b| b.folder.as_deref())
+                .collect::<Vec<_>>(),
+            [
+                None,
+                None,
+                Some("Mobile bookmarks"),
+                Some("Other bookmarks"),
+                Some("Work"),
+                Some("Work › Rust")
+            ]
+        );
+        assert_eq!(browser.search_imported("example", 20).unwrap().len(), 5);
+        assert!(browser
+            .connection
+            .prepare("SELECT folder FROM imported_pages")
+            .is_err());
+        browser.remove_bookmark(bookmarks[0].id).unwrap();
+        let reopened = Browser::with_connection(browser.connection).unwrap();
+        assert_eq!(reopened.bookmarks().unwrap().len(), 5);
+        assert!(!reopened
+            .bookmarks()
+            .unwrap()
+            .iter()
+            .any(|b| b.url == bookmarks[0].url));
+    }
+
+    #[test]
+    fn toggle_current_bookmark_adds_removes_and_needs_a_page() {
+        let mut b = memory();
+        assert_eq!(b.toggle_current_bookmark().unwrap(), BookmarkToggle::NoPage);
+        let id = follow(&mut b, "chosen", NavigationTarget::Root);
+        assert_eq!(b.toggle_current_bookmark().unwrap(), BookmarkToggle::Added);
+        let bookmark = b.bookmarks().unwrap().remove(0);
+        let visit = b
+            .snapshot()
+            .unwrap()
+            .visits
+            .into_iter()
+            .find(|v| v.id == id)
+            .unwrap();
+        assert_eq!((bookmark.url, bookmark.title), (visit.url, visit.title));
+        assert_eq!(
+            b.toggle_current_bookmark().unwrap(),
+            BookmarkToggle::Removed
+        );
+        assert!(b.bookmarks().unwrap().is_empty());
+        b.toggle_current_bookmark().unwrap();
+        assert!(b.bookmarks().unwrap()[0].id.get() > bookmark.id.get());
+    }
+
+    #[test]
+    fn a_failed_bookmark_import_rolls_back_history_replacement() {
+        let mut b = memory();
+        let history = ImportedPage {
+            url: url("history"),
+            title: "History".into(),
+            visits: 1,
+            typed: 0,
+            last_visit: None,
+        };
+        b.import_pages("chrome", std::slice::from_ref(&history), &[])
+            .unwrap();
+        b.connection.execute_batch("CREATE TRIGGER reject_bookmark BEFORE INSERT ON bookmarks BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;").unwrap();
+        let bookmark = ImportedBookmark {
+            url: url("bookmark"),
+            title: String::new(),
+            folder: "Bookmarks bar".into(),
+            visits: 0,
+        };
+        assert!(b.import_pages("chrome", &[], &[bookmark]).is_err());
+        assert_eq!(b.search_imported("history", 10).unwrap(), [history]);
+        assert!(b.bookmarks().unwrap().is_empty());
+    }
+
+    #[test]
+    fn import_bookmarks_appends_absent_ones_at_the_end_of_their_folder() {
+        let mut b = memory();
+        let draft = |path: &str, folder: &str, visits| ImportedBookmark {
+            url: url(path),
+            title: path.into(),
+            folder: folder.into(),
+            visits,
+        };
+        b.import_pages(
+            "chrome",
+            &[],
+            &[
+                draft("first", "Bookmarks bar", 5),
+                draft("second", "Bookmarks bar", 1),
+                draft("nested", "Bookmarks bar › Work › Rust", 1),
+            ],
+        )
+        .unwrap();
+        let original = b.bookmarks().unwrap();
+        b.remove_bookmark(original[1].id).unwrap();
+        b.import_pages(
+            "chrome",
+            &[],
+            &[
+                draft("first", "Other bookmarks", 100),
+                draft("third", "Bookmarks bar", 100),
+            ],
+        )
+        .unwrap();
+        let rows = b.bookmarks().unwrap();
+        assert_eq!(rows[0], original[0]);
+        assert_eq!(rows[1].url, url("third"));
+        assert_eq!(rows[2], original[2]);
+        assert_eq!(
+            b.import_pages("chrome", &[], &[draft("third", "Bookmarks bar", 100)])
+                .unwrap(),
+            0
+        );
+        let tx = b.connection.transaction().unwrap();
+        assert!(tx.execute("INSERT INTO bookmarks(url,title,folder,position,added_at) VALUES('https://invalid/','',' ',0,0)", []).is_err());
+    }
+
+    #[test]
+    fn opens_a_version_8_database_with_every_tree_unpinned() {
+        let connection = historical_connection(8);
+        let root = Ulid::new().to_string();
+        connection.execute("INSERT INTO visits(id,url,created_at,opened_at) VALUES(?1,'https://example.org/',1,1)", [&root]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO tree_state(root_id,last_visit_id,settled_at) VALUES(?1,?1,2)",
+                [&root],
+            )
+            .unwrap();
+        let b = Browser::with_connection(connection).unwrap();
+        let states = b.tree_states().unwrap();
+        assert_eq!(states.len(), 1);
+        assert!(states[0].pin.is_none());
+        assert_eq!(states[0].last_event_at, None);
+        assert!(!states[0].lifecycle.is_open());
+        assert_eq!(
+            b.connection
+                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            11
+        );
+    }
+
+    #[test]
+    fn pin_order_is_stable_idempotent_and_independent_of_lifecycle() {
+        let mut b = memory();
+        let a = follow(&mut b, "a", NavigationTarget::Root);
+        let child = follow_child(&mut b, "child");
+        let c = follow(&mut b, "c", NavigationTarget::Root);
+        b.set_pinned(TreeId(c), true).unwrap();
+        b.set_pinned(TreeId(a), true).unwrap();
+        let pins = b.tree_states().unwrap();
+        b.set_pinned(TreeId(c), true).unwrap();
+        assert_eq!(b.tree_states().unwrap(), pins);
+        b.settle_tree(TreeId(a)).unwrap();
+        assert_eq!(b.tree_states().unwrap()[0].pin, pins[0].pin);
+        b.restore(child).unwrap();
+        let request = url("child");
+        b.started(request.clone()).unwrap();
+        b.committed(request).unwrap();
+        let states = b.tree_states().unwrap();
+        assert!(states[0].lifecycle.is_open());
+        assert_eq!(states[0].pin, pins[0].pin);
+        let projection =
+            crate::forest::ForestProjection::from_snapshot(b.snapshot().unwrap(), states).unwrap();
+        assert_eq!(
+            projection.pinned().iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![TreeId(c), TreeId(a)]
+        );
+        b.set_pinned(TreeId(c), false).unwrap();
+        b.set_pinned(TreeId(c), true).unwrap();
+        assert!(b.tree_states().unwrap()[1].pin > b.tree_states().unwrap()[0].pin);
+    }
+
+    #[test]
+    fn tree_age_uses_the_newest_event_anywhere_in_the_tree_including_reload() {
+        let mut b = memory();
+        let a = follow(&mut b, "a", NavigationTarget::Root);
+        let child = follow_child(&mut b, "child");
+        b.connection
+            .execute("UPDATE visit_events SET at=10", [])
+            .unwrap();
+        b.connection
+            .execute(
+                "INSERT INTO visit_events(visit_id,kind,at) VALUES(?1,'reload',100)",
+                [a.to_string()],
+            )
+            .unwrap();
+        let state = &b.tree_states().unwrap()[0];
+        assert_eq!(state.last_visit, child);
+        assert_eq!(state.last_event_at, Some(100));
     }
 
     #[test]
@@ -1866,11 +2287,25 @@ mod tests {
         let b = Browser::open(&path).unwrap();
         assert!(!b.tree_states().unwrap()[0].lifecycle.is_open());
         assert_eq!(b.visit(a).unwrap().url, url("a"));
-        b.connection
-            .execute_batch("ALTER TABLE tree_state DROP COLUMN settled_at; PRAGMA user_version=7;")
-            .unwrap();
         drop(b);
-        assert!(Browser::open(&path).unwrap().tree_states().unwrap()[0]
+        let legacy = dir.path().join("legacy.db");
+        let connection = Connection::open(&legacy).unwrap();
+        connection
+            .execute_batch(
+                &include_str!("../tests/fixtures/schema-v8.sql")
+                    .replace(", settled_at INTEGER CHECK(settled_at > 0)", "")
+                    .replace("PRAGMA user_version=8", "PRAGMA user_version=7"),
+            )
+            .unwrap();
+        connection.execute("INSERT INTO visits(id,url,created_at,opened_at) VALUES(?1,'https://example.org/a',1,1)", [a.to_string()]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO tree_state(root_id,last_visit_id) VALUES(?1,?1)",
+                [a.to_string()],
+            )
+            .unwrap();
+        drop(connection);
+        assert!(Browser::open(&legacy).unwrap().tree_states().unwrap()[0]
             .lifecycle
             .is_open());
     }
@@ -2113,59 +2548,6 @@ mod tests {
             3,
             "a refused batch plants nothing"
         );
-    }
-
-    #[test]
-    fn suggestions_are_bounded_and_do_not_count_unopened_links() {
-        let mut b = memory();
-        let root = follow(&mut b, "root", NavigationTarget::Root);
-        b.queue_link(root, url("never-opened"), source("queued"))
-            .unwrap();
-        for i in 0..10 {
-            follow(
-                &mut b,
-                &format!("page-{i}"),
-                NavigationTarget::ChildOf(root),
-            );
-        }
-        let suggestions = b.start_suggestions().unwrap();
-        assert_eq!(suggestions.shortcuts.len(), 6);
-        assert!(!suggestions
-            .shortcuts
-            .iter()
-            .any(|s| s.url.path() == "/never-opened"));
-        assert_eq!(
-            suggestions.paths.len(),
-            1,
-            "URL variants share one host pair"
-        );
-        assert_eq!(suggestions.paths[0].visits, 10);
-        assert_eq!(suggestions.paths[0].first, url("root"));
-    }
-
-    #[test]
-    fn suggestions_count_opened_urls_and_parent_child_hosts() {
-        let mut b = memory();
-        assert_eq!(b.start_suggestions().unwrap(), StartSuggestions::default());
-        for _ in 0..3 {
-            let first = web_url("https://first.example/start").unwrap();
-            b.navigate(first.clone(), NavigationTarget::Root).unwrap();
-            b.started(first.clone()).unwrap();
-            b.committed(first).unwrap();
-            let root = b.snapshot().unwrap().current.unwrap();
-            let second = web_url("https://second.example/end").unwrap();
-            b.navigate(second.clone(), NavigationTarget::ChildOf(root))
-                .unwrap();
-            b.started(second.clone()).unwrap();
-            b.committed(second).unwrap();
-        }
-        let suggestions = b.start_suggestions().unwrap();
-        assert_eq!(suggestions.shortcuts.len(), 2);
-        assert!(suggestions.shortcuts.iter().all(|s| s.visits == 3));
-        assert_eq!(suggestions.paths.len(), 1);
-        assert_eq!(suggestions.paths[0].visits, 3);
-        b.set_theme_mode(ThemeMode::Dark).unwrap();
-        assert_eq!(b.theme_mode().unwrap(), ThemeMode::Dark);
     }
 
     #[test]
@@ -2988,24 +3370,23 @@ mod tests {
     }
 
     #[test]
-    fn imported_pages_are_searchable_replaceable_and_fill_the_shortcuts() {
+    fn imported_pages_are_searchable_and_replaceable() {
         let dir = tempfile::tempdir().unwrap();
         let mut browser = TestBrowser::open(&dir.path().join("forest.sqlite3")).unwrap();
-        let page = |url: &str, title: &str, visits, folder: Option<&str>| ImportedPage {
+        let page = |url: &str, title: &str, visits| ImportedPage {
             url: Url::parse(url).unwrap(),
             title: title.into(),
             visits,
             typed: 0,
             last_visit: Some(1),
-            folder: folder.map(str::to_owned),
         };
         browser
             .replace_imported(
                 "chrome:Default",
                 &[
-                    page("https://docs.rs/wry", "wry 100% docs", 3, None),
-                    page("https://docs.rs/tao", "tao docs", 9, None),
-                    page("https://servo.org/", "Servo", 0, Some("Bookmarks bar")),
+                    page("https://docs.rs/wry", "wry 100% docs", 3),
+                    page("https://docs.rs/tao", "tao docs", 9),
+                    page("https://servo.org/", "Servo", 0),
                 ],
             )
             .unwrap();
@@ -3022,24 +3403,15 @@ mod tests {
         );
         assert_eq!(
             browser.search_imported("o", 10).unwrap()[0].url.host_str(),
-            Some("servo.org"),
-            "bookmarks first"
+            Some("docs.rs"),
+            "history stays ordered by visits"
         );
         assert!(
             browser.snapshot().unwrap().visits.is_empty(),
             "imports plant no trees"
         );
-        let shortcuts = browser.start_suggestions().unwrap().shortcuts;
-        assert_eq!(
-            shortcuts.iter().map(|s| s.url.as_str()).collect::<Vec<_>>(),
-            ["https://docs.rs/tao", "https://servo.org/"],
-            "one shortcut per busy host"
-        );
         browser
-            .replace_imported(
-                "chrome:Default",
-                &[page("https://servo.org/", "Servo", 1, None)],
-            )
+            .replace_imported("chrome:Default", &[page("https://servo.org/", "Servo", 1)])
             .unwrap();
         assert!(
             browser.search_imported("docs", 10).unwrap().is_empty(),

@@ -12,6 +12,7 @@ mod forest_layout;
 pub(crate) mod graph;
 mod palette;
 mod pins;
+mod start;
 mod tree_view;
 mod view;
 mod waiting;
@@ -36,8 +37,8 @@ use palette::{Group, PaletteItem};
 
 use crate::{
     browser::{
-        Capture, Download, ImportedPage, NavigationTarget, SearchHit, StartSuggestions, ThemeMode,
-        TreeId, UsualPath, Visit, VisitId, VisitPreview,
+        Capture, Download, ImportedPage, NavigationTarget, SearchHit, ThemeMode, TreeId, Visit,
+        VisitId, VisitPreview,
     },
     forest::ForestProjection,
 };
@@ -56,18 +57,19 @@ thread_local! {
     static FAVICONS: RefCell<Weak<Favicons>> = const { RefCell::new(Weak::new()) };
 }
 
-/// The palette's last query, its results, and the row Enter runs first.
-type PaletteCache = (String, Vec<(Group, PaletteItem)>, usize);
+/// The query and rows last sent to the view, and their default row.
+type ShownPalette = (String, Vec<(Group, PaletteItem)>, usize);
 
 /// Everything the chrome shows, read from SQLite in one go.
 pub struct ChromeFrame {
+    pub bookmarks: Vec<crate::browser::Bookmark>,
     pub forest: ForestProjection,
     /// Waiting pages that already have a live view. Nothing fills it yet: background
     /// loading will, and the chrome then shows those pages as loaded with no other change.
     pub loaded: std::collections::HashSet<VisitId>,
     pub capture_enabled: bool,
     pub theme: ThemeMode,
-    pub suggestions: StartSuggestions,
+    pub declined: std::collections::HashSet<crate::suggest::SuggestionKey>,
     /// The files downloaded from the current tree's pages, oldest first.
     pub files: Vec<PageFile>,
 }
@@ -98,7 +100,15 @@ pub enum ChromeIntent {
     SettleCurrent,
     /// Name a tree; an empty name goes back to the automatic one.
     RenameTree(TreeId, String),
-    OpenPath(UsualPath),
+    OpenPath {
+        first: Url,
+        second: Url,
+    },
+    Bookmark {
+        url: Url,
+        title: String,
+    },
+    Decline(crate::suggest::SuggestionKey),
     SetTheme(ThemeMode),
     CancelContinuation,
     Restore(VisitId),
@@ -131,6 +141,11 @@ pub enum ChromeIntent {
         offer: u64,
         save: bool,
     },
+    RemoveBookmark(crate::browser::BookmarkId),
+    PinTree {
+        tree: TreeId,
+        pinned: bool,
+    },
 }
 
 /// A login waiting for the user to say whether to keep it.
@@ -153,8 +168,9 @@ pub enum Toast {
 /// The side of the browser the chrome talks to: commands, and read-only queries.
 pub trait ChromeHost {
     fn dispatch(&self, intent: ChromeIntent);
+    fn suggestions(&self, forest: &ForestProjection) -> Result<Vec<crate::suggest::Suggestion>>;
     fn search(&self, query: &str) -> Result<Vec<SearchHit>>;
-    /// Pages from imported browser history and bookmarks.
+    /// Pages from imported browser history.
     fn search_imported(&self, query: &str) -> Result<Vec<ImportedPage>>;
     fn preview(&self, visit: VisitId) -> Result<VisitPreview>;
     /// Gives the keyboard back to the page.
@@ -178,8 +194,10 @@ struct Inner {
     /// Something is open that Escape closes.
     modal: Cell<bool>,
     frame: RefCell<Option<ChromeFrame>>,
+    suggested: RefCell<Vec<crate::suggest::Suggestion>>,
+    start: Cell<bool>,
     /// The last palette results, so Enter runs exactly the row the view showed.
-    palette: RefCell<Option<PaletteCache>>,
+    palette: RefCell<Option<ShownPalette>>,
 }
 
 impl HtmlChrome {
@@ -217,6 +235,8 @@ impl HtmlChrome {
             cover: Cell::new(Some(CHROME_HEIGHT)),
             modal: Cell::new(false),
             frame: RefCell::new(None),
+            suggested: RefCell::new(Vec::new()),
+            start: Cell::new(false),
             palette: RefCell::new(None),
         });
         *slot.borrow_mut() = Rc::downgrade(&inner);
@@ -237,9 +257,11 @@ impl HtmlChrome {
     pub fn present(&self, frame: ChromeFrame) {
         let inner = &self.inner;
         let (width, _) = inner.size.get();
-        inner.call("present", &[view::frame(&frame, width)]);
+        inner.call(
+            "present",
+            &[view::frame(&frame, &inner.suggested.borrow(), width)],
+        );
         *inner.frame.borrow_mut() = Some(frame);
-        inner.palette.borrow_mut().take();
     }
 
     /// Follows the window: the page sits below `CHROME_HEIGHT`, the view on top.
@@ -247,6 +269,7 @@ impl HtmlChrome {
         let inner = &self.inner;
         let previous = inner.size.replace((width, height));
         inner.apply_bounds();
+        inner.call("viewport", &[json!(height)]);
         if previous.0 != width {
             if let Some(frame) = inner.frame.borrow().as_ref() {
                 inner.call("strip", &[view::strip(&frame.forest, width)]);
@@ -297,6 +320,7 @@ impl HtmlChrome {
 
     pub fn new_tree(&self) {
         self.inner.call("newTree", &[]);
+        let _ = self.inner.view.focus();
     }
 
     pub fn next_waiting(&self) {
@@ -457,6 +481,12 @@ impl Inner {
                     self.view.evaluate_script(&script)?;
                 }
             }
+            "surface" => {
+                let start = message["start"].as_bool().unwrap_or(false);
+                if self.start.replace(start) != start && start {
+                    self.freeze()?;
+                }
+            }
             "layer" => {
                 self.modal.set(message["modal"].as_bool().unwrap_or(false));
                 let cover = message["height"].as_f64().map(|h| h.max(CHROME_HEIGHT));
@@ -490,22 +520,27 @@ impl Inner {
                         .as_ref()
                         .context("The chrome has no forest yet.")?
                         .forest;
-                    json!({ "rows": view::palette_rows(&items, forest), "first": first })
+                    let rows =
+                        json!({ "rows": view::palette_rows(&items, forest), "first": first });
+                    *self.palette.borrow_mut() = Some((query.to_owned(), items, first));
+                    rows
                 };
                 self.call("paletteResults", &[message["seq"].clone(), rows]);
             }
             "run" => {
                 let query = message["q"].as_str().unwrap_or_default();
-                let fresh = self
+                let shown = self
                     .palette
                     .borrow()
                     .as_ref()
-                    .is_some_and(|(shown, _, _)| shown == query);
-                let (items, first) = self.palette_items(query);
-                let index = if fresh {
-                    message["item"].as_u64().map_or(first, |i| i as usize)
-                } else {
-                    first
+                    .filter(|(q, _, _)| q == query)
+                    .cloned();
+                let (items, index) = match shown {
+                    Some((_, items, first)) => (
+                        items,
+                        message["item"].as_u64().map_or(first, |i| i as usize),
+                    ),
+                    None => self.palette_items(query),
                 };
                 let scope = match message["scope"].as_str() {
                     Some(id) => PaletteScope::From(id.parse()?),
@@ -545,13 +580,8 @@ impl Inner {
         Ok(())
     }
 
-    /// The palette's results for `query`, kept so that running a row runs what was shown.
+    /// Fresh results for `query`, independent of the rows the view was last sent.
     fn palette_items(&self, query: &str) -> (Vec<(Group, PaletteItem)>, usize) {
-        if let Some((shown, items, first)) = self.palette.borrow().as_ref() {
-            if shown == query {
-                return (items.clone(), *first);
-            }
-        }
         let (hits, imported) = match self.host() {
             Some(host) if !query.trim().is_empty() => (
                 host.search(query).unwrap_or_default(),
@@ -563,30 +593,54 @@ impl Inner {
         let Some(frame) = frame.as_ref() else {
             return (Vec::new(), 0);
         };
-        let (mut items, first) = palette::results(query, hits, imported, &frame.forest);
+        let (mut items, first) =
+            palette::results(query, hits, imported, &frame.bookmarks, &frame.forest);
         if query.trim().is_empty() {
-            let suggestions = &frame.suggestions;
+            let suggestions = if self.start.get() {
+                self.suggested.borrow().clone()
+            } else {
+                self.host()
+                    .and_then(|h| h.suggestions(&frame.forest).ok())
+                    .unwrap_or_default()
+            };
             items.extend(
                 suggestions
-                    .shortcuts
-                    .iter()
-                    .map(|s| (Group::Shortcuts, PaletteItem::Shortcut(s.url.clone()))),
-            );
-            items.extend(
-                suggestions
-                    .paths
-                    .iter()
-                    .map(|p| (Group::Paths, PaletteItem::Path(p.clone()))),
+                    .into_iter()
+                    .filter(|s| {
+                        crate::suggest::admits(&frame.forest, &frame.bookmarks, &frame.declined, s)
+                    })
+                    .map(|s| (Group::Suggested, PaletteItem::Suggestion(s))),
             );
         }
-        *self.palette.borrow_mut() = Some((query.to_owned(), items.clone(), first));
         (items, first)
+    }
+
+    fn freeze(&self) -> Result<()> {
+        let frame = self.frame.borrow();
+        let Some(frame) = frame.as_ref() else {
+            return Ok(());
+        };
+        *self.suggested.borrow_mut() = self
+            .host()
+            .context("The browser closed.")?
+            .suggestions(&frame.forest)?;
+        self.call("start", &[start::value(frame, &self.suggested.borrow())]);
+        Ok(())
+    }
+
+    fn chip(&self, message: &Value) -> Option<crate::suggest::Suggestion> {
+        let key: crate::suggest::SuggestionKey = message["key"].as_str()?.parse().ok()?;
+        self.suggested
+            .borrow()
+            .iter()
+            .find(|s| s.key() == key)
+            .cloned()
     }
 
     fn intent(&self, message: &Value) -> Option<ChromeIntent> {
         let id = |key: &str| message[key].as_str()?.parse::<VisitId>().ok();
         let frame = self.frame.borrow();
-        let suggestions = &frame.as_ref()?.suggestions;
+        let frame = frame.as_ref()?;
         let index = || message["index"].as_u64().map(|i| i as usize);
         Some(match message["kind"].as_str()? {
             "settle-tree" => ChromeIntent::SettleTree(TreeId(id("id")?)),
@@ -619,12 +673,30 @@ impl Inner {
                 offer: message["offer"].as_u64()?,
                 index: index()?,
             },
-            "cancel" => ChromeIntent::CancelContinuation,
-            "path" => ChromeIntent::OpenPath(suggestions.paths.get(index()?)?.clone()),
-            "shortcut" => ChromeIntent::Navigate {
-                url: suggestions.shortcuts.get(index()?)?.url.clone(),
+            "pin-tree" => ChromeIntent::PinTree {
+                tree: TreeId(id("id")?),
+                pinned: message["pinned"].as_bool()?,
+            },
+            "open-bookmark" => ChromeIntent::Navigate {
+                url: frame
+                    .bookmarks
+                    .iter()
+                    .find(|b| Some(b.id.get()) == message["id"].as_i64())?
+                    .url
+                    .clone(),
                 target: NavigationTarget::Root,
             },
+            "remove-bookmark" => ChromeIntent::RemoveBookmark(
+                frame
+                    .bookmarks
+                    .iter()
+                    .find(|b| Some(b.id.get()) == message["id"].as_i64())?
+                    .id,
+            ),
+            "cancel" => ChromeIntent::CancelContinuation,
+            "open-suggestion" => start::open(&self.chip(message)?),
+            "keep-suggestion" => start::keep(&self.chip(message)?),
+            "decline-suggestion" => ChromeIntent::Decline(self.chip(message)?.key()),
             _ => return None,
         })
     }

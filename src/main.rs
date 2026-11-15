@@ -215,11 +215,13 @@ fn prepare_data_dir(chosen: Option<PathBuf>) -> Result<PathBuf> {
 
 fn import_chrome(data_dir: &std::path::Path, profile: &std::path::Path) -> Result<()> {
     let chrome = canopy::import::chrome_profile(profile)?;
-    let bookmarks = chrome.pages.iter().filter(|p| p.folder.is_some()).count();
-    canopy::browser::Browser::open(&data_dir.join("forest.sqlite3"))?
-        .replace_imported(&chrome.source, &chrome.pages)?;
+    let added = canopy::browser::Browser::open(&data_dir.join("forest.sqlite3"))?.import_pages(
+        &chrome.source,
+        &chrome.pages,
+        &chrome.bookmarks,
+    )?;
     println!(
-        "Imported {} pages from Chrome profile {}, {bookmarks} bookmarked.",
+        "Imported {} history pages from Chrome profile {}, {added} new bookmarks.",
         chrome.pages.len(),
         chrome.name
     );

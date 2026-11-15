@@ -78,6 +78,12 @@ harness = false
 required-features = ["gui-smoke"]
 
 [[test]]
+name = "palette_smoke"
+path = "tests/palette_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]
+
+[[test]]
 name = "history_smoke"
 path = "tests/history_smoke.rs"
 harness = false
@@ -149,5 +155,23 @@ required-features = ["gui-smoke"]
 [[test]]
 name = "login_smoke"
 path = "tests/login_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]
+
+[[test]]
+name = "newtree_smoke"
+path = "tests/newtree_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]
+
+[[test]]
+name = "refresh_smoke"
+path = "tests/refresh_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]
+
+[[test]]
+name = "readme_shots"
+path = "tests/readme_shots.rs"
 harness = false
 required-features = ["gui-smoke"]

@@ -31,12 +31,22 @@ fn main() -> Result<()> {
         .context("favicon pixels")?;
     icon.fill(0x2050ffff);
     let fixture = Fixture::start(icon.save_to_bufferv("png", &[])?)?;
+    canopy::browser::Browser::open(&directory.path().join("forest.sqlite3"))?.import_pages(
+        "chrome:Default",
+        &[],
+        &[canopy::browser::ImportedBookmark {
+            url: web_url(&fixture.url("/imported-bookmark"))?,
+            title: "Quokka atlas".into(),
+            folder: "Bookmarks bar".into(),
+            visits: 0,
+        }],
+    )?;
     let ui = Ui::new(directory.path())?;
     ui.window.show_all();
     ready(&ui)?;
     assert!(visible(&ui, "#start"));
     assert!(ui.snapshot()?.visits.is_empty());
-    assert!(text(&ui, "#start").contains("as your forest grows"));
+    assert!(text(&ui, "#start").contains("Pin a tree from its tab menu"));
     assert_eq!(
         chrome(&ui, "canopy.state().dark")?,
         true,
@@ -369,6 +379,7 @@ fn main() -> Result<()> {
         let (x, y) = chrome_point(&ui, &tab_title)?;
         move_to(x, y)?;
         xdo(&["click", "3"])?;
+        click_chrome(&ui, "[data-tab-action=rename]")?;
         wait("tree name field", || chrome_focused(&ui, "#tree-name"))?;
         keys()?;
         key("Return")?;
@@ -495,55 +506,19 @@ fn main() -> Result<()> {
     assert_eq!(ui.snapshot()?.current, Some(first));
     println!("PASS Ctrl+E opens the forest, node selection and Escape close it, and Ctrl+T opens a reversible new-tree page.");
 
-    let count = ui.snapshot()?.visits.len();
-    key("ctrl+t")?;
-    key("ctrl+k")?;
-    wait("palette suggestions", || {
-        visible(&ui, "#palette [data-kind=shortcut]") && visible(&ui, "#palette [data-kind=path]")
-    })?;
-    key("Escape")?;
-    wait("palette closed", || !visible(&ui, "#palette"))?;
-    click_chrome(&ui, "[data-shortcut='0']")?;
-    wait("shortcut plants a root", || {
-        ui.snapshot().unwrap().visits.len() == count + 1
-            && !ui.pages.selected_page().native.is_loading()
-    })?;
-    assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
-    key("ctrl+t")?;
-    wait("new-tree page", || visible(&ui, "[data-path='0']"))?;
-    click_chrome(&ui, "[data-path='0']")?;
-    wait("usual path loads two pages", || {
-        ui.snapshot().unwrap().visits.len() == count + 3
-            && !ui.pages.selected_page().native.is_loading()
-    })?;
-    let snapshot = ui.snapshot()?;
-    let second = snapshot.current_visit().unwrap();
-    let root = snapshot
-        .visits
-        .iter()
-        .find(|v| Some(v.id) == second.parent)
-        .context("usual-path root")?;
-    assert!(root.parent.is_none());
-    assert!(root.opened_at.is_some());
-    assert!(second.opened_at.is_some());
-    println!("PASS a shortcut plants a root and a usual path really loads a root and its child.");
-
     {
         let mut other = canopy::browser::Browser::open(&directory.path().join("forest.sqlite3"))?;
-        let page = |path: &str, title: &str, folder: Option<&str>| canopy::browser::ImportedPage {
+        let page = |path: &str, title: &str| canopy::browser::ImportedPage {
             url: web_url(&fixture.url(path)).unwrap(),
             title: title.into(),
             visits: 4,
             typed: 1,
             last_visit: Some(1),
-            folder: folder.map(str::to_owned),
         };
-        other.replace_imported(
+        other.import_pages(
             "chrome:Default",
-            &[
-                page("/imported-history", "Quokka field notes", None),
-                page("/imported-bookmark", "Quokka atlas", Some("Bookmarks bar")),
-            ],
+            &[page("/imported-history", "Quokka field notes")],
+            &[],
         )?;
     }
     let count = ui.snapshot()?.visits.len();

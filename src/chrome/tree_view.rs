@@ -76,6 +76,121 @@ pub(crate) fn tree_view(forest: &ForestProjection) -> Option<TreeView> {
     })
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Fit {
+    pub columns: usize,
+    pub rows: usize,
+    pub icon: f64,
+    pub step_x: f64,
+    pub step_y: f64,
+}
+
+impl Fit {
+    pub const CHIP: Self = Self {
+        columns: 3,
+        rows: 2,
+        icon: 12.,
+        step_x: 20.,
+        step_y: 18.,
+    };
+    pub const CARD: Self = Self {
+        columns: 7,
+        rows: 3,
+        icon: 14.,
+        step_x: 26.,
+        step_y: 22.,
+    };
+}
+
+pub(crate) struct Miniature {
+    pub width: f64,
+    pub height: f64,
+    pub icon: f64,
+    pub cut: bool,
+    pub nodes: Vec<MiniNode>,
+    pub edges: Vec<PlacedEdge>,
+}
+
+pub(crate) struct MiniNode {
+    pub id: VisitId,
+    pub x: f64,
+    pub y: f64,
+    pub last: bool,
+    pub waiting: bool,
+}
+
+pub(crate) fn miniature(
+    forest: &ForestProjection,
+    tree: &crate::forest::TreeSummary,
+    fit: Fit,
+) -> Miniature {
+    let path = forest.path(tree.last_visit);
+    let grid = place(forest, &path);
+    let first = path.len().saturating_sub(fit.columns);
+    let mut cells: Vec<_> = grid
+        .cells
+        .iter()
+        .map(|(&id, &(col, row))| (id, col, row))
+        .collect();
+    cells.sort_by_key(|&(_, col, row)| (col, row));
+    let mut kept = HashMap::new();
+    for (id, col, row) in cells {
+        if col < first || col >= first + fit.columns || row >= fit.rows {
+            continue;
+        }
+        if id == path[first]
+            || forest
+                .visit(id)
+                .and_then(|v| v.parent)
+                .is_some_and(|p| kept.contains_key(&p))
+        {
+            kept.insert(
+                id,
+                ((col - first) as f64 * fit.step_x, row as f64 * fit.step_y),
+            );
+        }
+    }
+    let mut nodes: Vec<_> = kept
+        .iter()
+        .map(|(&id, &(x, y))| MiniNode {
+            id,
+            x,
+            y,
+            last: id == tree.last_visit,
+            waiting: forest.visit(id).unwrap().state == crate::browser::VisitState::Queued,
+        })
+        .collect();
+    nodes.sort_by(|a, b| a.y.total_cmp(&b.y).then_with(|| a.x.total_cmp(&b.x)));
+    let rect = |id: &VisitId| {
+        let &(x, y) = &kept[id];
+        Rect {
+            x: x + fit.icon / 2.,
+            y: y + fit.icon / 2.,
+            w: fit.icon,
+            s: fit.icon,
+        }
+    };
+    let edges: Vec<_> = grid
+        .edges
+        .iter()
+        .filter(|e| kept.contains_key(&e.from) && kept.contains_key(&e.to))
+        .map(|e| PlacedEdge {
+            from: e.from,
+            to: e.to,
+            kind: e.kind,
+            curve: graph::edge_curve(e, rect(&e.from), rect(&e.to)),
+        })
+        .collect();
+    Miniature {
+        width: (fit.columns - 1) as f64 * fit.step_x + fit.icon,
+        height: (fit.rows - 1) as f64 * fit.step_y + fit.icon,
+        icon: fit.icon,
+        cut: first > 0,
+        nodes,
+        edges,
+    }
+}
+
 struct Grid {
     cells: HashMap<VisitId, (usize, usize)>,
     edges: Vec<Edge>,
@@ -205,6 +320,62 @@ mod tests {
     use crate::browser::{Lifecycle, Snapshot, TreeId, TreeState, Visit, VisitState};
     use std::collections::HashSet;
 
+    #[test]
+    fn miniature_shows_a_child_of_the_last_page_on_the_first_row_and_marks_waiting() {
+        let (forest, ids) = fixture(&[None, Some(0), Some(1)], 1);
+        let mini = miniature(&forest, &forest.trees()[0], Fit::CARD);
+        let child = mini.nodes.iter().find(|n| n.id == ids[2]).unwrap();
+        assert_eq!(child.y, 0.);
+        assert!(child.waiting);
+        assert_eq!(
+            mini.edges.iter().find(|e| e.to == child.id).unwrap().kind,
+            EdgeKind::Pending
+        );
+    }
+
+    #[test]
+    fn miniature_crops_without_squeezing_and_keeps_the_last_page_and_gap_mark() {
+        let mut parents = vec![None];
+        parents.extend((0..18).map(Some));
+        let (forest, ids) = fixture(&parents, 16);
+        for fit in [Fit::CARD, Fit::CHIP] {
+            let mini = miniature(&forest, &forest.trees()[0], fit);
+            assert!(mini.cut);
+            let last = mini.nodes.iter().find(|n| n.last).unwrap();
+            assert_eq!(last.id, ids[16]);
+            assert_eq!(last.y, 0.);
+            assert!(mini
+                .nodes
+                .iter()
+                .all(|n| n.x < mini.width && n.y < mini.height));
+            assert!(mini.nodes.len() <= fit.rows * fit.columns);
+            assert!(mini.nodes.iter().all(|n| n.id != ids[0]));
+        }
+    }
+
+    #[test]
+    fn miniature_places_branches_below_the_path_and_never_orphans_a_page() {
+        let (forest, ids) = fixture(
+            &[None, Some(0), Some(1), Some(0), Some(3), Some(4), Some(1)],
+            2,
+        );
+        let mini = miniature(&forest, &forest.trees()[0], Fit::CARD);
+        assert!(!mini.cut);
+        for id in &ids[..3] {
+            assert_eq!(mini.nodes.iter().find(|n| n.id == *id).unwrap().y, 0.);
+        }
+        assert!(mini
+            .nodes
+            .iter()
+            .filter(|n| !ids[..3].contains(&n.id))
+            .all(|n| n.y > 0.));
+        for node in &mini.nodes {
+            if let Some(parent) = forest.visit(node.id).unwrap().parent {
+                assert!(mini.nodes.iter().any(|n| n.id == parent));
+            }
+        }
+    }
+
     fn fixture(parents: &[Option<usize>], current: usize) -> (ForestProjection, Vec<VisitId>) {
         let ids: Vec<VisitId> = parents
             .iter()
@@ -235,6 +406,8 @@ mod tests {
                     current: Some(ids[current]),
                 },
                 vec![TreeState {
+                    pin: None,
+                    last_event_at: None,
                     root: TreeId(ids[0]),
                     last_visit: ids[current],
                     lifecycle: Lifecycle::Open,
@@ -304,6 +477,40 @@ mod tests {
             EdgeKind::Pending
         );
     }
+    #[test]
+    fn miniature_generated_forests_keep_connected_pages_and_waiting_marks() {
+        for seed in 1..80u64 {
+            let mut rng = seed;
+            let parents: Vec<_> = (0..400)
+                .map(|i| {
+                    rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    (i > 0).then(|| rng as usize % i)
+                })
+                .collect();
+            let (forest, _) = fixture(&parents, seed as usize);
+            for fit in [Fit::CARD, Fit::CHIP] {
+                let mini = miniature(&forest, &forest.trees()[0], fit);
+                let path = forest.path(forest.trees()[0].last_visit);
+                let first = path[path.len().saturating_sub(fit.columns)];
+                assert_eq!(mini.nodes.iter().filter(|n| n.last).count(), 1);
+                for node in &mini.nodes {
+                    assert!(node.x + fit.icon <= mini.width && node.y + fit.icon <= mini.height);
+                    assert_eq!(
+                        node.waiting,
+                        forest.visit(node.id).unwrap().state == VisitState::Queued
+                    );
+                    if node.id != first {
+                        let parent = forest.visit(node.id).unwrap().parent.unwrap();
+                        assert!(mini
+                            .edges
+                            .iter()
+                            .any(|e| e.from == parent && e.to == node.id));
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn every_page_once_without_tile_or_drop_line_collisions() {
         for seed in 1..80u64 {

@@ -113,6 +113,8 @@ mod tests {
             }
             current = parent;
             states.push(TreeState {
+                pin: None,
+                last_event_at: None,
                 lifecycle: if index < settled {
                     crate::browser::Lifecycle::Settled { since: 1 }
                 } else {

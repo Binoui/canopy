@@ -276,7 +276,8 @@ impl Ui {
                 forest,
                 capture_enabled: browser.capture_enabled()?,
                 theme: browser.theme_mode()?,
-                suggestions: browser.start_suggestions()?,
+                declined: browser.declined()?,
+                bookmarks: browser.bookmarks()?,
                 files,
             })
         })
@@ -330,6 +331,18 @@ impl Ui {
         self.chrome.open_palette(scope, seed);
     }
 
+    fn toggle_bookmark(&self) {
+        use crate::browser::BookmarkToggle;
+        let toast = match self.pages.toggle_current_bookmark() {
+            Ok(BookmarkToggle::Added) => Toast::Info("Bookmarked".into()),
+            Ok(BookmarkToggle::Removed) => Toast::Info("Bookmark removed".into()),
+            Ok(BookmarkToggle::NoPage) => Toast::Info("No page to bookmark".into()),
+            Err(error) => Toast::Error(error.to_string()),
+        };
+        self.schedule_refresh();
+        self.chrome.toast(toast);
+    }
+
     fn shortcut(&self, event: &gdk::EventKey) -> glib::Propagation {
         let Some(shortcut) = Shortcut::of(event) else {
             return glib::Propagation::Proceed;
@@ -338,6 +351,7 @@ impl Ui {
         match shortcut {
             Shortcut::Palette(seed) => self.open_palette(seed),
             Shortcut::SettleTree => self.chrome.settle_current(),
+            Shortcut::Bookmark => self.toggle_bookmark(),
             Shortcut::NewTree => self.chrome.new_tree(),
             Shortcut::Forest => self.chrome.toggle_forest(),
             Shortcut::ZoomTree => self.chrome.toggle_tree(),
@@ -366,6 +380,7 @@ impl Ui {
 enum Shortcut {
     Palette(PaletteSeed),
     NewTree,
+    Bookmark,
     SettleTree,
     Forest,
     ZoomTree,
@@ -427,6 +442,7 @@ impl Shortcut {
                 Self::Palette(PaletteSeed::CurrentAddress),
             ),
             (Modifiers::CONTROL, key::t, Self::NewTree),
+            (Modifiers::CONTROL, key::d, Self::Bookmark),
             (Modifiers::CONTROL, key::w, Self::SettleTree),
             (Modifiers::CONTROL, key::e, Self::Forest),
             (Modifiers::CONTROL_SHIFT, key::e, Self::ZoomTree),
@@ -459,14 +475,61 @@ impl Shortcut {
 }
 
 impl ChromeHost for Ui {
+    fn suggestions(&self, forest: &ForestProjection) -> Result<Vec<crate::suggest::Suggestion>> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis() as i64;
+        self.pages.read(|b| {
+            let bookmarks = b.bookmarks()?;
+            let declined = b.declined()?;
+            let arrivals = b.arrivals(forest, now - crate::suggest::WINDOW)?;
+            let chrome = b.chrome_favorites(3 + bookmarks.len() + declined.len())?;
+            let left = forest
+                .current()
+                .and_then(|v| forest.tree_of(v))
+                .or(b.last_event_tree(forest)?);
+            Ok(crate::suggest::rank(
+                &crate::suggest::Inputs {
+                    forest,
+                    bookmarks: &bookmarks,
+                    declined: &declined,
+                    arrivals: &arrivals,
+                    chrome: &chrome,
+                    left,
+                },
+                now,
+            ))
+        })
+    }
+
     fn dispatch(&self, intent: ChromeIntent) {
         let Some(ui) = self.me.upgrade() else { return };
         self.pages.cancel_continuation();
         let result = match intent {
             ChromeIntent::CancelContinuation => Ok(()),
-            ChromeIntent::OpenPath(path) => self.pages.open_path(path.first, path.second),
+            ChromeIntent::OpenPath { first, second } => self.pages.open_path(first, second),
+            ChromeIntent::Bookmark { url, title } => {
+                let result = self.pages.bookmark(&url, &title);
+                self.schedule_refresh();
+                result
+            }
+            ChromeIntent::Decline(key) => {
+                let result = self.pages.decline(&key);
+                self.schedule_refresh();
+                result
+            }
             ChromeIntent::SetTheme(mode) => {
                 let result = self.pages.set_theme(mode);
+                self.schedule_refresh();
+                result
+            }
+            ChromeIntent::RemoveBookmark(id) => {
+                let result = self.pages.remove_bookmark(id);
+                self.schedule_refresh();
+                result
+            }
+            ChromeIntent::PinTree { tree, pinned } => {
+                let result = self.pages.set_pinned(tree, pinned);
                 self.schedule_refresh();
                 result
             }
@@ -628,6 +691,7 @@ mod shortcut_tests {
                 Shortcut::Palette(PaletteSeed::CurrentAddress),
             ),
             (key::t, Modifiers::CONTROL, Shortcut::NewTree),
+            (key::d, Modifiers::CONTROL, Shortcut::Bookmark),
             (key::w, Modifiers::CONTROL, Shortcut::SettleTree),
             (key::e, Modifiers::CONTROL, Shortcut::Forest),
             (key::e, Modifiers::CONTROL_SHIFT, Shortcut::ZoomTree),

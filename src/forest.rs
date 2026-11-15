@@ -3,12 +3,14 @@ use std::collections::HashMap;
 use anyhow::{bail, Context, Result};
 
 use crate::{
-    browser::{Lifecycle, Snapshot, TreeId, TreeState, Visit, VisitId, VisitState},
+    browser::{Lifecycle, PinOrder, Snapshot, TreeId, TreeState, Visit, VisitId, VisitState},
     naming::tree_name,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TreeSummary {
+    pub pin: Option<PinOrder>,
+    pub last_event_at: Option<i64>,
     pub id: TreeId,
     pub title: String,
     pub root_host: String,
@@ -95,23 +97,28 @@ impl ForestProjection {
         }
         let mut states = HashMap::with_capacity(tree_states.len());
         for state in tree_states {
-            if states
-                .insert(state.root, (state.last_visit, state.name, state.lifecycle))
-                .is_some()
-            {
+            if states.insert(state.root, state).is_some() {
                 bail!("Duplicate tree state.");
             }
         }
         let mut trees = Vec::with_capacity(roots.len());
         for root in roots {
             let node = &nodes[&root];
-            let (last_visit, name, lifecycle) =
-                states.remove(&node.tree).context("Missing tree state.")?;
+            let TreeState {
+                last_visit,
+                name,
+                lifecycle,
+                pin,
+                last_event_at,
+                ..
+            } = states.remove(&node.tree).context("Missing tree state.")?;
             let last = nodes.get(&last_visit).context("Missing tree target.")?;
             if last.tree != node.tree || last.visit.state != VisitState::Opened {
                 bail!("Tree target must be an opened page in its tree.");
             }
             trees.push(TreeSummary {
+                pin,
+                last_event_at,
                 id: node.tree,
                 title: name.unwrap_or_else(|| {
                     tree_name(
@@ -151,6 +158,16 @@ impl ForestProjection {
 
     pub fn trees(&self) -> &[TreeSummary] {
         &self.trees
+    }
+
+    pub fn pinned(&self) -> Vec<&TreeSummary> {
+        let mut trees: Vec<_> = self
+            .trees
+            .iter()
+            .filter(|tree| tree.pin.is_some())
+            .collect();
+        trees.sort_by_key(|tree| tree.pin);
+        trees
     }
 
     pub fn open(&self) -> &[TreeSummary] {
@@ -226,6 +243,8 @@ mod tests {
                 current: Some(id),
             },
             vec![TreeState {
+                pin: None,
+                last_event_at: None,
                 root: TreeId(id),
                 last_visit: id,
                 name: None,
@@ -249,6 +268,8 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, &id)| TreeState {
+                pin: None,
+                last_event_at: None,
                 root: TreeId(id),
                 last_visit: id,
                 name: None,
@@ -302,6 +323,8 @@ mod tests {
                 current: Some(leaf),
             },
             vec![TreeState {
+                pin: None,
+                last_event_at: None,
                 lifecycle: crate::browser::Lifecycle::Open,
                 root: TreeId(root_id),
                 last_visit: leaf,
@@ -330,6 +353,8 @@ mod tests {
             let second = visit(Some(root_id), i, VisitState::Queued);
             visits.extend([first, second]);
             states.push(TreeState {
+                pin: None,
+                last_event_at: None,
                 lifecycle: crate::browser::Lifecycle::Open,
                 root: TreeId(root_id),
                 last_visit: root_id,
@@ -369,6 +394,8 @@ mod tests {
         let root = visit(None, 0, VisitState::Opened);
         let child = visit(Some(root.id), 1, VisitState::Queued);
         let state = TreeState {
+            pin: None,
+            last_event_at: None,
             lifecycle: crate::browser::Lifecycle::Open,
             root: TreeId(root.id),
             last_visit: root.id,
@@ -387,6 +414,8 @@ mod tests {
         assert!(ForestProjection::from_snapshot(
             snapshot,
             vec![TreeState {
+                pin: None,
+                last_event_at: None,
                 lifecycle: crate::browser::Lifecycle::Open,
                 last_visit: child.id,
                 ..state.clone()
