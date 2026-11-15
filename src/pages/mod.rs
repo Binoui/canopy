@@ -188,22 +188,11 @@ pub struct ReleaseEvent {
 #[cfg(feature = "gui-smoke")]
 type ReleaseObserver = Rc<dyn Fn(ReleaseEvent)>;
 
-struct PictureCover {
-    image: RefCell<gtk::cairo::Surface>,
-    painted: RefCell<gtk::cairo::Surface>,
-    probing: Cell<bool>,
-    shown: Cell<bool>,
-    active: Cell<bool>,
-    frozen: Cell<bool>,
+struct Hold {
+    outgoing: Rc<LivePage>,
     cancel: gio::Cancellable,
+    cap: Option<glib::SourceId>,
 }
-type PictureSlot = Rc<RefCell<Option<Rc<PictureCover>>>>;
-
-type PictureTask = (
-    glib::WeakRef<webkit2gtk::WebView>,
-    PictureSlot,
-    gio::Cancellable,
-);
 
 pub struct Pages {
     me: Weak<Pages>,
@@ -213,7 +202,7 @@ pub struct Pages {
     container: gtk::Fixed,
     viewport: Cell<(i32, i32)>,
     views: RefCell<Vec<glib::WeakRef<webkit2gtk::WebView>>>,
-    pictures: RefCell<Vec<PictureTask>>,
+    hold: RefCell<Option<Hold>>,
     chrome: RefCell<Option<glib::WeakRef<webkit2gtk::WebView>>>,
     commands: RefCell<std::collections::VecDeque<Command>>,
     #[cfg(feature = "gui-smoke")]
@@ -246,7 +235,7 @@ impl Pages {
             container: container.clone(),
             viewport: Cell::new((container.allocated_width(), container.allocated_height())),
             views: RefCell::new(Vec::new()),
-            pictures: RefCell::new(Vec::new()),
+            hold: RefCell::new(None),
             chrome: RefCell::new(None),
             commands: RefCell::new(std::collections::VecDeque::new()),
             #[cfg(feature = "gui-smoke")]
@@ -448,26 +437,14 @@ impl Pages {
     }
 
     pub fn cancel_continuation(&self) {
+        self.end_hold();
         self.advance_continuation(ContinuationEvent::Discard);
     }
 
-    #[cfg_attr(feature = "gui-smoke", track_caller)]
     fn cancel_candidate(&self) {
+        self.end_hold();
         let page = self.branches.candidate.borrow_mut().take();
         if let Some(page) = page {
-            #[cfg(feature = "gui-smoke")]
-            eprintln!(
-                "CANCEL_CANDIDATE at={} uri={:?} pending={:?} loading={} selected={:?}",
-                std::panic::Location::caller(),
-                page.native.uri(),
-                page.pending_ticket(),
-                page.native.is_loading(),
-                self.branches
-                    .live
-                    .borrow()
-                    .as_ref()
-                    .and_then(|p| p.native.uri())
-            );
             page.cancel();
         }
         if let Some((index, saved)) = self.branches.candidate_saved.borrow_mut().take() {
@@ -571,68 +548,11 @@ impl Pages {
         };
         self.branches.candidate.borrow_mut().take();
         self.branches.candidate_saved.borrow_mut().take();
+        self.end_hold();
         let old = self.branches.live.borrow_mut().replace(candidate.clone());
         let focus = old.as_ref().is_some_and(|page| page.native.has_focus());
         if let Some(old) = old {
-            self.releasing.set(true);
-            #[cfg(feature = "gui-smoke")]
-            self.release_event(&old, ReleasePhase::Holding);
-            if let Some(window) = old.native.window() {
-                window.set_pass_through(true);
-            }
-            self.freeze_picture(&old.native);
-            let pending = RefCell::new(Some(old.clone()));
-            let weak = self.me.clone();
-            #[cfg(feature = "gui-smoke")]
-            let started = std::time::Instant::now();
-            let finish: Rc<dyn Fn()> = Rc::new(move || {
-                if let Some(old) = pending.borrow_mut().take() {
-                    #[cfg(feature = "gui-smoke")]
-                    eprintln!("PICTURE presented {}ms", started.elapsed().as_millis());
-                    if let Some(pages) = weak.upgrade() {
-                        pages.release_picture(old);
-                    }
-                }
-            });
-            let slot = Rc::new(RefCell::new(None));
-            let cancel = gio::Cancellable::new();
-            self.pictures
-                .borrow_mut()
-                .retain(|(view, _, _)| view.upgrade().is_some_and(|v| v.parent().is_some()));
-            self.pictures.borrow_mut().push((
-                candidate.native.downgrade(),
-                slot.clone(),
-                cancel.clone(),
-            ));
-            Self::request_picture(
-                &candidate.native,
-                slot.clone(),
-                finish.clone(),
-                cancel.clone(),
-            );
-            let incoming = candidate.native.downgrade();
-            let outgoing = old.native.downgrade();
-            glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
-                if slot.borrow().is_some() {
-                    return;
-                }
-                let Some(view) = incoming.upgrade().filter(|v| v.parent().is_some()) else {
-                    cancel.cancel();
-                    return;
-                };
-                if let Some(old) = outgoing.upgrade() {
-                    if let Some(surface) = Self::capture_picture(&old) {
-                        #[cfg(feature = "gui-smoke")]
-                        eprintln!("PICTURE transferring outgoing image at cap");
-                        Self::present_snapshot(&view, slot, surface, finish, cancel);
-                    }
-                }
-            });
-            candidate.show();
-            if let Some(window) = old.native.window() {
-                window.raise();
-            }
-            self.place_view(&candidate.native);
+            self.hold_page(old, &candidate);
         } else {
             candidate.show();
         }
@@ -641,270 +561,81 @@ impl Pages {
         }
     }
 
-    fn freeze_picture(&self, view: &webkit2gtk::WebView) {
-        for (widget, slot, cancel) in self.pictures.borrow().iter() {
-            if widget.upgrade().as_ref() == Some(view) {
-                cancel.cancel();
-                if let Some(cover) = slot.borrow().clone() {
-                    if cover.active.get() {
-                        cover.frozen.set(true);
-                        *cover.image.borrow_mut() = cover.painted.borrow().clone();
-                    }
+    /// Only the real outgoing view covers the incoming view. All work belongs
+    /// to this hold and is cancelled before the outgoing page is checkpointed.
+    fn hold_page(&self, old: Rc<LivePage>, incoming: &LivePage) {
+        // A native outgoing window stacks independently of GtkFixed's draw order.
+        // The incoming view stays non-native, so it cannot inherit the cover's pixels.
+        if let Some(window) = old.native.window() {
+            window.ensure_native();
+        }
+        incoming.show();
+        let incoming = &incoming.native;
+        self.releasing.set(true);
+        let cancel = gio::Cancellable::new();
+        *self.hold.borrow_mut() = Some(Hold {
+            outgoing: old.clone(),
+            cancel: cancel.clone(),
+            cap: None,
+        });
+        if let Some(window) = old.native.window() {
+            window.set_pass_through(true);
+        }
+        if let Some(window) = old.native.window() {
+            window.restack(incoming.window().as_ref(), true);
+        }
+        self.place_view(incoming); // also raises the chrome
+        #[cfg(feature = "gui-smoke")]
+        self.release_event(&old, ReleasePhase::Holding);
+        let weak = self.me.clone();
+        let cap = glib::timeout_add_local_once(std::time::Duration::from_millis(1000), move || {
+            if let Some(pages) = weak.upgrade() {
+                if let Some(hold) = pages.hold.borrow_mut().as_mut() {
+                    hold.cap.take();
                 }
+                pages.end_hold();
             }
-        }
-        if let Some(surface) = Self::capture_picture(view) {
-            view.connect_local("draw", true, move |values| {
-                let context = values[1]
-                    .get::<gtk::cairo::Context>()
-                    .expect("draw context");
-                let view = values[0].get::<webkit2gtk::WebView>().expect("draw view");
-                Self::paint_picture(
-                    &context,
-                    &surface,
-                    view.allocated_width(),
-                    view.allocated_height(),
-                );
-                Some(false.to_value())
-            });
-        }
-    }
-
-    fn request_picture(
-        view: &webkit2gtk::WebView,
-        slot: PictureSlot,
-        finish: Rc<dyn Fn()>,
-        cancel: gio::Cancellable,
-    ) {
-        let target = view.downgrade();
-        let task_cancel = cancel.clone();
-        view.call_async_javascript_function(
+        });
+        self.hold.borrow_mut().as_mut().unwrap().cap = Some(cap);
+        let weak = self.me.clone();
+        let target = incoming.downgrade();
+        incoming.call_async_javascript_function(
             "while (!document.body) await new Promise(r => requestAnimationFrame(r)); await new Promise(r => requestAnimationFrame(r)); await new Promise(r => requestAnimationFrame(r)); return true;",
-            None, Some("canopy-picture"), None, Some(&cancel),
+            None, Some("canopy-hold"), None, Some(&cancel.clone()),
             move |result| {
-                if task_cancel.is_cancelled() { return; }
-                let Some(view) = target.upgrade().filter(|v| v.parent().is_some()) else { task_cancel.cancel(); return; };
-                if result.is_err() { Self::retry_picture(target, slot, finish, task_cancel); return; }
-                let target = view.downgrade();
-                let snapshot_cancel = task_cancel.clone();
-                view.snapshot(webkit2gtk::SnapshotRegion::Visible, webkit2gtk::SnapshotOptions::NONE, Some(&task_cancel), move |result| {
-                    if snapshot_cancel.is_cancelled() { return; }
-                    let Some(view) = target.upgrade().filter(|v| v.parent().is_some()) else { snapshot_cancel.cancel(); return; };
-                    match result {
-                        Ok(surface) => Self::present_snapshot(&view, slot, surface, finish, snapshot_cancel),
-                        Err(_) => Self::retry_picture(target, slot, finish, snapshot_cancel),
-                    }
-                });
-            },
-        );
+                if cancel.is_cancelled() || result.is_err() { return; }
+                let Some(view) = target.upgrade() else { return; };
+                let next_cancel = cancel.clone();
+                view.snapshot(webkit2gtk::SnapshotRegion::Visible, webkit2gtk::SnapshotOptions::NONE, Some(&cancel),
+                    move |result| {
+                        if next_cancel.is_cancelled() || result.is_err() { return; }
+                        drop(result); // rendering signal only; never paint the image
+                        let Some(view) = target.upgrade() else { return; };
+                        let done_cancel = next_cancel.clone();
+                        view.call_async_javascript_function(
+                            "await new Promise(r => requestAnimationFrame(r)); return true;",
+                            None, Some("canopy-hold"), None, Some(&next_cancel),
+                            move |result| {
+                                if !done_cancel.is_cancelled() && result.is_ok() {
+                                    if let Some(pages) = weak.upgrade() { pages.end_hold(); }
+                                }
+                            });
+                    });
+            });
     }
 
-    fn retry_picture(
-        target: glib::WeakRef<webkit2gtk::WebView>,
-        slot: PictureSlot,
-        finish: Rc<dyn Fn()>,
-        cancel: gio::Cancellable,
-    ) {
-        glib::timeout_add_local_once(std::time::Duration::from_millis(32), move || {
-            if cancel.is_cancelled() {
-                return;
+    fn end_hold(&self) {
+        let hold = self.hold.borrow_mut().take();
+        if let Some(hold) = hold {
+            hold.cancel.cancel();
+            if let Some(cap) = hold.cap {
+                cap.remove();
             }
-            if let Some(view) = target.upgrade().filter(|v| v.parent().is_some()) {
-                Self::request_picture(&view, slot, finish, cancel);
-            } else {
-                cancel.cancel();
-            }
-        });
-    }
-
-    fn capture_picture(view: &webkit2gtk::WebView) -> Option<gtk::cairo::Surface> {
-        if let Some(parent) = view
-            .parent()
-            .and_then(|p| p.downcast::<gtk::Container>().ok())
-        {
-            parent.check_resize();
+            self.release_outgoing(hold.outgoing);
         }
-        let image = gtk::cairo::ImageSurface::create(
-            gtk::cairo::Format::ARgb32,
-            view.allocated_width(),
-            view.allocated_height(),
-        )
-        .ok()?;
-        let context = gtk::cairo::Context::new(&image).ok()?;
-        view.draw(&context);
-        Some(context.target())
     }
 
-    /// Supply a picture while native backing pixels catch up. At the cap the picture
-    /// is copied from the outgoing page, so releasing its view cannot expose a blank.
-    fn present_snapshot(
-        view: &webkit2gtk::WebView,
-        slot: PictureSlot,
-        surface: gtk::cairo::Surface,
-        finish: Rc<dyn Fn()>,
-        cancel: gio::Cancellable,
-    ) {
-        let existing = slot.borrow().clone();
-        if let Some(cover) = existing {
-            if cover.active.get() {
-                *cover.image.borrow_mut() = surface;
-                view.queue_draw();
-            }
-            return;
-        }
-        let cover = Rc::new(PictureCover {
-            painted: RefCell::new(surface.clone()),
-            image: RefCell::new(surface),
-            probing: Cell::new(false),
-            shown: Cell::new(false),
-            active: Cell::new(true),
-            frozen: Cell::new(false),
-            cancel,
-        });
-        *slot.borrow_mut() = Some(cover.clone());
-        let picture = cover.clone();
-        let id = view.connect_local("draw", true, move |values| {
-            if !picture.probing.get() {
-                let context = values[1]
-                    .get::<gtk::cairo::Context>()
-                    .expect("draw context");
-                let view = values[0].get::<webkit2gtk::WebView>().expect("draw view");
-                if Self::paint_picture(
-                    &context,
-                    &picture.image.borrow(),
-                    view.allocated_width(),
-                    view.allocated_height(),
-                ) {
-                    *picture.painted.borrow_mut() = picture.image.borrow().clone();
-                    if !picture.shown.replace(true) {
-                        let finish = finish.clone();
-                        glib::timeout_add_local_once(std::time::Duration::ZERO, move || finish());
-                    }
-                }
-            }
-            Some(false.to_value())
-        });
-        view.queue_draw();
-        Self::probe_picture(view.downgrade(), cover, id);
-    }
-
-    fn probe_picture(
-        target: glib::WeakRef<webkit2gtk::WebView>,
-        cover: Rc<PictureCover>,
-        signal: glib::SignalHandlerId,
-    ) {
-        glib::timeout_add_local_once(std::time::Duration::from_millis(32), move || {
-            let Some(view) = target.upgrade() else {
-                cover.cancel.cancel();
-                return;
-            };
-            if view.parent().is_none() {
-                cover.active.set(false);
-                cover.cancel.cancel();
-                view.disconnect(signal);
-                return;
-            }
-            if cover.frozen.get() {
-                return;
-            }
-            cover.probing.set(true);
-            let ready = cover.shown.get() && Self::picture_ready(&view, &cover.image.borrow());
-            cover.probing.set(false);
-            if ready {
-                cover.cancel.cancel();
-                view.disconnect(signal);
-                if let Some(parent) = view
-                    .parent()
-                    .and_then(|p| p.downcast::<gtk::Container>().ok())
-                {
-                    parent.check_resize();
-                }
-                if let Some(window) = view.window() {
-                    let context =
-                        <gtk::cairo::Context as gdk::prelude::GdkContextExt>::create_from_window(
-                            &window,
-                        );
-                    view.draw(&context);
-                }
-                cover.active.set(false);
-                view.queue_draw();
-            } else {
-                Self::probe_picture(target, cover, signal);
-            }
-        });
-    }
-
-    fn paint_picture(
-        context: &gtk::cairo::Context,
-        surface: &gtk::cairo::Surface,
-        width: i32,
-        height: i32,
-    ) -> bool {
-        let Ok(image) = gtk::cairo::ImageSurface::try_from(surface.clone()) else {
-            return false;
-        };
-        if context.save().is_err() {
-            return false;
-        }
-        context.scale(
-            width as f64 / image.width().max(1) as f64,
-            height as f64 / image.height().max(1) as f64,
-        );
-        let painted = context
-            .set_source_surface(surface, 0., 0.)
-            .and_then(|_| context.paint())
-            .is_ok();
-        let _ = context.restore();
-        painted
-    }
-
-    fn picture_ready(view: &webkit2gtk::WebView, expected: &gtk::cairo::Surface) -> bool {
-        use gtk::cairo::{Context, Format, ImageSurface};
-        if let Some(parent) = view
-            .parent()
-            .and_then(|p| p.downcast::<gtk::Container>().ok())
-        {
-            parent.check_resize();
-        }
-        let render = |snapshot: bool| -> Option<Vec<u8>> {
-            let mut image = ImageSurface::create(
-                Format::ARgb32,
-                view.allocated_width(),
-                view.allocated_height(),
-            )
-            .ok()?;
-            {
-                let context = Context::new(&image).ok()?;
-                if snapshot {
-                    if !Self::paint_picture(
-                        &context,
-                        expected,
-                        view.allocated_width(),
-                        view.allocated_height(),
-                    ) {
-                        return None;
-                    }
-                } else {
-                    view.draw(&context);
-                }
-            }
-            let bytes = image.data().ok()?.to_vec();
-            Some(bytes)
-        };
-        let (Some(actual), Some(expected)) = (render(false), render(true)) else {
-            return false;
-        };
-        if actual == expected {
-            return true;
-        }
-        // Empty GTK/WebKit draws are transparent, theme grey, or white. Keep the
-        // rendered document over them; animated content need not match an earlier frame.
-        actual
-            .chunks_exact(4)
-            .any(|p| p[3] != 0 && p[..3] != [244, 245, 246] && p[..3] != [255, 255, 255])
-    }
-
-    fn release_picture(&self, old: Rc<LivePage>) {
+    fn release_outgoing(&self, old: Rc<LivePage>) {
         #[cfg(feature = "gui-smoke")]
         self.release_event(&old, ReleasePhase::Checkpointing);
         #[cfg(feature = "gui-smoke")]
@@ -933,9 +664,9 @@ impl Pages {
                         pages.branches.dormant.borrow_mut().push(saved);
                     }
                 }
-                pages.releasing.set(false);
                 #[cfg(feature = "gui-smoke")]
                 pages.emit_release(event);
+                pages.releasing.set(false);
                 loop {
                     let command = pages.commands.borrow_mut().pop_front();
                     let Some(command) = command else { break };
@@ -1005,6 +736,7 @@ impl Pages {
             };
         if self.releasing.get() && !in_place {
             self.commands.borrow_mut().push_back(Command::Go(go, None));
+            self.end_hold();
             return Ok(());
         }
         let page = self
@@ -1126,6 +858,7 @@ impl Pages {
     pub fn settle_tree(&self, tree: TreeId) -> Result<()> {
         if self.releasing.get() && self.branches.live.borrow().is_some() {
             self.commands.borrow_mut().push_back(Command::Settle(tree));
+            self.end_hold();
             return Ok(());
         }
         anyhow::ensure!(self.branches.live.borrow().is_some(), "No selected page.");
@@ -1230,6 +963,7 @@ impl Pages {
     pub fn reload(&self) -> Result<()> {
         if self.releasing.get() && self.branches.live.borrow().is_some() {
             self.commands.borrow_mut().push_back(Command::Reload);
+            self.end_hold();
             return Ok(());
         }
         let page = self
@@ -1377,6 +1111,20 @@ impl Pages {
 
     fn register_view(&self, view: &webkit2gtk::WebView) {
         self.views.borrow_mut().push(view.downgrade());
+        let weak = self.me.clone();
+        view.connect_unmap(move |view| {
+            if let Some(pages) = weak.upgrade() {
+                let selected = pages
+                    .branches
+                    .live
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|page| page.native == *view);
+                if selected {
+                    pages.end_hold();
+                }
+            }
+        });
         let weak = self.me.clone();
         view.connect_event(move |view, event| {
             let input = matches!(

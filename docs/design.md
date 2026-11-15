@@ -212,24 +212,22 @@ Adding, removing, showing or hiding page views never changes chrome allocation;
 its persistent size request still matches the window width and cover height. These
 independent allocations let the same GtkFixed preserve both rules.
 
-Pages::select_candidate switches bookkeeping and keyboard focus at commit. It
-maps the incoming page below the outgoing native window. The outgoing GDK window
-passes pointer input through, and Pages::register_view rejects input on any view
-that is no longer selected. The retiring picture is frozen so a late first frame
-cannot replace it after another branch commits.
-Two isolated-world animation frames after a body exists request a rendered snapshot.
-Pages::present_snapshot paints that image after the incoming widget's default draw,
-covering an empty backing store. If rendering takes 300 ms, the outgoing picture is
-copied into the incoming widget instead; there is no timeout that reveals grey.
-Only after that draw does Pages::release_picture hide/checkpoint/release the old
-view. Its existing FIFO then drains. In-place address navigation on the selected
-view can proceed when that queue is empty; another view's checkpoint cannot block
-it, and earlier queued commands retain their order.
-The temporary image scales with the slot during resize and remains until native
-pixels are available. Readiness work is cancelled on retirement or detachment.
-Native pixel probing uses one-shot timers scheduled after each check, so expensive
-draws cannot keep a repeating timer overdue and starve presentation or release.
-Failures and cancellation before commit never enter the picture handoff.
+Nothing but a real page view may cover a page. Canopy never paints an image
+over a page or draws into its window. Pages::select_candidate switches bookkeeping,
+events, focus and sign-in ownership at commit. Pages::hold_page maps the incoming
+view in the same rectangle beneath the outgoing view and below chrome. Only the
+outgoing window is promoted to a native GDK window, so GtkFixed draw order cannot
+paint the incoming view over it. Incoming windows retain their normal backing. The outgoing
+window passes pointer input through; the event filter rejects nonselected input.
+
+The hold ends after an isolated-world script sees a body and two animation frames,
+a visible-region snapshot completes (its image is discarded), and one further
+animation frame completes. It also ends at 1000 ms, another commit or cancellation,
+a queued switch or settle, or unmapping of the incoming view. Pages::end_hold
+cancels readiness and removes the cap timer before hiding, checkpointing and releasing
+the outgoing page. At most one outgoing view is held. The FIFO drains after release;
+in-place navigation proceeds when that queue is empty. A short blank after release,
+including after the cap when a page is busy, is accepted. No stale image is retained.
 Smoke instrumentation reports the outgoing view's identity at Holding, Checkpointing
 and Released. Exact container counts are captured in the Released callback, before
 queued commands are drained; the tests enforce a 1000 ms frame budget plus the
