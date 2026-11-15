@@ -35,6 +35,13 @@ pub enum BookmarkToggle {
 }
 
 impl Browser {
+    pub fn bookmark(&mut self, url: &Url, title: &str) -> Result<()> {
+        let tx = self.connection.transaction()?;
+        append(&tx, url, title, None, now_ms()?)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn bookmarks(&self) -> Result<Vec<Bookmark>> {
         let mut stmt = self.connection.prepare(
             "SELECT id,url,title,folder FROM bookmarks

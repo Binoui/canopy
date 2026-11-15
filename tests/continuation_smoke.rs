@@ -1,6 +1,6 @@
 use anyhow::Result;
 use canopy::{
-    browser::{Browser, Navigation, NavigationTarget, SourceContext, UsualPath, Visibility},
+    browser::{Browser, Navigation, NavigationTarget, SourceContext, Visibility},
     chrome::{ChromeHost, ChromeIntent},
     pages::{PageEvent, Pages},
     ui::Ui,
@@ -119,11 +119,10 @@ fn main() -> Result<()> {
         if case.starts_with("branch") || case == "settle_pending_branch" {
             ui.dispatch(ChromeIntent::BranchFromQueued(root));
         } else {
-            ui.dispatch(ChromeIntent::OpenPath(UsualPath {
+            ui.dispatch(ChromeIntent::OpenPath {
                 first: url(first),
                 second: url("second"),
-                visits: 1,
-            }));
+            });
         }
         let request_path = format!("/{case}/{first}");
         wait("first request issued", || {

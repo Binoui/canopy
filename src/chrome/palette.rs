@@ -5,9 +5,7 @@ use url::Url;
 use super::{ChromeIntent, PaletteScope};
 use crate::{
     address::{destination, web_search, Destination},
-    browser::{
-        Bookmark, ImportedPage, NavigationTarget, SearchHit, UsualPath, VisitId, VisitState,
-    },
+    browser::{Bookmark, ImportedPage, NavigationTarget, SearchHit, VisitId, VisitState},
     forest::ForestProjection,
 };
 
@@ -22,8 +20,7 @@ pub(crate) enum PaletteItem {
         excerpt: String,
     },
     Go(Url),
-    Shortcut(Url),
-    Path(UsualPath),
+    Suggestion(crate::suggest::Suggestion),
     /// A page from imported browser history.
     Imported(ImportedPage),
     Bookmark(Bookmark),
@@ -35,8 +32,7 @@ pub(crate) enum PaletteItem {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Group {
-    Shortcuts,
-    Paths,
+    Suggested,
     Pending,
     Forest,
     Bookmarks,
@@ -48,8 +44,7 @@ pub(crate) enum Group {
 impl Group {
     pub(crate) fn title(self) -> &'static str {
         match self {
-            Group::Shortcuts => "Frequent pages",
-            Group::Paths => "Usual paths",
+            Group::Suggested => "Suggested",
             Group::Pending => "Pending in this tree",
             Group::Forest => "In your forest",
             Group::Bookmarks => "Bookmarks",
@@ -173,13 +168,9 @@ pub(crate) fn intent(
         (false, PaletteScope::From(parent)) => NavigationTarget::ChildOf(parent),
     };
     Some(match item {
-        PaletteItem::Path(path) => ChromeIntent::OpenPath(path.clone()),
+        PaletteItem::Suggestion(s) => super::start::open(s),
         PaletteItem::Bookmark(b) => ChromeIntent::Navigate {
             url: b.url.clone(),
-            target: NavigationTarget::Root,
-        },
-        PaletteItem::Shortcut(url) => ChromeIntent::Navigate {
-            url: url.clone(),
             target: NavigationTarget::Root,
         },
         PaletteItem::Page(visit) if new_tree => ChromeIntent::Navigate {

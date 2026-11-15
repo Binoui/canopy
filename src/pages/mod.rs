@@ -526,6 +526,12 @@ impl Pages {
         self.browser.borrow_mut().remove_bookmark(id)
     }
 
+    pub fn bookmark(&self, url: &Url, title: &str) -> Result<()> {
+        self.browser.borrow_mut().bookmark(url, title)
+    }
+    pub fn decline(&self, key: &crate::suggest::SuggestionKey) -> Result<()> {
+        self.browser.borrow_mut().decline(key)
+    }
     pub fn set_pinned(&self, tree: TreeId, pinned: bool) -> Result<()> {
         self.browser.borrow_mut().set_pinned(tree, pinned)
     }

@@ -26,7 +26,11 @@ use crate::{
 /// Room at the end of the current-page pill for the Memory dot.
 const ACCESSORY: f64 = 22.;
 
-pub(crate) fn frame(frame: &ChromeFrame, width: f64) -> Value {
+pub(crate) fn frame(
+    frame: &ChromeFrame,
+    suggested: &[crate::suggest::Suggestion],
+    width: f64,
+) -> Value {
     let forest = &frame.forest;
     let current = forest.current();
     let active = current.and_then(|id| forest.tree_of(id));
@@ -82,22 +86,7 @@ pub(crate) fn frame(frame: &ChromeFrame, width: f64) -> Value {
             ThemeMode::Light => "light",
             ThemeMode::Dark => "dark",
         },
-        "start": super::start::value(frame),
-        "shortcuts": frame.suggestions.shortcuts.iter().enumerate().map(|(index, shortcut)| {
-            let host = short_host(&shortcut.url);
-            json!({
-                "index": index,
-                "url": shortcut.url.as_str(),
-                "label": if shortcut.title.is_empty() { host } else { shortcut.title.as_str() },
-            })
-        }).collect::<Vec<_>>(),
-        "paths": frame.suggestions.paths.iter().enumerate().map(|(index, path)| json!({
-            "index": index,
-            "first": path.first.as_str(),
-            "second": path.second.as_str(),
-            "text": format!("{}, then {}", short_host(&path.first), short_host(&path.second)),
-            "count": format!("{} times", path.visits),
-        })).collect::<Vec<_>>(),
+        "start": super::start::value(frame, suggested),
     })
 }
 
@@ -349,18 +338,14 @@ pub(crate) fn palette_rows(items: &[(Group, PaletteItem)], forest: &ForestProjec
                     let excerpt = excerpt.split_whitespace().collect::<Vec<_>>().join(" ");
                     ("saved", title.clone(), excerpt.chars().take(140).collect(), json!("search"))
                 }
-                PaletteItem::Path(path) => (
-                    "path",
-                    format!("{} → {}", short_host(&path.first), short_host(&path.second)),
-                    format!("{} visits", path.visits),
-                    json!({ "url": path.first.as_str(), "opened": true }),
-                ),
-                PaletteItem::Shortcut(url) => (
-                    "shortcut",
-                    short_host(url).to_owned(),
-                    url.path().to_owned(),
-                    json!({ "url": url.as_str(), "opened": true }),
-                ),
+                PaletteItem::Suggestion(s) => {
+                    let chip = super::start::chip(forest, s);
+                    let url = match s {
+                        crate::suggest::Suggestion::Page { url, .. } | crate::suggest::Suggestion::Path { first: url, .. } => url,
+                        crate::suggest::Suggestion::Tree { tree, .. } => &forest.visit(tree.root()).unwrap().url,
+                    };
+                    ("suggestion", chip["title"].as_str().unwrap().to_owned(), s.why(), json!({"url":url.as_str(),"opened":true}))
+                }
                 PaletteItem::Imported(page) => {
                     let host = short_host(&page.url).to_owned();
                     let title = if page.title.trim().is_empty() { host.clone() } else { page.title.clone() };
@@ -489,7 +474,7 @@ pub(crate) fn ago(timestamp_ms: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browser::{Download, Snapshot, StartSuggestions, TreeId, TreeState};
+    use crate::browser::{Download, Snapshot, TreeId, TreeState};
 
     fn chain() -> (ForestProjection, Vec<VisitId>) {
         chain_with_lifecycle(Lifecycle::Open)
@@ -595,15 +580,15 @@ mod tests {
             loaded: HashSet::new(),
             capture_enabled: true,
             theme: ThemeMode::Dark,
-            suggestions: StartSuggestions::default(),
+            declined: Default::default(),
             bookmarks: vec![],
             files: vec![],
         };
-        let value = super::frame(&frame, 800.);
+        let value = super::frame(&frame, &[], 800.);
         assert_eq!(value["visits"][ids[2].to_string()]["when"], "not loaded");
         assert_eq!(value["waiting"]["ids"], json!([ids[2].to_string()]));
         frame.loaded.extend(ids.iter().copied());
-        let value = super::frame(&frame, 800.);
+        let value = super::frame(&frame, &[], 800.);
         assert_eq!(value["visits"][ids[2].to_string()]["loaded"], true);
         assert_eq!(value["visits"][ids[2].to_string()]["queued"], true);
         assert_eq!(value["visits"][ids[2].to_string()]["when"], "loaded");
@@ -642,11 +627,11 @@ mod tests {
             forest,
             capture_enabled: true,
             theme: ThemeMode::Dark,
-            suggestions: StartSuggestions::default(),
+            declined: Default::default(),
             bookmarks: vec![],
             files: Vec::new(),
         };
-        let value = super::frame(&frame, 1240.);
+        let value = super::frame(&frame, &[], 1240.);
         let tabs = value["tabs"].as_array().unwrap();
         assert_eq!(tabs.len(), 1);
         assert_eq!(tabs[0]["active"], false);
@@ -661,11 +646,11 @@ mod tests {
             forest,
             capture_enabled: true,
             theme: ThemeMode::Dark,
-            suggestions: StartSuggestions::default(),
+            declined: Default::default(),
             bookmarks: vec![],
             files: Vec::new(),
         };
-        let value = super::frame(&frame, 1240.);
+        let value = super::frame(&frame, &[], 1240.);
         assert_eq!(value["tabs"], json!([]));
         assert_eq!(value["current"], ids[1].to_string());
         assert_eq!(value["visits"].as_object().unwrap().len(), 3);
@@ -685,11 +670,11 @@ mod tests {
             forest,
             capture_enabled: true,
             theme: ThemeMode::Dark,
-            suggestions: StartSuggestions::default(),
+            declined: Default::default(),
             bookmarks: vec![],
             files: Vec::new(),
         };
-        let value = super::frame(&frame, 1240.);
+        let value = super::frame(&frame, &[], 1240.);
         assert_eq!(value["current"], ids[1].to_string());
         assert_eq!(value["visits"].as_object().unwrap().len(), 3);
         assert_eq!(value["visits"][ids[2].to_string()]["queued"], true);
@@ -730,7 +715,7 @@ mod tests {
             forest,
             capture_enabled: true,
             theme: ThemeMode::Dark,
-            suggestions: StartSuggestions::default(),
+            declined: Default::default(),
             bookmarks: vec![],
             files: vec![
                 file(
@@ -744,7 +729,7 @@ mod tests {
                 file(3, ids[1], "/home/me/Saved files/report (1).pdf", 812, false),
             ],
         };
-        let value = super::frame(&frame, 1240.);
+        let value = super::frame(&frame, &[], 1240.);
         let files = value["files"].as_object().unwrap();
         assert_eq!(files.len(), 2);
         assert_eq!(

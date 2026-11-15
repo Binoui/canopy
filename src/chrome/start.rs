@@ -6,7 +6,7 @@ use super::{
     ChromeFrame,
 };
 
-pub(super) fn value(frame: &ChromeFrame) -> Value {
+pub(super) fn value(frame: &ChromeFrame, frozen: &[crate::suggest::Suggestion]) -> Value {
     let pinned: Vec<_> = frame
         .forest
         .pinned()
@@ -24,7 +24,24 @@ pub(super) fn value(frame: &ChromeFrame) -> Value {
             })
         })
         .collect();
-    json!({"pinned": pinned, "bookmarks": bookmarks(&frame.bookmarks)})
+    json!({"pinned": pinned, "bookmarks": bookmarks(&frame.bookmarks), "suggested": suggested(frame, frozen)})
+}
+
+/// The chips still on offer, each in the place it had when the band was ranked, so the
+/// ones that stay never slide under the pointer when one leaves.
+fn suggested(frame: &ChromeFrame, frozen: &[crate::suggest::Suggestion]) -> Vec<Value> {
+    frozen
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| {
+            crate::suggest::admits(&frame.forest, &frame.bookmarks, &frame.declined, s)
+        })
+        .map(|(slot, s)| {
+            let mut chip = chip(&frame.forest, s);
+            chip["slot"] = json!(slot);
+            chip
+        })
+        .collect()
 }
 
 fn mini_value(mini: &tree_view::Miniature) -> Value {
@@ -37,9 +54,39 @@ fn mini_value(mini: &tree_view::Miniature) -> Value {
 mod tests {
     use super::*;
     use crate::{
-        browser::{Browser, StartSuggestions, ThemeMode},
+        browser::{Browser, ThemeMode},
         forest::ForestProjection,
     };
+
+    #[test]
+    fn a_chip_that_leaves_does_not_move_the_ones_that_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let browser = Browser::open(&dir.path().join("forest.sqlite3")).unwrap();
+        let page = |path: &str| crate::suggest::Suggestion::Page {
+            url: url::Url::parse(&format!("https://example.org/{path}")).unwrap(),
+            title: path.into(),
+            why: crate::suggest::PageWhy::ThisWeek(2),
+        };
+        let frozen = [page("a"), page("b"), page("c")];
+        let frame = ChromeFrame {
+            forest: ForestProjection::from_snapshot(
+                browser.snapshot().unwrap(),
+                browser.tree_states().unwrap(),
+            )
+            .unwrap(),
+            loaded: Default::default(),
+            capture_enabled: true,
+            theme: ThemeMode::Dark,
+            declined: [frozen[0].key()].into(),
+            bookmarks: vec![],
+            files: vec![],
+        };
+        let start = value(&frame, &frozen);
+        assert_eq!(start["suggested"].as_array().unwrap().len(), 2);
+        assert_eq!(start["suggested"][0]["title"], "b");
+        assert_eq!(start["suggested"][0]["slot"], 1);
+        assert_eq!(start["suggested"][1]["slot"], 2);
+    }
 
     #[test]
     fn cards_follow_pin_order_and_roots_without_events_show_only_the_page_count() {
@@ -63,11 +110,11 @@ mod tests {
             loaded: Default::default(),
             capture_enabled: true,
             theme: ThemeMode::Dark,
-            suggestions: StartSuggestions::default(),
+            declined: Default::default(),
             bookmarks: vec![],
             files: vec![],
         };
-        let start = value(&frame);
+        let start = value(&frame, &[]);
         assert_eq!(start["pinned"][0]["id"], ids[1].to_string());
         assert_eq!(start["pinned"][1]["id"], ids[0].to_string());
         assert_eq!(start["pinned"][0]["meta"], "1 page");
@@ -174,5 +221,75 @@ mod bookmark_tests {
         let band = bookmarks(&b.bookmarks().unwrap());
         assert_eq!(band["tiles"].as_array().unwrap().len(), 16);
         assert!(band["more"].is_null());
+    }
+}
+
+pub(super) fn chip(
+    forest: &crate::forest::ForestProjection,
+    s: &crate::suggest::Suggestion,
+) -> Value {
+    use crate::suggest::{site, Suggestion};
+    let (kind, title, tip, glyph) = match s {
+        Suggestion::Page { url, title, .. } => {
+            let label = if title.trim().is_empty() {
+                site(url)
+            } else {
+                title
+            };
+            (
+                "page",
+                label.to_owned(),
+                format!("{label}\n{url}"),
+                json!({"url":url.as_str()}),
+            )
+        }
+        Suggestion::Tree { tree, .. } => {
+            let t = forest.trees().iter().find(|t| t.id == *tree).unwrap();
+            (
+                "tree",
+                t.title.clone(),
+                format!("{}\n{}", t.title, forest.visit(tree.root()).unwrap().url),
+                json!({"mini":mini_value(&tree_view::miniature(forest,t,Fit::CHIP))}),
+            )
+        }
+        Suggestion::Path { first, second, .. } => (
+            "path",
+            format!("{}, then {}", site(first), site(second)),
+            format!("{first}\n{second}"),
+            json!({"first":first.as_str(),"second":second.as_str()}),
+        ),
+    };
+    json!({"key":s.key().to_string(),"kind":kind,"title":title,"tip":tip,"why":s.why(),"glyph":glyph})
+}
+
+pub(super) fn open(s: &crate::suggest::Suggestion) -> super::ChromeIntent {
+    use crate::suggest::Suggestion;
+    match s {
+        Suggestion::Page { url, .. } => super::ChromeIntent::Navigate {
+            url: url.clone(),
+            target: crate::browser::NavigationTarget::Root,
+        },
+        Suggestion::Tree { tree, .. } => super::ChromeIntent::SelectTree(*tree),
+        Suggestion::Path { first, second, .. } => super::ChromeIntent::OpenPath {
+            first: first.clone(),
+            second: second.clone(),
+        },
+    }
+}
+pub(super) fn keep(s: &crate::suggest::Suggestion) -> super::ChromeIntent {
+    use crate::suggest::{site, Suggestion};
+    match s {
+        Suggestion::Page { url, title, .. } => super::ChromeIntent::Bookmark {
+            url: url.clone(),
+            title: title.clone(),
+        },
+        Suggestion::Tree { tree, .. } => super::ChromeIntent::PinTree {
+            tree: *tree,
+            pinned: true,
+        },
+        Suggestion::Path { first, .. } => super::ChromeIntent::Bookmark {
+            url: first.clone(),
+            title: site(first).into(),
+        },
     }
 }

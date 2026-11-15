@@ -9,6 +9,7 @@ const MOVE = 300, RESIZE = 220;
 const LEAVES = 3;
 const MONOGRAM = ['#d95c42', '#3b7ad6', '#2e9e5e', '#9c6bde', '#d9962e', '#3b99ad', '#d1547a', '#6b7380'];
 const ICONS = {
+  bookmark: '<path d="M6 3h12v18l-6-4-6 4z" stroke-width="1.7"/>',
   expand: '<path d="M9 4H4v5M15 4h5v5M4 15v5h5M20 15v5h-5" stroke-width="1.7"/>',
   collapse: '<path d="M4 9h5V4M20 9h-5V4M9 20v-5H4M15 20v-5h5" stroke-width="1.7"/>',
   pinned: '<path d="M9 3h6l-1 7 4 4v2H6v-2l4-4zM12 16v6" stroke-width="1.6"/>',
@@ -29,7 +30,7 @@ const $ = (id) => document.getElementById(id);
 const post = (message) => window.ipc.postMessage(JSON.stringify(message));
 /// Intents that load a page also give the keyboard back to it, as the GTK buttons that
 /// never took focus did.
-const NAVIGATES = new Set(['restore', 'select-tree', 'settle-tree', 'settle-current', 'shortcut', 'path', 'open-bookmark', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
+const NAVIGATES = new Set(['restore', 'select-tree', 'settle-tree', 'settle-current', 'open-suggestion', 'open-bookmark', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
 const intent = (kind, extra = {}) => {
   post({ t: 'intent', kind, ...extra });
   if (NAVIGATES.has(kind)) post({ t: 'focus', target: 'page' });
@@ -1054,6 +1055,7 @@ const pageShows = () => S.surface === 'reading' && !S.overlay;
 function setSurface(surface) {
   if (S.surface === surface) return;
   S.surface = surface;
+  post({ t: 'surface', start: surface === 'start' });
   if (surface === 'start') focusStart();
   renderPlaceholder();
   $('start').hidden = surface !== 'start';
@@ -1118,8 +1120,8 @@ function renderPlaceholder() {
   $('strip-placeholder').hidden = !(S.surface === 'start' && !current());
 }
 
-function bandHead(label, hint = '') {
-  return `<div class="band-head"><span class="grow">${esc(label)}</span><span class="hint">${esc(hint)}</span></div>`;
+function bandHead(label, hint = '', mark = '') {
+  return `<div class="band-head">${mark ? icon(mark) : ''}<span class="grow">${esc(label)}</span><span class="hint">${esc(hint)}</span></div>`;
 }
 
 function miniHtml(mini) {
@@ -1139,14 +1141,13 @@ function pinnedBand(start) {
       : '<div class="hint-line">Pin a tree from its tab menu. It stays here and never settles on its own.</div>') + '</section>';
 }
 
-function frequentBand() {
-  const shortcuts = S.frame.shortcuts.map((s) => `<button class="start-tile" data-start="shortcut" data-id="${s.index}" title="${esc(s.label + '\n' + s.url)}">`
-    + `<span class="glyph">${fav(s.url, true, 24)}</span><span class="label">${esc(s.label)}</span></button>`).join('');
-  const paths = S.frame.paths.map((p) => `<button class="menu-row path-row" data-start="path" data-id="${p.index}" title="${esc(p.first + '\n' + p.second)}">`
-    + `<span class="chain"><span class="glyph">${fav(p.first, true, 14)}</span><i>→</i><span class="glyph">${fav(p.second, true, 14)}</span></span>`
-    + `<span class="grow">${esc(p.text)}</span><span class="menu-detail">${esc(p.count)}</span></button>`).join('');
-  return '<section>' + bandHead('Frequent pages') + (shortcuts ? `<div class="start-tiles">${shortcuts}</div>` : '<div class="hint-line">Your frequent pages will appear here as your forest grows.</div>')
-    + '</section><section>' + bandHead('Usual paths') + (paths || '<div class="hint-line">Follow links to build paths you can revisit.</div>') + '</section>';
+function suggestedBand(start) {
+  if (!start.suggested.length) return '';
+  return '<section>' + bandHead('Suggested', 'From your history', 'spark') + '<div class="sg-row">' + start.suggested.map((s) => {
+    const g = s.glyph;
+    const glyph = s.kind === 'tree' ? miniHtml(g.mini) : s.kind === 'path' ? fav(g.first, true, 14) + '<i>→</i>' + fav(g.second, true, 14) : fav(g.url, true, 16);
+    return `<div class="sg" style="grid-column:${s.slot + 1}"><button class="sg-main" data-start="suggestion" data-id="${esc(s.key)}" title="${esc(s.tip)}"><span class="sg-glyph ${s.kind}">${glyph}</span><span class="sg-text"><span class="sg-title">${esc(s.title)}</span><span class="sg-why">${esc(s.why)}</span></span></button><span class="sg-actions"><button class="sg-act" data-start="keep" data-id="${esc(s.key)}" title="Keep" aria-label="Keep">${icon('bookmark')}</button><button class="sg-act" data-start="decline" data-id="${esc(s.key)}" title="Stop suggesting this" aria-label="Stop suggesting this">${icon('close')}</button></span></div>`;
+  }).join('') + '</div></section>';
 }
 
 function folderChip(f) {
@@ -1170,20 +1171,21 @@ function togglePopover(kind, anchor, data) {
   $('popover').querySelector('button')?.focus();
 }
 
-const BANDS = [pinnedBand, bookmarksBand, frequentBand];
+const BANDS = [pinnedBand, bookmarksBand, suggestedBand];
 const START = {
   bookmark: { open: (id) => { closePopover(false); uncover(); intent('open-bookmark', { id: Number(id) }); }, menu: 'bookmark' },
   folder: { open: (name, el) => togglePopover('folder', el, { folder: name }) },
   more: { open: (_, el) => togglePopover('folder', el, { more: true }) },
   folders: { open: (_, el) => togglePopover('folder', el, { hidden: true }) },
   tree: { open: (id) => { uncover(); intent('select-tree', { id }); }, menu: 'unpin' },
-  shortcut: { open: (id) => { uncover(); intent('shortcut', { index: Number(id) }); } },
-  path: { open: (id) => { uncover(); intent('path', { index: Number(id) }); } },
+  suggestion: { open: (key) => { intent('open-suggestion', { key }); uncover(); } },
+  keep: { open: (key) => intent('keep-suggestion', { key }) },
+  decline: { open: (key) => intent('decline-suggestion', { key }) },
 };
 
 function renderStart() {
   if (!S.frame || S.startPressed) return;
-  const paint = JSON.stringify([S.frame.start, S.frame.shortcuts, S.frame.paths, S.rev]);
+  const paint = JSON.stringify([S.frame.start, S.rev]);
   if (S.startPaint === paint) return;
   S.startPaint = paint;
   const focused = document.activeElement?.closest('[data-start]');
@@ -1360,6 +1362,7 @@ const when = (at) => new Date(at).toLocaleString(undefined, { day: '2-digit', mo
 
 window.canopy = {
   viewport(height) { S.windowHeight = height; },
+  start(value) { if (!S.frame) return; S.frame.start = value; renderStart(); },
   present(frame, height) {
     S.windowHeight = height;
     const previous = current();

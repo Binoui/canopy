@@ -91,6 +91,7 @@ fn main() -> Result<()> {
         )?;
     }
     assert!(text(&ui, "#start-content").contains("Ctrl+D bookmarks the page you are on."));
+    assert!(!visible(&ui, ".sg-row"));
     key("ctrl+d")?;
     wait("no current page toast", || {
         toast_text(&ui).is_some_and(|t| t == "No page to bookmark")
@@ -293,13 +294,7 @@ fn main() -> Result<()> {
     println!(
         "PASS tab menu, rename, pin mark, unpin, re-pin, settle keeps pin, card context menu."
     );
-    let count = ui.snapshot()?.visits.len();
-    click_chrome(&ui, "[data-start=shortcut]")?;
-    wait("frequent tile plants root", || {
-        ui.snapshot().unwrap().visits.len() == count + 1
-            && !ui.pages.selected_page().native.is_loading()
-    })?;
-    assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
+    suggested(&ui, directory.path(), &format!("http://{address}"))?;
     {
         let mut browser = canopy::browser::Browser::open(&directory.path().join("forest.sqlite3"))?;
         let urls = (0..12)
@@ -319,7 +314,7 @@ fn main() -> Result<()> {
     ui.dispatch(ChromeIntent::SetTheme(ThemeMode::Dark));
     start_page(&ui)?;
     wait("extra cards", || {
-        chrome(&ui, "canopy.state().start.pinned.length").is_ok_and(|v| v == 14)
+        chrome(&ui, "canopy.state().start.pinned.length").is_ok_and(|v| v == 15)
     })?;
     assert_eq!(chrome(&ui, "document.getElementById('start').scrollHeight > document.getElementById('start').clientHeight")?, true);
     chrome(&ui, "document.getElementById('start').scrollTop=10000")?;
@@ -339,7 +334,8 @@ fn main() -> Result<()> {
     pump(100);
     click_chrome(&ui, ".pinned-card")?;
     wait("placeholder leaves", || !visible(&ui, "#strip-placeholder"))?;
-    println!("PASS frequent tile plants and all-settled placeholder clears on card click.");
+    println!("PASS all-settled placeholder clears on card click.");
+    chrome_fill(&ui, directory.path())?;
     ui.window.close();
     Ok(())
 }
@@ -548,5 +544,328 @@ fn bookmarks(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
     key("Escape")?;
     key("Escape")?;
     println!("PASS bookmark grid, overflow, folder lists, palette, always planting roots, tile and row removal, folder overflow, dark/light shots at 900 by 600.");
+    Ok(())
+}
+
+fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
+    key("Escape")?;
+    use canopy::browser::{Browser, VisitId};
+    use rusqlite::{params, Connection};
+    let connection = Connection::open(data.join("forest.sqlite3"))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis() as i64;
+    let seed = |url: &str, title: &str, count: usize, parent: Option<VisitId>| -> Result<VisitId> {
+        let id: VisitId = ulid::Ulid::new().to_string().parse()?;
+        connection.execute("INSERT INTO visits(id,parent_id,url,title,created_at,opened_at) VALUES(?1,?2,?3,?4,?5,?5)",params![id.to_string(),parent.map(|v|v.to_string()),url,title,now])?;
+        if parent.is_none() {
+            connection.execute(
+                "INSERT INTO tree_state(root_id,last_visit_id,settled_at) VALUES(?1,?1,?2)",
+                params![id.to_string(), now],
+            )?;
+        }
+        for _ in 0..count {
+            connection.execute(
+                "INSERT INTO visit_events(visit_id,from_visit_id,kind,at) VALUES(?1,?2,'new',?3)",
+                params![id.to_string(), parent.map(|v| v.to_string()), now],
+            )?;
+        }
+        Ok(id)
+    };
+    let page = seed(&format!("{base}/suggest-page"), "Daily reading", 8, None)?;
+    let waiting = seed(&format!("{base}/suggest-tree"), "Dinner plans", 1, None)?;
+    for i in 0..5 {
+        let child = seed(
+            &format!("{base}/tree-{i}"),
+            "Dinner detail",
+            1,
+            Some(waiting),
+        )?;
+        connection.execute(
+            "UPDATE visit_events SET from_visit_id=NULL WHERE visit_id=?1",
+            [child.to_string()],
+        )?;
+    }
+    let first = seed(
+        &format!("{}/path-first", base.replace("127.0.0.1", "localhost")),
+        "First",
+        1,
+        None,
+    )?;
+    seed(&format!("{base}/path-second"), "Second", 4, Some(first))?;
+    let challenger = seed(&format!("{base}/challenger"), "New arrival", 1, None)?;
+    let mut browser = Browser::open(&data.join("forest.sqlite3"))?;
+    browser.queue_link(
+        waiting,
+        web_url(&format!("{base}/suggest-waiting"))?,
+        SourceContext {
+            page_url: web_url(base)?,
+            citation_url: None,
+            link_text: "Waiting".into(),
+            excerpt: String::new(),
+        },
+    )?;
+    ui.dispatch(ChromeIntent::SetTheme(ThemeMode::Dark));
+    start_page(ui)?;
+    wait("three suggested kinds", || {
+        chrome(ui, "canopy.state().start.suggested.map(s=>s.kind)")
+            .is_ok_and(|v| v == serde_json::json!(["page", "tree", "path"]))
+    })?;
+    let keys = chrome(ui, "canopy.state().start.suggested.map(s=>s.key)")?;
+    assert_eq!(
+        chrome(
+            ui,
+            "new Set([...document.querySelectorAll('.sg')].map(e=>e.offsetTop)).size"
+        )?,
+        1
+    );
+    for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        ui.dispatch(ChromeIntent::SetTheme(mode));
+        pump(250);
+        hover_chrome(ui, ".sg-main")?;
+        pump(100);
+        assert_eq!(
+            chrome(
+                ui,
+                "getComputedStyle(document.querySelector('.sg-actions')).opacity"
+            )?,
+            "1"
+        );
+        if std::env::var_os("CANOPY_NEWTREE_SHOTS").is_some() {
+            std::fs::create_dir_all(".cache/shots")?;
+            save_window(
+                ui,
+                if mode == ThemeMode::Dark {
+                    ".cache/shots/suggested-dark.png"
+                } else {
+                    ".cache/shots/suggested-light.png"
+                },
+            )?;
+        }
+    }
+    key("ctrl+k")?;
+    wait("suggestions in palette", || {
+        visible(ui, "#palette [data-kind=suggestion]")
+    })?;
+    assert_eq!(
+        chrome(
+            ui,
+            "canopy.state().rows.filter(r=>r.kind==='suggestion').map(r=>r.title)"
+        )?,
+        chrome(ui, "canopy.state().start.suggested.map(s=>s.title)")?
+    );
+    key("Escape")?;
+    for _ in 0..20 {
+        connection.execute(
+            "INSERT INTO visit_events(visit_id,kind,at) VALUES(?1,'return',?2)",
+            params![challenger.to_string(), now],
+        )?;
+    }
+    for mode in [ThemeMode::Dark, ThemeMode::Light] {
+        ui.dispatch(ChromeIntent::SetTheme(mode));
+        pump(250);
+        assert_eq!(
+            chrome(ui, "canopy.state().start.suggested.map(s=>s.key)")?,
+            keys
+        );
+        assert_eq!(
+            chrome(
+                ui,
+                "[...document.querySelectorAll('[data-start=suggestion]')].map(e=>e.dataset.id)"
+            )?,
+            keys
+        );
+    }
+    click_chrome(ui, "[data-start=suggestion]")?;
+    wait("painted page opens", || {
+        ui.snapshot()
+            .unwrap()
+            .current_visit()
+            .is_some_and(|v| v.url.path() == "/suggest-page")
+            && !ui.pages.selected_page().native.is_loading()
+    })?;
+    assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
+    start_page(ui)?;
+    wait("arrival reranks next entry", || {
+        chrome(ui, "canopy.state().start.suggested[0].title").is_ok_and(|v| v == "New arrival")
+    })?;
+    let chosen = web_url(&format!("{base}/challenger"))?;
+    let lefts =
+        "[...document.querySelectorAll('.sg')].map(e=>Math.round(e.getBoundingClientRect().left))";
+    let before = chrome(ui, lefts)?;
+    hover_chrome(ui, ".sg-main")?;
+    click_chrome(ui, "[data-start=keep]")?;
+    wait("Keep page bookmarks", || {
+        browser.bookmarks().unwrap().iter().any(|b| b.url == chosen)
+    })?;
+    wait("Keep removes without filling", || {
+        chrome(ui, "canopy.state().start.suggested.length").is_ok_and(|v| v == 2)
+    })?;
+    assert_eq!(
+        chrome(ui, lefts)?,
+        serde_json::json!([before[1], before[2]]),
+        "the chips that stay keep their places"
+    );
+    let declined: canopy::suggest::SuggestionKey =
+        chrome(ui, "canopy.state().start.suggested[0].key")?
+            .as_str()
+            .unwrap()
+            .parse()?;
+    hover_chrome(ui, ".sg-main")?;
+    click_chrome(ui, "[data-start=decline]")?;
+    wait("cross persists", || {
+        browser.declined().unwrap().contains(&declined)
+    })?;
+    wait("cross removes without filling", || {
+        chrome(ui, "canopy.state().start.suggested.length").is_ok_and(|v| v == 1)
+    })?;
+    key("Escape")?;
+    start_page(ui)?;
+    wait("tree suggested", || {
+        chrome(
+            ui,
+            "canopy.state().start.suggested.some(s=>s.kind==='tree')",
+        )
+        .is_ok_and(|v| v == true)
+    })?;
+    let tree_key = format!("tree {waiting}");
+    let selector = format!("[data-start=keep][data-id='{tree_key}']");
+    hover_chrome(
+        ui,
+        &format!("[data-start=suggestion][data-id='{tree_key}']"),
+    )?;
+    click_chrome(ui, &selector)?;
+    wait("Keep tree pins", || {
+        browser
+            .tree_states()
+            .unwrap()
+            .iter()
+            .any(|t| t.root.root() == waiting && t.pin.is_some())
+    })?;
+    wait("kept tree leaves", || !visible(ui, &selector))?;
+    assert!(!chrome(ui, "canopy.state().start.suggested.map(s=>s.key)")?
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!(declined.to_string())));
+    let path_key = "path localhost 127.0.0.1";
+    click_chrome(
+        ui,
+        &format!("[data-start=suggestion][data-id='{path_key}']"),
+    )?;
+    let opened_path = wait("suggested path loads its child", || {
+        ui.snapshot()
+            .unwrap()
+            .current_visit()
+            .is_some_and(|v| v.url.path() == "/path-second" && v.parent.is_some())
+            && !ui.pages.selected_page().native.is_loading()
+    });
+    if let Err(error) = opened_path {
+        anyhow::bail!(
+            "{error}; current {:?}; native {:?}; loading {}; surface {:?}; chips {:?}",
+            ui.snapshot()?.current_visit(),
+            ui.pages.selected_page().native.uri(),
+            ui.pages.selected_page().native.is_loading(),
+            chrome(ui, "canopy.state().surface")?,
+            chrome(ui, "canopy.state().start.suggested")?
+        );
+    }
+    let snapshot = ui.snapshot()?;
+    let second = snapshot.current_visit().unwrap();
+    let root = snapshot
+        .visits
+        .iter()
+        .find(|v| Some(v.id) == second.parent)
+        .unwrap();
+    assert_eq!(root.url.path(), "/path-first");
+    assert!(root.parent.is_none());
+    start_page(ui)?;
+    wait("path offered again", || {
+        visible(
+            ui,
+            &format!("[data-start=suggestion][data-id='{path_key}']"),
+        )
+    })?;
+    hover_chrome(
+        ui,
+        &format!("[data-start=suggestion][data-id='{path_key}']"),
+    )?;
+    click_chrome(ui, &format!("[data-start=keep][data-id='{path_key}']"))?;
+    wait("Keep path bookmarks first page", || {
+        browser
+            .bookmarks()
+            .unwrap()
+            .iter()
+            .any(|b| b.url.path() == "/path-first")
+    })?;
+    wait("kept path leaves", || {
+        !visible(
+            ui,
+            &format!("[data-start=suggestion][data-id='{path_key}']"),
+        )
+    })?;
+    key("Escape")?;
+    ui.dispatch(ChromeIntent::PinTree {
+        tree: tree(ui, waiting),
+        pinned: false,
+    });
+    start_page(ui)?;
+    wait("settled tree offered again", || {
+        visible(
+            ui,
+            &format!("[data-start=suggestion][data-id='{tree_key}']"),
+        )
+    })?;
+    click_chrome(
+        ui,
+        &format!("[data-start=suggestion][data-id='{tree_key}']"),
+    )?;
+    wait("suggested tree restores last page", || {
+        ui.snapshot().unwrap().current == Some(waiting)
+            && !ui.pages.selected_page().native.is_loading()
+    })?;
+    assert!(browser
+        .tree_states()?
+        .iter()
+        .any(|t| t.root.root() == waiting && t.lifecycle.is_open()));
+    ui.dispatch(ChromeIntent::PinTree {
+        tree: tree(ui, waiting),
+        pinned: true,
+    });
+    assert!(browser.snapshot()?.visits.iter().any(|v| v.id == page));
+    println!("PASS three suggestion kinds, reasons and hover actions, frozen keys across two refreshes, painted-key activation, new-entry ranking, Keep page/tree, persisted cross, path activation and Keep, tree restoration and no backfill.");
+    Ok(())
+}
+
+fn chrome_fill(ui: &Ui, data: &std::path::Path) -> Result<()> {
+    use canopy::browser::{Browser, ImportedPage};
+    let mut browser = Browser::open(&data.join("forest.sqlite3"))?;
+    let connection = rusqlite::Connection::open(data.join("forest.sqlite3"))?;
+    connection.execute("DELETE FROM visit_events", [])?;
+    let pages: Vec<_> = (0..12)
+        .map(|i| ImportedPage {
+            url: web_url(&format!("https://chrome{i}.test/")).unwrap(),
+            title: format!("Chrome {i}"),
+            visits: 100 - i,
+            typed: 0,
+            last_visit: None,
+        })
+        .collect();
+    browser.replace_imported("test", &pages)?;
+    for page in &pages[..8] {
+        browser.bookmark(&page.url, &page.title)?;
+    }
+    browser.decline(&canopy::suggest::SuggestionKey::Page(pages[8].url.clone()))?;
+    ui.dispatch(ChromeIntent::SetTheme(ThemeMode::Dark));
+    start_page(ui)?;
+    wait("Chrome fills every remaining place", || {
+        chrome(ui, "canopy.state().start.suggested.map(s=>s.why)").is_ok_and(|v| {
+            v == serde_json::json!(["Often in Chrome", "Often in Chrome", "Often in Chrome"])
+        })
+    })?;
+    assert_eq!(
+        chrome(ui, "canopy.state().start.suggested.map(s=>s.title)")?,
+        serde_json::json!(["Chrome 9", "Chrome 10", "Chrome 11"])
+    );
+    println!("PASS Chrome history fills all three places after eight bookmarked pages and a declined key.");
     Ok(())
 }
