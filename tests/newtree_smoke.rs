@@ -43,6 +43,8 @@ fn start_page(ui: &Ui) -> Result<()> {
 
 fn shots(ui: &Ui, name: &str) -> Result<()> {
     if std::env::var_os("CANOPY_NEWTREE_SHOTS").is_some() {
+        move_to(5, 590)?;
+        pump(500);
         std::fs::create_dir_all(".cache/shots")?;
         save_window(ui, &format!(".cache/shots/newtree-{name}.png"))?;
     }
