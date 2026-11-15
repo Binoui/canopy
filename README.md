@@ -40,6 +40,7 @@ To build an optimized binary into `~/.local/bin` and add Canopy to rofi, wofi or
 
 ```sh
 cargo install --path . --locked --root ~/.local
+install -Dm755 helpers/canopy-login-bitwarden ~/.local/bin/canopy-login-bitwarden
 install -Dm644 packaging/canopy.desktop ~/.local/share/applications/canopy.desktop
 install -Dm644 assets/logo/canopy.svg ~/.local/share/icons/hicolor/scalable/apps/canopy.svg
 for size in 16 22 24 32; do
@@ -126,6 +127,45 @@ Canopy waits for the page to stop asking for a password before it offers. If the
 
 A login you save stays in the encrypted vault on this computer, next to the ones brought in from Chrome, and replaces the imported copy of the same account. Importing from Chrome again does not bring the old password back. There is no list of saved logins to edit or delete yet, and no way to tell Canopy never to ask for a site.
 
+### Keep logins in your password manager
+
+Canopy can read and save logins in a password manager you already use, in place of its own vault. It reaches the manager through a helper, a small program called `canopy-login-NAME`. To choose one, run:
+
+```sh
+canopy --login-helper NAME
+```
+
+The choice takes effect the next time Canopy starts. `canopy --login-helper vault` goes back to the vault on this computer. Canopy uses one or the other, not both: with a helper chosen, the vault's logins are not offered.
+
+When the manager is locked, the key button reads **Unlock** with the manager's name. Click it, or press **Ctrl+Shift+L**, and the manager asks for what it needs. The manager decides which of its logins match a page. Canopy asks it only about pages loaded over HTTPS, or from this computer.
+
+#### Bitwarden
+
+The Bitwarden helper comes with Canopy and uses `bw`, Bitwarden's own command-line tool. Set it up once:
+
+```sh
+sudo pacman -S bitwarden-cli   # or your system's package for bw
+bw login
+install -Dm755 helpers/canopy-login-bitwarden ~/.local/bin/canopy-login-bitwarden
+canopy --login-helper bitwarden
+```
+
+Your master password is asked for in a small window once each time Canopy runs, the first time you unlock. The helper needs `zenity` or `kdialog` for that window, and Python 3. The session stays in Canopy's memory, so the vault locks again when Canopy quits. Logins you save in Canopy go to your Bitwarden vault and reach your other devices from there. Changes made on other devices arrive at the next unlock.
+
+`bw` is slow to start. The key button appears about four seconds after a sign-in page has loaded, and unlocking takes about six seconds after you type your password. Logins that ask for the master password again are not offered, because `bw` cannot ask for it.
+
+#### Write a helper
+
+A helper is run once per question, with the question as its only argument. It reads a JSON request on its input and writes a JSON answer on its output.
+
+| Question | Request | Answer |
+| --- | --- | --- |
+| `get` | `url`, `origin`, `state` | `{"logins": [{"username": "…", "password": "…"}]}` |
+| `store` | `url`, `origin`, `username`, `password`, `state` | `{}` |
+| `unlock` | `state` | `{"state": "…"}` or `{"cancelled": true}` |
+
+Any answer can instead be `{"locked": true}` or `{"error": "why"}`. `state` is the text the last `unlock` answered, or null. Canopy keeps it in memory only and sends it back with every request, so a helper can hold an unlocked session without writing it to disk. `get` has 30 seconds to answer, `store` 60 seconds, and `unlock` five minutes.
+
 ## Try a fork
 
 1. Press **Ctrl+K**, type an address and press **Enter**.
@@ -182,6 +222,12 @@ Check the formatting, the core tests and the compiler diagnostics:
 cargo fmt --check
 cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
+```
+
+The Bitwarden helper has its own tests, which run it against a stand-in for `bw`:
+
+```sh
+python3 helpers/test_canopy_login_bitwarden.py
 ```
 
 The GUI tests load locally served pages and drive the window with real pointer and keyboard input. They check the HTML chrome through its own DOM. Install Xvfb and xdotool, then run them like this. Unsetting `WAYLAND_DISPLAY` keeps the window on Xvfb from a Wayland session:

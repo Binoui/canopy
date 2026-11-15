@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""Canopy's login helper for Bitwarden.
+
+It talks to your vault through bw, Bitwarden's own command-line tool, and keeps nothing
+on disk itself. Set it up once:
+
+    1. Install bw (the bitwarden-cli package on most systems).
+    2. Run `bw login` in a terminal.
+    3. Run `canopy --login-helper bitwarden`, then start Canopy.
+
+Canopy runs this program with one of get, store or unlock, a JSON request on its input,
+and reads a JSON answer from its output. The session key bw gives at unlock goes back to
+Canopy as "state". Canopy keeps it in memory and returns it with each request, so the
+vault locks again when Canopy quits.
+
+Logins that ask for the master password again are left out: bw cannot ask for it.
+"""
+
+import base64
+import json
+import os
+import shutil
+import subprocess
+import sys
+from urllib.parse import urlsplit
+
+LOGIN = 1
+REPROMPT = 1
+SIGNED_OUT = "Bitwarden is not signed in on this computer. Run bw login in a terminal, once."
+
+
+def bw(*arguments, session=None, text=None, extra=None):
+    """Runs bw and returns its JSON response: {"success", "data" or "message"}."""
+    environment = dict(os.environ, **(extra or {}))
+    if session:
+        environment["BW_SESSION"] = session
+    try:
+        result = subprocess.run(
+            ["bw", "--response", "--nointeraction", *arguments],
+            input=text, capture_output=True, text=True, env=environment, check=False,
+        )
+    except FileNotFoundError:
+        return {"success": False, "message": "bw, Bitwarden's command-line tool, is not installed."}
+    try:
+        response = json.loads(result.stdout)
+        if isinstance(response, dict) and "success" in response:
+            return response
+    except ValueError:
+        pass
+    return {"success": False, "message": (result.stderr or result.stdout).strip() or "bw gave no answer."}
+
+
+def failure(response):
+    """Turns a refusal from bw into the helper's answer."""
+    message = str(response.get("message") or "bw failed.")
+    lowered = message.lower()
+    if "not logged in" in lowered:
+        return {"error": SIGNED_OUT}
+    if "locked" in lowered or "session" in lowered:
+        return {"locked": True}
+    return {"error": message}
+
+
+def matching(request):
+    """The login items bw matches to the page, or the refusal to answer with."""
+    response = bw("list", "items", "--url", request["url"], session=request["state"])
+    if not response["success"]:
+        return None, failure(response)
+    items = [
+        item for item in response["data"]["data"]
+        if item.get("type") == LOGIN and item.get("login") and not item.get("deletedDate")
+    ]
+    return items, None
+
+
+def get(request):
+    if not request.get("state"):
+        return {"locked": True}
+    items, refusal = matching(request)
+    if refusal:
+        return refusal
+    return {"logins": [
+        {"username": item["login"].get("username") or "", "password": item["login"]["password"]}
+        for item in items
+        if item["login"].get("password") and item.get("reprompt") != REPROMPT
+    ]}
+
+
+def store(request):
+    if not request.get("state"):
+        return {"locked": True}
+    items, refusal = matching(request)
+    if refusal:
+        return refusal
+    same = [item for item in items if (item["login"].get("username") or "") == request["username"]]
+    if same:
+        item = same[0]
+        if item.get("reprompt") == REPROMPT:
+            return {"error": "This login asks for your master password again. Change it in Bitwarden."}
+        item["login"]["password"] = request["password"]
+        command = ("edit", "item", item["id"])
+    else:
+        item = {
+            "type": LOGIN,
+            "name": urlsplit(request["origin"]).hostname or request["origin"],
+            "notes": None,
+            "favorite": False,
+            "organizationId": None,
+            "folderId": None,
+            "reprompt": 0,
+            "login": {
+                "username": request["username"] or None,
+                "password": request["password"],
+                "totp": None,
+                "uris": [{"match": None, "uri": request["origin"]}],
+            },
+        }
+        command = ("create", "item")
+    # The item travels on bw's input, never on its command line.
+    encoded = base64.b64encode(json.dumps(item).encode()).decode()
+    response = bw(*command, session=request["state"], text=encoded)
+    return {} if response["success"] else failure(response)
+
+
+def ask_master_password(email):
+    """Asks with the desktop's own dialog. None when the user cancels."""
+    prompt = f"Master password for {email}" if email else "Master password"
+    dialogs = {
+        "zenity": ["zenity", "--password", "--title=Unlock Bitwarden"],
+        "kdialog": ["kdialog", "--title", "Unlock Bitwarden", "--password", prompt],
+    }
+    order = ["kdialog", "zenity"] if "KDE" in os.environ.get("XDG_CURRENT_DESKTOP", "") else ["zenity", "kdialog"]
+    for name in order:
+        if shutil.which(name):
+            result = subprocess.run(dialogs[name], capture_output=True, text=True, check=False)
+            return result.stdout.rstrip("\n") if result.returncode == 0 else None
+    raise RuntimeError("Install zenity or kdialog, so that your master password can be asked for.")
+
+
+def unlock(_request):
+    status = bw("status")
+    if not status["success"]:
+        return failure(status)
+    account = status["data"].get("template") or status["data"]
+    if account.get("status") == "unauthenticated":
+        return {"error": SIGNED_OUT}
+    password = ask_master_password(account.get("userEmail"))
+    if not password:
+        return {"cancelled": True}
+    response = bw("unlock", "--passwordenv", "CANOPY_BW_PASSWORD", extra={"CANOPY_BW_PASSWORD": password})
+    if not response["success"]:
+        signed_out = "not logged in" in str(response.get("message")).lower()
+        return {"error": SIGNED_OUT if signed_out else "Bitwarden did not accept that master password."}
+    session = response["data"]["raw"]
+    # Changes made on other devices arrive with a sync. It runs on its own, so the answer
+    # does not wait for it; until it ends, the vault is only a little older.
+    subprocess.Popen(
+        ["bw", "--nointeraction", "sync"], env=dict(os.environ, BW_SESSION=session),
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return {"state": session}
+
+
+def main():
+    verbs = {"get": get, "store": store, "unlock": unlock}
+    try:
+        answer = verbs[sys.argv[1]](json.load(sys.stdin))
+    except (IndexError, KeyError):
+        answer = {"error": "This is Canopy's login helper for Bitwarden. Canopy runs it with get, store or unlock."}
+    except Exception as error:  # Canopy shows the reason instead of a silent failure.
+        answer = {"error": str(error) or type(error).__name__}
+    print(json.dumps(answer))
+
+
+if __name__ == "__main__":
+    main()
