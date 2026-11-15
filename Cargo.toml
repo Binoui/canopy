@@ -127,3 +127,9 @@ name = "waiting_smoke"
 path = "tests/waiting_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
+
+[[test]]
+name = "login_smoke"
+path = "tests/login_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]

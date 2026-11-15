@@ -89,7 +89,7 @@ It reads `~/.config/google-chrome/Default`. Pass another profile folder after th
 
 Cookies reach Canopy while it runs, or at its next start before it reloads your page or opens the addresses it was given. This keeps sites signed in when their sessions still work. Chrome's cookies replace matching Canopy cookies. Session cookies last until Canopy quits. Partitioned and expired cookies are skipped.
 
-Passwords go into an encrypted vault. Its key stays in your system keyring. The import may ask you to unlock the keyring. Canopy does not fill password fields yet.
+Passwords go into an encrypted vault. Its key stays in your system keyring. The import may ask you to unlock the keyring. [Sign in with a saved login](#sign-in-with-a-saved-login) explains how Canopy fills them.
 
 Running the command again refreshes imported pages and updates matching passwords without removing other saved accounts. Canopy loads none of the imported pages. If Chrome is writing a database, or the keyring is locked, resolve the reported error and run the import again. Cookies accepted just before a crash may need another import.
 
@@ -108,6 +108,15 @@ Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not aff
 - **F6** moves the keyboard focus between the page and the current page in the strip. **Left** and **Right** walk the path, and **Enter** opens the focused page.
 - **Alt+Left** goes back to the parent page.
 - **Ctrl+R**, **F5**, and **Ctrl+Shift+R** reload the current page. Canopy has no hard reload, so all three perform a plain reload.
+- **Ctrl+Shift+L** fills the saved login for the page.
+
+## Sign in with a saved login
+
+When a page asks you to sign in and the vault holds a login for that site, a key button appears in the top row with the account name. Click it, or press **Ctrl+Shift+L**, and Canopy types the user name and password into the page. With several accounts for the site, the button opens a list to choose from. You then sign in yourself: Canopy does not submit the form.
+
+Nothing is filled until you ask. A login is offered only on the exact site it was saved for, with the same scheme, host and port, and never to a frame embedded in the page. On a sign-in that asks for the user name first and the password on the next page, use the button on each page.
+
+The vault holds the passwords brought in from Chrome. Canopy does not save new passwords yet. The keyring may ask you to unlock it the first time a login is filled. Sign-up and change-password forms are left alone. Fields that a site keeps in a closed component or in a frame are not found.
 
 ## Try a fork
 
@@ -176,6 +185,7 @@ env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' c
 env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test open_url_smoke
 env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test shortcut_smoke
 env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test sandbox_smoke
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test login_smoke
 ```
 
 `open_url_smoke` starts the `canopy` binary on temporary data folders and launches it again with addresses, so it checks the hand-off between real processes. It needs no session bus.

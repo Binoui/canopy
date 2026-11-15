@@ -19,6 +19,7 @@ const ICONS = {
   globe: '<circle cx="12" cy="12" r="8.5" stroke-width="1.7"/><path d="M3.5 12h17M12 3.5c2.6 2.6 2.6 14.4 0 17M12 3.5c-2.6 2.6-2.6 14.4 0 17" stroke-width="1.7"/>',
   close: '<path d="M6 6l12 12M18 6L6 18" stroke-width="1.9"/>',
   file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" stroke-width="1.7"/><path d="M14 3v5h5" stroke-width="1.7"/>',
+  key: '<circle cx="7.5" cy="15.5" r="5.5" stroke-width="1.7"/><path d="M21 2l-9.6 9.6M15.5 7.5l3 3L22 7l-3-3" stroke-width="1.7"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" stroke-width="1.7"/>',
   settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" stroke-width="1.6"/><circle cx="12" cy="12" r="3" stroke-width="1.6"/>',
 };
@@ -27,7 +28,7 @@ const $ = (id) => document.getElementById(id);
 const post = (message) => window.ipc.postMessage(JSON.stringify(message));
 /// Intents that load a page also give the keyboard back to it, as the GTK buttons that
 /// never took focus did.
-const NAVIGATES = new Set(['restore', 'select-tree', 'settle-tree', 'settle-current', 'shortcut', 'path', 'open-citation', 'open-saved', 'branch-queued']);
+const NAVIGATES = new Set(['restore', 'select-tree', 'settle-tree', 'settle-current', 'shortcut', 'path', 'open-citation', 'open-saved', 'branch-queued', 'fill-login']);
 const intent = (kind, extra = {}) => {
   post({ t: 'intent', kind, ...extra });
   if (NAVIGATES.has(kind)) post({ t: 'focus', target: 'page' });
@@ -40,6 +41,7 @@ const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 
 const S = {
   frame: null,
+  logins: null,
   strip: null,
   rev: 0,
   systemDark: null,
@@ -665,6 +667,42 @@ function closePopover(returnFocus = true) {
   syncLayer();
 }
 
+// ---------- saved logins for the page's sign-in fields ----------
+
+const loginNames = () => S.logins?.names ?? [];
+const loginLabel = (name) => name || 'No user name';
+
+function renderLoginChip() {
+  const chip = $('login-chip');
+  const names = loginNames();
+  chip.hidden = !names.length;
+  if (names.length) {
+    const one = names.length === 1;
+    chip.innerHTML = `${icon('key')}<span>${esc(one ? loginLabel(names[0]) : `${names.length} logins`)}</span>`;
+    chip.title = `${one ? `Fill the saved login for ${loginLabel(names[0])}` : 'Choose a saved login to fill'} · Ctrl+Shift+L`;
+  }
+  if (S.popover?.kind === 'logins') {
+    if (names.length > 1) renderPopover();
+    else closePopover(false);
+  }
+  fitTabs();
+}
+
+/// One saved login is filled at once; several open the list under the chip.
+function fillLogin() {
+  const names = loginNames();
+  if (!names.length) { canopy.toast('info', 'No saved login for this page'); return; }
+  if (names.length === 1) { pickLogin(0); return; }
+  if (S.popover?.kind === 'logins') { closePopover(); return; }
+  openPopover('logins', $('login-chip'));
+  post({ t: 'focus', target: 'chrome' });
+  $('popover').querySelector('[data-login]')?.focus();
+}
+
+function pickLogin(index) {
+  intent('fill-login', { offer: S.logins.offer, index });
+}
+
 function visitRow(v) {
   const detail = v.queued ? 'pending' : v.site.split(' · ').slice(1).join(' · ');
   return `<button class="menu-row" data-id="${v.id}">${visitFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(detail)}</span></button>`;
@@ -683,6 +721,14 @@ function renderPopover() {
         return `<button class="menu-row${i === 0 ? ' next' : ''}" data-id="${id}">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.when)}</span>${i === 0 ? '<kbd>Ctrl Tab</kbd>' : ''}</button>`;
       }).join('');
     popover.querySelectorAll('[data-id]').forEach((row) => row.addEventListener('click', () => openNextWaiting(row.dataset.id)));
+  } else if (kind === 'logins') {
+    popover.innerHTML = '<div class="menu-heading">Saved logins for this site</div>'
+      + loginNames().map((name, index) => `<button class="menu-row" data-login="${index}">${icon('key')}<span class="grow">${esc(loginLabel(name))}</span></button>`).join('');
+    popover.querySelectorAll('[data-login]').forEach((row) => row.addEventListener('click', () => {
+      const index = Number(row.dataset.login);
+      closePopover(false);
+      pickLogin(index);
+    }));
   } else if (kind === 'hidden') {
     popover.innerHTML = data.map(visit).filter(Boolean).map(visitRow).join('');
     popover.querySelectorAll('[data-id]').forEach((row) => row.addEventListener('click', () => {
@@ -1222,6 +1268,11 @@ window.canopy = {
     renderStart();
     renderForest();
   },
+  logins(offer) {
+    S.logins = offer.names.length ? offer : null;
+    renderLoginChip();
+  },
+  fillLogin() { fillLogin(); },
   nextWaiting() { openNextWaiting(); },
   openPalette(options) { openPalette(options); },
   newTree() {
@@ -1322,7 +1373,7 @@ window.canopy = {
   state() {
     return {
       surface: S.surface, overlay: S.overlay, treeSide: S.treeSide, open: S.open, animating: !!strip.anim, card: S.card, layer: S.layer, palette: !!S.palette,
-      reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported,
+      reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported, logins: loginNames(),
       dark: document.documentElement.classList.contains('dark'),
       nodes: [...strip.elements.keys()], rows: S.palette?.rows ?? [],
       waiting: S.frame?.waiting.ids ?? [], pins: (S.strip?.pins ?? []).map((p) => p.kind), room: S.strip?.room ?? null,
@@ -1372,6 +1423,10 @@ $('tab-overflow').addEventListener('click', (event) => {
 $('new-tree').addEventListener('click', () => window.canopy.newTree());
 $('forest-button').addEventListener('click', () => window.canopy.toggleForest());
 $('search-pill').addEventListener('click', () => openPalette({ scope: S.surface === 'start' ? null : current(), text: '' }));
+$('login-chip').addEventListener('click', (event) => {
+  event.stopPropagation();
+  fillLogin();
+});
 $('settings-button').addEventListener('click', (event) => {
   event.stopPropagation();
   if (S.popover?.kind === 'settings') closePopover();

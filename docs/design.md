@@ -48,6 +48,27 @@ At rest, the view covers only the top 94 px. It grows to cover whatever is open 
 
 This choice replaces the GTK and cairo chrome. It costs a second WebKit process, measured at about 124 MB of PSS. In exchange, a single interface runs on Linux, macOS and Windows. On Linux, GTK remains the invisible host of both webviews, as in Tauri. The page engine and the host window stay tied to WebKitGTK until the port to macOS and Windows.
 
+## Saved logins are filled on request
+
+A LoginProvider answers two questions: which accounts are saved for a page's origin, and
+what an account's password is. The encrypted vault in src/logins.rs is the first provider.
+Ui owns the provider, so a password manager the user already has can stand in for the vault
+without the page or the chrome changing.
+
+A helper in the page's isolated world, src/login_fields.js, finds the sign-in fields of the
+top frame, including fields inside open shadow roots. It posts an empty message when they
+appear or go away. The live page then asks the helper for its state against the document it
+knows, and reports the page address only while that document is still on screen and of the
+page's own origin. It asks again when a load finishes, and each new document starts with no
+fields. Page script cannot post that message or read the helper.
+
+Ui looks the accounts up and numbers each offer it sends to the chrome. The chrome sends
+back the offer number with the chosen row, so a choice made on a replaced offer fills
+nothing. The password leaves the provider only then. The live page refuses to fill a
+document of another origin, and the helper checks the origin again in the same turn as it
+sets the fields. Nothing is filled without that choice, which keeps a hidden form from
+collecting a password on load.
+
 ## The MVP1 scope
 
 The first milestone checks navigation, forks and resuming after a restart.
