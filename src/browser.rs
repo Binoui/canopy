@@ -1786,9 +1786,28 @@ mod tests {
         {
             connection.execute("INSERT INTO imported_pages(source,url,title,visits,typed,last_visit,folder) VALUES('chrome',?1,?2,?3,0,NULL,?4)", params![format!("https://example.org/{i}"), format!("Title {i}"), i as i64, folder]).unwrap();
         }
+        connection
+            .execute(
+                "INSERT INTO imported_pages(source,url,title,visits,typed,last_visit,folder)
+                 VALUES('chrome','file:///home/me/notes.html','Notes',0,0,NULL,'Bookmarks bar')",
+                [],
+            )
+            .unwrap();
         let mut browser = Browser::with_connection(connection).unwrap();
         let bookmarks = browser.bookmarks().unwrap();
         assert_eq!(bookmarks.len(), 6);
+        assert_eq!(
+            browser
+                .connection
+                .query_row(
+                    "SELECT COUNT(*) FROM imported_pages WHERE url LIKE 'file:%'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1,
+            "a bookmark that is not a web address keeps its imported row"
+        );
         assert_eq!(bookmarks[0].url.path(), "/1");
         assert_eq!(bookmarks[1].url.path(), "/0");
         assert_eq!(
