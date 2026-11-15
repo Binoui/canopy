@@ -43,6 +43,7 @@ const S = {
   frame: null,
   logins: null,
   save: null,
+  locked: null,
   strip: null,
   rev: 0,
   systemDark: null,
@@ -678,11 +679,14 @@ const loginLabel = (name) => name || 'No user name';
 function renderLoginChip() {
   const chip = $('login-chip');
   const names = loginNames();
-  chip.hidden = !S.save && !names.length;
+  chip.hidden = !S.save && !names.length && !S.locked;
   chip.classList.toggle('on', !!S.save);
   if (S.save) {
     chip.innerHTML = `${icon('key')}<span>${S.save.update ? 'Update password?' : 'Save login?'}</span>`;
     chip.title = `${S.save.update ? 'Update the saved password' : 'Save the login'} for ${loginLabel(S.save.username)} on ${S.save.site}`;
+  } else if (S.locked && !names.length) {
+    chip.innerHTML = `${icon('key')}<span>${esc(`Unlock ${S.locked}`)}</span>`;
+    chip.title = `Unlock ${S.locked} to fill a saved login · Ctrl+Shift+L`;
   } else if (names.length) {
     const one = names.length === 1;
     chip.innerHTML = `${icon('key')}<span>${esc(one ? loginLabel(names[0]) : `${names.length} logins`)}</span>`;
@@ -705,6 +709,7 @@ function answerSave(save) {
 /// One saved login is filled at once; several open the list under the chip.
 function fillLogin() {
   const names = loginNames();
+  if (!names.length && S.locked) { intent('unlock-logins'); return; }
   if (!names.length) { canopy.toast('info', 'No saved login for this page'); return; }
   if (names.length === 1) { pickLogin(0); return; }
   if (S.popover?.kind === 'logins') { closePopover(); return; }
@@ -740,7 +745,7 @@ function renderPopover() {
     if (!save) { closePopover(false); return; }
     popover.innerHTML = `<div class="menu-heading">${save.update ? 'Update the saved password?' : 'Save this login?'}</div>`
       + `<div class="menu-row" id="save-login-account">${icon('key')}<span class="grow">${esc(loginLabel(save.username))}</span><span class="menu-detail">${esc(save.site)}</span></div>`
-      + '<div class="menu-hint">Kept in the encrypted vault on this computer.</div>'
+      + `<div class="menu-hint">Kept in ${esc(save.keeper)}.</div>`
       + `<div class="card-actions save-actions"><button class="action" data-save="1">${save.update ? 'Update' : 'Save'}</button><button class="action" data-save="0">Not now</button></div>`;
     popover.querySelectorAll('[data-save]').forEach((button) => button.addEventListener('click', () => answerSave(button.dataset.save === '1')));
   } else if (kind === 'logins') {
@@ -1294,6 +1299,10 @@ window.canopy = {
     S.logins = offer.names.length ? offer : null;
     renderLoginChip();
   },
+  loginsLocked(keeper) {
+    S.locked = keeper;
+    renderLoginChip();
+  },
   saveLogin(offer) {
     S.save = offer;
     renderLoginChip();
@@ -1399,7 +1408,7 @@ window.canopy = {
   state() {
     return {
       surface: S.surface, overlay: S.overlay, treeSide: S.treeSide, open: S.open, animating: !!strip.anim, card: S.card, layer: S.layer, palette: !!S.palette,
-      reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported, logins: loginNames(), save: S.save,
+      reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported, logins: loginNames(), save: S.save, locked: S.locked,
       dark: document.documentElement.classList.contains('dark'),
       nodes: [...strip.elements.keys()], rows: S.palette?.rows ?? [],
       waiting: S.frame?.waiting.ids ?? [], pins: (S.strip?.pins ?? []).map((p) => p.kind), room: S.strip?.room ?? null,

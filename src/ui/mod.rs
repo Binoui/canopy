@@ -1,10 +1,10 @@
+mod logins;
 mod save_watch;
 
 use std::{
     cell::{Cell, RefCell},
     path::Path,
     rc::{Rc, Weak},
-    time::{Duration, Instant},
 };
 
 use anyhow::Result;
@@ -15,11 +15,11 @@ use crate::{
     browser::{Browser, Download, ImportedPage, SearchHit, Snapshot, VisitId, VisitPreview},
     chrome::{
         ChromeFrame, ChromeHost, ChromeIntent, HtmlChrome, PageFile, PaletteScope, PaletteSeed,
-        SaveOffer, Toast,
+        Toast,
     },
     forest::ForestProjection,
-    logins::{Login, LoginProvider, Logins, SavedLogin},
-    pages::{DownloadEvent, Go, LoginEvent, PageEvent, Pages},
+    logins::{Login, LoginProvider, SavedLogin},
+    pages::{DownloadEvent, Go, PageEvent, Pages},
 };
 
 pub struct Ui {
@@ -32,8 +32,14 @@ pub struct Ui {
     cookie_monitor: gio::FileMonitor,
     draining_cookies: Cell<bool>,
     cookies_pending: Cell<bool>,
-    /// Where saved logins are read from. `None` when the vault could not be opened.
-    logins: RefCell<Option<Box<dyn LoginProvider>>>,
+    /// Where saved logins are kept. `None` when the vault could not be opened.
+    logins: RefCell<Option<Rc<dyn LoginProvider>>>,
+    /// The page on screen that shows sign-in fields, and the number of the lookup made
+    /// for it, so an answer that arrives for an earlier page is dropped.
+    login_page: RefCell<Option<Url>>,
+    lookups: Cell<u64>,
+    /// The provider asked to be unlocked before it answers for this page.
+    logins_locked: Cell<bool>,
     /// The accounts offered for the page on screen, and the number of that offer.
     offered: RefCell<(u64, Vec<SavedLogin>)>,
     /// The login the user last sent to a page, until the page shows whether it was accepted.
@@ -81,14 +87,7 @@ impl Ui {
         inbox.prepare()?;
         let cookie_monitor = gio::File::for_path(inbox.directory())
             .monitor_directory(gio::FileMonitorFlags::NONE, None::<&gio::Cancellable>)?;
-        // Opening the vault reads no secret; the keyring is only asked when a login is filled.
-        let logins: Option<Box<dyn LoginProvider>> = match Logins::open(data_dir) {
-            Ok(vault) => Some(Box::new(vault)),
-            Err(error) => {
-                eprintln!("Canopy: saved logins are unavailable. {error}");
-                None
-            }
-        };
+        let (logins, logins_problem) = logins::provider(data_dir);
         let ui = Rc::new_cyclic(|me: &Weak<Ui>| {
             let host: Weak<dyn ChromeHost> = me.clone();
             chrome.attach(host);
@@ -103,6 +102,9 @@ impl Ui {
                 draining_cookies: Cell::new(false),
                 cookies_pending: Cell::new(false),
                 logins: RefCell::new(logins),
+                login_page: RefCell::new(None),
+                lookups: Cell::new(0),
+                logins_locked: Cell::new(false),
                 offered: RefCell::default(),
                 save_watch: RefCell::default(),
                 saving: RefCell::new(None),
@@ -163,6 +165,9 @@ impl Ui {
         });
         ui.chrome.set_system_dark(prefers_dark());
         ui.refresh();
+        if let Some(problem) = logins_problem {
+            ui.report_error(&problem);
+        }
         Ok(ui)
     }
 
@@ -493,6 +498,10 @@ impl ChromeHost for Ui {
             ChromeIntent::OpenFileFolder(id) => ui.open_file(id, true),
             ChromeIntent::FillLogin { offer, index } => ui.fill_login(offer, index),
             ChromeIntent::AnswerSave { offer, save } => ui.answer_save(offer, save),
+            ChromeIntent::UnlockLogins => {
+                ui.unlock_logins();
+                Ok(())
+            }
         };
         self.report(result);
     }
@@ -538,166 +547,6 @@ impl Ui {
                 Ok(())
             }
         }
-    }
-}
-
-impl Ui {
-    /// Reads saved logins from `provider` from now on.
-    pub fn set_login_provider(&self, provider: Box<dyn LoginProvider>) {
-        *self.logins.borrow_mut() = Some(provider);
-        self.offer_logins(None);
-    }
-
-    fn login_event(&self, event: LoginEvent) {
-        match event {
-            LoginEvent::NewDocument => {
-                self.save_watch.borrow_mut().new_document();
-                self.offer_logins(None);
-            }
-            LoginEvent::Fields {
-                page,
-                username,
-                password,
-                asks_password,
-            } => {
-                self.offer_logins((username || password).then_some(&page));
-                let accepted = self
-                    .save_watch
-                    .borrow_mut()
-                    .fields(asks_password, Instant::now());
-                if let Some(login) = accepted {
-                    self.offer_save(login);
-                }
-            }
-            LoginEvent::Sent(login) => self.save_watch.borrow_mut().sent(login, Instant::now()),
-        }
-    }
-
-    /// Offers to keep a login the page accepted, unless it is already saved as it is.
-    fn offer_save(&self, mut login: Login) {
-        let Some(update) = self.unsaved(&mut login) else {
-            return;
-        };
-        let id = self.save_offers.get() + 1;
-        self.save_offers.set(id);
-        let offer = SaveOffer {
-            id,
-            site: Url::parse(login.origin.as_str())
-                .ok()
-                .and_then(|url| url.host_str().map(str::to_owned))
-                .unwrap_or_default(),
-            username: login.username.clone(),
-            update,
-        };
-        *self.saving.borrow_mut() = Some((id, login));
-        self.chrome.offer_save(Some(&offer));
-        // An unanswered offer does not keep the password in memory for the whole session.
-        let weak = self.me.clone();
-        glib::timeout_add_local_once(Duration::from_secs(300), move || {
-            if let Some(ui) = weak.upgrade() {
-                let waiting = ui
-                    .saving
-                    .borrow_mut()
-                    .take_if(|(waiting, _)| *waiting == id);
-                if waiting.is_some() {
-                    ui.chrome.offer_save(None);
-                }
-            }
-        });
-    }
-
-    /// Whether `login` differs from what is saved: `Some(true)` for a new password on a
-    /// saved account, `Some(false)` for a new account, `None` when there is nothing to
-    /// save. A login sent without a user name belongs to the site's only saved account.
-    fn unsaved(&self, login: &mut Login) -> Option<bool> {
-        let provider = self.logins.borrow();
-        let provider = provider.as_ref()?;
-        let saved = provider
-            .for_page(&Url::parse(login.origin.as_str()).ok()?)
-            .ok()?;
-        if login.username.is_empty() {
-            match saved.as_slice() {
-                [] => {}
-                [only] => login.username.clone_from(&only.username),
-                _ => return None,
-            }
-        }
-        let mut update = false;
-        for account in saved.iter().filter(|s| s.username == login.username) {
-            // A password that cannot be read cannot be compared; saving would fail too.
-            if provider.password(account).ok()?.expose() == login.password.expose() {
-                return None;
-            }
-            update = true;
-        }
-        Some(update)
-    }
-
-    /// Keeps, or lets go of, the login of save offer number `offer`.
-    fn answer_save(&self, offer: u64, save: bool) -> Result<()> {
-        use anyhow::Context;
-        let (_, login) = self
-            .saving
-            .borrow_mut()
-            .take_if(|(waiting, _)| *waiting == offer)
-            .context("That login is no longer waiting to be saved.")?;
-        self.chrome.offer_save(None);
-        if save {
-            self.logins
-                .borrow_mut()
-                .as_mut()
-                .context("Saved logins are unavailable.")?
-                .save(&login)?;
-            self.chrome
-                .toast(Toast::Info("Login saved on this computer.".into()));
-        }
-        Ok(())
-    }
-
-    /// Offers the accounts saved for `page`, which shows sign-in fields. `None`, or a page
-    /// with no saved account, takes the offer away.
-    fn offer_logins(&self, page: Option<&Url>) {
-        let logins = match (page, self.logins.borrow().as_ref()) {
-            // A vault that cannot be read offers nothing; filling is where errors are shown.
-            (Some(page), Some(provider)) => provider.for_page(page).unwrap_or_default(),
-            _ => Vec::new(),
-        };
-        let offer = {
-            let mut offered = self.offered.borrow_mut();
-            if logins.is_empty() && offered.1.is_empty() {
-                return;
-            }
-            *offered = (offered.0 + 1, logins);
-            offered.0
-        };
-        let offered = self.offered.borrow();
-        let names: Vec<&str> = offered.1.iter().map(|l| l.username.as_str()).collect();
-        self.chrome.offer_logins(offer, &names);
-    }
-
-    /// Fills the account the user picked from offer number `offer`.
-    fn fill_login(&self, offer: u64, index: usize) -> Result<()> {
-        use anyhow::Context;
-        let login = {
-            let offered = self.offered.borrow();
-            (offered.0 == offer)
-                .then(|| offered.1.get(index).cloned())
-                .flatten()
-                .context("That login is no longer offered for this page.")?
-        };
-        let password = self
-            .logins
-            .borrow()
-            .as_ref()
-            .context("Saved logins are unavailable.")?
-            .password(&login)?;
-        let weak = self.me.clone();
-        self.pages
-            .fill_login(&login.origin, &login.username, &password, move |result| {
-                if let (Some(ui), Err(error)) = (weak.upgrade(), result) {
-                    ui.report_error(&error.to_string());
-                }
-            })
     }
 }
 

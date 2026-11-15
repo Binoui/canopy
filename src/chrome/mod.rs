@@ -124,6 +124,8 @@ pub enum ChromeIntent {
         offer: u64,
         index: usize,
     },
+    /// Unlock the password manager that holds the logins.
+    UnlockLogins,
     /// Answer save offer number `offer`: keep the login, or not now.
     AnswerSave {
         offer: u64,
@@ -139,6 +141,8 @@ pub struct SaveOffer {
     pub username: String,
     /// The account is already saved with another password.
     pub update: bool,
+    /// Where the login would be kept, as in "Kept in …".
+    pub keeper: String,
 }
 
 pub enum Toast {
@@ -319,9 +323,15 @@ impl HtmlChrome {
     /// password. `None` takes the offer away.
     pub fn offer_save(&self, offer: Option<&SaveOffer>) {
         let value = offer.map_or(Value::Null, |offer| {
-            json!({ "offer": offer.id, "site": offer.site, "username": offer.username, "update": offer.update })
+            json!({ "offer": offer.id, "site": offer.site, "username": offer.username, "update": offer.update, "keeper": offer.keeper })
         });
         self.inner.call("saveLogin", &[value]);
+    }
+
+    /// Says that `keeper` has to be unlocked before it can offer the page its logins, or,
+    /// with `None`, that it no longer has to.
+    pub fn logins_locked(&self, keeper: Option<&str>) {
+        self.inner.call("loginsLocked", &[json!(keeper)]);
     }
 
     /// Fills the only offered login, or opens the list when there are several.
@@ -595,6 +605,7 @@ impl Inner {
             "remember" => ChromeIntent::RememberSelection,
             "open-file" => ChromeIntent::OpenFile(message["file"].as_i64()?),
             "open-file-folder" => ChromeIntent::OpenFileFolder(message["file"].as_i64()?),
+            "unlock-logins" => ChromeIntent::UnlockLogins,
             "save-login" => ChromeIntent::AnswerSave {
                 offer: message["offer"].as_u64()?,
                 save: message["save"].as_bool()?,

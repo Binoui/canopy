@@ -12,6 +12,7 @@ const HELP: &str = "Canopy
 
 Usage: canopy [--data-dir PATH] [ADDRESS...]
        canopy [--data-dir PATH] --import-chrome [PROFILE]
+       canopy [--data-dir PATH] --login-helper NAME
 
 Each ADDRESS opens as a new tree, and the last one is shown. When Canopy is already
 open on the same data directory, the addresses open in that window instead.
@@ -19,7 +20,12 @@ open on the same data directory, the addresses open in that window instead.
 --import-chrome reads a Chrome profile's history, bookmarks, cookies and passwords,
 then exits. PROFILE defaults to ~/.config/google-chrome/Default. Running it again
 refreshes pages and adds cookies and encrypted passwords. Pages are not loaded.
-The system keyring protects the password vault. Page filling is not available yet.
+The system keyring protects the password vault.
+
+--login-helper chooses where saved logins are kept, from the next start of Canopy.
+NAME is a password manager's helper, a program called canopy-login-NAME next to
+Canopy or on your PATH, or the path of one. \"vault\" goes back to the vault on this
+computer.
 
 Ctrl+K    Search your forest or go to an address
 Ctrl+L    Same, starting from the current address
@@ -30,6 +36,7 @@ F6        Move between the page and the tree strip
 Alt+←     Back to the parent page
 Ctrl+R    Reload the page
 Ctrl+S    Remember the selection
+Ctrl+Shift+L  Fill the saved login for the page
 Ctrl+Q    Quit
 
 Your profile and browsing are kept in XDG_DATA_HOME/canopy.";
@@ -52,12 +59,15 @@ enum Command {
     Help,
     /// `None` means the default Chrome profile.
     ImportChrome(Option<PathBuf>),
+    /// `None` means the vault on this computer.
+    LoginHelper(Option<String>),
     Browse(Vec<Url>),
 }
 
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Invocation> {
     let mut data_dir = None;
     let mut import = None;
+    let mut helper = None;
     let mut urls = Vec::new();
     let mut args = args.into_iter().peekable();
     while let Some(arg) = args.next() {
@@ -67,6 +77,14 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Invocation> {
                     Some(next) if !next.starts_with("--") => args.next().map(PathBuf::from),
                     _ => None,
                 });
+            }
+            Some("--login-helper") => {
+                let name = args
+                    .next()
+                    .and_then(|name| name.into_string().ok())
+                    .filter(|name| !name.is_empty() && !name.starts_with("--"))
+                    .context("--login-helper expects a helper's name, or vault.")?;
+                helper = Some((name != "vault").then_some(name));
             }
             Some("--data-dir") => {
                 data_dir = Some(PathBuf::from(
@@ -95,10 +113,13 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Invocation> {
             ),
         }
     }
-    let command = match import {
-        Some(_) if !urls.is_empty() => bail!("--import-chrome does not open addresses."),
-        Some(profile) => Command::ImportChrome(profile),
-        None => Command::Browse(urls),
+    let command = match (import, helper) {
+        (Some(_), Some(_)) => bail!("Use --import-chrome and --login-helper one at a time."),
+        (Some(_), _) if !urls.is_empty() => bail!("--import-chrome does not open addresses."),
+        (_, Some(_)) if !urls.is_empty() => bail!("--login-helper does not open addresses."),
+        (Some(profile), None) => Command::ImportChrome(profile),
+        (None, Some(helper)) => Command::LoginHelper(helper),
+        (None, None) => Command::Browse(urls),
     };
     Ok(Invocation { data_dir, command })
 }
@@ -119,6 +140,9 @@ fn run() -> Result<()> {
                 .join(".config/google-chrome/Default"),
             };
             return import_chrome(&prepare_data_dir(data_dir)?, &profile);
+        }
+        Command::LoginHelper(name) => {
+            return choose_login_helper(&prepare_data_dir(data_dir)?, name.as_deref())
         }
         Command::Browse(urls) => urls,
     };
@@ -153,6 +177,19 @@ fn run() -> Result<()> {
         glib::ControlFlow::Continue
     });
     gtk::main();
+    Ok(())
+}
+
+/// Records where saved logins are kept. A helper that cannot be found is refused, so a
+/// typing mistake does not leave Canopy without its logins.
+fn choose_login_helper(data_dir: &std::path::Path, name: Option<&str>) -> Result<()> {
+    use canopy::{login_helper, logins::LoginProvider};
+    let keeper = match name {
+        Some(name) => login_helper::LoginHelper::find(name)?.name(),
+        None => "the vault on this computer".to_owned(),
+    };
+    login_helper::configure(data_dir, name)?;
+    println!("Saved logins are kept in {keeper}, from the next start of Canopy.");
     Ok(())
 }
 
@@ -245,6 +282,23 @@ mod tests {
 
     fn urls(addresses: &[&str]) -> Command {
         Command::Browse(addresses.iter().map(|a| Url::parse(a).unwrap()).collect())
+    }
+
+    #[test]
+    fn login_helper_takes_a_name_and_nothing_else() {
+        let command = |args: &[&str]| parse(args).map(|invocation| invocation.command);
+        assert_eq!(
+            command(&["--login-helper", "bitwarden"]).unwrap(),
+            Command::LoginHelper(Some("bitwarden".into()))
+        );
+        assert_eq!(
+            command(&["--login-helper", "vault"]).unwrap(),
+            Command::LoginHelper(None)
+        );
+        assert!(command(&["--login-helper"]).is_err());
+        assert!(command(&["--login-helper", "--data-dir"]).is_err());
+        assert!(command(&["--login-helper", "bitwarden", "example.org"]).is_err());
+        assert!(command(&["--login-helper", "bitwarden", "--import-chrome"]).is_err());
     }
 
     #[test]
