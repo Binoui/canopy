@@ -86,6 +86,7 @@ fn main() -> Result<()> {
     for title in ["First refresh", "Second refresh", "Last refresh"] {
         rename(&ui, gamma, title);
     }
+    let held = !text(&ui, "#tab-row").contains("Last refresh");
     release()?;
     let tab = ui.snapshot()?.current == Some(alpha);
     println!("tab click across three refreshes: {tab}");
@@ -122,7 +123,8 @@ fn main() -> Result<()> {
         visible(&ui, &format!("[data-start=tree][data-id='{beta}']"))
     })?;
     press(&ui, &format!("[data-start=tree][data-id='{beta}']"))?;
-    rename(&ui, gamma, "Card refresh");
+    rename(&ui, beta, "Card refresh");
+    chrome(&ui, "canopy.icons(1000)")?;
     release()?;
     let card = ui.snapshot()?.current == Some(beta);
     println!("pinned card click across refresh: {card}");
@@ -131,9 +133,28 @@ fn main() -> Result<()> {
         text(&ui, "#tab-row").contains("Immediate refresh")
     })?;
     println!("unpressed frame appears immediately: true");
+    press(&ui, &format!(".tab[data-id='{alpha}']"))?;
+    rename(&ui, gamma, "Focus recovery");
+    ui.pages.selected_page().native.grab_focus();
+    wait("focus loss releases deferred frame", || {
+        text(&ui, "#tab-row").contains("Focus recovery")
+    })?;
+    release()?;
+    println!("focus loss releases deferred frame: true");
+
+    press(&ui, &format!(".tab[data-id='{alpha}']"))?;
+    rename(&ui, gamma, "Missed release recovery");
+    let (x, y) = page_point(&ui, 500, 500)?;
+    move_to(x, y)?;
+    release()?;
+    hover_chrome(&ui, "#settings-button")?;
+    wait("return after outside release", || {
+        text(&ui, "#tab-row").contains("Missed release recovery")
+    })?;
+    println!("outside release does not freeze chrome: true");
     assert!(
-        tab && menu && card,
-        "refresh must preserve every held click"
+        tab && menu && card && held,
+        "refresh must preserve every held click and defer painting"
     );
     Ok(())
 }

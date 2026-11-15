@@ -1184,7 +1184,7 @@ const START = {
 };
 
 function renderStart() {
-  if (!S.frame || S.startPressed) return;
+  if (!S.frame) return;
   const paint = JSON.stringify([S.frame.start, S.rev]);
   if (S.startPaint === paint) return;
   S.startPaint = paint;
@@ -1515,10 +1515,12 @@ window.canopy = {
     S.systemDark = dark;
     applyTheme();
   },
-  /// For tests: what the view shows, without reaching into the DOM.
+  /// For tests: received state, including start data awaiting a safe repaint.
   state() {
+    const pending = [...refresh.pending].reverse().find(([kind]) => kind === 'start' || kind === 'present');
+    const start = pending ? (pending[0] === 'start' ? pending[1].args[0] : pending[1].args[0].start) : S.frame?.start;
     return {
-      start: S.frame?.start,
+      start,
       surface: S.surface, overlay: S.overlay, treeSide: S.treeSide, open: S.open, animating: !!strip.anim, card: S.card, layer: S.layer, palette: !!S.palette,
       reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported, logins: loginNames(), save: S.save, locked: S.locked,
       dark: document.documentElement.classList.contains('dark'),
@@ -1528,19 +1530,43 @@ window.canopy = {
   },
 };
 
+// A release must finish dispatching its click before any pressed element is replaced.
+const refresh = { buttons: 0, pending: new Map(), release: null };
+function rebuild(kind, apply, args) {
+  if (!refresh.buttons) { apply(...args); return; }
+  refresh.pending.delete(kind);
+  refresh.pending.set(kind, { apply, args });
+}
+function releaseRefresh() {
+  clearTimeout(refresh.release);
+  refresh.release = setTimeout(() => {
+    refresh.buttons = 0;
+    const pending = [...refresh.pending.values()];
+    refresh.pending.clear();
+    for (const { apply, args } of pending) apply(...args);
+  });
+}
+for (const kind of ['present', 'strip', 'icons', 'start', 'logins', 'loginsLocked', 'saveLogin', 'paletteResults', 'previewResult', 'reader', 'readerList']) {
+  const apply = window.canopy[kind].bind(window.canopy);
+  window.canopy[kind] = (...args) => rebuild(kind, apply, args);
+}
+for (const type of ['mousedown', 'mouseup', 'mousemove', 'mouseover']) {
+  window.addEventListener(type, (event) => {
+    if (event.buttons) {
+      clearTimeout(refresh.release);
+      refresh.buttons = event.buttons;
+    } else if (refresh.buttons) releaseRefresh();
+  }, true);
+}
+window.addEventListener('blur', releaseRefresh);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) releaseRefresh();
+});
+
 // ---------- static wiring ----------
 
 $('start-search').insertAdjacentHTML('afterbegin', icon('search'));
 $('start-search').addEventListener('click', () => openPalette({ scope: null, text: '' }));
-// A repaint between press and release would replace the pressed element and lose the click.
-$('start-content').addEventListener('mousedown', () => { S.startPressed = true; });
-for (const type of ['mouseup', 'blur']) {
-  window.addEventListener(type, () => {
-    if (!S.startPressed) return;
-    S.startPressed = false;
-    setTimeout(renderStart);
-  });
-}
 for (const container of [$('start-content'), $('popover')]) {
   container.addEventListener('click', (event) => {
     const el = event.target.closest('[data-start]');
