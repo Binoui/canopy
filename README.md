@@ -39,9 +39,15 @@ To build an optimized binary into `~/.local/bin` and add Canopy to rofi, wofi or
 ```sh
 cargo install --path . --locked --root ~/.local
 install -Dm644 packaging/canopy.desktop ~/.local/share/applications/canopy.desktop
+install -Dm644 assets/logo/canopy.svg ~/.local/share/icons/hicolor/scalable/apps/canopy.svg
+for size in 16 22 24 32; do
+  install -Dm644 assets/logo/canopy-small.svg ~/.local/share/icons/hicolor/${size}x${size}/apps/canopy.svg
+done
 ```
 
 Run the first command again after pulling changes. The binary embeds its font, so it does not need the project folder.
+
+The icon is `assets/logo/canopy.svg`. The simpler `assets/logo/canopy-small.svg` replaces it at 32 pixels and below, where the full drawing blurs.
 
 The `rust-toolchain.toml` file selects stable Rust for this project. It does not change your default version in other projects.
 
