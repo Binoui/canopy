@@ -1363,8 +1363,7 @@ const when = (at) => new Date(at).toLocaleString(undefined, { day: '2-digit', mo
 window.canopy = {
   viewport(height) { S.windowHeight = height; },
   start(value) { if (!S.frame) return; S.frame.start = value; renderStart(); },
-  present(frame, height) {
-    S.windowHeight = height;
+  present(frame) {
     const previous = current();
     S.frame = frame;
     applyStrip(frame.strip);
