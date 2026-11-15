@@ -124,6 +124,21 @@ pub enum ChromeIntent {
         offer: u64,
         index: usize,
     },
+    /// Answer save offer number `offer`: keep the login, or not now.
+    AnswerSave {
+        offer: u64,
+        save: bool,
+    },
+}
+
+/// A login waiting for the user to say whether to keep it.
+pub struct SaveOffer {
+    pub id: u64,
+    /// The site's host, as shown to the user.
+    pub site: String,
+    pub username: String,
+    /// The account is already saved with another password.
+    pub update: bool,
 }
 
 pub enum Toast {
@@ -298,6 +313,15 @@ impl HtmlChrome {
     pub fn offer_logins(&self, offer: u64, usernames: &[&str]) {
         self.inner
             .call("logins", &[json!({ "offer": offer, "names": usernames })]);
+    }
+
+    /// Offers to save the login the user just signed in with, or to update its saved
+    /// password. `None` takes the offer away.
+    pub fn offer_save(&self, offer: Option<&SaveOffer>) {
+        let value = offer.map_or(Value::Null, |offer| {
+            json!({ "offer": offer.id, "site": offer.site, "username": offer.username, "update": offer.update })
+        });
+        self.inner.call("saveLogin", &[value]);
     }
 
     /// Fills the only offered login, or opens the list when there are several.
@@ -571,6 +595,10 @@ impl Inner {
             "remember" => ChromeIntent::RememberSelection,
             "open-file" => ChromeIntent::OpenFile(message["file"].as_i64()?),
             "open-file-folder" => ChromeIntent::OpenFileFolder(message["file"].as_i64()?),
+            "save-login" => ChromeIntent::AnswerSave {
+                offer: message["offer"].as_u64()?,
+                save: message["save"].as_bool()?,
+            },
             "fill-login" => ChromeIntent::FillLogin {
                 offer: message["offer"].as_u64()?,
                 index: index()?,

@@ -32,7 +32,7 @@ const WORLD: &str = "canopy-reading-memory";
 const HELPER: &str = include_str!("../capture.js");
 /// Script message the helper posts, debounced, when the page scrolls.
 const SCROLLED: &str = "canopyScrolled";
-use super::{PageEvent, Pages};
+use super::{LoginEvent, PageEvent, Pages};
 
 #[derive(Clone)]
 pub(super) struct CheckpointEntry {
@@ -286,10 +286,11 @@ impl LivePage {
                 }),
             ));
         }
-        signals.push((
-            manager.clone().upcast(),
-            login_fields::setup(&manager, &state),
-        ));
+        signals.extend(
+            login_fields::setup(&manager, &state)
+                .into_iter()
+                .map(|id| (manager.clone().upcast(), id)),
+        );
         {
             let weak = Rc::downgrade(&state);
             signals.push((
@@ -373,7 +374,7 @@ impl LivePage {
                                 }
                             }
                             // The new document reports its own sign-in fields.
-                            state.emit(PageEvent::LoginFields(None));
+                            state.emit(PageEvent::Login(LoginEvent::NewDocument));
                         }
                         LoadEvent::Finished => {
                             let next = state
