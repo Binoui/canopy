@@ -1,5 +1,5 @@
 use super::{Browser, TreeId, VisitId};
-use crate::{address::web_url, suggest::SuggestionKey};
+use crate::{address::web_url, forest::ForestProjection, suggest::SuggestionKey};
 use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
 use std::collections::HashSet;
@@ -24,9 +24,7 @@ pub struct Arrival {
 }
 
 impl Browser {
-    pub fn arrivals(&self, since: i64) -> Result<Vec<Arrival>> {
-        let snapshot = self.snapshot()?;
-        let forest = crate::forest::ForestProjection::from_snapshot(snapshot, self.tree_states()?)?;
+    pub fn arrivals(&self, forest: &ForestProjection, since: i64) -> Result<Vec<Arrival>> {
         let mut stmt = self.connection.prepare("SELECT e.visit_id,e.from_visit_id,e.kind,e.at FROM visit_events e WHERE e.kind != 'reload' AND e.at >= ?1 ORDER BY e.at,e.id")?;
         let rows = stmt.query_map([since], |r| {
             Ok((
@@ -36,15 +34,17 @@ impl Browser {
                 r.get::<_, i64>(3)?,
             ))
         })?;
-        rows.map(|r| {
-            let (id, from, kind, at) = r?;
+        let mut arrivals = Vec::new();
+        for row in rows {
+            let (id, from, kind, at) = row?;
             let visit: VisitId = id.parse()?;
-            let page = forest
-                .visit(visit)
-                .ok_or_else(|| anyhow::anyhow!("Missing arrival page."))?;
-            Ok(Arrival {
+            // The caller's forest can be one page older than the log.
+            let (Some(page), Some(tree)) = (forest.visit(visit), forest.tree_of(visit)) else {
+                continue;
+            };
+            arrivals.push(Arrival {
                 visit,
-                tree: forest.tree_of(visit).unwrap(),
+                tree,
                 url: web_url(page.url.as_str())?,
                 title: page.title.clone(),
                 from: from.map(|v| v.parse()).transpose()?,
@@ -55,12 +55,12 @@ impl Browser {
                     ArrivalKind::Return
                 },
                 at,
-            })
-        })
-        .collect()
+            });
+        }
+        Ok(arrivals)
     }
 
-    pub fn last_event_tree(&self) -> Result<Option<TreeId>> {
+    pub fn last_event_tree(&self, forest: &ForestProjection) -> Result<Option<TreeId>> {
         let id: Option<String> = self
             .connection
             .query_row(
@@ -70,8 +70,6 @@ impl Browser {
             )
             .optional()?;
         let Some(id) = id else { return Ok(None) };
-        let forest =
-            crate::forest::ForestProjection::from_snapshot(self.snapshot()?, self.tree_states()?)?;
         Ok(forest.tree_of(id.parse()?))
     }
 

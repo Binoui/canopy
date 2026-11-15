@@ -171,9 +171,11 @@ pub fn rank(input: &Inputs<'_>, now: i64) -> Vec<Suggestion> {
         .filter(|a| a.at >= now - WINDOW && a.at <= now)
         .collect();
     let weight = |at| 0.5_f64.powf((now - at) as f64 / (7 * DAY) as f64);
+    let mut trees: HashMap<TreeId, Vec<&Arrival>> = HashMap::new();
     let mut pages: HashMap<Url, Vec<&Arrival>> = HashMap::new();
     let mut paths: HashMap<(String, String), Vec<(&Arrival, Url)>> = HashMap::new();
     for a in &events {
+        trees.entry(a.tree).or_default().push(a);
         pages.entry(a.url.clone()).or_default().push(a);
         if a.kind == ArrivalKind::New && a.from.is_some() && a.from == a.parent {
             if let Some(first) = a.from.and_then(|v| input.forest.visit(v)) {
@@ -230,7 +232,7 @@ pub fn rank(input: &Inputs<'_>, now: i64) -> Vec<Suggestion> {
         if Some(tree.id) == input.left {
             continue;
         }
-        let arrivals: Vec<_> = events.iter().filter(|a| a.tree == tree.id).collect();
+        let arrivals = trees.get(&tree.id).map(Vec::as_slice).unwrap_or(&[]);
         let days: HashSet<_> = arrivals.iter().map(|a| (now - a.at) / DAY).collect();
         let start = if days.contains(&0) { 0 } else { 1 };
         let streak = (start..).take_while(|d| days.contains(d)).count();

@@ -480,12 +480,12 @@ impl ChromeHost for Ui {
         self.pages.read(|b| {
             let bookmarks = b.bookmarks()?;
             let declined = b.declined()?;
-            let arrivals = b.arrivals(now - crate::suggest::WINDOW)?;
+            let arrivals = b.arrivals(forest, now - crate::suggest::WINDOW)?;
             let chrome = b.chrome_favorites(3 + bookmarks.len() + declined.len())?;
             let left = forest
                 .current()
                 .and_then(|v| forest.tree_of(v))
-                .or(b.last_event_tree()?);
+                .or(b.last_event_tree(forest)?);
             Ok(crate::suggest::rank(
                 &crate::suggest::Inputs {
                     forest,

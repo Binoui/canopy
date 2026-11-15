@@ -1746,27 +1746,123 @@ mod tests {
     }
 
     #[test]
+    fn seeded_history_pins_ranked_suggestions() {
+        let b = memory();
+        let now = 100 * crate::suggest::DAY;
+        for i in 1..=40_u128 {
+            let id = ulid::Ulid::from(i).to_string();
+            b.connection
+                .execute(
+                    "INSERT INTO visits(id,url,title,created_at,opened_at) VALUES(?1,?2,?3,?4,?4)",
+                    params![
+                        id,
+                        format!("https://seed{i}.test/"),
+                        format!("Seed {i}"),
+                        now - 10 * crate::suggest::DAY
+                    ],
+                )
+                .unwrap();
+            b.connection
+                .execute(
+                    "INSERT INTO tree_state(root_id,last_visit_id,settled_at) VALUES(?1,?1,?2)",
+                    params![id, now],
+                )
+                .unwrap();
+            for day in 1..=3 {
+                b.connection
+                    .execute(
+                        "INSERT INTO visit_events(visit_id,kind,at) VALUES(?1,'return',?2)",
+                        params![id, now - day * crate::suggest::DAY],
+                    )
+                    .unwrap();
+            }
+        }
+        let forest = crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap();
+        let arrivals = b.arrivals(&forest, 0).unwrap();
+        let result = crate::suggest::rank(
+            &crate::suggest::Inputs {
+                forest: &forest,
+                bookmarks: &[],
+                declined: &HashSet::new(),
+                arrivals: &arrivals,
+                chrome: &[],
+                left: b.last_event_tree(&forest).unwrap(),
+            },
+            now,
+        );
+        assert_eq!(
+            result
+                .iter()
+                .map(|s| (s.key().to_string(), s.why()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    "tree 00000000000000000000000001".into(),
+                    "Opened 3 days in a row".into()
+                ),
+                (
+                    "tree 00000000000000000000000002".into(),
+                    "Opened 3 days in a row".into()
+                ),
+                (
+                    "tree 00000000000000000000000003".into(),
+                    "Opened 3 days in a row".into()
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn history_counts_returns_but_never_reloads_and_finds_the_last_tree_outside_the_window() {
         let mut b = memory();
         let root = follow(&mut b, "root", NavigationTarget::Root);
-        let before = b.arrivals(0).unwrap().len();
+        let forest = crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap();
+        let before = b.arrivals(&forest, 0).unwrap().len();
         let load = b.reload().unwrap().unwrap();
         b.started(load.clone()).unwrap();
         b.committed(load).unwrap();
-        assert_eq!(b.arrivals(0).unwrap().len(), before);
+        assert_eq!(b.arrivals(&forest, 0).unwrap().len(), before);
         let child = follow_child(&mut b, "child");
         let load = b.restore(root).unwrap();
         b.started(load.clone()).unwrap();
         b.committed(load).unwrap();
-        let arrivals = b.arrivals(0).unwrap();
+        let forest = crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap();
+        let arrivals = b.arrivals(&forest, 0).unwrap();
         assert_eq!(arrivals.len(), before + 2);
         assert_eq!(arrivals.last().unwrap().kind, ArrivalKind::Return);
         assert_eq!(arrivals.last().unwrap().from, Some(child));
         b.connection
             .execute("UPDATE visit_events SET at=1", [])
             .unwrap();
-        assert!(b.arrivals(2).unwrap().is_empty());
-        assert_eq!(b.last_event_tree().unwrap(), Some(TreeId(root)));
+        assert!(b.arrivals(&forest, 2).unwrap().is_empty());
+        assert_eq!(b.last_event_tree(&forest).unwrap(), Some(TreeId(root)));
+    }
+
+    #[test]
+    fn arrivals_skip_a_page_the_callers_forest_does_not_hold_yet() {
+        let mut b = memory();
+        follow(&mut b, "known", NavigationTarget::Root);
+        let forest = crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap();
+        let known = b.arrivals(&forest, 0).unwrap().len();
+        follow(&mut b, "newer", NavigationTarget::Root);
+        assert_eq!(b.arrivals(&forest, 0).unwrap().len(), known);
+        assert_eq!(b.last_event_tree(&forest).unwrap(), None);
     }
 
     #[test]
@@ -1780,7 +1876,12 @@ mod tests {
                 [old.to_string()],
             )
             .unwrap();
-        assert_eq!(b.last_event_tree().unwrap(), Some(TreeId(recent)));
+        let forest = crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(b.last_event_tree(&forest).unwrap(), Some(TreeId(recent)));
     }
 
     #[test]
