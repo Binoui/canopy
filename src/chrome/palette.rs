@@ -210,6 +210,8 @@ mod tests {
                 current: Some(root),
             },
             vec![TreeState {
+                pin: None,
+                last_event_at: None,
                 lifecycle: crate::browser::Lifecycle::Open,
                 root: TreeId(root),
                 last_visit: root,

@@ -116,6 +116,8 @@ mod tests {
             .enumerate()
             .filter(|(_, p)| p.is_none())
             .map(|(i, _)| TreeState {
+                pin: None,
+                last_event_at: None,
                 root: TreeId(ids[i]),
                 last_visit: ids[i],
                 name: None,

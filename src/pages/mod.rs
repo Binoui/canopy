@@ -518,6 +518,9 @@ impl Pages {
     pub fn set_theme(&self, mode: ThemeMode) -> Result<()> {
         self.browser.borrow_mut().set_theme_mode(mode)
     }
+    pub fn set_pinned(&self, tree: TreeId, pinned: bool) -> Result<()> {
+        self.browser.borrow_mut().set_pinned(tree, pinned)
+    }
     pub fn rename_tree(&self, tree: TreeId, name: &str) -> Result<()> {
         self.browser.borrow_mut().rename_tree(tree, name)
     }

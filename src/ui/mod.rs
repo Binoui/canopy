@@ -468,6 +468,11 @@ impl ChromeHost for Ui {
                 self.schedule_refresh();
                 result
             }
+            ChromeIntent::PinTree { tree, pinned } => {
+                let result = self.pages.set_pinned(tree, pinned);
+                self.schedule_refresh();
+                result
+            }
             ChromeIntent::RenameTree(tree, name) => {
                 let result = self.pages.rename_tree(tree, &name);
                 self.schedule_refresh();

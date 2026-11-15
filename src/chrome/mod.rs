@@ -12,6 +12,7 @@ mod forest_layout;
 pub(crate) mod graph;
 mod palette;
 mod pins;
+mod start;
 mod tree_view;
 mod view;
 mod waiting;
@@ -131,6 +132,10 @@ pub enum ChromeIntent {
         offer: u64,
         save: bool,
     },
+    PinTree {
+        tree: TreeId,
+        pinned: bool,
+    },
 }
 
 /// A login waiting for the user to say whether to keep it.
@@ -237,7 +242,10 @@ impl HtmlChrome {
     pub fn present(&self, frame: ChromeFrame) {
         let inner = &self.inner;
         let (width, _) = inner.size.get();
-        inner.call("present", &[view::frame(&frame, width)]);
+        inner.call(
+            "present",
+            &[view::frame(&frame, width), json!(inner.size.get().1)],
+        );
         *inner.frame.borrow_mut() = Some(frame);
         inner.palette.borrow_mut().take();
     }
@@ -247,6 +255,7 @@ impl HtmlChrome {
         let inner = &self.inner;
         let previous = inner.size.replace((width, height));
         inner.apply_bounds();
+        inner.call("viewport", &[json!(height)]);
         if previous.0 != width {
             if let Some(frame) = inner.frame.borrow().as_ref() {
                 inner.call("strip", &[view::strip(&frame.forest, width)]);
@@ -297,6 +306,7 @@ impl HtmlChrome {
 
     pub fn new_tree(&self) {
         self.inner.call("newTree", &[]);
+        let _ = self.inner.view.focus();
     }
 
     pub fn next_waiting(&self) {
@@ -613,6 +623,10 @@ impl Inner {
             "fill-login" => ChromeIntent::FillLogin {
                 offer: message["offer"].as_u64()?,
                 index: index()?,
+            },
+            "pin-tree" => ChromeIntent::PinTree {
+                tree: TreeId(id("id")?),
+                pinned: message["pinned"].as_bool()?,
             },
             "cancel" => ChromeIntent::CancelContinuation,
             "path" => ChromeIntent::OpenPath(suggestions.paths.get(index()?)?.clone()),

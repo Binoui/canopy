@@ -21,6 +21,7 @@
 
 <section id="strip">
   <div id="strip-bg"></div>
+  <div id="strip-placeholder" hidden>+ <span>A new tree starts here</span></div>
   <div id="strip-clip">
     <div id="strip-canvas">
       <div id="glow"></div>
@@ -45,7 +46,10 @@
 <div id="pins"><button id="waiting-pin" class="pin" data-pin="waiting" aria-label="Next waiting page" hidden></button><button id="zoom-pin" class="pin icon-pin" data-pin="zoom" aria-pressed="false" title="Zoom into this tree · Ctrl+Shift+E" aria-label="Zoom into this tree" hidden></button></div>
 
 <div id="start" class="surface dapple" hidden>
-  <div id="start-content"></div>
+  <div id="start-column">
+    <button id="start-search"> <i class="caret"></i><span>An address, a search, or anything on this page</span><kbd>Ctrl K</kbd></button>
+    <div id="start-content"></div>
+  </div>
 </div>
 
 <div id="forest" class="overlay" hidden>

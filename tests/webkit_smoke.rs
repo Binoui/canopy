@@ -357,6 +357,7 @@ fn main() -> Result<()> {
         let (x, y) = chrome_point(&ui, &tab_title)?;
         move_to(x, y)?;
         xdo(&["click", "3"])?;
+        click_chrome(&ui, "[data-tab-action=rename]")?;
         wait("tree name field", || chrome_focused(&ui, "#tree-name"))?;
         keys()?;
         key("Return")?;
@@ -491,15 +492,17 @@ fn main() -> Result<()> {
     })?;
     key("Escape")?;
     wait("palette closed", || !visible(&ui, "#palette"))?;
-    click_chrome(&ui, "[data-shortcut='0']")?;
+    click_chrome(&ui, "[data-start=shortcut][data-id='0']")?;
     wait("shortcut plants a root", || {
         ui.snapshot().unwrap().visits.len() == count + 1
             && !ui.pages.selected_page().native.is_loading()
     })?;
     assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
     key("ctrl+t")?;
-    wait("new-tree page", || visible(&ui, "[data-path='0']"))?;
-    click_chrome(&ui, "[data-path='0']")?;
+    wait("new-tree page", || {
+        visible(&ui, "[data-start=path][data-id='0']")
+    })?;
+    click_chrome(&ui, "[data-start=path][data-id='0']")?;
     wait("usual path loads two pages", || {
         ui.snapshot().unwrap().visits.len() == count + 3
             && !ui.pages.selected_page().native.is_loading()
