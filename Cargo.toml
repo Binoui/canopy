@@ -139,3 +139,9 @@ name = "newtree_smoke"
 path = "tests/newtree_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
+
+[[test]]
+name = "refresh_smoke"
+path = "tests/refresh_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]

@@ -194,8 +194,7 @@ fn main() -> Result<()> {
     xdo(&["mousedown", "1"])?;
     ui.dispatch(ChromeIntent::RenameTree(tree(&ui, other), "Held".into()));
     wait("a refresh while the button is down", || {
-        chrome(&ui, "canopy.state().start.pinned.some(t=>t.title==='Held')")
-            .is_ok_and(|held| held == true)
+        chrome(&ui, "canopy.state().deferred.includes('present')").is_ok_and(|held| held == true)
     })?;
     xdo(&["mouseup", "1"])?;
     wait("settled card reopens last page", || {
