@@ -446,7 +446,7 @@ impl Pages {
                                 ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)
                             })
                             .is_ok_and(|forest| {
-                                saved.entries.iter().all(|e| {
+                                saved.entries.get(saved.current).is_some_and(|e| {
                                     forest.tree_of(e.visit).is_some_and(|tree| {
                                         forest.open().iter().any(|t| t.id == tree)
                                     })
@@ -631,10 +631,11 @@ impl Pages {
             Landing::Unchanged => Ok(()),
             Landing::Restore(visit) => self.go(Go::Visit(visit)),
             Landing::Start => {
-                let selected = self.branches.live.borrow().clone();
-                if let Some(page) = selected {
-                    page.blank();
-                }
+                let page = Rc::new(LivePage::new(&self.container, self.me.clone(), &self.context)?);
+                page.follow_container_bounds(&self.container);
+                let previous = self.branches.live.borrow_mut().replace(page.clone());
+                drop(previous);
+                page.show();
                 Ok(())
             }
         }
