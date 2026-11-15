@@ -755,6 +755,77 @@ fn overlapping_ancestors() -> Result<()> {
     f.arrived(q1)?;
     assert_eq!(f.pages.selected_history_visits(), vec![q1]);
     assert_eq!(f.server.hits("/d"), 3);
+    drop(f);
+
+    let f = Fixture::new()?;
+    let a = f.navigate("/a")?;
+    let b = f.navigate("/b")?;
+    f.pages.open_roots(&[f.server.url("/root")])?;
+    wait("root", || {
+        f.pages
+            .read(|b| b.snapshot())
+            .unwrap()
+            .current_visit()
+            .unwrap()
+            .url
+            .path()
+            == "/root"
+    })?;
+    settle();
+    // A detached cold revival seeds a second native history for the same ancestor.
+    f.release()?;
+    assert!(f.revive(a)?);
+    let x = f.navigate("/x")?;
+    f.pages.open_roots(&[f.server.url("/other")])?;
+    wait("other", || {
+        f.pages
+            .read(|b| b.snapshot())
+            .unwrap()
+            .current_visit()
+            .unwrap()
+            .url
+            .path()
+            == "/other"
+    })?;
+    let errors = Rc::new(std::cell::Cell::new(0));
+    let observed = errors.clone();
+    f.pages.observe(move |event| {
+        if matches!(event, PageEvent::Error(_)) {
+            observed.set(observed.get() + 1)
+        }
+    });
+    f.server.refused.store(true, Ordering::Relaxed);
+    f.pages.go(Go::Visit(b))?;
+    wait("cancelled overlap revival", || errors.get() > 0)?;
+    f.server.refused.store(false, Ordering::Relaxed);
+    f.pages.go(Go::Visit(a))?;
+    f.arrived(a)?;
+    assert!(
+        f.pages.selected_history_visits().contains(&x),
+        "MRU overlapping history wins"
+    );
+    assert!(!f.pages.selected_history_visits().contains(&b));
+    f.pages.go(Go::Visit(b))?;
+    f.arrived(b)?;
+    assert!(f.pages.selected_history_visits().contains(&a));
+    f.pages.open_roots(&[f.server.url("/last")])?;
+    wait("last", || {
+        f.pages
+            .read(|b| b.snapshot())
+            .unwrap()
+            .current_visit()
+            .unwrap()
+            .url
+            .path()
+            == "/last"
+    })?;
+    f.pages.go(Go::Visit(a))?;
+    f.arrived(a)?;
+    assert!(
+        f.pages.selected_history_visits().contains(&b),
+        "selection changes overlapping histories' MRU order"
+    );
+    assert!(!f.pages.selected_history_visits().contains(&x));
     Ok(())
 }
 fn release_commands() -> Result<()> {
