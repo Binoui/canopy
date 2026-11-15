@@ -515,11 +515,14 @@ impl Pages {
                 window.set_pass_through(true);
             }
             let pending = RefCell::new(Some(old.clone()));
+            let cancel = gio::Cancellable::new();
+            let stop = cancel.clone();
             let weak = self.me.clone();
             #[cfg(feature = "gui-smoke")]
             let started = std::time::Instant::now();
             let finish: Rc<dyn Fn(&str)> = Rc::new(move |_reason| {
                 if let Some(old) = pending.borrow_mut().take() {
+                    stop.cancel();
                     #[cfg(feature = "gui-smoke")]
                     eprintln!("PICTURE {_reason} {}ms", started.elapsed().as_millis());
                     if let Some(pages) = weak.upgrade() {
@@ -529,12 +532,13 @@ impl Pages {
             });
             let painted = finish.clone();
             let view = candidate.native.clone();
+            let snapshot_cancel = cancel.clone();
             candidate.native.call_async_javascript_function(
                 "while (!document.body) await new Promise(r => requestAnimationFrame(r)); await new Promise(r => requestAnimationFrame(r)); await new Promise(r => requestAnimationFrame(r)); return true;",
-                None, Some("canopy-picture"), None, None::<&gio::Cancellable>,
+                None, Some("canopy-picture"), None, Some(&cancel),
                 move |result| {
                     if result.is_ok() {
-                        view.snapshot(webkit2gtk::SnapshotRegion::Visible, webkit2gtk::SnapshotOptions::NONE, None::<&gio::Cancellable>, move |result| {
+                        view.snapshot(webkit2gtk::SnapshotRegion::Visible, webkit2gtk::SnapshotOptions::NONE, Some(&snapshot_cancel), move |result| {
                             if result.is_ok() {
                                 glib::timeout_add_local_once(std::time::Duration::from_millis(34), move || painted("snapshot"));
                             }
