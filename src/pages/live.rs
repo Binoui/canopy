@@ -907,13 +907,13 @@ impl LivePage {
         page.native.restore_session_state(&session);
         let binding = (|| -> Result<Vec<HistoryEntry>> {
             let shows_target = |e: &&CheckpointEntry| e.visit == visit && e.uri == e.stored_url;
-            let target = saved
+            let _target = saved
                 .entries
                 .get(saved.current)
                 .filter(shows_target)
                 .or_else(|| saved.entries.iter().rev().find(shows_target))
                 .context("Visit has no traversable entry in checkpoint.")?;
-            anyhow::ensure!(!target.post, "POST target requires GET.");
+
             let (items, current) =
                 ordered_entries(&page.native.back_forward_list().context("No history.")?)?;
             let urls = items
@@ -1859,7 +1859,7 @@ impl NativeState {
             .chain(history.iter().rev())
             .find(|entry| {
                 entry.visit == visit
-                    && !entry.needs_get
+                    && (!entry.needs_get || self.history_document.get() == 0)
                     && entry.document != self.history_document.get()
                     && (self.history_document.get() == 0 || Some(&entry.item) != current.as_ref())
                     && live.contains(&entry.item)
