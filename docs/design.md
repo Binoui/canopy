@@ -76,8 +76,8 @@ Candidates load hidden, without focus. Their successful commit writes the cursor
 tree target and arrival once, in Browser's transaction, and synchronously promotes
 the candidate. The old widget is then hidden and the candidate shown. It takes
 focus only when the previous page held it, preserving an active chrome editor.
-Ui raises chrome on its event. Candidates are realized while hidden, so their
-native windows exist before the chrome is raised. A failure before commit reports the normal error
+Pages places and raises each view at creation, show and map, before page events.
+Candidates are realized while hidden. A failure before commit reports the normal error
 and preserves the old selected page and cursor. A retry routes normally. A second
 request cancels the candidate by its own ticket and destroys it; selecting the same
 pending visit reuses it. A cancelled or failed revival retains its checkpoint.
@@ -144,9 +144,21 @@ Its delayed Started cannot become a new native request or cancel the candidate.
 A subsequent user load queues behind that drain with its own ticket. This includes
 a policy-accepted load waiting for beforeunload to return.
 
-The chrome has a persistent GTK size request matching its window width and current
-cover height. GtkFixed can therefore reallocate children when page views are added
-or removed without shrinking the chrome to its initial 1 px request. The scrolled
-wrapper still permits the window to shrink. A candidate that becomes a download is
-retained until WebKit hands the download to the shared context. Handover has a 30 s
-fallback, so a missing download-started signal cannot retain a candidate forever.
+Pages::place_view owns page allocation and stacking. Every page view, including
+hidden candidates and releasing views, uses the content rectangle (window width,
+window height minus the fixed 94 px header). Pages stores that rectangle and applies
+it at creation, show, map and every resize, without waiting for a container signal.
+Expanded chrome covers overlay content rather than shrinking the page viewport.
+Chrome stays above every page view, including immediately when a native view maps.
+Adding, removing, showing or hiding page views never changes chrome allocation;
+its persistent size request still matches the window width and cover height. These
+independent allocations let the same GtkFixed preserve both rules.
+
+Response state belongs to a LoadTicket. Only the main response policy decision
+that calls download marks that ticket for handover. NativeState::end_response
+clears response bookkeeping on replacement or cancellation. No-content responses
+end normally and discard empty candidates immediately. Download-started consumes
+the matching response metadata and emits completion without a view-wide timer.
+
+Forward cannot leave a POST result opened by GET in a fresh revived branch, because
+that fresh native view has no forward history.

@@ -1,7 +1,9 @@
+#[path = "common/http.rs"]
+mod http;
 use std::{
     cell::Cell,
     collections::BTreeMap,
-    io::{Read, Write},
+    io::Write,
     net::TcpListener,
     rc::Rc,
     sync::{Arc, Mutex},
@@ -861,11 +863,10 @@ impl Server {
                 let Ok(mut stream) = stream else { continue };
                 let counted = counted.clone();
                 thread::spawn(move || {
-                    let mut request = [0; 4096];
-                    let Ok(size) = stream.read(&mut request) else {
+                    let Ok(request) = http::request(&mut stream) else {
                         return;
                     };
-                    let request = String::from_utf8_lossy(&request[..size]);
+                    let request = String::from_utf8_lossy(&request);
                     let path = request.split_whitespace().nth(1).unwrap_or("/").to_owned();
                     let method = request.split_whitespace().next().unwrap_or("GET");
                     *counted

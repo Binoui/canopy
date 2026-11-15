@@ -1,4 +1,6 @@
 #![allow(dead_code, unused_imports)]
+#[path = "common/http.rs"]
+mod http;
 use anyhow::{bail, Result};
 mod common;
 #[path = "common/branch_regressions.rs"]
@@ -13,7 +15,7 @@ use serde_json::{json, Value};
 use std::{
     cell::RefCell,
     collections::BTreeMap,
-    io::{Read, Write},
+    io::Write,
     net::TcpListener,
     rc::Rc,
     sync::{
@@ -76,11 +78,10 @@ impl Server {
                 let refuse = refuse.clone();
                 thread::spawn(move || {
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                    let mut request = [0; 8192];
-                    let Ok(n) = stream.read(&mut request) else {
+                    let Ok(request) = http::request(&mut stream) else {
                         return;
                     };
-                    let text = String::from_utf8_lossy(&request[..n]);
+                    let text = String::from_utf8_lossy(&request);
                     let method = text.split_whitespace().next().unwrap_or("GET");
                     let path = text.split_whitespace().nth(1).unwrap_or("/").to_string();
                     *count
@@ -283,6 +284,11 @@ fn branch_history() -> Result<()> {
             .is_some_and(|v| v.url == f.server.url("/root"))
     })?;
     wait("previous view destroyed", || old.upgrade().is_none())?;
+    assert_eq!(
+        f.fixed.children().len(),
+        1,
+        "released source widget must be removed"
+    );
     wait("previous web process exited", || web_process_count() == 1)?;
     f.pages.go(Go::Visit(b))?;
     f.arrived(b)?;
@@ -465,6 +471,11 @@ fn replacement(same: bool) -> Result<()> {
         assert!(f.pages.read(|b| b.visit(q))?.opened_at.is_none());
     }
     drop(old);
+    assert_eq!(
+        f.fixed.children().len(),
+        1,
+        "activation leaves exactly one widget"
+    );
     wait("one web process after activation", || {
         web_process_count() == 1
     })?;

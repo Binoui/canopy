@@ -1,6 +1,8 @@
-// GUI regressions adapted from the independent round-two fixture.
+// Branch navigation regressions.
 // Every selected case asserts behavior; diagnostic RESULT lines aid comparison.
 #![allow(dead_code, unused_imports, unused_variables)]
+#[path = "common/http.rs"]
+mod http;
 use anyhow::{bail, Context, Result};
 use canopy::{
     browser::{NavigationTarget, TreeId, VisitId},
@@ -12,7 +14,7 @@ use gtk::prelude::*;
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, HashSet},
-    io::{Read, Write},
+    io::Write,
     net::TcpListener,
     rc::Rc,
     sync::{Arc, Mutex},
@@ -52,11 +54,10 @@ impl Server {
     }
     fn handle(&self, stream: &mut std::net::TcpStream) {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-        let mut request = [0; 16384];
-        let Ok(n) = stream.read(&mut request) else {
+        let Ok(request) = http::request(stream) else {
             return;
         };
-        let text = String::from_utf8_lossy(&request[..n]).to_string();
+        let text = String::from_utf8_lossy(&request).to_string();
         let method = text.split_whitespace().next().unwrap_or("GET").to_string();
         let full = text.split_whitespace().nth(1).unwrap_or("/").to_string();
         let path = full.split('?').next().unwrap_or("/").to_string();
@@ -367,7 +368,7 @@ fn ui_mouse_back() -> Result<()> {
         u.server.hits("/a")
     );
     let _ = r;
-    assert!(q_back, "N5: mouse Back must reach forest parent");
+    assert!(q_back, "mouse Back must reach forest parent");
     Ok(())
 }
 
@@ -412,8 +413,209 @@ fn ui_tab_collapse() -> Result<()> {
         w.len(),
         w.iter().min()
     );
-    assert_eq!(small, 0, "N7: chrome narrowed during page change");
-    assert!(collapses.is_empty(), "N7: collapsed tab row");
+    assert_eq!(small, 0, "chrome narrowed during page change");
+    assert!(collapses.is_empty(), "collapsed tab row");
+    Ok(())
+}
+
+fn geometry(u: &U) -> Result<()> {
+    let a = u.ui.pages.selected_page().native.allocation();
+    assert_eq!(
+        (a.x(), a.y(), a.width(), a.height()),
+        (
+            0,
+            94,
+            u.ui.window.allocated_width(),
+            u.ui.window.allocated_height() - 94
+        ),
+        "selected page must fill content rectangle"
+    );
+    wait("page viewport matches allocation", || {
+        eval(&u.ui, "JSON.stringify([innerWidth,innerHeight])").ok()
+            == Some(json!([a.width(), a.height()]))
+    })?;
+    // GDK returns native children in topmost-first stacking order.
+    let chrome = u.ui.chrome.native().window().unwrap();
+    let page = u.ui.pages.selected_page().native.window().unwrap();
+    let windows = chrome.parent().unwrap().children();
+    let ci = windows.iter().position(|w| *w == chrome).unwrap();
+    let pi = windows.iter().position(|w| *w == page).unwrap();
+    println!("STACK chrome={ci} page={pi} allocation={a:?}");
+    assert!(
+        ci < pi,
+        "chrome must be above page immediately after showing it"
+    );
+    click_chrome(&u.ui, "#search-pill")?;
+    wait("chrome responds immediately", || visible(&u.ui, "#palette"))?;
+    key("Escape")?;
+    Ok(())
+}
+
+fn resize_and_show() -> Result<()> {
+    for (w, h) in [
+        (900, 640),
+        (1440, 1000),
+        (390, 600),
+        (320, 500),
+        (1240, 800),
+    ] {
+        let u = U::new()?;
+        let a = u.root("/a")?;
+        u.ui.window.resize(w, h);
+        pump(250);
+        let b = u.root("/b")?;
+        geometry(&u)?;
+        u.ui.pages.go(Go::Visit(a))?;
+        anyhow::ensure!(u.arrives(a, 6000), "revived root arrives");
+        geometry(&u)?;
+        if w < 900 {
+            key("ctrl+2")?;
+        } else {
+            click_chrome(&u.ui, &u.tab(b))?;
+        }
+        anyhow::ensure!(u.arrives(b, 6000), "tab click arrives");
+        geometry(&u)?;
+        key("ctrl+1")?;
+        anyhow::ensure!(u.arrives(a, 6000), "digit switch arrives");
+        geometry(&u)?;
+        // Use a link below every chrome cover, and then scroll the loaded page.
+        eval(&u.ui, "document.getElementById('fork').style.cssText='display:block;margin-top:150px;height:60px';JSON.stringify(true)")?;
+        u.page_click("fork", "1")?;
+        anyhow::ensure!(
+            u.until(4000, || u.cursor_path() == "/d" && !u.loading()),
+            "resized page follows real link"
+        );
+        let (x, y) = page_point(&u.ui, 200, 400)?;
+        move_to(x, y)?;
+        xdo(&["click", "5"])?;
+        wait("resized page receives wheel", || {
+            eval(&u.ui, "JSON.stringify(scrollY)")
+                .ok()
+                .and_then(|v| v.as_f64())
+                .is_some_and(|y| y > 0.)
+        })?;
+        key("alt+Left")?;
+        anyhow::ensure!(u.arrives(a, 6000), "Back arrives");
+        geometry(&u)?;
+        if w == 900 {
+            eval(&u.ui, "document.getElementById('fork').href='/queued';document.getElementById('fork').style.cssText='display:block;margin-top:150px;height:60px';JSON.stringify(true)")?;
+            u.page_click("fork", "2")?;
+            wait("queued page recorded", || {
+                u.ui.snapshot()
+                    .is_ok_and(|s| s.visits.iter().any(|v| v.url.path() == "/queued"))
+            })?;
+            let q =
+                u.ui.snapshot()?
+                    .visits
+                    .iter()
+                    .find(|v| v.url.path() == "/queued")
+                    .unwrap()
+                    .id;
+            open_strip(&u.ui)?;
+            click_chrome(&u.ui, &node(q))?;
+            anyhow::ensure!(u.arrives(q, 6000), "queued strip node arrives");
+            geometry(&u)?;
+            key("alt+Left")?;
+            anyhow::ensure!(u.arrives(a, 6000), "Back revives parent branch");
+            geometry(&u)?;
+            u.server.gate("x", true);
+            u.ui.pages.open_roots(&[u.server.url("/gate/x/resize")])?;
+            anyhow::ensure!(
+                u.until(4000, || u.server.hits("/gate/x/resize") > 0),
+                "resize candidate requested"
+            );
+            u.ui.window.resize(1000, 700);
+            pump(150);
+            u.server.gate("x", false);
+            anyhow::ensure!(
+                u.until(6000, || u.cursor_path() == "/gate/x/resize" && !u.loading()),
+                "resized candidate arrives"
+            );
+            geometry(&u)?;
+        }
+        u.ui.window.close();
+    }
+    Ok(())
+}
+
+fn chrome_after_changes() -> Result<()> {
+    let u = U::new()?;
+    let chrome = u.ui.chrome.native().downgrade();
+    let maps = Rc::new(std::cell::Cell::new(0));
+    let seen = maps.clone();
+    u.ui.pages.observe_page_placement(move |view| {
+        let page = view.window().unwrap();
+        let chrome = chrome.upgrade().unwrap().window().unwrap();
+        let children = chrome.parent().unwrap().children();
+        let ci = children.iter().position(|w| *w == chrome).unwrap();
+        let pi = children.iter().position(|w| *w == page).unwrap();
+        println!("MAP_STACK chrome={ci} page={pi}");
+        assert!(
+            ci < pi,
+            "chrome must be above a mapped page before page events"
+        );
+        seen.set(seen.get() + 1);
+    });
+    let a = u.root("/a")?;
+    let b = u.root("/b")?;
+    u.ui.pages.go(Go::Visit(a))?;
+    anyhow::ensure!(u.arrives(a, 6000), "revival arrives");
+    geometry(&u)?;
+    // Cancel a hidden candidate, then click the chrome immediately.
+    u.server.gate("x", true);
+    u.ui.pages.open_roots(&[u.server.url("/gate/x/target")])?;
+    anyhow::ensure!(
+        u.until(4000, || u.server.hits("/gate/x/target") > 0),
+        "candidate starts"
+    );
+    key("Escape")?;
+    u.ui.pages.go(Go::Visit(a))?;
+    u.server.gate("x", false);
+    geometry(&u)?;
+    let trees =
+        u.ui.pages
+            .read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
+    for t in trees.open() {
+        u.ui.pages.settle_tree(t.id)?;
+        pump(100);
+    }
+    geometry(&u)?;
+    // Trusted chrome click on the empty start page: opening the palette covers it.
+    click_chrome(&u.ui, "#new-tree")?;
+    assert!(
+        maps.get() >= 4,
+        "all kinds of view changes must place their native windows"
+    );
+    let _ = b;
+    u.ui.window.close();
+    Ok(())
+}
+
+fn palette_anchor_stable() -> Result<()> {
+    let u = U::new()?;
+    u.root("/a")?;
+    key("ctrl+k")?;
+    wait("palette", || visible(&u.ui, "#palette"))?;
+    chrome(
+        &u.ui,
+        "(window.__anchor=document.querySelector('#palette-context .fav'),true)",
+    )?;
+    for n in 0..4 {
+        eval(
+            &u.ui,
+            &format!("document.title='changed {n}';JSON.stringify(true)"),
+        )?;
+        pump(200);
+        assert_eq!(
+            chrome(
+                &u.ui,
+                "window.__anchor === document.querySelector('#palette-context .fav')"
+            )?,
+            json!(true),
+            "title update must preserve favicon element"
+        );
+    }
+    u.ui.window.close();
     Ok(())
 }
 
@@ -438,14 +640,20 @@ fn main() -> Result<()> {
         .filter(|a| !a.starts_with('-'))
         .collect();
     type Case = (&'static str, fn() -> Result<()>);
-    let cases: &[Case] = &[("mouse", ui_mouse_back), ("allocation", ui_tab_collapse)];
+    let cases: &[Case] = &[
+        ("mouse", ui_mouse_back),
+        ("allocation", ui_tab_collapse),
+        ("resize", resize_and_show),
+        ("anchor", palette_anchor_stable),
+        ("stacking", chrome_after_changes),
+    ];
     for (name, run) in cases {
         if !only.is_empty() && !only.iter().any(|o| o == name) {
             continue;
         }
         match run() {
             Ok(()) => println!("DONE {name}"),
-            Err(error) => return Err(error.context(format!("round3 UI {name}"))),
+            Err(error) => return Err(error.context(format!("branch UI {name}"))),
         }
     }
     Ok(())

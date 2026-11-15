@@ -1,8 +1,6 @@
-use std::{
-    io::{Read, Write},
-    net::TcpListener,
-    thread,
-};
+#[path = "common/http.rs"]
+mod http;
+use std::{io::Write, net::TcpListener, thread};
 
 use anyhow::Result;
 use canopy::{
@@ -93,11 +91,10 @@ fn main() -> Result<()> {
     thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { break };
-            let mut request = [0; 4096];
-            let Ok(size) = stream.read(&mut request) else {
+            let Ok(request) = http::request(&mut stream) else {
                 continue;
             };
-            let request = String::from_utf8_lossy(&request[..size]);
+            let request = String::from_utf8_lossy(&request);
             let path = request.split_whitespace().nth(1).unwrap_or("/");
             if path == "/b" {
                 counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

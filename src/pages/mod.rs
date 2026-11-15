@@ -135,6 +135,8 @@ enum StartPage {
 }
 
 type Observer = Rc<dyn Fn(PageEvent)>;
+#[cfg(feature = "gui-smoke")]
+type PlacementObserver = Rc<dyn Fn(&webkit2gtk::WebView)>;
 
 enum Command {
     Go(Go, Option<Continuation>),
@@ -163,6 +165,8 @@ pub struct Pages {
     checkpoint: RefCell<Option<live::Checkpoint>>,
     #[cfg(feature = "gui-smoke")]
     before_revival: RefCell<Option<Rc<dyn Fn()>>>,
+    #[cfg(feature = "gui-smoke")]
+    placement_observer: RefCell<Option<PlacementObserver>>,
     releasing: Cell<bool>,
     continuation: RefCell<Option<PendingContinuation>>,
     observer: RefCell<Option<Observer>>,
@@ -191,6 +195,8 @@ impl Pages {
             checkpoint: RefCell::new(None),
             #[cfg(feature = "gui-smoke")]
             before_revival: RefCell::new(None),
+            #[cfg(feature = "gui-smoke")]
+            placement_observer: RefCell::new(None),
             releasing: Cell::new(false),
             continuation: RefCell::new(None),
             observer: RefCell::new(None),
@@ -861,6 +867,18 @@ impl Pages {
         {
             window.raise();
         }
+        #[cfg(feature = "gui-smoke")]
+        if view.is_mapped() {
+            let observer = self.placement_observer.borrow().clone();
+            if let Some(observer) = observer {
+                observer(view);
+            }
+        }
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn observe_page_placement(&self, observer: impl Fn(&webkit2gtk::WebView) + 'static) {
+        *self.placement_observer.borrow_mut() = Some(Rc::new(observer));
     }
 
     fn register_view(&self, view: &webkit2gtk::WebView) {

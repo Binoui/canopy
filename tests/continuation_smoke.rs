@@ -1,3 +1,5 @@
+#[path = "common/http.rs"]
+mod http;
 use anyhow::Result;
 use canopy::{
     browser::{Browser, Navigation, NavigationTarget, SourceContext, UsualPath, Visibility},
@@ -9,7 +11,7 @@ use gtk::prelude::*;
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
-    io::{Read, Write},
+    io::Write,
     net::TcpListener,
     rc::Rc,
     sync::{Arc, Mutex},
@@ -32,11 +34,10 @@ fn main() -> Result<()> {
             let requests = requests.clone();
             thread::spawn(move || {
                 let Ok(mut stream) = stream else { return };
-                let mut bytes = [0; 8192];
-                let Ok(n) = stream.read(&mut bytes) else {
+                let Ok(bytes) = http::request(&mut stream) else {
                     return;
                 };
-                let request = String::from_utf8_lossy(&bytes[..n]);
+                let request = String::from_utf8_lossy(&bytes);
                 let path = request.split_whitespace().nth(1).unwrap_or("/").to_owned();
                 *requests.lock().unwrap().entry(path.clone()).or_default() += 1;
                 if path.ends_with("/meta") {

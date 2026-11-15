@@ -1,7 +1,9 @@
-// GUI regressions adapted from the independent round-two fixture.
+// Branch navigation regressions.
 // Every selected case asserts behavior; diagnostic RESULT lines aid comparison.
 #![allow(dead_code, unused_imports, unused_variables)]
-use anyhow::{bail, Result};
+#[path = "common/http.rs"]
+mod http;
+use anyhow::{bail, Context, Result};
 use canopy::{
     browser::{Browser, NavigationTarget, TreeId, VisitId},
     forest::ForestProjection,
@@ -13,7 +15,7 @@ use serde_json::{json, Value};
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, HashSet},
-    io::{Read, Write},
+    io::Write,
     net::TcpListener,
     path::{Path, PathBuf},
     rc::Rc,
@@ -88,11 +90,10 @@ impl Server {
     }
     fn handle(&self, stream: &mut std::net::TcpStream) {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-        let mut request = [0; 16384];
-        let Ok(n) = stream.read(&mut request) else {
+        let Ok(request) = http::request(stream) else {
             return;
         };
-        let text = String::from_utf8_lossy(&request[..n]).to_string();
+        let text = String::from_utf8_lossy(&request).to_string();
         let method = text.split_whitespace().next().unwrap_or("GET").to_string();
         let full = text.split_whitespace().nth(1).unwrap_or("/").to_string();
         let path = full.split('?').next().unwrap_or("/").to_string();
@@ -155,6 +156,9 @@ impl Server {
             ["redirect", rest @ ..] => {
                 let to = format!("/{}", rest.join("/"));
                 let _ = write!(stream, "HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+            ["nc205"] => {
+                let _ = write!(stream, "HTTP/1.1 205 Reset Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
             }
             ["nocontent"] => {
                 let _ = write!(stream, "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
@@ -529,7 +533,7 @@ fn bg_nav(page: &str, after: u64) -> Result<()> {
     );
     assert!(
         requested && arrived,
-        "N1: same-document change cancelled requested switch"
+        "same-document change cancelled requested switch"
     );
     Ok(())
 }
@@ -564,7 +568,7 @@ fn policy_window(spin: u32) -> Result<()> {
         f.cursor_path(),
         f.errors()
     );
-    assert!(arrived, "N2: policy-phase cancellation left old page deaf");
+    assert!(arrived, "policy-phase cancellation left old page deaf");
     Ok(())
 }
 
@@ -594,7 +598,7 @@ fn alias_first_page(path: &str) -> Result<()> {
         f.server.hits(path),
         f.server.hits("/a")
     );
-    assert!(back1, "N6: Back must reach forest parent in one press");
+    assert!(back1, "Back must reach forest parent in one press");
     Ok(())
 }
 
@@ -642,7 +646,7 @@ fn download_candidate(path: &str) -> Result<()> {
     let _ = a;
     assert!(
         done && on == ["/a"] && f.cursor() == Some(a),
-        "N4: candidate download must save under visible page"
+        "candidate download must save under visible page"
     );
     Ok(())
 }
@@ -711,7 +715,7 @@ fn wedge(ms: u64, cancel: &str) -> Result<()> {
         uri_path(&f),
         f.errors()
     );
-    assert!(child, "N2: failed switch left old page deaf");
+    assert!(child, "failed switch left old page deaf");
     Ok(())
 }
 
@@ -736,7 +740,7 @@ fn alias_anchor() -> Result<()> {
         "RESULT alias_anchor list={list:?} back1_reaches_parent={back1} after1={after1} q_requests={}",
         f.server.hits("/q")
     );
-    assert!(back1, "N6: anchor Back must reach parent");
+    assert!(back1, "anchor Back must reach parent");
     Ok(())
 }
 
@@ -786,16 +790,6 @@ fn post_walk(posts: u32) -> Result<()> {
     for i in 1..=posts + 3 {
         let before = f.cursor_path();
         f.pages.go(Go::Parent)?;
-        pump_for(400);
-        quiet(&f, 5000);
-        pump_for(300);
-        lines.push(format!(
-            "back{i} {before}->{} uri={} list={:?} [{}]",
-            f.cursor_path(),
-            uri_path(&f),
-            native_list(&f),
-            counts(&f)
-        ));
         let expected = if i < posts {
             format!("/post/{}", posts - i)
         } else if i == posts {
@@ -803,16 +797,24 @@ fn post_walk(posts: u32) -> Result<()> {
         } else {
             "/a".into()
         };
+        wait_for(8000, || f.cursor_path() == expected && !loading(&f));
+        lines.push(format!(
+            "back{i} {before}->{} uri={} list={:?} [{}]",
+            f.cursor_path(),
+            uri_path(&f),
+            native_list(&f),
+            counts(&f)
+        ));
         assert_eq!(
             f.cursor_path(),
             expected,
-            "N3: each Back reaches the preceding page"
+            "each Back reaches the preceding page"
         );
         for n in 1..=posts {
             assert_eq!(
                 f.server.hits(&format!("POST /post/{n}")),
                 1,
-                "N3: no form resubmission"
+                "no form resubmission"
             );
         }
         if f.cursor_path() == "/a" {
@@ -825,7 +827,7 @@ fn post_walk(posts: u32) -> Result<()> {
         f.errors(),
         lines.join("\n  ")
     );
-    assert_eq!(f.cursor_path(), "/a", "N3: POST Back walk must reach start");
+    assert_eq!(f.cursor_path(), "/a", "POST Back walk must reach start");
     Ok(())
 }
 
@@ -879,7 +881,7 @@ fn post_mid_walk() -> Result<()> {
     assert_eq!(
         f.cursor_path(),
         "/a",
-        "N3: Back through noncurrent POST must reach start"
+        "Back through noncurrent POST must reach start"
     );
     Ok(())
 }
@@ -911,12 +913,12 @@ fn wedge_script() -> Result<()> {
     assert_eq!(
         f.cursor_path(),
         "/scripted",
-        "N2: self navigation must select its visit"
+        "self navigation must select its visit"
     );
     assert_eq!(
         f.pages.read(|b| b.snapshot())?.visits.len(),
         before + 1,
-        "N2: exactly one script visit"
+        "exactly one script visit"
     );
     f.pages.go(Go::Address {
         url: f.server.url("/after"),
@@ -932,7 +934,7 @@ fn wedge_script() -> Result<()> {
     assert_eq!(
         f.cursor_path(),
         "/after",
-        "N2: page-started visit must be recorded"
+        "page-started visit must be recorded"
     );
     Ok(())
 }
@@ -996,7 +998,7 @@ fn unload_stuck(kind: &str) -> Result<()> {
     );
     assert!(
         arrived,
-        "N2: old page must recover after beforeunload cancellation"
+        "old page must recover after beforeunload cancellation"
     );
     assert_eq!(
         third_visits, 0,
@@ -1011,6 +1013,51 @@ fn unload_stuck(kind: &str) -> Result<()> {
 
 /// The old view has just issued an in-place load (still in WebKit's policy phase) when a switch
 /// that then fails is requested. Does the old view take the next in-place request?
+fn no_content_ends_load() -> Result<()> {
+    for path in ["/nocontent", "/nc205"] {
+        let f = Fixture::new()?;
+        let a = f.navigate("/a")?;
+        let ended = Rc::new(std::cell::Cell::new(false));
+        let seen = ended.clone();
+        f.pages.observe(move |event| {
+            if matches!(event, PageEvent::Loading(false)) {
+                seen.set(true);
+            }
+        });
+        f.pages.open_roots(&[f.server.url(path)])?;
+        anyhow::ensure!(
+            wait_for(8000, || f.server.hits(path) > 0),
+            "no-content response requested"
+        );
+        anyhow::ensure!(
+            wait_for(3000, || ended.get()),
+            "no-content must end loading promptly"
+        );
+        assert_eq!(
+            f.fixed.children().len(),
+            1,
+            "no-content candidate must be removed at load end"
+        );
+        assert_eq!(f.cursor(), Some(a));
+        ended.set(false);
+        f.pages.go(Go::Address {
+            url: f.server.url(path),
+            target: NavigationTarget::ChildOf(a),
+        })?;
+        anyhow::ensure!(
+            wait_for(3000, || ended.get()),
+            "in-place no-content must end loading promptly"
+        );
+        ended.set(false);
+        f.navigate("/b")?;
+        anyhow::ensure!(
+            wait_for(1000, || ended.get()),
+            "next load must deliver its own end"
+        );
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let environment = tempfile::tempdir()?;
     let home = environment.path().join("home");
@@ -1032,6 +1079,7 @@ fn main() -> Result<()> {
         .collect();
     type Case = (&'static str, fn() -> Result<()>);
     let cases: &[Case] = &[
+        ("no_content", no_content_ends_load),
         ("hash_pulse", || bg_nav("/hash-pulse", 900)),
         ("ps_pulse", || bg_nav("/ps-pulse", 900)),
         ("ps_once", || bg_nav("/ps-once", 150)),
@@ -1056,22 +1104,8 @@ fn main() -> Result<()> {
         if !only.is_empty() && !only.iter().any(|o| o == name) {
             continue;
         }
-        for attempt in 0..3 {
-            match run() {
-                Ok(()) => {
-                    println!("DONE {name}");
-                    break;
-                }
-                Err(error)
-                    if attempt < 2
-                        && (error.to_string().starts_with("setup submit ")
-                            || error.to_string() == "setup POST visit not recorded") =>
-                {
-                    println!("NOTE {name}: retry fresh fixture after known unrecorded setup submission: {error}");
-                }
-                Err(error) => return Err(error.context(format!("round3 {name}"))),
-            }
-        }
+        run().with_context(|| format!("branch behavior {name}"))?;
+        println!("DONE {name}");
         pump_for(300);
     }
     Ok(())

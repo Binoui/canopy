@@ -1,6 +1,7 @@
 // GUI regressions for branch ownership, cancellation and history.
 // Cases assert user-visible behavior as well as printing diagnostic results.
 #![allow(dead_code, unused_imports, unused_variables)]
+use super::http;
 use anyhow::{bail, Result};
 use canopy::{
     browser::{Browser, NavigationTarget, TreeId, VisitId},
@@ -13,7 +14,7 @@ use serde_json::{json, Value};
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, HashSet},
-    io::{Read, Write},
+    io::Write,
     net::TcpListener,
     path::{Path, PathBuf},
     rc::Rc,
@@ -88,11 +89,10 @@ impl Server {
     }
     fn handle(&self, stream: &mut std::net::TcpStream) {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-        let mut request = [0; 16384];
-        let Ok(n) = stream.read(&mut request) else {
+        let Ok(request) = http::request(stream) else {
             return;
         };
-        let text = String::from_utf8_lossy(&request[..n]).to_string();
+        let text = String::from_utf8_lossy(&request).to_string();
         let method = text.split_whitespace().next().unwrap_or("GET").to_string();
         let full = text.split_whitespace().nth(1).unwrap_or("/").to_string();
         let path = full.split('?').next().unwrap_or("/").to_string();
@@ -427,9 +427,9 @@ fn old_inflight() -> Result<()> {
     assert_eq!(
         f.visits_with_path("/delay/700/abandoned"),
         0,
-        "S2: abandoned visit committed"
+        "abandoned visit committed"
     );
-    assert_eq!(events.len(), 1, "S2: arrival log moved more than once");
+    assert_eq!(events.len(), 1, "arrival log moved more than once");
     Ok(())
 }
 
@@ -463,7 +463,7 @@ fn retire_race() -> Result<()> {
         f.server.hits("/target"),
         f.visits_with_path("/gate/s1/one")
     );
-    assert!(arrived, "S2: retiring request cancelled switch");
+    assert!(arrived, "retiring request cancelled switch");
     assert_eq!(f.server.hits("/two"), 0);
     Ok(())
 }
@@ -489,7 +489,7 @@ fn settle_other_during_switch() -> Result<()> {
         f.server.hits("/gate/x/x"),
         f.errors()
     );
-    assert!(arrived, "S1: settling unrelated tree cancelled switch");
+    assert!(arrived, "settling unrelated tree cancelled switch");
     Ok(())
 }
 
@@ -497,32 +497,21 @@ fn settle_other_during_switch() -> Result<()> {
 fn post_switch_back() -> Result<()> {
     let f = Fixture::new()?;
     let a = f.navigate("/a")?;
-    let mut form = f.navigate("/form")?;
+    let form = f.navigate("/form")?;
     let before = f.pages.read(|b| b.snapshot())?.visits.len();
-    let mut posted = false;
-    for attempt in 0..3 {
-        if attempt > 0 {
-            form = f.navigate("/form")?;
-        }
-        f.eval("globalThis.__formPainted=false; requestAnimationFrame(()=>requestAnimationFrame(()=>{globalThis.__formPainted=true})); return true;")?;
-        wait("form painted for pointer input", || {
-            f.eval("return globalThis.__formPainted;").ok() == Some(json!(true))
-        })?;
-        let requests = f.server.hits("POST /post-result");
-        click(&f, "go")?;
-        posted = wait_for(8000, || {
+    f.eval("globalThis.__formPainted=false; requestAnimationFrame(()=>requestAnimationFrame(()=>{globalThis.__formPainted=true})); return true;")?;
+    wait("form painted for pointer input", || {
+        f.eval("return globalThis.__formPainted;").ok() == Some(json!(true))
+    })?;
+    let requests = f.server.hits("POST /post-result");
+    click(&f, "go")?;
+    anyhow::ensure!(
+        wait_for(8000, || {
             f.server.hits("POST /post-result") > requests
                 && f.cursor_path() == "/post-result"
                 && !f.pages.selected_page().native.is_loading()
-        });
-        if posted {
-            break;
-        }
-        println!("NOTE retry unrecorded setup form submit {}", attempt + 1);
-    }
-    anyhow::ensure!(
-        posted,
-        "POST was not issued and recorded after three setup attempts"
+        }),
+        "POST was not issued and recorded"
     );
     let post = f
         .visit_with_path("/post-result")
@@ -538,7 +527,7 @@ fn post_switch_back() -> Result<()> {
     let arrived = f.arrives(post, 8000);
     pump_for(800);
     println!(
-        "RESULT post_switch_back posted={posted} arrived={arrived} history_has_form={} history_has_a={} history_has_after={} list_len={} post_requests_total={} posts_on_switch={} get_post_result={}",
+        "RESULT post_switch_back posted=true arrived={arrived} history_has_form={} history_has_a={} history_has_after={} list_len={} post_requests_total={} posts_on_switch={} get_post_result={}",
         f.history().contains(&form),
         f.history().contains(&a),
         f.history().contains(&next),
@@ -548,16 +537,13 @@ fn post_switch_back() -> Result<()> {
         f.server.hits("GET /post-result"),
     );
     assert!(arrived);
-    assert!(
-        f.history().contains(&form),
-        "S3: POST revival lost back list"
-    );
+    assert!(f.history().contains(&form), "POST revival lost back list");
     assert!(f.history().contains(&a));
     assert!(!f.history().contains(&next), "GET drops forward entries");
     assert_eq!(f.server.hits("POST /post-result"), posts_before);
     assert_eq!(f.server.hits("GET /post-result"), 1);
     f.pages.go(Go::Parent)?;
-    assert!(f.arrives(form, 6000), "S3: Back must reach form");
+    assert!(f.arrives(form, 6000), "Back must reach form");
     f.pages.go(Go::Parent)?;
     assert!(f.arrives(a, 6000));
     Ok(())
@@ -587,7 +573,7 @@ fn settle_start_new_tree() -> Result<()> {
         f.server.hits("/n2"),
         f.server.hits("/n1"),
     );
-    assert!(f.history().contains(&n1), "S4: branch was not kept");
+    assert!(f.history().contains(&n1), "branch was not kept");
     let revived = f.pages.selected_page().native;
     f.pages.go(Go::Parent)?;
     let back = f.arrives(n1, 6000);
@@ -596,11 +582,11 @@ fn settle_start_new_tree() -> Result<()> {
         f.cursor_path(),
         f.server.hits("/n1")
     );
-    assert!(back, "S4: Back did not reach new root");
+    assert!(back, "Back did not reach new root");
     assert_eq!(
         f.pages.selected_page().native,
         revived,
-        "S4: Back must traverse within revived view"
+        "Back must traverse within revived view"
     );
     Ok(())
 }
@@ -646,7 +632,7 @@ fn iframe_back(path: &str) -> Result<()> {
         f.cursor_path(),
         list.iter().take(6).collect::<Vec<_>>()
     );
-    assert!(back, "S5: Back stepped a frame");
+    assert!(back, "Back stepped a frame");
     Ok(())
 }
 
@@ -683,7 +669,7 @@ fn saved_routing() -> Result<()> {
     );
     assert!(
         f.history().contains(&a),
-        "S6: saved capture lost its branch history"
+        "saved capture lost its branch history"
     );
     f.pages.go(Go::Visit(r2))?;
     let back = f.arrives(r2, 6000);
@@ -696,7 +682,7 @@ fn saved_routing() -> Result<()> {
     assert!(arrived && back);
     assert!(
         f.history().contains(&r),
-        "S6: saved capture truncated other branch"
+        "saved capture truncated other branch"
     );
     assert_eq!(f.server.hits("/r2"), 2);
     Ok(())
@@ -940,7 +926,7 @@ fn citation_routing() -> Result<()> {
     assert_eq!(f.pages.read(|b| b.visit(citation))?.parent, Some(a));
     assert!(
         !f.history().contains(&r),
-        "S6: citation entered unrelated branch"
+        "citation entered unrelated branch"
     );
     f.pages.go(Go::Visit(r2))?;
     f.arrived(r2)?;
@@ -1103,16 +1089,8 @@ fn unload_during_switch() -> Result<()> {
         let before = f.events().len();
         f.open_root("/next")?;
         pump_for(300);
-        assert_eq!(
-            f.visits_with_path("/third"),
-            0,
-            "S2: retiring unload committed"
-        );
-        assert_eq!(
-            f.events().len(),
-            before + 1,
-            "S2: unload changed arrival log"
-        );
+        assert_eq!(f.visits_with_path("/third"), 0, "retiring unload committed");
+        assert_eq!(f.events().len(), before + 1, "unload changed arrival log");
     }
     Ok(())
 }

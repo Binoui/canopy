@@ -1,3 +1,5 @@
+#[path = "common/http.rs"]
+mod http;
 use anyhow::{bail, Result};
 use canopy::{
     browser::{Browser, NavigationTarget, VisitId},
@@ -9,7 +11,7 @@ use serde_json::{json, Value};
 use std::{
     cell::RefCell,
     collections::BTreeMap,
-    io::{Read, Write},
+    io::Write,
     net::TcpListener,
     rc::Rc,
     sync::{
@@ -70,11 +72,10 @@ impl Server {
                 let refuse = refuse.clone();
                 thread::spawn(move || {
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                    let mut request = [0; 8192];
-                    let Ok(n) = stream.read(&mut request) else {
+                    let Ok(request) = http::request(&mut stream) else {
                         return;
                     };
-                    let text = String::from_utf8_lossy(&request[..n]);
+                    let text = String::from_utf8_lossy(&request);
                     let method = text.split_whitespace().next().unwrap_or("GET");
                     let path = text.split_whitespace().nth(1).unwrap_or("/").to_string();
                     *count
@@ -734,7 +735,7 @@ fn revived_form_back() -> Result<()> {
             .path()
             .to_owned(),
     );
-    assert_eq!(paths, ["/post"], "N3: GET belongs to a fresh branch");
+    assert_eq!(paths, ["/post"], "GET belongs to a fresh branch");
     f.pages.reload()?;
     f.arrived(post)?;
     f.release()?;
