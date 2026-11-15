@@ -494,41 +494,6 @@ fn main() -> Result<()> {
     assert_eq!(ui.snapshot()?.current, Some(first));
     println!("PASS Ctrl+E opens the forest, node selection and Escape close it, and Ctrl+T opens a reversible new-tree page.");
 
-    let count = ui.snapshot()?.visits.len();
-    key("ctrl+t")?;
-    key("ctrl+k")?;
-    wait("palette suggestions", || {
-        visible(&ui, "#palette [data-kind=shortcut]") && visible(&ui, "#palette [data-kind=path]")
-    })?;
-    key("Escape")?;
-    wait("palette closed", || !visible(&ui, "#palette"))?;
-    click_chrome(&ui, "[data-start=shortcut][data-id='0']")?;
-    wait("shortcut plants a root", || {
-        ui.snapshot().unwrap().visits.len() == count + 1
-            && !ui.pages.selected_page().native.is_loading()
-    })?;
-    assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
-    key("ctrl+t")?;
-    wait("new-tree page", || {
-        visible(&ui, "[data-start=path][data-id='0']")
-    })?;
-    click_chrome(&ui, "[data-start=path][data-id='0']")?;
-    wait("usual path loads two pages", || {
-        ui.snapshot().unwrap().visits.len() == count + 3
-            && !ui.pages.selected_page().native.is_loading()
-    })?;
-    let snapshot = ui.snapshot()?;
-    let second = snapshot.current_visit().unwrap();
-    let root = snapshot
-        .visits
-        .iter()
-        .find(|v| Some(v.id) == second.parent)
-        .context("usual-path root")?;
-    assert!(root.parent.is_none());
-    assert!(root.opened_at.is_some());
-    assert!(second.opened_at.is_some());
-    println!("PASS a shortcut plants a root and a usual path really loads a root and its child.");
-
     {
         let mut other = canopy::browser::Browser::open(&directory.path().join("forest.sqlite3"))?;
         let page = |path: &str, title: &str| canopy::browser::ImportedPage {

@@ -86,7 +86,6 @@ pub(crate) struct Fit {
 }
 
 impl Fit {
-    #[cfg(test)]
     pub const CHIP: Self = Self {
         columns: 3,
         rows: 2,

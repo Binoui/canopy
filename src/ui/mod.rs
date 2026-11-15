@@ -274,7 +274,7 @@ impl Ui {
                 forest,
                 capture_enabled: browser.capture_enabled()?,
                 theme: browser.theme_mode()?,
-                suggestions: browser.start_suggestions()?,
+                declined: browser.declined()?,
                 bookmarks: browser.bookmarks()?,
                 files,
             })
@@ -473,12 +473,49 @@ impl Shortcut {
 }
 
 impl ChromeHost for Ui {
+    fn suggestions(&self, forest: &ForestProjection) -> Result<Vec<crate::suggest::Suggestion>> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis() as i64;
+        self.pages.read(|b| {
+            let bookmarks = b.bookmarks()?;
+            let declined = b.declined()?;
+            let arrivals = b.arrivals(now - crate::suggest::WINDOW)?;
+            let chrome = b.chrome_favorites(3 + bookmarks.len() + declined.len())?;
+            let left = forest
+                .current()
+                .and_then(|v| forest.tree_of(v))
+                .or(b.last_event_tree()?);
+            Ok(crate::suggest::rank(
+                &crate::suggest::Inputs {
+                    forest,
+                    bookmarks: &bookmarks,
+                    declined: &declined,
+                    arrivals: &arrivals,
+                    chrome: &chrome,
+                    left,
+                },
+                now,
+            ))
+        })
+    }
+
     fn dispatch(&self, intent: ChromeIntent) {
         let Some(ui) = self.me.upgrade() else { return };
         self.pages.cancel_continuation();
         let result = match intent {
             ChromeIntent::CancelContinuation => Ok(()),
-            ChromeIntent::OpenPath(path) => self.pages.open_path(path.first, path.second),
+            ChromeIntent::OpenPath { first, second } => self.pages.open_path(first, second),
+            ChromeIntent::Bookmark { url, title } => {
+                let result = self.pages.bookmark(&url, &title);
+                self.schedule_refresh();
+                result
+            }
+            ChromeIntent::Decline(key) => {
+                let result = self.pages.decline(&key);
+                self.schedule_refresh();
+                result
+            }
             ChromeIntent::SetTheme(mode) => {
                 let result = self.pages.set_theme(mode);
                 self.schedule_refresh();
