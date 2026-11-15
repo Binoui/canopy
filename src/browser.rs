@@ -1,3 +1,5 @@
+mod bookmarks;
+pub use bookmarks::{Bookmark, BookmarkId, BookmarkToggle, ImportedBookmark};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
@@ -48,7 +50,7 @@ pub struct VisitPreview {
     pub snippet: String,
 }
 
-/// A page known from another browser's history or bookmarks.
+/// A page known from another browser's history.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ImportedPage {
     pub url: Url,
@@ -57,8 +59,6 @@ pub struct ImportedPage {
     pub typed: usize,
     /// Milliseconds since the Unix epoch.
     pub last_visit: Option<i64>,
-    /// Where the page is bookmarked, as "Bookmarks bar › Folder", if it is.
-    pub folder: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -332,7 +332,7 @@ impl Browser {
              INSERT OR IGNORE INTO session(singleton, current_id) VALUES(1, NULL);",
         )?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version > 9 {
+        if version > 10 {
             bail!("This database comes from a newer version of Canopy.");
         }
         if version == 0 {
@@ -509,39 +509,20 @@ impl Browser {
             migrate_pins(&transaction)?;
             transaction.commit()?;
         }
+        if version < 10 {
+            let tx = connection.transaction()?;
+            bookmarks::migrate(&tx)?;
+            tx.commit()?;
+        }
         Ok(Self { connection })
     }
 
-    /// Replaces everything imported from `source` with `pages`, in one transaction.
     pub fn replace_imported(&mut self, source: &str, pages: &[ImportedPage]) -> Result<usize> {
-        let transaction = self.connection.transaction()?;
-        transaction.execute("DELETE FROM imported_pages WHERE source=?1", [source])?;
-        {
-            let mut insert = transaction.prepare(
-                "INSERT INTO imported_pages(source, url, title, visits, typed, last_visit, folder)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(source, url) DO UPDATE SET
-                    title=excluded.title, visits=excluded.visits, typed=excluded.typed,
-                    last_visit=excluded.last_visit, folder=excluded.folder",
-            )?;
-            for page in pages {
-                insert.execute(params![
-                    source,
-                    page.url.as_str(),
-                    page.title,
-                    page.visits as i64,
-                    page.typed as i64,
-                    page.last_visit,
-                    page.folder,
-                ])?;
-            }
-        }
-        transaction.commit()?;
+        self.import_pages(source, pages, &[])?;
         Ok(pages.len())
     }
 
-    /// Imported pages whose title or URL contains `query`: bookmarks first, then the pages
-    /// typed and visited most.
+    /// Imported pages whose title or URL contains `query`, typed and visited most first.
     pub fn search_imported(&self, query: &str, limit: usize) -> Result<Vec<ImportedPage>> {
         let query = query.trim();
         if query.is_empty() {
@@ -552,11 +533,11 @@ impl Browser {
             .replace('%', "\\%")
             .replace('_', "\\_");
         let mut statement = self.connection.prepare(
-            r"SELECT url, MAX(title), SUM(visits), SUM(typed), MAX(last_visit), MAX(folder)
+            r"SELECT url, MAX(title), SUM(visits), SUM(typed), MAX(last_visit)
               FROM imported_pages
               WHERE title LIKE ?1 ESCAPE '\' OR url LIKE ?1 ESCAPE '\'
               GROUP BY url
-              ORDER BY MAX(folder) IS NULL, SUM(typed) DESC, SUM(visits) DESC, MAX(last_visit) DESC
+              ORDER BY SUM(typed) DESC, SUM(visits) DESC, MAX(last_visit) DESC
               LIMIT ?2",
         )?;
         let rows =
@@ -571,7 +552,7 @@ impl Browser {
     /// The most visited imported page of each of the busiest hosts.
     fn imported_favorites(&self, limit: usize) -> Result<Vec<ImportedPage>> {
         let mut statement = self.connection.prepare(
-            "SELECT url, MAX(title), SUM(visits), SUM(typed), MAX(last_visit), MAX(folder)
+            "SELECT url, MAX(title), SUM(visits), SUM(typed), MAX(last_visit)
              FROM imported_pages GROUP BY url
              ORDER BY SUM(typed) DESC, SUM(visits) DESC, url",
         )?;
@@ -1619,7 +1600,6 @@ fn imported_row(row: &Row) -> rusqlite::Result<Option<ImportedPage>> {
         visits: row.get::<_, i64>(2)?.max(0) as usize,
         typed: row.get::<_, i64>(3)?.max(0) as usize,
         last_visit: row.get(4)?,
-        folder: row.get(5)?,
     }))
 }
 
@@ -1791,6 +1771,147 @@ mod tests {
     }
 
     #[test]
+    fn opens_a_version_9_database_and_copies_chrome_bookmarks_once() {
+        let connection = historical_connection(9);
+        for (i, folder) in [
+            "Bookmarks bar",
+            "Bookmarks bar",
+            "Bookmarks bar › Work",
+            "Bookmarks bar › Work › Rust",
+            "Other bookmarks",
+            "Mobile bookmarks",
+        ]
+        .iter()
+        .enumerate()
+        {
+            connection.execute("INSERT INTO imported_pages(source,url,title,visits,typed,last_visit,folder) VALUES('chrome',?1,?2,?3,0,NULL,?4)", params![format!("https://example.org/{i}"), format!("Title {i}"), i as i64, folder]).unwrap();
+        }
+        let mut browser = Browser::with_connection(connection).unwrap();
+        let bookmarks = browser.bookmarks().unwrap();
+        assert_eq!(bookmarks.len(), 6);
+        assert_eq!(bookmarks[0].url.path(), "/1");
+        assert_eq!(bookmarks[1].url.path(), "/0");
+        assert_eq!(
+            bookmarks
+                .iter()
+                .map(|b| b.folder.as_deref())
+                .collect::<Vec<_>>(),
+            [
+                None,
+                None,
+                Some("Mobile bookmarks"),
+                Some("Other bookmarks"),
+                Some("Work"),
+                Some("Work › Rust")
+            ]
+        );
+        assert_eq!(browser.search_imported("example", 20).unwrap().len(), 5);
+        assert!(browser
+            .connection
+            .prepare("SELECT folder FROM imported_pages")
+            .is_err());
+        browser.remove_bookmark(bookmarks[0].id).unwrap();
+        let reopened = Browser::with_connection(browser.connection).unwrap();
+        assert_eq!(reopened.bookmarks().unwrap().len(), 5);
+        assert!(!reopened
+            .bookmarks()
+            .unwrap()
+            .iter()
+            .any(|b| b.url == bookmarks[0].url));
+    }
+
+    #[test]
+    fn toggle_current_bookmark_adds_removes_and_needs_a_page() {
+        let mut b = memory();
+        assert_eq!(b.toggle_current_bookmark().unwrap(), BookmarkToggle::NoPage);
+        let id = follow(&mut b, "chosen", NavigationTarget::Root);
+        assert_eq!(b.toggle_current_bookmark().unwrap(), BookmarkToggle::Added);
+        let bookmark = b.bookmarks().unwrap().remove(0);
+        let visit = b
+            .snapshot()
+            .unwrap()
+            .visits
+            .into_iter()
+            .find(|v| v.id == id)
+            .unwrap();
+        assert_eq!((bookmark.url, bookmark.title), (visit.url, visit.title));
+        assert_eq!(
+            b.toggle_current_bookmark().unwrap(),
+            BookmarkToggle::Removed
+        );
+        assert!(b.bookmarks().unwrap().is_empty());
+        b.toggle_current_bookmark().unwrap();
+        assert!(b.bookmarks().unwrap()[0].id.get() > bookmark.id.get());
+    }
+
+    #[test]
+    fn a_failed_bookmark_import_rolls_back_history_replacement() {
+        let mut b = memory();
+        let history = ImportedPage {
+            url: url("history"),
+            title: "History".into(),
+            visits: 1,
+            typed: 0,
+            last_visit: None,
+        };
+        b.import_pages("chrome", std::slice::from_ref(&history), &[])
+            .unwrap();
+        b.connection.execute_batch("CREATE TRIGGER reject_bookmark BEFORE INSERT ON bookmarks BEGIN SELECT RAISE(ABORT, 'fixture failure'); END;").unwrap();
+        let bookmark = ImportedBookmark {
+            url: url("bookmark"),
+            title: String::new(),
+            folder: "Bookmarks bar".into(),
+            visits: 0,
+        };
+        assert!(b.import_pages("chrome", &[], &[bookmark]).is_err());
+        assert_eq!(b.search_imported("history", 10).unwrap(), [history]);
+        assert!(b.bookmarks().unwrap().is_empty());
+    }
+
+    #[test]
+    fn import_bookmarks_appends_absent_ones_at_the_end_of_their_folder() {
+        let mut b = memory();
+        let draft = |path: &str, folder: &str, visits| ImportedBookmark {
+            url: url(path),
+            title: path.into(),
+            folder: folder.into(),
+            visits,
+        };
+        b.import_pages(
+            "chrome",
+            &[],
+            &[
+                draft("first", "Bookmarks bar", 5),
+                draft("second", "Bookmarks bar", 1),
+                draft("nested", "Bookmarks bar › Work › Rust", 1),
+            ],
+        )
+        .unwrap();
+        let original = b.bookmarks().unwrap();
+        b.remove_bookmark(original[1].id).unwrap();
+        b.import_pages(
+            "chrome",
+            &[],
+            &[
+                draft("first", "Other bookmarks", 100),
+                draft("third", "Bookmarks bar", 100),
+            ],
+        )
+        .unwrap();
+        let rows = b.bookmarks().unwrap();
+        assert_eq!(rows[0], original[0]);
+        assert_eq!(rows[1].url, url("third"));
+        assert_eq!(rows[2], original[2]);
+        assert_eq!(
+            b.import_pages("chrome", &[], &[draft("third", "Bookmarks bar", 100)])
+                .unwrap(),
+            0
+        );
+        let tx = b.connection.transaction().unwrap();
+        assert!(tx.execute("INSERT INTO bookmarks(url,title,folder,position,added_at) VALUES('https://invalid/','',' ',0,0)", []).is_err());
+    }
+
+    #[test]
     fn opens_a_version_8_database_with_every_tree_unpinned() {
         let connection = historical_connection(8);
         let root = Ulid::new().to_string();
@@ -1811,7 +1932,7 @@ mod tests {
             b.connection
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            9
+            10
         );
     }
 
@@ -3172,21 +3293,20 @@ mod tests {
     fn imported_pages_are_searchable_replaceable_and_fill_the_shortcuts() {
         let dir = tempfile::tempdir().unwrap();
         let mut browser = TestBrowser::open(&dir.path().join("forest.sqlite3")).unwrap();
-        let page = |url: &str, title: &str, visits, folder: Option<&str>| ImportedPage {
+        let page = |url: &str, title: &str, visits| ImportedPage {
             url: Url::parse(url).unwrap(),
             title: title.into(),
             visits,
             typed: 0,
             last_visit: Some(1),
-            folder: folder.map(str::to_owned),
         };
         browser
             .replace_imported(
                 "chrome:Default",
                 &[
-                    page("https://docs.rs/wry", "wry 100% docs", 3, None),
-                    page("https://docs.rs/tao", "tao docs", 9, None),
-                    page("https://servo.org/", "Servo", 0, Some("Bookmarks bar")),
+                    page("https://docs.rs/wry", "wry 100% docs", 3),
+                    page("https://docs.rs/tao", "tao docs", 9),
+                    page("https://servo.org/", "Servo", 0),
                 ],
             )
             .unwrap();
@@ -3203,8 +3323,8 @@ mod tests {
         );
         assert_eq!(
             browser.search_imported("o", 10).unwrap()[0].url.host_str(),
-            Some("servo.org"),
-            "bookmarks first"
+            Some("docs.rs"),
+            "history stays ordered by visits"
         );
         assert!(
             browser.snapshot().unwrap().visits.is_empty(),
@@ -3217,10 +3337,7 @@ mod tests {
             "one shortcut per busy host"
         );
         browser
-            .replace_imported(
-                "chrome:Default",
-                &[page("https://servo.org/", "Servo", 1, None)],
-            )
+            .replace_imported("chrome:Default", &[page("https://servo.org/", "Servo", 1)])
             .unwrap();
         assert!(
             browser.search_imported("docs", 10).unwrap().is_empty(),

@@ -62,6 +62,7 @@ type PaletteCache = (String, Vec<(Group, PaletteItem)>, usize);
 
 /// Everything the chrome shows, read from SQLite in one go.
 pub struct ChromeFrame {
+    pub bookmarks: Vec<crate::browser::Bookmark>,
     pub forest: ForestProjection,
     /// Waiting pages that already have a live view. Nothing fills it yet: background
     /// loading will, and the chrome then shows those pages as loaded with no other change.
@@ -132,6 +133,7 @@ pub enum ChromeIntent {
         offer: u64,
         save: bool,
     },
+    RemoveBookmark(crate::browser::BookmarkId),
     PinTree {
         tree: TreeId,
         pinned: bool,
@@ -568,7 +570,8 @@ impl Inner {
         let Some(frame) = frame.as_ref() else {
             return (Vec::new(), 0);
         };
-        let (mut items, first) = palette::results(query, hits, imported, &frame.forest);
+        let (mut items, first) =
+            palette::results(query, hits, imported, &frame.bookmarks, &frame.forest);
         if query.trim().is_empty() {
             let suggestions = &frame.suggestions;
             items.extend(
@@ -591,7 +594,8 @@ impl Inner {
     fn intent(&self, message: &Value) -> Option<ChromeIntent> {
         let id = |key: &str| message[key].as_str()?.parse::<VisitId>().ok();
         let frame = self.frame.borrow();
-        let suggestions = &frame.as_ref()?.suggestions;
+        let frame = frame.as_ref()?;
+        let suggestions = &frame.suggestions;
         let index = || message["index"].as_u64().map(|i| i as usize);
         Some(match message["kind"].as_str()? {
             "settle-tree" => ChromeIntent::SettleTree(TreeId(id("id")?)),
@@ -628,6 +632,22 @@ impl Inner {
                 tree: TreeId(id("id")?),
                 pinned: message["pinned"].as_bool()?,
             },
+            "open-bookmark" => ChromeIntent::Navigate {
+                url: frame
+                    .bookmarks
+                    .iter()
+                    .find(|b| Some(b.id.get()) == message["id"].as_i64())?
+                    .url
+                    .clone(),
+                target: NavigationTarget::Root,
+            },
+            "remove-bookmark" => ChromeIntent::RemoveBookmark(
+                frame
+                    .bookmarks
+                    .iter()
+                    .find(|b| Some(b.id.get()) == message["id"].as_i64())?
+                    .id,
+            ),
             "cancel" => ChromeIntent::CancelContinuation,
             "path" => ChromeIntent::OpenPath(suggestions.paths.get(index()?)?.clone()),
             "shortcut" => ChromeIntent::Navigate {

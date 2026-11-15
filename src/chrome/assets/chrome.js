@@ -29,7 +29,7 @@ const $ = (id) => document.getElementById(id);
 const post = (message) => window.ipc.postMessage(JSON.stringify(message));
 /// Intents that load a page also give the keyboard back to it, as the GTK buttons that
 /// never took focus did.
-const NAVIGATES = new Set(['restore', 'select-tree', 'settle-tree', 'settle-current', 'shortcut', 'path', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
+const NAVIGATES = new Set(['restore', 'select-tree', 'settle-tree', 'settle-current', 'shortcut', 'path', 'open-bookmark', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
 const intent = (kind, extra = {}) => {
   post({ t: 'intent', kind, ...extra });
   if (NAVIGATES.has(kind)) post({ t: 'focus', target: 'page' });
@@ -753,6 +753,18 @@ function renderPopover() {
         S.popover.field.focus(); S.popover.field.select();
       } else intent(action === 'pin' ? 'pin-tree' : 'settle-tree', { id: data, pinned: menu.pinned });
     }));
+  } else if (kind === 'bookmark') {
+    popover.innerHTML = '<button class="menu-row" data-remove-bookmark>Remove bookmark</button>';
+    popover.querySelector('button').addEventListener('click', () => { closePopover(false); intent('remove-bookmark', { id: Number(data) }); });
+  } else if (kind === 'folder') {
+    const b = S.frame.start.bookmarks;
+    if (data.hidden) {
+      popover.innerHTML = (b.hidden?.folders ?? []).map((f) => `<button class="menu-row" data-start="folder" data-id="${esc(f.name)}">${icon('folder')}<span class="grow">${esc(f.name)}</span><span class="menu-detail">${f.count}</span></button>`).join('');
+    } else {
+      const folder = [...b.folders, ...(b.hidden?.folders ?? [])].find((f) => f.name === data.folder);
+      const rows = data.more ? b.more?.rows : folder?.rows;
+      popover.innerHTML = (rows ?? []).map((r) => `<button class="menu-row" data-start="bookmark" data-id="${r.id}" title="${esc(r.label + '\n' + r.url)}">${fav(r.url, true, 16)}<span class="grow">${esc(r.label)}</span></button>`).join('');
+    }
   } else if (kind === 'waiting') {
     const { ids, order } = S.frame.waiting;
     if (!ids.length) { closePopover(false); return; }
@@ -1098,7 +1110,8 @@ function uncover() {
 
 function focusStart() {
   post({ t: 'focus', target: 'chrome' });
-  $('start-search').focus();
+  $('start-search').focus({ preventScroll: true });
+  $('start').scrollTop = 0;
 }
 
 function renderPlaceholder() {
@@ -1136,8 +1149,33 @@ function frequentBand() {
     + '</section><section>' + bandHead('Usual paths') + (paths || '<div class="hint-line">Follow links to build paths you can revisit.</div>') + '</section>';
 }
 
-const BANDS = [pinnedBand, frequentBand];
+function folderChip(f) {
+  return `<button class="folder-chip" data-start="folder" data-id="${esc(f.name)}" title="${esc(f.name)}">${icon('folder')}<span>${esc(f.name)}</span><i>${f.count}</i></button>`;
+}
+
+function bookmarksBand(start) {
+  const b = start.bookmarks;
+  const chips = b.folders.map(folderChip).join('') + (b.hidden ? `<button class="folder-chip" data-start="folders">${esc(b.hidden.label)}</button>` : '');
+  const tiles = b.tiles.map((r) => `<button class="start-tile" data-start="bookmark" data-id="${r.id}" title="${esc(r.label + '\n' + r.url)}"><span class="glyph">${fav(r.url, true, 24)}</span><span class="label">${esc(r.label)}</span></button>`).join('');
+  const more = b.more ? `<button class="start-tile" data-start="more"><span class="glyph">${icon('chevron')}</span><span class="label">${esc(b.more.label)}</span></button>` : '';
+  return '<section><div class="band-head"><span class="grow">Bookmarks</span>' + chips + '</div>'
+    + (b.empty ? '<div class="hint-line">Ctrl+D bookmarks the page you are on.</div>' : `<div class="start-tiles">${tiles}${more}</div>`) + '</section>';
+}
+
+function togglePopover(kind, anchor, data) {
+  if (S.popover?.kind === kind && S.popover.anchor === anchor) { closePopover(false); anchor.focus(); return; }
+  const origin = anchor.closest('#popover') ? S.popover.anchor : anchor;
+  openPopover(kind, origin, data);
+  post({ t: 'focus', target: 'chrome' });
+  $('popover').querySelector('button')?.focus();
+}
+
+const BANDS = [pinnedBand, bookmarksBand, frequentBand];
 const START = {
+  bookmark: { open: (id) => { closePopover(false); uncover(); intent('open-bookmark', { id: Number(id) }); }, menu: 'bookmark' },
+  folder: { open: (name, el) => togglePopover('folder', el, { folder: name }) },
+  more: { open: (_, el) => togglePopover('folder', el, { more: true }) },
+  folders: { open: (_, el) => togglePopover('folder', el, { hidden: true }) },
   tree: { open: (id) => { uncover(); intent('select-tree', { id }); }, menu: 'unpin' },
   shortcut: { open: (id) => { uncover(); intent('shortcut', { index: Number(id) }); } },
   path: { open: (id) => { uncover(); intent('path', { index: Number(id) }); } },
@@ -1491,19 +1529,21 @@ window.canopy = {
 
 $('start-search').insertAdjacentHTML('afterbegin', icon('search'));
 $('start-search').addEventListener('click', () => openPalette({ scope: null, text: '' }));
-$('start-content').addEventListener('click', (event) => {
-  const el = event.target.closest('[data-start]');
-  if (el) START[el.dataset.start]?.open(el.dataset.id, el);
-});
-$('start-content').addEventListener('contextmenu', (event) => {
-  const el = event.target.closest('[data-start]');
-  const menu = el && START[el.dataset.start]?.menu;
-  if (!menu) return;
-  event.preventDefault();
-  openPopover(menu, el, el.dataset.id);
-  post({ t: 'focus', target: 'chrome' });
-  $('popover').querySelector('button')?.focus();
-});
+for (const container of [$('start-content'), $('popover')]) {
+  container.addEventListener('click', (event) => {
+    const el = event.target.closest('[data-start]');
+    if (el) START[el.dataset.start]?.open(el.dataset.id, el);
+  });
+  container.addEventListener('contextmenu', (event) => {
+    const el = event.target.closest('[data-start]');
+    const menu = el && START[el.dataset.start]?.menu;
+    if (!menu) return;
+    event.preventDefault();
+    openPopover(menu, el, el.dataset.id);
+    post({ t: 'focus', target: 'chrome' });
+    $('popover').querySelector('button')?.focus();
+  });
+}
 document.addEventListener('keydown', (event) => {
   if (S.surface !== 'start' || S.palette || S.popover || S.reader || S.overlay
       || event.ctrlKey || event.altKey || event.metaKey || event.isComposing

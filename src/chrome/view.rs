@@ -364,13 +364,10 @@ pub(crate) fn palette_rows(items: &[(Group, PaletteItem)], forest: &ForestProjec
                 PaletteItem::Imported(page) => {
                     let host = short_host(&page.url).to_owned();
                     let title = if page.title.trim().is_empty() { host.clone() } else { page.title.clone() };
-                    let (kind, detail) = match &page.folder {
-                        Some(folder) => ("bookmark", folder.clone()),
-                        None if page.visits > 0 => ("imported", format!("{host} · {}", plural(page.visits, "visit"))),
-                        None => ("imported", host),
-                    };
-                    (kind, title, detail, json!({ "url": page.url.as_str(), "opened": true }))
+                    let detail = if page.visits > 0 { format!("{host} · {}", plural(page.visits, "visit")) } else { host };
+                    ("imported", title, detail, json!({ "url": page.url.as_str(), "opened": true }))
                 }
+                PaletteItem::Bookmark(b) => ("bookmark", super::start::bookmark_label(b).to_owned(), b.folder.clone().unwrap_or_else(|| "Bookmarks".into()), json!({"url": b.url.as_str(), "opened":true})),
                 PaletteItem::Go(url) => ("go", format!("Go to {url}"), String::new(), json!("globe")),
                 PaletteItem::WebSearch { query, .. } => (
                     "search",
@@ -445,7 +442,7 @@ fn pill_width(visit: &Visit) -> f64 {
 }
 
 /// Inter's average advance, close enough for layout; the view ellipsizes the rest.
-fn text_width(text: &str, size: f64, em: f64) -> f64 {
+pub(super) fn text_width(text: &str, size: f64, em: f64) -> f64 {
     text.chars().count() as f64 * size * em
 }
 
@@ -460,7 +457,7 @@ pub(crate) fn site_line(visit: &Visit) -> String {
     }
 }
 
-fn short_host(url: &url::Url) -> &str {
+pub(super) fn short_host(url: &url::Url) -> &str {
     let host = url.host_str().unwrap_or_default();
     host.strip_prefix("www.").unwrap_or(host)
 }
@@ -599,6 +596,7 @@ mod tests {
             capture_enabled: true,
             theme: ThemeMode::Dark,
             suggestions: StartSuggestions::default(),
+            bookmarks: vec![],
             files: vec![],
         };
         let value = super::frame(&frame, 800.);
@@ -645,6 +643,7 @@ mod tests {
             capture_enabled: true,
             theme: ThemeMode::Dark,
             suggestions: StartSuggestions::default(),
+            bookmarks: vec![],
             files: Vec::new(),
         };
         let value = super::frame(&frame, 1240.);
@@ -663,6 +662,7 @@ mod tests {
             capture_enabled: true,
             theme: ThemeMode::Dark,
             suggestions: StartSuggestions::default(),
+            bookmarks: vec![],
             files: Vec::new(),
         };
         let value = super::frame(&frame, 1240.);
@@ -686,6 +686,7 @@ mod tests {
             capture_enabled: true,
             theme: ThemeMode::Dark,
             suggestions: StartSuggestions::default(),
+            bookmarks: vec![],
             files: Vec::new(),
         };
         let value = super::frame(&frame, 1240.);
@@ -730,6 +731,7 @@ mod tests {
             capture_enabled: true,
             theme: ThemeMode::Dark,
             suggestions: StartSuggestions::default(),
+            bookmarks: vec![],
             files: vec![
                 file(
                     1,

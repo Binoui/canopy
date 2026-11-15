@@ -521,20 +521,22 @@ fn main() -> Result<()> {
 
     {
         let mut other = canopy::browser::Browser::open(&directory.path().join("forest.sqlite3"))?;
-        let page = |path: &str, title: &str, folder: Option<&str>| canopy::browser::ImportedPage {
+        let page = |path: &str, title: &str| canopy::browser::ImportedPage {
             url: web_url(&fixture.url(path)).unwrap(),
             title: title.into(),
             visits: 4,
             typed: 1,
             last_visit: Some(1),
-            folder: folder.map(str::to_owned),
         };
-        other.replace_imported(
+        other.import_pages(
             "chrome:Default",
-            &[
-                page("/imported-history", "Quokka field notes", None),
-                page("/imported-bookmark", "Quokka atlas", Some("Bookmarks bar")),
-            ],
+            &[page("/imported-history", "Quokka field notes")],
+            &[canopy::browser::ImportedBookmark {
+                url: web_url(&fixture.url("/imported-bookmark"))?,
+                title: "Quokka atlas".into(),
+                folder: "Bookmarks bar".into(),
+                visits: 0,
+            }],
         )?;
     }
     let count = ui.snapshot()?.visits.len();

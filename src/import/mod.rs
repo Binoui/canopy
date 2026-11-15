@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     path::Path,
     time::Duration,
 };
@@ -8,7 +8,10 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
-use crate::{address::web_url, browser::ImportedPage};
+use crate::{
+    address::web_url,
+    browser::{ImportedBookmark, ImportedPage},
+};
 
 mod linux;
 use crate::{
@@ -33,10 +36,9 @@ fn chrome_ms(value: i64) -> i64 {
     }
 }
 
-/// Every web page in the profile's history and bookmarks, one entry per URL.
+/// Every web page in the profile's history, one entry per URL.
 fn read_pages(profile: &Path) -> Result<Vec<ImportedPage>> {
     let history = profile.join("History");
-    let bookmarks = profile.join("Bookmarks");
     if !["History", "Bookmarks", "Cookies", "Login Data"]
         .iter()
         .any(|name| profile.join(name).is_file())
@@ -50,10 +52,6 @@ fn read_pages(profile: &Path) -> Result<Vec<ImportedPage>> {
     if history.is_file() {
         read_history(&history, &mut pages)
             .with_context(|| format!("Could not read {}", history.display()))?;
-    }
-    if bookmarks.is_file() {
-        read_bookmarks(&bookmarks, &mut pages)
-            .with_context(|| format!("Could not read {}", bookmarks.display()))?;
     }
     let mut pages: Vec<_> = pages.into_values().collect();
     pages.sort_by(|a, b| a.url.as_str().cmp(b.url.as_str()));
@@ -78,16 +76,17 @@ fn read_history(path: &Path, pages: &mut HashMap<String, ImportedPage>) -> Resul
                 visits: row.get::<_, i64>(2)?.max(0) as usize,
                 typed: row.get::<_, i64>(3)?.max(0) as usize,
                 last_visit: (last > 0).then(|| last / 1000 + CHROME_EPOCH_MS),
-                folder: None,
             },
         );
     }
     Ok(())
 }
 
-/// Walks Chrome's `Bookmarks` JSON. A bookmarked page keeps its history counts and takes
-/// the bookmark's name.
-fn read_bookmarks(path: &Path, pages: &mut HashMap<String, ImportedPage>) -> Result<()> {
+/// Reads Chrome's bookmarks separately, retaining history counts for the initial order.
+fn read_bookmarks(path: &Path, pages: &[ImportedPage]) -> Result<Vec<ImportedBookmark>> {
+    let mut bookmarks = Vec::new();
+    let visits: HashMap<_, _> = pages.iter().map(|p| (&p.url, p.visits)).collect();
+    let mut seen = HashSet::new();
     let json: Value = serde_json::from_slice(&std::fs::read(path)?)?;
     let roots = json["roots"]
         .as_object()
@@ -107,20 +106,15 @@ fn read_bookmarks(path: &Path, pages: &mut HashMap<String, ImportedPage>) -> Res
                         continue;
                     };
                     let title = node["name"].as_str().unwrap_or_default().to_owned();
-                    let page = pages
-                        .entry(url.to_string())
-                        .or_insert_with(|| ImportedPage {
+                    let visits = visits.get(&url).copied().unwrap_or(0);
+                    if seen.insert(url.clone()) {
+                        bookmarks.push(ImportedBookmark {
                             url,
-                            title: String::new(),
-                            visits: 0,
-                            typed: 0,
-                            last_visit: None,
-                            folder: None,
+                            title,
+                            visits,
+                            folder,
                         });
-                    if !title.is_empty() {
-                        page.title = title;
                     }
-                    page.folder = Some(folder);
                 }
                 Some("folder") => {
                     let path = if std::ptr::eq(node, root) {
@@ -136,7 +130,7 @@ fn read_bookmarks(path: &Path, pages: &mut HashMap<String, ImportedPage>) -> Res
             }
         }
     }
-    Ok(())
+    Ok(bookmarks)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -216,6 +210,7 @@ impl<T> Decrypted<T> {
     }
 }
 pub struct ChromeProfile {
+    pub bookmarks: Vec<ImportedBookmark>,
     pub name: String,
     pub source: String,
     pub pages: Vec<ImportedPage>,
@@ -225,6 +220,11 @@ pub struct ChromeProfile {
 
 pub fn chrome_profile(profile: &Path) -> Result<ChromeProfile> {
     let pages = read_pages(profile)?;
+    let bookmarks = if profile.join("Bookmarks").is_file() {
+        read_bookmarks(&profile.join("Bookmarks"), &pages)?
+    } else {
+        vec![]
+    };
     let name = profile
         .file_name()
         .unwrap_or_default()
@@ -235,6 +235,7 @@ pub fn chrome_profile(profile: &Path) -> Result<ChromeProfile> {
         .duration_since(std::time::UNIX_EPOCH)?
         .as_secs() as i64;
     Ok(ChromeProfile {
+        bookmarks,
         source: format!("chrome:{name}"),
         name,
         pages,
@@ -708,9 +709,10 @@ mod tests {
                     {"type":"url","name":"Rust docs: wry","url":"https://docs.rs/wry"},
                     {"type":"folder","name":"Reading","children":[
                         {"type":"url","name":"Servo","url":"https://servo.org/"},
-                        {"type":"url","name":"Bad","url":"javascript:alert(1)"}]}]},
-                "other":{"type":"folder","name":"Other bookmarks","children":[]},
-                "synced":{"type":"folder","name":"Mobile bookmarks","children":[]}},
+                        {"type":"url","name":"Bad","url":"javascript:alert(1)"}]},
+                    {"type":"folder","name":"Work","children":[{"type":"folder","name":"Rust","children":[{"type":"url","name":"Nested","url":"https://example.org/nested"}]}]}]},
+                "other":{"type":"folder","name":"Other bookmarks","children":[{"type":"folder","name":"Y","children":[{"type":"url","name":"Other","url":"https://example.org/other"}]}]},
+                "synced":{"type":"folder","name":"Mobile bookmarks","children":[{"type":"url","name":"Mobile","url":"https://example.org/mobile"}]}},
               "version":1}"#,
         )
         .unwrap();
@@ -718,25 +720,27 @@ mod tests {
     }
 
     #[test]
-    fn history_and_bookmarks_merge_by_url_and_skip_non_web_pages() {
+    fn bookmarks_are_read_apart_from_history() {
         let dir = profile();
-        let pages = chrome_profile(dir.path()).unwrap().pages;
+        let profile = chrome_profile(dir.path()).unwrap();
+        let pages = profile.pages;
+        let bookmarks = profile.bookmarks;
         let urls: Vec<_> = pages.iter().map(|p| p.url.as_str()).collect();
         assert_eq!(
             urls,
-            [
-                "https://docs.rs/wry",
-                "https://news.ycombinator.com/",
-                "https://servo.org/"
-            ]
+            ["https://docs.rs/wry", "https://news.ycombinator.com/"]
         );
         let wry = &pages[0];
-        assert_eq!(wry.title, "Rust docs: wry");
+        assert_eq!(bookmarks[0].title, "Rust docs: wry");
         assert_eq!((wry.visits, wry.typed), (12, 3));
-        assert_eq!(wry.folder.as_deref(), Some("Bookmarks bar"));
+        assert_eq!(bookmarks[0].folder, "Bookmarks bar");
         assert_eq!(wry.last_visit, Some(1_794_517_910_813));
-        assert_eq!(pages[2].folder.as_deref(), Some("Bookmarks bar › Reading"));
-        assert_eq!(pages[1].folder, None);
+        assert_eq!(bookmarks[1].folder, "Bookmarks bar › Reading");
+        assert_eq!(bookmarks.len(), 5);
+        assert_eq!(bookmarks[2].folder, "Bookmarks bar › Work › Rust");
+        assert_eq!(bookmarks[3].folder, "Other bookmarks › Y");
+        assert_eq!(bookmarks[4].folder, "Mobile bookmarks");
+        assert_eq!(bookmarks[0].visits, 12);
     }
 
     #[test]

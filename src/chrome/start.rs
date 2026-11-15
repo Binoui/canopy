@@ -24,7 +24,7 @@ pub(super) fn value(frame: &ChromeFrame) -> Value {
             })
         })
         .collect();
-    json!({"pinned": pinned})
+    json!({"pinned": pinned, "bookmarks": bookmarks(&frame.bookmarks)})
 }
 
 fn mini_value(mini: &tree_view::Miniature) -> Value {
@@ -64,6 +64,7 @@ mod tests {
             capture_enabled: true,
             theme: ThemeMode::Dark,
             suggestions: StartSuggestions::default(),
+            bookmarks: vec![],
             files: vec![],
         };
         let start = value(&frame);
@@ -78,5 +79,100 @@ mod tests {
             .unwrap()
             .iter()
             .all(|t| t.pin.is_some()));
+    }
+}
+
+pub(super) fn bookmark_label(b: &crate::browser::Bookmark) -> &str {
+    if b.title.trim().is_empty() {
+        super::view::short_host(&b.url)
+    } else {
+        &b.title
+    }
+}
+
+fn bookmarks(bookmarks: &[crate::browser::Bookmark]) -> Value {
+    use std::collections::BTreeMap;
+    let row = |b: &crate::browser::Bookmark| json!({"id":b.id.get(), "label":bookmark_label(b), "url":b.url.as_str()});
+    let top: Vec<_> = bookmarks.iter().filter(|b| b.folder.is_none()).collect();
+    let count = if top.len() > 16 { 15 } else { top.len() };
+    let mut folders = BTreeMap::<&str, Vec<_>>::new();
+    for b in bookmarks {
+        if let Some(name) = b.folder.as_deref() {
+            folders.entry(name).or_default().push(b);
+        }
+    }
+    let mut folders: Vec<_> = folders.into_iter().collect();
+    folders.sort_by(|(a, aa), (b, bb)| bb.len().cmp(&aa.len()).then(a.cmp(b)));
+    let width = |name: &str, count: usize| {
+        super::view::text_width(name, 11., 0.56)
+            + super::view::text_width(&count.to_string(), 11., 0.56)
+            + 42.
+    };
+    let total: f64 = folders
+        .iter()
+        .map(|(name, rows)| width(name, rows.len()))
+        .sum();
+    let mut room = if total > 520. { 456. } else { 520. };
+    let mut visible = 0;
+    for (name, rows) in &folders {
+        room -= width(name, rows.len());
+        if room < 0. {
+            break;
+        }
+        visible += 1;
+    }
+    let folder = |(name, rows): &(&str, Vec<&crate::browser::Bookmark>)| json!({"name":name,"count":rows.len(),"rows":rows.iter().map(|b| row(b)).collect::<Vec<_>>()});
+    json!({
+        "tiles": top[..count].iter().map(|b| row(b)).collect::<Vec<_>>(),
+        "more": (top.len() > count).then(|| json!({"label":format!("{} more", top.len()-count),"rows":top[count..].iter().map(|b| row(b)).collect::<Vec<_>>() })),
+        "folders": folders[..visible].iter().map(folder).collect::<Vec<_>>(),
+        "hidden": (visible < folders.len()).then(|| json!({"label":format!("{} more", folders.len()-visible),"folders":folders[visible..].iter().map(folder).collect::<Vec<_>>() })),
+        "empty": bookmarks.is_empty(),
+    })
+}
+
+#[cfg(test)]
+mod bookmark_tests {
+    use super::*;
+    use crate::browser::{Browser, ImportedBookmark};
+    #[test]
+    fn bookmark_band_has_sixteen_cells_with_n_more_and_sorted_folder_chips() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut b = Browser::open(&dir.path().join("db")).unwrap();
+        let mut input = Vec::new();
+        for i in 0..17 {
+            input.push(ImportedBookmark {
+                url: url::Url::parse(&format!("https://example.org/{i}")).unwrap(),
+                title: String::new(),
+                folder: "Bookmarks bar".into(),
+                visits: 17 - i,
+            });
+        }
+        for i in 0..20 {
+            input.push(ImportedBookmark {
+                url: url::Url::parse(&format!("https://example.org/folder/{i}")).unwrap(),
+                title: "Folder".into(),
+                folder: format!("Bookmarks bar › Folder {i}"),
+                visits: 0,
+            });
+        }
+        b.import_pages("test", &[], &input).unwrap();
+        let rows = b.bookmarks().unwrap();
+        let band = bookmarks(&rows);
+        assert_eq!(band["tiles"].as_array().unwrap().len(), 15);
+        assert_eq!(band["more"]["label"], "2 more");
+        assert_eq!(band["tiles"][0]["label"], "example.org");
+        assert_eq!(band["more"]["rows"][0]["url"], "https://example.org/15");
+        assert_eq!(band["folders"][0]["name"], "Folder 0");
+        assert_eq!(
+            band["folders"].as_array().unwrap().len()
+                + band["hidden"]["folders"].as_array().unwrap().len(),
+            20
+        );
+        assert_eq!(bookmarks(&[])["empty"], true);
+        b.remove_bookmark(rows[16].id).unwrap();
+        let band = bookmarks(&b.bookmarks().unwrap());
+        assert_eq!(band["tiles"].as_array().unwrap().len(), 16);
+        assert!(band["more"].is_null());
     }
 }
