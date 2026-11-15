@@ -620,6 +620,37 @@ fn chrome_after_changes() -> Result<()> {
     Ok(())
 }
 
+fn forest_click_survives_frame() -> Result<()> {
+    let u = U::new()?;
+    let a = u.root("/a")?;
+    let tree =
+        u.ui.pages
+            .read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?
+            .tree_of(a)
+            .unwrap();
+    u.ui.pages.settle_tree(tree)?;
+    wait("last tree settled", || u.cursor().is_none() && !u.loading())?;
+    key("ctrl+e")?;
+    let selector = format!(".forest-node[data-id='{a}']");
+    wait("settled page visible", || visible(&u.ui, &selector))?;
+    let (x, y) = chrome_point(&u.ui, &selector)?;
+    focus_window()?;
+    move_to(x, y)?;
+    chrome(&u.ui,"(window.__pressed=false,window.addEventListener('mousedown',()=>window.__pressed=true,{once:true}),true)")?;
+    xdo(&["mousedown", "1"])?;
+    wait("chrome received mouse down", || {
+        chrome(&u.ui, "window.__pressed").ok() == Some(json!(true))
+    })?;
+    chrome(&u.ui, "(canopy.present(S.frame),true)")?;
+    xdo(&["mouseup", "1"])?;
+    anyhow::ensure!(
+        u.arrives(a, 6000),
+        "unchanged forest frame must preserve a pressed page's click"
+    );
+    u.ui.window.close();
+    Ok(())
+}
+
 fn palette_anchor_stable() -> Result<()> {
     let u = U::new()?;
     u.root("/a")?;
@@ -675,6 +706,7 @@ fn main() -> Result<()> {
         ("resize", resize_and_show),
         ("anchor", palette_anchor_stable),
         ("stacking", chrome_after_changes),
+        ("forest_frame", forest_click_survives_frame),
     ];
     for (name, run) in cases {
         if !only.is_empty() && !only.iter().any(|o| o == name) {

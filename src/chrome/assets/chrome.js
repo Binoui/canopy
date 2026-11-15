@@ -889,7 +889,12 @@ function renderForest() {
   svg.innerHTML = edges;
   const d = layout.divider;
   const divider = d ? `<div class="forest-divider" style="top:${d.y}px"><b>${esc(d.title)}</b><span>${esc(d.detail)}</span></div>` : '';
-  $('forest-nodes').innerHTML = heads + divider + nodes;
+  const content = heads + divider + nodes;
+  const layer = $('forest-nodes');
+  if (layer.__content !== content) {
+    layer.innerHTML = content;
+    layer.__content = content;
+  }
   applyCamera();
 }
 

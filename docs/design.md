@@ -152,6 +152,8 @@ GTK child visibility unmaps dormant candidates while retaining their visible fla
 so GTK accepts allocations for them; ordinary hide() rejects those allocations.
 Expanded chrome covers overlay content rather than shrinking the page viewport.
 Chrome stays above every page view, including immediately when a native view maps.
+An unchanged forest frame preserves its interactive DOM nodes, so a press and release
+can span a refresh without losing the click. renderForest owns that identity rule.
 Adding, removing, showing or hiding page views never changes chrome allocation;
 its persistent size request still matches the window width and cover height. These
 independent allocations let the same GtkFixed preserve both rules.
