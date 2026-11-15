@@ -135,16 +135,26 @@ enum StartPage {
 
 type Observer = Rc<dyn Fn(PageEvent)>;
 
+enum Command {
+    Go(Go, Option<Continuation>),
+    Settle(TreeId),
+    Reload,
+}
+
+struct Branches {
+    live: RefCell<Option<Rc<LivePage>>>,
+    dormant: RefCell<Vec<live::Checkpoint>>,
+    candidate: RefCell<Option<Rc<LivePage>>>,
+    candidate_saved: RefCell<Option<live::Checkpoint>>,
+}
+
 pub struct Pages {
     me: Weak<Pages>,
     browser: RefCell<Browser>,
     context: Rc<native::PageContext>,
-    live: RefCell<Option<Rc<LivePage>>>,
+    branches: Branches,
     container: gtk::Fixed,
-    dormant: RefCell<Vec<live::Checkpoint>>,
-    candidate: RefCell<Option<Rc<LivePage>>>,
-    candidate_saved: RefCell<Option<live::Checkpoint>>,
-    commands: RefCell<std::collections::VecDeque<(Go, Option<Continuation>)>>,
+    commands: RefCell<std::collections::VecDeque<Command>>,
     #[cfg(feature = "gui-smoke")]
     checkpoint: RefCell<Option<live::Checkpoint>>,
     #[cfg(feature = "gui-smoke")]
@@ -162,11 +172,13 @@ impl Pages {
             me: me.clone(),
             browser: RefCell::new(browser),
             context,
-            live: RefCell::new(None),
+            branches: Branches {
+                live: RefCell::new(None),
+                dormant: RefCell::new(Vec::new()),
+                candidate: RefCell::new(None),
+                candidate_saved: RefCell::new(None),
+            },
             container: container.clone(),
-            dormant: RefCell::new(Vec::new()),
-            candidate: RefCell::new(None),
-            candidate_saved: RefCell::new(None),
             commands: RefCell::new(std::collections::VecDeque::new()),
             #[cfg(feature = "gui-smoke")]
             checkpoint: RefCell::new(None),
@@ -178,7 +190,7 @@ impl Pages {
             start: Cell::new(None),
         });
         let page = LivePage::new(container, Rc::downgrade(&pages), &pages.context)?;
-        *pages.live.borrow_mut() = Some(Rc::new(page));
+        *pages.branches.live.borrow_mut() = Some(Rc::new(page));
         let weak = Rc::downgrade(&pages);
         pages.context.observe(move |event| {
             if let Some(pages) = weak.upgrade() {
@@ -203,7 +215,12 @@ impl Pages {
 
     #[cfg(feature = "gui-smoke")]
     fn page(&self) -> Rc<LivePage> {
-        self.live.borrow().as_ref().expect("mounted page").clone()
+        self.branches
+            .live
+            .borrow()
+            .as_ref()
+            .expect("mounted page")
+            .clone()
     }
 
     pub fn read<T>(&self, query: impl FnOnce(&Browser) -> T) -> T {
@@ -226,7 +243,8 @@ impl Pages {
     // Clone the observer and end every state borrow before WebKit, GTK or Ui can reenter.
     fn receive(&self, event: PageEvent) {
         let continuation_selected = self.continuation.borrow().as_ref().is_none_or(|c| {
-            self.live
+            self.branches
+                .live
                 .borrow()
                 .as_ref()
                 .is_some_and(|page| page.owns(c.state.ticket()))
@@ -241,6 +259,7 @@ impl Pages {
                 }
             }
             let pending = self
+                .branches
                 .live
                 .borrow()
                 .as_ref()
@@ -270,6 +289,7 @@ impl Pages {
     fn committed(self: &Rc<Self>, ticket: LoadTicket, visit: VisitId) {
         self.select_candidate(ticket);
         let same_document = self
+            .branches
             .live
             .borrow()
             .as_ref()
@@ -288,7 +308,7 @@ impl Pages {
         let weak = self.me.clone();
         glib::idle_add_local_once(move || {
             let Some(pages) = weak.upgrade() else { return };
-            if pages.live.borrow().is_none() {
+            if pages.branches.live.borrow().is_none() {
                 return;
             }
             let continuation = {
@@ -337,19 +357,23 @@ impl Pages {
     }
 
     fn cancel_candidate(&self) {
-        let page = self.candidate.borrow_mut().take();
+        let page = self.branches.candidate.borrow_mut().take();
         if let Some(page) = page {
             page.cancel();
         }
-        if let Some(saved) = self.candidate_saved.borrow_mut().take() {
-            self.dormant.borrow_mut().push(saved);
+        if let Some(saved) = self.branches.candidate_saved.borrow_mut().take() {
+            self.branches.dormant.borrow_mut().push(saved);
         }
     }
 
     fn candidate_page(&self, visit: Option<VisitId>) -> Result<Rc<LivePage>> {
         self.cancel_candidate();
+        let selected = self.branches.live.borrow().clone();
+        if let Some(selected) = selected {
+            selected.cancel_unissued();
+        }
         let saved = visit.and_then(|visit| {
-            let mut dormant = self.dormant.borrow_mut();
+            let mut dormant = self.branches.dormant.borrow_mut();
             let index = dormant
                 .iter()
                 .rposition(|saved| saved.entries.iter().any(|e| e.visit == visit))?;
@@ -368,16 +392,16 @@ impl Pages {
             }
             _ => LivePage::empty(&self.container, self.me.clone(), &self.context)?,
         };
-        *self.candidate_saved.borrow_mut() = saved;
+        *self.branches.candidate_saved.borrow_mut() = saved;
         page.native.hide();
         page.follow_container_bounds(&self.container);
         let page = Rc::new(page);
-        *self.candidate.borrow_mut() = Some(page.clone());
+        *self.branches.candidate.borrow_mut() = Some(page.clone());
         Ok(page)
     }
 
     fn route(&self, visit: VisitId) -> Result<()> {
-        let candidate = self.candidate.borrow().clone();
+        let candidate = self.branches.candidate.borrow().clone();
         if candidate
             .as_ref()
             .is_some_and(|p| p.pending_visit() == Some(visit))
@@ -385,7 +409,7 @@ impl Pages {
             return Ok(());
         }
         self.cancel_candidate();
-        let selected = self.live.borrow().clone();
+        let selected = self.branches.live.borrow().clone();
         if let Some(page) = selected {
             if page.current_visit() == Some(visit) {
                 return Ok(());
@@ -398,13 +422,13 @@ impl Pages {
     }
 
     fn select_candidate(&self, ticket: LoadTicket) {
-        let candidate = self.candidate.borrow().clone();
+        let candidate = self.branches.candidate.borrow().clone();
         let Some(candidate) = candidate.filter(|p| p.owns(ticket)) else {
             return;
         };
-        self.candidate.borrow_mut().take();
-        self.candidate_saved.borrow_mut().take();
-        let old = self.live.borrow_mut().replace(candidate.clone());
+        self.branches.candidate.borrow_mut().take();
+        self.branches.candidate_saved.borrow_mut().take();
+        let old = self.branches.live.borrow_mut().replace(candidate.clone());
         if let Some(old) = old {
             old.native.hide();
             self.releasing.set(true);
@@ -426,20 +450,26 @@ impl Pages {
                                 })
                             });
                         if open {
-                            pages.dormant.borrow_mut().push(saved);
+                            pages.branches.dormant.borrow_mut().push(saved);
                         }
                     }
                     pages.releasing.set(false);
                     loop {
                         let command = pages.commands.borrow_mut().pop_front();
-                        let Some((command, continuation)) = command else {
-                            break;
+                        let Some(command) = command else { break };
+                        let result = match command {
+                            Command::Go(go, continuation) => {
+                                let result = pages.go(go);
+                                if let Some(continuation) = continuation {
+                                    pages.continue_with(continuation);
+                                }
+                                result
+                            }
+                            Command::Settle(tree) => pages.settle_tree(tree),
+                            Command::Reload => pages.reload(),
                         };
-                        if let Err(error) = pages.go(command) {
+                        if let Err(error) = result {
                             pages.receive(PageEvent::Error(error.to_string()));
-                        }
-                        if let Some(continuation) = continuation {
-                            pages.continue_with(continuation);
                         }
                         if pages.releasing.get() {
                             break;
@@ -452,7 +482,7 @@ impl Pages {
     }
 
     fn receive_view(&self, view: crate::browser::ViewId, empty: bool, event: PageEvent) {
-        let candidate = self.candidate.borrow().clone();
+        let candidate = self.branches.candidate.borrow().clone();
         if candidate.as_ref().is_some_and(|p| p.view() == view) {
             if matches!(event, PageEvent::Error(_))
                 || matches!(event, PageEvent::Loading(false)) && empty
@@ -463,24 +493,23 @@ impl Pages {
             return;
         }
         let selected = self
+            .branches
             .live
             .borrow()
             .as_ref()
             .is_some_and(|p| p.view() == view);
         if selected {
-            if matches!(event, PageEvent::Loading(true)) {
-                self.cancel_candidate();
-            }
             self.receive(event);
         }
     }
 
     pub fn go(&self, go: Go) -> Result<()> {
         if self.releasing.get() {
-            self.commands.borrow_mut().push_back((go, None));
+            self.commands.borrow_mut().push_back(Command::Go(go, None));
             return Ok(());
         }
         let page = self
+            .branches
             .live
             .borrow()
             .clone()
@@ -522,10 +551,11 @@ impl Pages {
     pub fn branch_from_queued(&self, visit: VisitId) -> Result<()> {
         self.go(Go::Visit(visit))?;
         let pending = self
+            .branches
             .candidate
             .borrow()
             .clone()
-            .or_else(|| self.live.borrow().clone())
+            .or_else(|| self.branches.live.borrow().clone())
             .and_then(|page| page.pending_ticket());
         if pending.is_none() && self.commands.borrow().is_empty() {
             self.receive(PageEvent::OpenBranchPalette { visit });
@@ -543,15 +573,16 @@ impl Pages {
         Ok(())
     }
     fn continue_with(&self, action: Continuation) {
-        if let Some(command) = self.commands.borrow_mut().back_mut() {
-            command.1 = Some(action);
+        if let Some(Command::Go(_, continuation)) = self.commands.borrow_mut().back_mut() {
+            *continuation = Some(action);
             return;
         }
         let page = self
+            .branches
             .candidate
             .borrow()
             .clone()
-            .or_else(|| self.live.borrow().clone());
+            .or_else(|| self.branches.live.borrow().clone());
         *self.continuation.borrow_mut() =
             page.as_ref()
                 .and_then(|page| page.pending_ticket())
@@ -562,12 +593,16 @@ impl Pages {
     }
 
     pub fn settle_tree(&self, tree: TreeId) -> Result<()> {
-        anyhow::ensure!(self.live.borrow().is_some(), "No selected page.");
+        if self.releasing.get() && self.branches.live.borrow().is_some() {
+            self.commands.borrow_mut().push_back(Command::Settle(tree));
+            return Ok(());
+        }
+        anyhow::ensure!(self.branches.live.borrow().is_some(), "No selected page.");
         self.cancel_continuation();
         self.cancel_candidate();
         let forest =
             self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
-        self.dormant.borrow_mut().retain(|saved| {
+        self.branches.dormant.borrow_mut().retain(|saved| {
             !saved
                 .entries
                 .iter()
@@ -579,7 +614,7 @@ impl Pages {
             Landing::Unchanged => Ok(()),
             Landing::Restore(visit) => self.go(Go::Visit(visit)),
             Landing::Start => {
-                let selected = self.live.borrow().clone();
+                let selected = self.branches.live.borrow().clone();
                 if let Some(page) = selected {
                     page.blank();
                 }
@@ -615,14 +650,14 @@ impl Pages {
     }
     pub fn resume(&self) -> Result<()> {
         if self.start.get().is_some() {
-            anyhow::ensure!(self.live.borrow().is_some(), "No selected page.");
+            anyhow::ensure!(self.branches.live.borrow().is_some(), "No selected page.");
         }
         match self.start.take() {
             Some(StartPage::Reload) => self.reload(),
             Some(StartPage::Show(visit)) => self.go(Go::Visit(visit)),
             Some(StartPage::Blank) => {
                 self.cancel_continuation();
-                let selected = self.live.borrow().clone();
+                let selected = self.branches.live.borrow().clone();
                 if let Some(page) = selected {
                     page.blank();
                 }
@@ -633,7 +668,7 @@ impl Pages {
     }
     pub fn open_roots(&self, urls: &[Url]) -> Result<()> {
         if !urls.is_empty() && self.start.get().is_none() {
-            anyhow::ensure!(self.live.borrow().is_some(), "No selected page.");
+            anyhow::ensure!(self.branches.live.borrow().is_some(), "No selected page.");
         }
         let roots = self.browser.borrow_mut().add_roots(urls)?;
         let Some(last) = roots.last().copied() else {
@@ -649,7 +684,12 @@ impl Pages {
         }
     }
     pub fn reload(&self) -> Result<()> {
+        if self.releasing.get() && self.branches.live.borrow().is_some() {
+            self.commands.borrow_mut().push_back(Command::Reload);
+            return Ok(());
+        }
         let page = self
+            .branches
             .live
             .borrow()
             .clone()
@@ -664,6 +704,7 @@ impl Pages {
     }
     pub fn remember_selection(&self) -> Result<()> {
         let page = self
+            .branches
             .live
             .borrow()
             .clone()
@@ -672,6 +713,7 @@ impl Pages {
     }
     pub fn set_capture_enabled(&self, enabled: bool) -> Result<()> {
         let page = self
+            .branches
             .live
             .borrow()
             .clone()
@@ -685,13 +727,13 @@ impl Pages {
         self.browser.borrow_mut().rename_tree(tree, name)
     }
     pub fn focus(&self) {
-        let selected = self.live.borrow().clone();
+        let selected = self.branches.live.borrow().clone();
         if let Some(page) = selected {
             page.focus();
         }
     }
     pub fn resize(&self, width: f64, height: f64) {
-        let selected = self.live.borrow().clone();
+        let selected = self.branches.live.borrow().clone();
         if let Some(page) = selected {
             page.set_bounds(0., CHROME_HEIGHT, width, height - CHROME_HEIGHT);
         }
@@ -710,6 +752,7 @@ impl Pages {
         done: impl FnOnce(Result<live::Checkpoint>) + 'static,
     ) -> Result<()> {
         let page = self
+            .branches
             .live
             .borrow_mut()
             .take()
@@ -749,7 +792,7 @@ impl Pages {
     #[cfg(feature = "gui-smoke")]
     pub fn mount_selected_page(self: &Rc<Self>, container: &gtk::Fixed) -> Result<()> {
         let page = LivePage::new(container, Rc::downgrade(self), &self.context)?;
-        let old = self.live.borrow_mut().replace(Rc::new(page));
+        let old = self.branches.live.borrow_mut().replace(Rc::new(page));
         if let Some(old) = old {
             let pending = old.clone();
             old.capture_checkpoint_scroll(move || {
@@ -768,7 +811,7 @@ impl Pages {
         visit: VisitId,
     ) -> Result<live::Revival> {
         anyhow::ensure!(!self.releasing.get(), "Page release still pending.");
-        anyhow::ensure!(self.live.borrow().is_none(), "Page still live.");
+        anyhow::ensure!(self.branches.live.borrow().is_none(), "Page still live.");
         let (page, cold) = match saved {
             Some(saved) => {
                 LivePage::revive(container, self.me.clone(), &self.context, saved, visit)?
@@ -781,7 +824,7 @@ impl Pages {
         page.native.show();
         page.follow_container_bounds(container);
         let page = Rc::new(page);
-        *self.live.borrow_mut() = Some(page.clone());
+        *self.branches.live.borrow_mut() = Some(page.clone());
         #[cfg(feature = "gui-smoke")]
         {
             let observer = self.before_revival.borrow().clone();

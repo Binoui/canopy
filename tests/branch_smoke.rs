@@ -728,6 +728,45 @@ fn overlapping_ancestors() -> Result<()> {
     assert_eq!(f.server.hits("/d"), 3);
     Ok(())
 }
+fn release_commands() -> Result<()> {
+    let f = Fixture::new()?;
+    f.navigate("/a")?;
+    let weak = Rc::downgrade(&f.pages);
+    let once = Rc::new(std::cell::Cell::new(false));
+    let called = once.clone();
+    f.pages.observe(move |event| {
+        let pages = weak.upgrade().unwrap();
+        let root = pages
+            .read(|b| b.snapshot())
+            .unwrap()
+            .current_visit()
+            .is_some_and(|v| v.url.path() == "/root");
+        if matches!(event, PageEvent::Changed) && root && !called.replace(true) {
+            let base = pages
+                .read(|b| b.snapshot())
+                .unwrap()
+                .current_visit()
+                .unwrap()
+                .url
+                .clone();
+            pages
+                .open_path(base.join("/first").unwrap(), base.join("/second").unwrap())
+                .unwrap();
+        }
+    });
+    f.pages.open_roots(&[f.server.url("/root")])?;
+    wait("queued path", || {
+        f.pages
+            .read(|b| b.snapshot())
+            .unwrap()
+            .current_visit()
+            .is_some_and(|v| v.url.path() == "/second")
+    })?;
+    assert!(once.get());
+    assert_eq!(f.server.hits("/first"), 1);
+    assert_eq!(f.server.hits("/second"), 1);
+    Ok(())
+}
 fn main() -> Result<()> {
     let environment = tempfile::tempdir()?;
     let home = environment.path().join("home");
@@ -747,6 +786,7 @@ fn main() -> Result<()> {
     type Case = (&'static str, fn() -> Result<()>);
     let cases: &[Case] = &[
         ("branch_history", branch_history),
+        ("release_commands", release_commands),
         ("overlapping_ancestors", overlapping_ancestors),
         ("owner_fork_queue_scroll", owner_fork_queue_scroll),
         ("middle_history", middle_history),

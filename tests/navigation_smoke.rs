@@ -321,6 +321,7 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
             );
         }
         "adopt" => {
+            let source = ui.pages.selected_page().native.clone();
             let started = Rc::new(Cell::new(false));
             let observed = started.clone();
             let handler = ui
@@ -390,8 +391,8 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
                 ui.snapshot()?.current_visit().unwrap().parent.is_none(),
                 "user requested a new root"
             );
-            ui.pages.selected_page().native.disconnect(handler);
-            ui.pages.selected_page().native.disconnect(policy);
+            source.disconnect(handler);
+            source.disconnect(policy);
         }
         "replace" => {
             eval(

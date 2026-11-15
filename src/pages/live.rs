@@ -221,6 +221,25 @@ impl LivePage {
             .iter()
             .any(|e| e.visit == visit && entries.contains(&e.item))
     }
+    pub(super) fn cancel_unissued(&self) {
+        if !matches!(
+            *self.state.issue.borrow(),
+            Issue::Idle | Issue::Issued { .. }
+        ) {
+            return;
+        }
+        if let Some(ticket) = self.pending_ticket() {
+            self.state
+                .owner()
+                .discard_view_continuation(&self.state.navigation.borrow());
+            self.state.navigation.borrow_mut().failed(ticket);
+            self.state
+                .load_generation
+                .set(self.state.load_generation.get().wrapping_add(1));
+            *self.state.issue.borrow_mut() = Issue::Idle;
+        }
+    }
+
     pub(super) fn cancel(&self) {
         self.state
             .owner()
@@ -1202,8 +1221,14 @@ impl NativeState {
             return Ok(false);
         };
         let owner = self.owner();
-        let foreground = owner.live.borrow().as_ref().is_some_and(|p| p.owns(ticket))
+        let foreground = owner
+            .branches
+            .live
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| p.owns(ticket))
             || owner
+                .branches
                 .candidate
                 .borrow()
                 .as_ref()
@@ -1286,7 +1311,21 @@ impl NativeState {
         self.ticket().as_ref() == Some(ticket)
     }
 
+    fn foreground_requested(&self) {
+        let owner = self.owner();
+        let selected = owner
+            .branches
+            .live
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| p.native == self.native);
+        if selected {
+            owner.cancel_candidate();
+        }
+    }
+
     fn load(self: &Rc<Self>, url: Url) {
+        self.foreground_requested();
         // Every caller registers its intent first; an address with no attempt has no visit to
         // commit to.
         let Some(requested) = self.navigation.borrow().pending_ticket() else {
@@ -1490,6 +1529,12 @@ impl NativeState {
         let Some(uri) = action.request().and_then(|request| request.uri()) else {
             return false;
         };
+        if self.navigation.borrow().pending_ticket().is_none()
+            && matches!(*self.issue.borrow(), Issue::Idle)
+        {
+            self.foreground_requested();
+        }
+
         if uri == "about:blank" {
             return false;
         }
