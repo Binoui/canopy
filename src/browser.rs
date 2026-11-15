@@ -110,8 +110,20 @@ pub enum Landing {
     Start,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct PinOrder(std::num::NonZeroI64);
+
+impl PinOrder {
+    fn from_sql(value: i64) -> Result<Self> {
+        anyhow::ensure!(value > 0, "Invalid pin order.");
+        Ok(Self(std::num::NonZeroI64::new(value).unwrap()))
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TreeState {
+    pub pin: Option<PinOrder>,
+    pub last_event_at: Option<i64>,
     pub root: TreeId,
     pub last_visit: VisitId,
     /// The name the user gave the tree. Without one, the tree is named after its pages.
@@ -271,6 +283,16 @@ pub struct Browser {
     connection: Connection,
 }
 
+fn migrate_pins(connection: &Connection) -> Result<()> {
+    connection.execute_batch(
+        "ALTER TABLE tree_state ADD COLUMN pin_order INTEGER CHECK(pin_order > 0);
+                 CREATE UNIQUE INDEX tree_state_pin_order ON tree_state(pin_order)
+                    WHERE pin_order IS NOT NULL;
+                 PRAGMA user_version = 9;",
+    )?;
+    Ok(())
+}
+
 impl Browser {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -310,7 +332,7 @@ impl Browser {
              INSERT OR IGNORE INTO session(singleton, current_id) VALUES(1, NULL);",
         )?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version > 8 {
+        if version > 9 {
             bail!("This database comes from a newer version of Canopy.");
         }
         if version == 0 {
@@ -482,6 +504,11 @@ impl Browser {
             )?;
             transaction.commit()?;
         }
+        if version < 9 {
+            let transaction = connection.transaction()?;
+            migrate_pins(&transaction)?;
+            transaction.commit()?;
+        }
         Ok(Self { connection })
     }
 
@@ -627,13 +654,31 @@ impl Browser {
 
     pub fn tree_states(&self) -> Result<Vec<TreeState>> {
         let mut statement = self.connection.prepare(
-            "SELECT t.root_id, t.last_visit_id, t.name, t.settled_at FROM tree_state t
-             JOIN visits v ON v.id=t.root_id ORDER BY v.created_at, v.rowid",
+            "WITH RECURSIVE members(root_id, visit_id) AS (
+    SELECT id, id FROM visits WHERE parent_id IS NULL
+    UNION ALL
+    SELECT m.root_id, v.id FROM visits v JOIN members m ON v.parent_id=m.visit_id
+), activity(root_id, latest_event_at) AS (
+    SELECT m.root_id, MAX(e.at)
+    FROM members m LEFT JOIN visit_events e ON e.visit_id=m.visit_id
+    GROUP BY m.root_id
+)
+SELECT t.root_id, t.last_visit_id, t.name, t.settled_at, t.pin_order,
+       a.latest_event_at
+FROM tree_state t
+JOIN visits r ON r.id=t.root_id
+LEFT JOIN activity a ON a.root_id=t.root_id
+ORDER BY r.created_at, r.rowid",
         )?;
         let mut rows = statement.query([])?;
         let mut states = Vec::new();
         while let Some(row) = rows.next()? {
             states.push(TreeState {
+                pin: row
+                    .get::<_, Option<i64>>(4)?
+                    .map(PinOrder::from_sql)
+                    .transpose()?,
+                last_event_at: row.get(5)?,
                 root: TreeId(row.get::<_, String>(0)?.parse()?),
                 last_visit: row.get::<_, String>(1)?.parse()?,
                 name: row.get(2)?,
@@ -643,6 +688,41 @@ impl Browser {
             });
         }
         Ok(states)
+    }
+
+    pub fn set_pinned(&mut self, tree: TreeId, pinned: bool) -> Result<()> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let order: Option<Option<i64>> = tx
+            .query_row(
+                "SELECT pin_order FROM tree_state WHERE root_id=?1",
+                [tree.root().to_string()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if order.is_none() || (pinned && order.flatten().is_some()) {
+            return Ok(());
+        }
+        if pinned {
+            let next: i64 = tx.query_row(
+                "SELECT COALESCE(MAX(pin_order), 0) FROM tree_state",
+                [],
+                |r| r.get(0),
+            )?;
+            let next = next.checked_add(1).context("Too many pinned trees.")?;
+            tx.execute(
+                "UPDATE tree_state SET pin_order=?2 WHERE root_id=?1 AND pin_order IS NULL",
+                params![tree.root().to_string(), next],
+            )?;
+        } else {
+            tx.execute(
+                "UPDATE tree_state SET pin_order=NULL WHERE root_id=?1",
+                [tree.root().to_string()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Takes `tree` out of the tabs and says where the window goes. Settling a settled tree
@@ -1698,6 +1778,93 @@ mod tests {
         follow(browser, path, NavigationTarget::ChildOf(parent))
     }
 
+    fn historical_connection(version: i64) -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        let sql = include_str!("../tests/fixtures/schema-v8.sql");
+        connection.execute_batch(sql).unwrap();
+        if version >= 9 {
+            let tx = connection.unchecked_transaction().unwrap();
+            migrate_pins(&tx).unwrap();
+            tx.commit().unwrap();
+        }
+        connection
+    }
+
+    #[test]
+    fn opens_a_version_8_database_with_every_tree_unpinned() {
+        let connection = historical_connection(8);
+        let root = Ulid::new().to_string();
+        connection.execute("INSERT INTO visits(id,url,created_at,opened_at) VALUES(?1,'https://example.org/',1,1)", [&root]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO tree_state(root_id,last_visit_id,settled_at) VALUES(?1,?1,2)",
+                [&root],
+            )
+            .unwrap();
+        let b = Browser::with_connection(connection).unwrap();
+        let states = b.tree_states().unwrap();
+        assert_eq!(states.len(), 1);
+        assert!(states[0].pin.is_none());
+        assert_eq!(states[0].last_event_at, None);
+        assert!(!states[0].lifecycle.is_open());
+        assert_eq!(
+            b.connection
+                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            9
+        );
+    }
+
+    #[test]
+    fn pin_order_is_stable_idempotent_and_independent_of_lifecycle() {
+        let mut b = memory();
+        let a = follow(&mut b, "a", NavigationTarget::Root);
+        let child = follow_child(&mut b, "child");
+        let c = follow(&mut b, "c", NavigationTarget::Root);
+        b.set_pinned(TreeId(c), true).unwrap();
+        b.set_pinned(TreeId(a), true).unwrap();
+        let pins = b.tree_states().unwrap();
+        b.set_pinned(TreeId(c), true).unwrap();
+        assert_eq!(b.tree_states().unwrap(), pins);
+        b.settle_tree(TreeId(a)).unwrap();
+        assert_eq!(b.tree_states().unwrap()[0].pin, pins[0].pin);
+        b.restore(child).unwrap();
+        let request = url("child");
+        b.started(request.clone()).unwrap();
+        b.committed(request).unwrap();
+        let states = b.tree_states().unwrap();
+        assert!(states[0].lifecycle.is_open());
+        assert_eq!(states[0].pin, pins[0].pin);
+        let projection =
+            crate::forest::ForestProjection::from_snapshot(b.snapshot().unwrap(), states).unwrap();
+        assert_eq!(
+            projection.pinned().iter().map(|t| t.id).collect::<Vec<_>>(),
+            vec![TreeId(c), TreeId(a)]
+        );
+        b.set_pinned(TreeId(c), false).unwrap();
+        b.set_pinned(TreeId(c), true).unwrap();
+        assert!(b.tree_states().unwrap()[1].pin > b.tree_states().unwrap()[0].pin);
+    }
+
+    #[test]
+    fn tree_age_uses_the_newest_event_anywhere_in_the_tree_including_reload() {
+        let mut b = memory();
+        let a = follow(&mut b, "a", NavigationTarget::Root);
+        let child = follow_child(&mut b, "child");
+        b.connection
+            .execute("UPDATE visit_events SET at=10", [])
+            .unwrap();
+        b.connection
+            .execute(
+                "INSERT INTO visit_events(visit_id,kind,at) VALUES(?1,'reload',100)",
+                [a.to_string()],
+            )
+            .unwrap();
+        let state = &b.tree_states().unwrap()[0];
+        assert_eq!(state.last_visit, child);
+        assert_eq!(state.last_event_at, Some(100));
+    }
+
     #[test]
     fn interleaved_views_ticket_cancellation_redirect_and_hidden_commit() {
         let mut browser = Browser::with_connection(Connection::open_in_memory().unwrap()).unwrap();
@@ -1866,11 +2033,25 @@ mod tests {
         let b = Browser::open(&path).unwrap();
         assert!(!b.tree_states().unwrap()[0].lifecycle.is_open());
         assert_eq!(b.visit(a).unwrap().url, url("a"));
-        b.connection
-            .execute_batch("ALTER TABLE tree_state DROP COLUMN settled_at; PRAGMA user_version=7;")
-            .unwrap();
         drop(b);
-        assert!(Browser::open(&path).unwrap().tree_states().unwrap()[0]
+        let legacy = dir.path().join("legacy.db");
+        let connection = Connection::open(&legacy).unwrap();
+        connection
+            .execute_batch(
+                &include_str!("../tests/fixtures/schema-v8.sql")
+                    .replace(", settled_at INTEGER CHECK(settled_at > 0)", "")
+                    .replace("PRAGMA user_version=8", "PRAGMA user_version=7"),
+            )
+            .unwrap();
+        connection.execute("INSERT INTO visits(id,url,created_at,opened_at) VALUES(?1,'https://example.org/a',1,1)", [a.to_string()]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO tree_state(root_id,last_visit_id) VALUES(?1,?1)",
+                [a.to_string()],
+            )
+            .unwrap();
+        drop(connection);
+        assert!(Browser::open(&legacy).unwrap().tree_states().unwrap()[0]
             .lifecycle
             .is_open());
     }

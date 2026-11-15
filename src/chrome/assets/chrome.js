@@ -11,6 +11,7 @@ const MONOGRAM = ['#d95c42', '#3b7ad6', '#2e9e5e', '#9c6bde', '#d9962e', '#3b99a
 const ICONS = {
   expand: '<path d="M9 4H4v5M15 4h5v5M4 15v5h5M20 15v5h-5" stroke-width="1.7"/>',
   collapse: '<path d="M4 9h5V4M20 9h-5V4M9 20v-5H4M15 20v-5h5" stroke-width="1.7"/>',
+  pinned: '<path d="M9 3h6l-1 7 4 4v2H6v-2l4-4zM12 16v6" stroke-width="1.6"/>',
   plus: '<path d="M12 5v14M5 12h14" stroke-width="1.9"/>',
   search: '<circle cx="11" cy="11" r="6.5" stroke-width="1.9"/><path d="M20 20l-4.2-4.2" stroke-width="1.9"/>',
   spark: '<path d="M11 2.5l1.9 5.6 5.6 1.9-5.6 1.9L11 17.5l-1.9-5.6L3.5 10l5.6-1.9z" fill="currentColor" stroke="none"/><path d="M18.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z" fill="currentColor" stroke="none" opacity=".7"/>',
@@ -200,6 +201,7 @@ function renderTabs() {
     return `<button class="tab${tree.active ? ' on' : ''}" data-id="${tree.id}" title="${esc(`${tree.title} · ${pages}${pending}${key}`)}" aria-label="${esc(`${tree.title}, ${pages}${pending}`)}">`
       + (root ? visitFav(root, 14) : '')
       + `<span class="tab-title">${esc(tree.title)}</span>`
+      + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Pinned">${icon('pinned')}</span>` : '')
       + (tree.pending ? `<span class="count">${tree.pending}</span>` : '')
       + `<span class="tab-settle" data-settle="${tree.id}" title="Settle${tree.active ? ' · Ctrl+W' : ''}" aria-hidden="true">${icon('close')}</span>`
       + '</button>';
@@ -649,13 +651,17 @@ $('popover').addEventListener('mouseleave', leaveWaitingPin);
 /// the menu should not cover.
 function openPopover(kind, anchor, data, below = anchor) {
   const popover = $('popover');
+  const a = anchor.getBoundingClientRect();
+  const b = below.getBoundingClientRect();
   S.popover = { kind, anchor, data };
   renderPopover();
   popover.hidden = false;
-  const a = anchor.getBoundingClientRect();
   const width = popover.offsetWidth;
   popover.style.left = `${clamp(a.left, 8, window.innerWidth - width - 8)}px`;
-  popover.style.top = `${below.getBoundingClientRect().bottom + 6}px`;
+  const belowRoom = (S.windowHeight ?? window.innerHeight) - b.bottom - 14;
+  const above = belowRoom < 200 && a.top > belowRoom;
+  popover.style.maxHeight = `${Math.max(40, above ? a.top - 14 : belowRoom)}px`;
+  popover.style.top = `${above ? Math.max(8, a.top - popover.offsetHeight - 6) : b.bottom + 6}px`;
   if (S.layer !== 'palette') setLayer('menu');
   syncLayer();
 }
@@ -731,7 +737,23 @@ function renderPopover() {
   const popover = $('popover');
   const { kind, data } = S.popover;
   popover.classList.toggle('waiting', kind === 'waiting');
-  if (kind === 'waiting') {
+  if (kind === 'tab' || kind === 'unpin') {
+    const tab = S.frame.tabs.find((t) => t.id === data);
+    const menu = kind === 'unpin' ? { label: 'Unpin tree', pinned: false } : tab?.pinMenu;
+    if (!menu) { closePopover(false); return; }
+    popover.innerHTML = (kind === 'tab' ? '<button class="menu-row" data-tab-action="rename">Rename</button>' : '')
+      + `<button class="menu-row" data-tab-action="pin">${esc(menu.label)}</button>`
+      + (kind === 'tab' ? '<button class="menu-row" data-tab-action="settle">Settle tree</button>' : '');
+    popover.querySelectorAll('[data-tab-action]').forEach((row) => row.addEventListener('click', () => {
+      const anchor = S.popover.anchor;
+      const action = row.dataset.tabAction;
+      closePopover(false);
+      if (action === 'rename') {
+        openPopover('rename', anchor, data);
+        S.popover.field.focus(); S.popover.field.select();
+      } else intent(action === 'pin' ? 'pin-tree' : 'settle-tree', { id: data, pinned: menu.pinned });
+    }));
+  } else if (kind === 'waiting') {
     const { ids, order } = S.frame.waiting;
     if (!ids.length) { closePopover(false); return; }
     popover.innerHTML = `<div class="pop-head"><span class="menu-heading grow">Waiting in this tree · ${ids.length}</span><span class="menu-detail">${esc(order)}</span></div>`
@@ -854,7 +876,7 @@ function wireCaptureRow() {
 
 let paletteSeq = 0, paletteTimer = 0;
 
-function openPalette({ scope, text }) {
+function openPalette({ scope, text, typed = false }) {
   intent('cancel');
   if (S.surface === 'start') scope = null;
   closePopover(false);
@@ -869,7 +891,8 @@ function openPalette({ scope, text }) {
   const input = $('palette-input');
   input.value = text;
   input.focus();
-  input.select();
+  if (typed) input.setSelectionRange(text.length, text.length);
+  else input.select();
   queryPalette();
   syncLayer();
 }
@@ -1019,6 +1042,8 @@ const pageShows = () => S.surface === 'reading' && !S.overlay;
 function setSurface(surface) {
   if (S.surface === surface) return;
   S.surface = surface;
+  if (surface === 'start') focusStart();
+  renderPlaceholder();
   $('start').hidden = surface !== 'start';
   setLayer(restingLayer());
   syncLayer();
@@ -1051,6 +1076,7 @@ function setOverlay(kind) {
 function closeOverlay() {
   setOverlay(null);
   if (pageShows()) post({ t: 'focus', target: 'page' });
+  else if (S.surface === 'start') focusStart();
 }
 
 function toggleOverlay(kind) {
@@ -1070,28 +1096,68 @@ function uncover() {
   setSurface('reading');
 }
 
-function renderStart() {
-  const frame = S.frame;
-  if (!frame) return;
-  const shortcuts = frame.shortcuts.map((s) => `<button class="shortcut-tile" data-shortcut="${s.index}" title="${esc(s.url)}">`
+function focusStart() {
+  post({ t: 'focus', target: 'chrome' });
+  $('start-search').focus();
+}
+
+function renderPlaceholder() {
+  $('strip-placeholder').hidden = !(S.surface === 'start' && !current());
+}
+
+function bandHead(label, hint = '') {
+  return `<div class="band-head"><span class="grow">${esc(label)}</span><span class="hint">${esc(hint)}</span></div>`;
+}
+
+function miniHtml(mini) {
+  const edges = mini.edges.map((e) => `<path class="${e.wait ? 'wait' : ''}" d="M ${e.c[0]} C ${e.c[1]} ${e.c[2]} ${e.c[3]}"/>`).join('');
+  const stub = mini.cut ? `<path class="wait" d="M -6 ${mini.s / 2} H 0"/>` : '';
+  return `<span class="mt" style="width:${mini.w}px;height:${mini.h}px"><svg width="${mini.w}" height="${mini.h}">${edges}${stub}</svg>`
+    + mini.nodes.map((n) => `<span class="mt-node${n.last ? ' last' : ''}${n.waiting ? ' waiting' : ''}" style="left:${n.x}px;top:${n.y}px">${fav(visit(n.id).url, !n.waiting, mini.s)}</span>`).join('') + '</span>';
+}
+
+function pinnedBand(start) {
+  return '<section>' + bandHead('Pinned trees', 'Opens the tree where you left it')
+    + (start.pinned.length ? '<div class="pinned-row">' + start.pinned.map((t) =>
+      `<button class="pinned-card" data-start="tree" data-id="${t.id}" title="${esc(t.tip)}">`
+      + `<span class="pc-tree">${miniHtml(t.mini)}</span><span class="pc-foot"><span class="pc-name">${esc(t.title)}</span>`
+      + (t.waiting ? `<span class="count" title="${t.waiting} waiting">${t.waiting}</span>` : '')
+      + `</span><span class="pc-meta">${esc(t.meta)}</span></button>`).join('') + '</div>'
+      : '<div class="hint-line">Pin a tree from its tab menu. It stays here and never settles on its own.</div>') + '</section>';
+}
+
+function frequentBand() {
+  const shortcuts = S.frame.shortcuts.map((s) => `<button class="start-tile" data-start="shortcut" data-id="${s.index}" title="${esc(s.label + '\n' + s.url)}">`
     + `<span class="glyph">${fav(s.url, true, 24)}</span><span class="label">${esc(s.label)}</span></button>`).join('');
-  const paths = frame.paths.map((p) => `<button class="menu-row path-row" data-path="${p.index}" title="${esc(`${p.first}\n${p.second}`)}">`
+  const paths = S.frame.paths.map((p) => `<button class="menu-row path-row" data-start="path" data-id="${p.index}" title="${esc(p.first + '\n' + p.second)}">`
     + `<span class="chain"><span class="glyph">${fav(p.first, true, 14)}</span><i>→</i><span class="glyph">${fav(p.second, true, 14)}</span></span>`
     + `<span class="grow">${esc(p.text)}</span><span class="menu-detail">${esc(p.count)}</span></button>`).join('');
-  $('start-content').innerHTML = '<div class="start-title">New tree</div>'
-    + `<button id="start-search">${icon('search')}<span>An address, a search, or a page in your forest</span><kbd>Ctrl K</kbd></button>`
-    + (shortcuts ? `<div class="tiles">${shortcuts}</div>` : '<div class="empty">Your frequent pages will appear here as your forest grows.</div>')
-    + '<div><div class="menu-heading">Usual paths</div>'
-    + (paths || '<div class="empty" style="text-align:left;padding:0 8px">Follow links to build paths you can revisit.</div>') + '</div>';
-  $('start-search').addEventListener('click', () => openPalette({ scope: null, text: '' }));
-  $('start-content').querySelectorAll('[data-shortcut]').forEach((tile) => tile.addEventListener('click', () => {
-    setSurface('reading');
-    intent('shortcut', { index: Number(tile.dataset.shortcut) });
-  }));
-  $('start-content').querySelectorAll('[data-path]').forEach((row) => row.addEventListener('click', () => {
-    setSurface('reading');
-    intent('path', { index: Number(row.dataset.path) });
-  }));
+  return '<section>' + bandHead('Frequent pages') + (shortcuts ? `<div class="start-tiles">${shortcuts}</div>` : '<div class="hint-line">Your frequent pages will appear here as your forest grows.</div>')
+    + '</section><section>' + bandHead('Usual paths') + (paths || '<div class="hint-line">Follow links to build paths you can revisit.</div>') + '</section>';
+}
+
+const BANDS = [pinnedBand, frequentBand];
+const START = {
+  tree: { open: (id) => { uncover(); intent('select-tree', { id }); }, menu: 'unpin' },
+  shortcut: { open: (id) => { uncover(); intent('shortcut', { index: Number(id) }); } },
+  path: { open: (id) => { uncover(); intent('path', { index: Number(id) }); } },
+};
+
+function renderStart() {
+  if (!S.frame || S.startPressed) return;
+  const paint = JSON.stringify([S.frame.start, S.frame.shortcuts, S.frame.paths, S.rev]);
+  if (S.startPaint === paint) return;
+  S.startPaint = paint;
+  const focused = document.activeElement?.closest('[data-start]');
+  const anchor = S.popover?.anchor.closest('[data-start]');
+  const find = (el) => el && [...$('start-content').querySelectorAll('[data-start]')].find((n) => n.dataset.start === el.dataset.start && n.dataset.id === el.dataset.id);
+  $('start-content').innerHTML = BANDS.map((band) => band(S.frame.start)).join('');
+  find(focused)?.focus();
+  if (anchor) {
+    const next = find(anchor);
+    if (next) S.popover.anchor = next;
+    else closePopover(false);
+  }
 }
 
 // ---------- forest view ----------
@@ -1255,7 +1321,9 @@ const when = (at) => new Date(at).toLocaleString(undefined, { day: '2-digit', mo
 // ---------- Rust's side ----------
 
 window.canopy = {
-  present(frame) {
+  viewport(height) { S.windowHeight = height; },
+  present(frame, height) {
+    S.windowHeight = height;
     const previous = current();
     S.frame = frame;
     applyStrip(frame.strip);
@@ -1270,6 +1338,7 @@ window.canopy = {
     renderTabs();
     animateStrip(previous === null && strip.shown.nodes.size === 0 ? 0 : MOVE);
     renderStart();
+    renderPlaceholder();
     renderForest();
     renderSheet(false);
     if (S.card) {
@@ -1315,6 +1384,7 @@ window.canopy = {
     closePalette(false);
     setOverlay(null);
     setSurface('start');
+    focusStart();
   },
   toggleForest() { toggleOverlay('forest'); },
   toggleTree() { toggleOverlay('tree'); },
@@ -1407,6 +1477,7 @@ window.canopy = {
   /// For tests: what the view shows, without reaching into the DOM.
   state() {
     return {
+      start: S.frame?.start,
       surface: S.surface, overlay: S.overlay, treeSide: S.treeSide, open: S.open, animating: !!strip.anim, card: S.card, layer: S.layer, palette: !!S.palette,
       reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported, logins: loginNames(), save: S.save, locked: S.locked,
       dark: document.documentElement.classList.contains('dark'),
@@ -1417,6 +1488,38 @@ window.canopy = {
 };
 
 // ---------- static wiring ----------
+
+$('start-search').insertAdjacentHTML('afterbegin', icon('search'));
+$('start-search').addEventListener('click', () => openPalette({ scope: null, text: '' }));
+// A repaint between press and release would replace the pressed element and lose the click.
+$('start-content').addEventListener('mousedown', () => { S.startPressed = true; });
+for (const type of ['mouseup', 'blur']) {
+  window.addEventListener(type, () => {
+    if (!S.startPressed) return;
+    S.startPressed = false;
+    setTimeout(renderStart);
+  });
+}
+$('start-content').addEventListener('click', (event) => {
+  const el = event.target.closest('[data-start]');
+  if (el) START[el.dataset.start]?.open(el.dataset.id, el);
+});
+$('start-content').addEventListener('contextmenu', (event) => {
+  const el = event.target.closest('[data-start]');
+  const menu = el && START[el.dataset.start]?.menu;
+  if (!menu) return;
+  event.preventDefault();
+  openPopover(menu, el, el.dataset.id);
+  post({ t: 'focus', target: 'chrome' });
+  $('popover').querySelector('button')?.focus();
+});
+document.addEventListener('keydown', (event) => {
+  if (S.surface !== 'start' || S.palette || S.popover || S.reader || S.overlay
+      || event.ctrlKey || event.altKey || event.metaKey || event.isComposing
+      || event.target.closest('input, textarea, [contenteditable]') || [...event.key].length !== 1 || event.key === ' ') return;
+  event.preventDefault();
+  openPalette({ scope: null, text: event.key, typed: true });
+});
 
 $('new-tree').innerHTML = icon('plus');
 $('agent').innerHTML = icon('spark');
@@ -1440,15 +1543,13 @@ $('tab-row').addEventListener('auxclick', (event) => {
   const tab = event.target.closest('[data-id]');
   if (event.button === 1 && tab) intent('settle-tree', { id: tab.dataset.id });
 });
-// A right click on a tab names its tree.
 $('tab-row').addEventListener('contextmenu', (event) => {
   const tab = event.target.closest('[data-id]');
   if (!tab) return;
   event.preventDefault();
-  openPopover('rename', tab, tab.dataset.id);
+  openPopover('tab', tab, tab.dataset.id);
   post({ t: 'focus', target: 'chrome' });
-  S.popover.field.focus();
-  S.popover.field.select();
+  $('popover').querySelector('button')?.focus();
 });
 $('tab-overflow').addEventListener('click', (event) => {
   event.stopPropagation();
@@ -1498,7 +1599,7 @@ cardEl.addEventListener('mouseleave', () => {
 
 // A press outside an open popover closes it.
 document.addEventListener('mousedown', (event) => {
-  if (S.popover && !$('popover').contains(event.target) && event.target !== S.popover.anchor) closePopover();
+  if (S.popover && !$('popover').contains(event.target) && !S.popover.anchor.contains(event.target)) closePopover();
 });
 
 // Over the transparent part of the window, the view only stays while something is open;

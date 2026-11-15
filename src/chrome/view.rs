@@ -40,6 +40,8 @@ pub(crate) fn frame(frame: &ChromeFrame, width: f64) -> Value {
                 "pages": tree.page_count,
                 "pending": tree.pending_count,
                 "active": Some(tree.id) == active,
+                "pinned": tree.pin.is_some(),
+                "pinMenu": { "label": if tree.pin.is_some() { "Unpin tree" } else { "Pin tree" }, "pinned": tree.pin.is_none() },
             })
         })
         .collect();
@@ -80,6 +82,7 @@ pub(crate) fn frame(frame: &ChromeFrame, width: f64) -> Value {
             ThemeMode::Light => "light",
             ThemeMode::Dark => "dark",
         },
+        "start": super::start::value(frame),
         "shortcuts": frame.suggestions.shortcuts.iter().enumerate().map(|(index, shortcut)| {
             let host = short_host(&shortcut.url);
             json!({
@@ -462,7 +465,7 @@ fn short_host(url: &url::Url) -> &str {
     host.strip_prefix("www.").unwrap_or(host)
 }
 
-fn plural(count: usize, noun: &str) -> String {
+pub(super) fn plural(count: usize, noun: &str) -> String {
     if count == 1 {
         format!("1 {noun}")
     } else {
@@ -525,6 +528,8 @@ mod tests {
                 current: Some(ids[length - 2]),
             },
             vec![TreeState {
+                pin: None,
+                last_event_at: None,
                 lifecycle,
                 root: TreeId(ids[0]),
                 last_visit: ids[length - 2],

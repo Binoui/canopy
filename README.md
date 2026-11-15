@@ -103,7 +103,8 @@ Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not aff
 - **Ctrl+K** or the **Search or go…** pill opens the palette. Type to search your forest and your saved text, or to go to an address. **Enter** opens the selected result. **Alt+Enter** opens it in a new tree. **Escape** closes the palette and gives the focus back to the page.
 - **Ctrl+L** opens the same palette with the current address selected.
 - **Ctrl+E** or the forest button opens every tree. Drag or scroll to pan, Ctrl+scroll to zoom, and use **Titles** to switch between pills and icons. Click a page to restore it.
-- **Ctrl+T** or **+** opens the new-tree page with frequent pages and usual paths from your history. A usual path loads its first page as a root, then its second page as a child. **Escape** returns to your page.
+- **Ctrl+T** or **+** opens the new-tree page. Type immediately to search in a new tree, or click its search field. Pinned trees appear in a stable three-column band above frequent pages and usual paths from your history. A pinned card restores the tree where you left it, even after you settle it. A usual path loads its first page as a root, then its second page as a child. **Escape** returns to your page.
+- Right-click a tree tab for **Rename**, **Pin tree** or **Unpin tree**, and **Settle tree**. Pinned tabs show a pin mark. Right-click a pinned card to unpin it. Pinning and settling are independent.
 - **Ctrl+W**, a middle click on a tab, or the **×** on a tab settles a tree. A settled tree leaves the tabs and keeps every page. It waits under **Settled** in the forest view, and opening any of its pages brings its tab back. With the new-tree page, the forest view or the palette open, **Ctrl+W** closes that instead.
 - **Ctrl+1** to **Ctrl+9** switch to a tab. Shift is also accepted for layouts such as AZERTY.
 - **F6** moves the keyboard focus between the page and the current page in the strip. **Left** and **Right** walk the path, and **Enter** opens the focused page.
@@ -233,6 +234,7 @@ python3 helpers/test_canopy_login_bitwarden.py
 The GUI tests load locally served pages and drive the window with real pointer and keyboard input. They check the HTML chrome through its own DOM. Install Xvfb and xdotool, then run them like this. Unsetting `WAYLAND_DISPLAY` keeps the window on Xvfb from a Wayland session:
 
 ```sh
+env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test newtree_smoke
 env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test webkit_smoke
 env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test reading_smoke
 env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' cargo test --locked --features gui-smoke --test download_smoke
@@ -247,3 +249,5 @@ env -u WAYLAND_DISPLAY GDK_BACKEND=x11 xvfb-run -a -s '-screen 0 1440x1000x24' c
 The download test points `HOME`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` at a temporary folder, so it never writes to your real download folder and opens files with a stand-in app instead of yours. Set `CANOPY_DOWNLOAD_SHOTS` to a folder to keep screenshots of the leaves and their list.
 
 The design choices are described in [A forest of visits](docs/design.md) and [The memory of an exploration](docs/reading-memory.md).
+
+`newtree_smoke` checks pinned cards, the tab menu, new-tree typing and focus, the empty strip placeholder, and scrolling at 900 by 600. Set `CANOPY_NEWTREE_SHOTS=1` to save dark and light captures in `.cache/shots/`.
