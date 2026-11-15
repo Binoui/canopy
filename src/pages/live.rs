@@ -222,10 +222,7 @@ impl LivePage {
             .any(|e| e.visit == visit && entries.contains(&e.item))
     }
     pub(super) fn cancel_unissued(&self) {
-        if !matches!(
-            *self.state.issue.borrow(),
-            Issue::Idle | Issue::Issued { .. }
-        ) {
+        if !matches!(*self.state.issue.borrow(), Issue::Idle) {
             return;
         }
         if let Some(ticket) = self.pending_ticket() {
