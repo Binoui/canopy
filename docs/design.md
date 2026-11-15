@@ -50,10 +50,10 @@ This choice replaces the GTK and cairo chrome. It costs a second WebKit process,
 
 ## Saved logins are filled on request
 
-A LoginProvider answers two questions: which accounts are saved for a page's origin, and
-what an account's password is. The encrypted vault in src/logins.rs is the first provider.
-Ui owns the provider, so a password manager the user already has can stand in for the vault
-without the page or the chrome changing.
+A LoginProvider answers which accounts are saved for a page, what an account's password is,
+and keeps a login. The encrypted vault in src/logins.rs is the first provider. Ui owns the
+provider, so a password manager the user already has can stand in for the vault without the
+page or the chrome changing.
 
 A helper in the page's isolated world, src/login_fields.js, finds the sign-in fields of the
 top frame, including fields inside open shadow roots. It posts an empty message when they
@@ -79,6 +79,19 @@ compares it with the provider: an identical saved login brings no offer, a diffe
 password brings an update. The password is written only when the user accepts, and an
 unanswered offer is dropped after five minutes. In the vault, a login saved in Canopy has
 its own source and stands in for imported copies of the same account.
+
+A provider answers through a callback, at once or later on the GTK thread, and can answer
+that it is locked. Ui numbers each lookup and drops an answer that arrives for an earlier
+page. LoginHelper in src/login_helper.rs is the provider for a password manager the user
+already has. It runs a program called canopy-login-NAME once per question, with JSON on its
+input and output, through GIO's asynchronous subprocess calls, so a slow manager never
+blocks the window. The helper decides which accounts match a page, and Canopy asks only
+about HTTPS and loopback pages. The text a helper answers at unlock stays in memory and
+goes back with each request, which lets a helper keep a session without storing it. The
+passwords of the last four lookups stay at hand for the fill that follows. One provider is
+active at a time: the helper named in the data folder's login-helper file, or the vault.
+Canopy links no password manager's code. helpers/canopy-login-bitwarden drives Bitwarden's
+own command-line tool.
 
 ## The MVP1 scope
 

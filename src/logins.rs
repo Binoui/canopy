@@ -60,29 +60,55 @@ impl From<rusqlite::Error> for LoginsError {
 }
 type Result<T> = std::result::Result<T, LoginsError>;
 
-/// Where saved logins come from. The vault on this computer is one provider; a password
-/// manager the user already has can be another.
+/// A provider's answer: the value, or that the user has to unlock the provider first.
+pub enum Reply<T> {
+    Ready(T),
+    Locked,
+}
+
+/// Called with a provider's answer, at once or later on the same thread.
+pub type Done<T> = Box<dyn FnOnce(anyhow::Result<Reply<T>>)>;
+
+/// Where saved logins are kept. The vault on this computer is one provider; a password
+/// manager the user already has, reached through a helper program, is another. A provider
+/// may take its time, so it answers through `done`.
 pub trait LoginProvider {
-    /// The accounts saved for exactly this page's origin, most recently used first.
-    fn for_page(&self, page: &Url) -> Result<Vec<SavedLogin>>;
-    /// The password of an account `for_page` returned.
-    fn password(&self, login: &SavedLogin) -> Result<Secret>;
-    /// Keeps `login`, replacing the password of the same account on the same origin.
-    fn save(&mut self, login: &Login) -> Result<()>;
+    /// Where the logins are kept, as the user reads it in "Login saved in …".
+    fn name(&self) -> String;
+    /// The accounts saved for this page, most recently used first. Each belongs to the
+    /// page's own origin.
+    fn for_page(&self, page: &Url, done: Done<Vec<SavedLogin>>);
+    /// The password of an account a recent `for_page` returned.
+    fn password(&self, login: &SavedLogin) -> anyhow::Result<Secret>;
+    /// Keeps `login`, replacing the password of the same account on the same site.
+    fn save(&self, login: Login, done: Done<()>);
+    /// Asks the user to unlock the provider, after an answer of `Locked`. Answers whether
+    /// it is now unlocked.
+    fn unlock(&self, done: Box<dyn FnOnce(anyhow::Result<bool>)>) {
+        done(Ok(true))
+    }
 }
 
 impl LoginProvider for Logins {
-    fn for_page(&self, page: &Url) -> Result<Vec<SavedLogin>> {
-        Logins::for_page(self, page)
+    fn name(&self) -> String {
+        "the vault on this computer".into()
     }
 
-    fn password(&self, login: &SavedLogin) -> Result<Secret> {
-        Logins::password(self, login)
+    fn for_page(&self, page: &Url, done: Done<Vec<SavedLogin>>) {
+        done(
+            Logins::for_page(self, page)
+                .map(Reply::Ready)
+                .map_err(Into::into),
+        );
     }
 
-    fn save(&mut self, login: &Login) -> Result<()> {
-        self.upsert_imported(SAVED, std::slice::from_ref(login))
-            .map(|_| ())
+    fn password(&self, login: &SavedLogin) -> anyhow::Result<Secret> {
+        Ok(Logins::password(self, login)?)
+    }
+
+    fn save(&self, login: Login, done: Done<()>) {
+        let saved = self.upsert(SAVED, std::slice::from_ref(&login));
+        done(saved.map(|_| Reply::Ready(())).map_err(Into::into));
     }
 }
 
@@ -180,6 +206,10 @@ impl Logins {
     }
 
     pub fn upsert_imported(&mut self, source: &str, logins: &[Login]) -> Result<usize> {
+        self.upsert(source, logins)
+    }
+
+    fn upsert(&self, source: &str, logins: &[Login]) -> Result<usize> {
         if logins.is_empty() {
             return Ok(0);
         }
@@ -376,17 +406,36 @@ mod tests {
         vault
             .upsert_imported("chrome:one", &[login(page.as_str(), "old-fake"), bob])
             .unwrap();
-        let provider: &mut dyn LoginProvider = &mut vault;
+        let provider: &dyn LoginProvider = &vault;
+        let save = |login: Login| {
+            let saved = std::rc::Rc::new(std::cell::Cell::new(false));
+            let done = saved.clone();
+            provider.save(
+                login,
+                Box::new(move |reply| done.set(matches!(reply, Ok(Reply::Ready(()))))),
+            );
+            assert!(saved.get(), "the vault answers at once");
+        };
         let mut changed = login(page.as_str(), "new-fake");
         changed.last_used = 9;
-        provider.save(&changed).unwrap();
-        let offered = provider.for_page(&page).unwrap();
+        save(changed);
+        let found = std::rc::Rc::new(RefCell::new(Vec::new()));
+        let done = found.clone();
+        provider.for_page(
+            &page,
+            Box::new(move |reply| {
+                if let Ok(Reply::Ready(logins)) = reply {
+                    *done.borrow_mut() = logins;
+                }
+            }),
+        );
+        let offered = found.take();
         let names: Vec<_> = offered.iter().map(|l| l.username.as_str()).collect();
         assert_eq!(names, ["alice", "bob"]);
         assert!(provider.password(&offered[0]).unwrap().expose() == "new-fake");
         assert!(provider.password(&offered[1]).unwrap().expose() == "bob-fake");
         // Saving again replaces the saved password; a later import does not bring the old one back.
-        provider.save(&login(page.as_str(), "newer-fake")).unwrap();
+        save(login(page.as_str(), "newer-fake"));
         vault
             .upsert_imported("chrome:one", &[login(page.as_str(), "old-fake")])
             .unwrap();

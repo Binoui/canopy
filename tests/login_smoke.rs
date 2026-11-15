@@ -6,11 +6,12 @@ use std::{
     thread,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use canopy::{
     address::{web_url, WebOrigin},
     browser::NavigationTarget,
-    logins::{Login, LoginId, LoginProvider, LoginsError, SavedLogin},
+    login_helper::LoginHelper,
+    logins::{Done, Login, LoginId, LoginProvider, Reply, SavedLogin},
     secret::Secret,
     ui::Ui,
 };
@@ -39,37 +40,38 @@ fn store(accounts: &[(&str, &str)]) -> Store {
 }
 
 impl LoginProvider for Accounts {
-    fn for_page(&self, page: &Url) -> Result<Vec<SavedLogin>, LoginsError> {
-        if WebOrigin::of(page).as_ref() != Some(&self.origin) {
-            return Ok(Vec::new());
-        }
-        Ok(self
-            .accounts
-            .borrow()
-            .iter()
-            .enumerate()
-            .map(|(index, (username, _))| SavedLogin {
-                id: LoginId::new(index as i64),
-                origin: self.origin.clone(),
-                username: username.clone(),
-            })
-            .collect())
+    fn name(&self) -> String {
+        "the test accounts".into()
     }
 
-    fn password(&self, login: &SavedLogin) -> Result<Secret, LoginsError> {
+    fn for_page(&self, page: &Url, done: Done<Vec<SavedLogin>>) {
+        let mut found = Vec::new();
+        if WebOrigin::of(page).as_ref() == Some(&self.origin) {
+            for (index, (username, _)) in self.accounts.borrow().iter().enumerate() {
+                found.push(SavedLogin {
+                    id: LoginId::new(index as i64),
+                    origin: self.origin.clone(),
+                    username: username.clone(),
+                });
+            }
+        }
+        done(Ok(Reply::Ready(found)));
+    }
+
+    fn password(&self, login: &SavedLogin) -> Result<Secret> {
         self.accounts
             .borrow()
             .iter()
             .find(|(username, _)| *username == login.username)
             .map(|(_, password)| Secret::new(password.clone()))
-            .ok_or(LoginsError::Corrupt)
+            .context("no such account")
     }
 
-    fn save(&mut self, login: &Login) -> Result<(), LoginsError> {
+    fn save(&self, login: Login, done: Done<()>) {
         let mut accounts = self.accounts.borrow_mut();
         accounts.retain(|(username, _)| *username != login.username);
         accounts.push((login.username.clone(), login.password.expose().to_owned()));
-        Ok(())
+        done(Ok(Reply::Ready(())));
     }
 }
 
@@ -166,7 +168,7 @@ fn main() -> Result<()> {
     let ui = Ui::new(directory.path())?;
     ui.window.show_all();
     ready(&ui)?;
-    ui.set_login_provider(Box::new(Accounts {
+    ui.set_login_provider(Rc::new(Accounts {
         origin: origin.clone(),
         accounts: store(&[("alice", "fake-alice")]),
     }));
@@ -266,7 +268,7 @@ fn main() -> Result<()> {
     );
     println!("PASS sign-in fields inside web components are found and filled.");
 
-    ui.set_login_provider(Box::new(Accounts {
+    ui.set_login_provider(Rc::new(Accounts {
         origin: origin.clone(),
         accounts: store(&[("alice", "fake-alice"), ("bob", "fake-bob")]),
     }));
@@ -310,6 +312,7 @@ fn main() -> Result<()> {
     println!("PASS a choice from a replaced offer fills nothing.");
 
     saving(&ui, &base, origin)?;
+    helper(&ui, &base, directory.path())?;
     ui.window.close();
     Ok(())
 }
@@ -336,7 +339,7 @@ fn save_offer(ui: &Ui) -> serde_json::Value {
 
 fn saving(ui: &Ui, base: &Url, origin: WebOrigin) -> Result<()> {
     let accounts = store(&[("alice", "fake-alice")]);
-    ui.set_login_provider(Box::new(Accounts {
+    ui.set_login_provider(Rc::new(Accounts {
         origin,
         accounts: accounts.clone(),
     }));
@@ -440,5 +443,87 @@ fn saving(ui: &Ui, base: &Url, origin: WebOrigin) -> Result<()> {
             .any(|(u, p)| u == "erin" && p == "fake-erin")
     })?;
     println!("PASS a login sent by a page that stays is offered once its form goes away.");
+    Ok(())
+}
+
+/// A password manager's helper that keeps its accounts in a file next to itself and
+/// answers only once unlocked.
+const HELPER: &str = r#"#!/usr/bin/env python3
+import json, os, sys
+verb, request = sys.argv[1], json.load(sys.stdin)
+kept = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kept.json")
+logins = json.load(open(kept))
+if verb == "unlock":
+    answer = {"state": "open-sesame"}
+elif request.get("state") != "open-sesame":
+    answer = {"locked": True}
+elif verb == "get":
+    answer = {"error": "asked about " + request["url"]} if request["url"].endswith("/retry") else {"logins": logins}
+else:
+    logins = [l for l in logins if l["username"] != request["username"]]
+    logins.append({"username": request["username"], "password": request["password"]})
+    json.dump(logins, open(kept, "w"))
+    answer = {}
+print(json.dumps(answer))
+"#;
+
+fn helper(ui: &Ui, base: &Url, directory: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let program = directory.join("canopy-login-test");
+    let kept = directory.join("kept.json");
+    std::fs::write(&program, HELPER)?;
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))?;
+    std::fs::write(&kept, r#"[{"username": "zoe", "password": "fake-zoe"}]"#)?;
+    let found = LoginHelper::find(program.to_str().context("a readable path")?)?;
+    assert_eq!(found.name(), "Test");
+    assert!(LoginHelper::find("no-such-helper-here").is_err());
+    ui.set_login_provider(Rc::new(found));
+
+    open(ui, base, "/login")?;
+    wait("the locked manager asks to be unlocked", || {
+        chrome(ui, "canopy.state().locked").is_ok_and(|keeper| keeper == "Test")
+    })?;
+    assert_eq!(text(ui, "#login-chip"), "Unlock Test");
+    assert_eq!(offered(ui), json!([]));
+    if let Ok(dir) = std::env::var("CANOPY_LOGIN_SHOTS") {
+        save_window(ui, &format!("{dir}/login-unlock.png"))?;
+    }
+    click_chrome(ui, "#login-chip")?;
+    wait("the unlocked manager offers its account", || {
+        offered(ui) == json!(["zoe"])
+    })?;
+    assert!(chrome(ui, "canopy.state().locked")?.is_null());
+    assert_eq!(text(ui, "#login-chip"), "zoe");
+    click_chrome(ui, "#login-chip")?;
+    wait("the manager's login is filled", || {
+        fields(ui).is_ok_and(|f| f["user"] == "zoe" && f["pass"] == "fake-zoe")
+    })?;
+    println!("PASS a helper's manager is unlocked from the key button, then fills its login.");
+
+    sign_in(ui, base, "/login", "yan", "fake-yan")?;
+    wait("the manager is offered the new login", || {
+        save_offer(ui)["username"] == "yan"
+    })?;
+    assert_eq!(save_offer(ui)["keeper"], "Test");
+    click_chrome(ui, "#login-chip")?;
+    wait("the save question", || {
+        visible(ui, "#popover [data-save='1']")
+    })?;
+    assert_eq!(text(ui, "#popover .menu-hint"), "Kept in Test.");
+    click_chrome(ui, "#popover [data-save='1']")?;
+    wait("the helper stores the login", || {
+        std::fs::read_to_string(&kept).is_ok_and(|kept| kept.contains("fake-yan"))
+    })?;
+    wait("the save is confirmed", || {
+        toast_text(ui).is_some_and(|toast| toast == "Login saved in Test.")
+    })?;
+    println!("PASS a new login is stored through the helper.");
+
+    open(ui, base, "/retry")?;
+    wait("the helper's error is shown", || {
+        toast_text(ui).is_some_and(|toast| toast.starts_with("Test: asked about "))
+    })?;
+    assert_eq!(offered(ui), json!([]));
+    println!("PASS a helper's error is shown and offers nothing.");
     Ok(())
 }
