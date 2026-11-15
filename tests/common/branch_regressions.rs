@@ -869,13 +869,21 @@ fn click_during_switch() -> Result<()> {
 }
 fn script_during_switch() -> Result<()> {
     let f = Fixture::new()?;
-    f.navigate("/script-nav")?;
-    pump_for(150);
-    f.pages.open_roots(&[f.server.url("/delay/1500/target")])?;
+    f.navigate("/a")?;
+    f.server.gate("script-switch", true);
+    f.pages
+        .open_roots(&[f.server.url("/gate/script-switch/target")])?;
     wait("script switch requested", || {
-        f.server.hits("/delay/1500/target") > 0
+        f.server.hits("/gate/script-switch/target") > 0
     })?;
-    pump_for(2500);
+    // Trigger only after the candidate really exists. A timer from page load can
+    // fire before a new web process starts under load, testing no switch at all.
+    f.eval("location.href='/after-script'; return true;")?;
+    wait("script navigation selected", || {
+        f.cursor_path() == "/after-script"
+    })?;
+    f.server.gate("script-switch", false);
+    pump_for(500);
     assert_eq!(f.cursor_path(), "/after-script");
     Ok(())
 }
