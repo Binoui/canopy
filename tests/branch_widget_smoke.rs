@@ -476,7 +476,12 @@ fn resize_and_show() -> Result<()> {
         anyhow::ensure!(u.arrives(b, 6000), "tab click arrives");
         geometry(&u)?;
         key("ctrl+1")?;
-        anyhow::ensure!(u.arrives(a, 6000), "digit switch arrives");
+        anyhow::ensure!(
+            u.arrives(a, 6000),
+            "digit switch arrives: cursor={} uri={} expected={a}",
+            u.cursor_path(),
+            u.uri()
+        );
         geometry(&u)?;
         // Use a link below every chrome cover, and then scroll the loaded page.
         eval(&u.ui, "document.getElementById('fork').style.cssText='display:block;margin-top:150px;height:60px';JSON.stringify(true)")?;

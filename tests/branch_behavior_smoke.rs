@@ -856,12 +856,16 @@ fn post_mid_walk() -> Result<()> {
         "revived arrived={arrived} list={:?}",
         native_list(&f)
     ));
-    for i in 1..=5 {
+    for (step, expected) in ["/post/1", "/pform/1", "/a"].into_iter().enumerate() {
+        let i = step + 1;
         let before = f.cursor_path();
         f.pages.go(Go::Parent)?;
-        pump_for(400);
-        quiet(&f, 5000);
-        pump_for(300);
+        wait_for(8000, || f.cursor_path() == expected && !loading(&f));
+        assert_eq!(
+            f.cursor_path(),
+            expected,
+            "each Back reaches its preceding page"
+        );
         lines.push(format!(
             "back{i} {before}->{} list={:?} P1={} G1={}",
             f.cursor_path(),
