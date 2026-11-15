@@ -113,8 +113,8 @@ surface in this step.
 
 Starting a candidate fails all pending foreground work in the old view and invalidates
 its asynchronous link decisions. The old committed document remains usable. Main-frame
-Started and same-document navigation cancel the candidate; subframe policy decisions
-do not. Settling cancels only a candidate targeting that tree. Settling the last tree
+Started for another document cancels the candidate; same-document changes (pushState,
+replaceState and fragments) and subframe policy decisions do not. Settling cancels only a candidate targeting that tree. Settling the last tree
 creates a fresh home view, so the next branch cannot inherit settled history. Release
 keeps a valid checkpoint when its current entry belongs to an open tree.
 

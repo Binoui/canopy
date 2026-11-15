@@ -236,7 +236,12 @@ impl LivePage {
         if let Some(ticket) = self.pending_ticket() {
             state.navigation.borrow_mut().failed(ticket);
         }
-        let draining = state.active_ticket().filter(|_| self.native.is_loading());
+        // Policy-phase cancellation has no Finished signal to drain. Only Started
+        // loads participate in the stop/Finished handshake (including beforeunload).
+        let draining = match *state.issue.borrow() {
+            Issue::Loading(ticket) if self.native.is_loading() => Some(ticket),
+            _ => None,
+        };
         *state.issue.borrow_mut() = draining.map(Issue::Cancelling).unwrap_or(Issue::Idle);
         state.issued.borrow_mut().take();
         state.traversal.borrow_mut().take();
@@ -1839,15 +1844,6 @@ impl NativeState {
                 };
                 self.navigation.borrow_mut().publish(visit, stored.url);
             }
-        }
-        if self
-            .navigation
-            .borrow()
-            .current
-            .as_ref()
-            .is_some_and(|d| d.page_url != url)
-        {
-            self.foreground_requested();
         }
         self.navigation.borrow_mut().same_document(url);
         if let Some(document) = self.ticket() {
