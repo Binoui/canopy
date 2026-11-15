@@ -266,13 +266,30 @@ impl LivePage {
                 .find(|n| list.nth_item(-(*n as i32)).as_ref() == Some(item))
                 .unwrap_or(u32::MAX)
         });
-        items.into_iter().find(|item| {
-            self.state.history.borrow().iter().any(|e| {
-                e.item == *item
-                    && e.document != self.state.history_document.get()
-                    && self.state.native_history_allowed(e.visit)
+        let allowed = |item: &&BackForwardListItem| {
+            self.state
+                .history
+                .borrow()
+                .iter()
+                .any(|e| e.item == **item && self.state.native_history_allowed(e.visit))
+        };
+        items
+            .iter()
+            .filter(allowed)
+            .find(|item| {
+                self.state
+                    .history
+                    .borrow()
+                    .iter()
+                    .any(|e| e.item == **item && Some(e.visit) != self.current_visit())
             })
-        })
+            .or_else(|| {
+                items
+                    .iter()
+                    .filter(allowed)
+                    .find(|item| item.uri() != self.native.uri())
+            })
+            .cloned()
     }
     pub(super) fn back_visit(&self) -> Result<Option<VisitId>> {
         let Some(visit) = self.current_visit() else {
@@ -1535,6 +1552,11 @@ impl NativeState {
             #[cfg(feature = "gui-smoke")]
             self.revival_refusals.set(self.revival_refusals.get() + 1);
             decision.ignore();
+            // GET replaces this restored POST entry in place, retaining its back list.
+            if let Some(document) = self.current_entry_document() {
+                self.history_document.set(document);
+            }
+            self.back_forward_commit.set(false);
             let visit = self.current_entry_visit();
             if let Some(visit) = visit {
                 let result = self

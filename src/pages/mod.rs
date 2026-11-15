@@ -413,7 +413,7 @@ impl Pages {
         self.cancel_candidate();
         let selected = self.branches.live.borrow().clone();
         if let Some(page) = selected {
-            if page.current_visit() == Some(visit) {
+            if page.current_visit() == Some(visit) || page.pending_visit() == Some(visit) {
                 return Ok(());
             }
             if self.read(|b| b.visit(visit))?.opened_at.is_some() && page.contains(visit) {
