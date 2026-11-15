@@ -145,7 +145,7 @@ struct Branches {
     live: RefCell<Option<Rc<LivePage>>>,
     dormant: RefCell<Vec<live::Checkpoint>>,
     candidate: RefCell<Option<Rc<LivePage>>>,
-    candidate_saved: RefCell<Option<live::Checkpoint>>,
+    candidate_saved: RefCell<Option<(usize, live::Checkpoint)>>,
 }
 
 pub struct Pages {
@@ -361,8 +361,10 @@ impl Pages {
         if let Some(page) = page {
             page.cancel();
         }
-        if let Some(saved) = self.branches.candidate_saved.borrow_mut().take() {
-            self.branches.dormant.borrow_mut().push(saved);
+        if let Some((index, saved)) = self.branches.candidate_saved.borrow_mut().take() {
+            let mut dormant = self.branches.dormant.borrow_mut();
+            let index = index.min(dormant.len());
+            dormant.insert(index, saved);
         }
     }
 
@@ -377,9 +379,9 @@ impl Pages {
             let index = dormant
                 .iter()
                 .rposition(|saved| saved.entries.iter().any(|e| e.visit == visit))?;
-            Some(dormant.remove(index))
+            Some((index, dormant.remove(index)))
         });
-        let page = match (saved.as_ref(), visit) {
+        let page = match (saved.as_ref().map(|(_, saved)| saved), visit) {
             (Some(saved), Some(visit)) => {
                 LivePage::revive(
                     &self.container,
