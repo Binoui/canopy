@@ -28,15 +28,15 @@ Persistent ids are ULIDs. URLs are not visit ids. Subresources and embedded fram
 
 WebKitGTK builds the page view inside a GTK container. wry still builds the chrome view. The native signals tell apart the start, the commit and the failure of a load.
 
-Pages in src/pages/mod.rs owns the window's Browser, PageContext and one LivePage. Ui owns the window, HTML chrome and cookie inbox. It translates navigation intents into Go commands and reads the forest through Pages::read, which exposes only a shared Browser reference. Pages owns settling and startup selection, including blanking the live page when the last tree is settled.
+Pages in src/pages/mod.rs owns the window's Browser, PageContext and the branch registry. Ui owns the window, HTML chrome and cookie inbox. It translates navigation intents into Go commands and reads the forest through Pages::read, which exposes only a shared Browser reference. Pages owns settling and startup selection, including blanking the live page when the last tree is settled.
 
-PageContext in src/pages/native.rs owns the content WebContext, its persistent data and cookie manager, favicon database and download handler. LivePage in src/pages/live.rs builds the single page in that context and keeps navigation and native history. Its callbacks enter Pages through a weak state reference. A callback guard retains the owner for the entire callback, including reentrant observer calls, and reaches the sole Browser writer. Ui applies cookie batches through Pages with its existing startup gate and serialized drain. The chrome keeps its separate wry context.
+PageContext in src/pages/native.rs owns the content WebContext, its persistent data and cookie manager, favicon database and download handler. LivePage in src/pages/live.rs builds each page in that context and keeps navigation and native history. Its callbacks enter Pages through a weak state reference. A callback guard retains the owner for the entire callback, including reentrant observer calls, and reaches the sole Browser writer. Ui applies cookie batches through Pages with its existing startup gate and serialized drain. The chrome keeps its separate wry context.
 
 Pages keeps branch-palette and path continuations by LoadTicket. A continuation waits for its matching commit, then for that attempt to finish loading. A same-document commit is ready immediately. Once ready, it runs exactly once on a GTK idle after the native document has been bound, even if the page starts another navigation first. The path's second address attaches to the visit committed by its first attempt, including when that page refreshes itself. A native replacement before readiness, a failure of the waiting attempt, an explicit cancellation, blanking, or settling discards it. A Pages command cancels when it starts a new attempt; Back and reload also clear a path continuation when they do nothing. A no-op Back or reload preserves a pending branch palette. Pages issues the path's second address itself, or reports OpenBranchPalette to Ui through its one PageEvent observer.
 
 Downloads find their source with WebKit's download webview lookup. PageContext asks that view's weakly registered state for the visit at transfer start. A transfer retains the context, which reports through a weak Pages reference to record the saved file. Saving and recording do not depend on the source view surviving while the window owner remains alive. Its event sink retains no page. Favicons retains the database and observes database changes and page icon notifications through weak cache references.
 
-Pages clones a live-page handle or observer before calling it. Browser, navigation and continuation borrows end before WebKit or GTK operations or observer callbacks that can reenter. The native adapter clones a document before binding its JavaScript epoch. Read closures contain database queries only. A single webview loads the active page. The other visits stay in SQLite.
+Pages clones a live-page handle or observer before calling it. Browser, navigation and continuation borrows end before WebKit or GTK operations or observer callbacks that can reenter. The native adapter clones a document before binding its JavaScript epoch. Read closures contain database queries only. The selected branch has one view. Other branches retain in-memory native history checkpoints; visits outside those histories stay in SQLite.
 
 Back uses an entry still present in WebKit's history only when its visit belongs to the current open tree, otherwise the parent in the forest. Page-script and mouse Back cannot reopen a settled tree or cross into another open tree. Back from the blank start page does nothing. The list's changed signals drop the bindings of removed entries and bind same-document entries to their visit. Each entry also keeps its native document group, because a return can move the list before Started. This group tells a return within the same document from a full load, even at an identical URL. A full commit gets a fresh group unless it is a back or forward traversal. A traversal onto an unbound entry falls back to the forest parent. The native cursor is read at changed or Committed, never at notify::uri. A restore only traverses an entry from another native document. On a pushState route, F5 and a visit-node click load the stored visit URL, so neither leaves an attempt waiting for load signals that a same-document traversal never sends. A cold resume reloads the URL and restores the recorded scroll. WebKit's page cache can keep the DOM and the forms of an entry still present.
 
@@ -56,75 +56,53 @@ The minimap, the graph layout, page extraction, summaries and the agent wait for
 
 In-app changes inside web applications remain a separate case. The MVP does not promise to turn every JavaScript state change into a visit.
 
-## In-memory page checkpoints
+## Branch registry and switching
 
-The per-branch rollout will call the private checkpoint lifecycle in Pages. Its
-only current callers are GUI probes. A checkpoint owns serialized WebKit session
-bytes, entry records in native list order, and the current position. Each entry
-records its visit, document group, native URL, stored visit URL, and whether its
-request used POST. The two URLs allow a pushState entry to alias a visit without
-changing that visit's stored address. Checkpoints contain no native objects and
-never enter SQLite or logs.
+Pages owns the selected live branch, an optional candidate, and a linear MRU list
+of dormant branch checkpoints. There is no visit-to-branch index. Each checkpoint
+is the continuation of its lane's native history; lane membership is not persisted.
+A view follows links and forks in place. WebKit removes abandoned forward entries;
+opening those stored visits later starts fresh branches. Roots and first activations
+of queued visits also start fresh branches. Queuing never fetches a page.
 
-Release takes the selected page out of its slot, cancels its pending navigation
-and queued capabilities, and stops loading before asking its isolated script
-world for the displayed document's URL and scroll. The pending completion owns the source view.
-The answer saves scroll only for the same valid document and URL. A 500 ms GLib
-timeout cancels the query and completes release if the web process does not answer.
-The main loop must be serviced for either completion to run. A hung main loop has
-no wall-clock guarantee. On timeout, the most recent SQLite and WebKit values can
-still miss recent scrolling. The query measures scroll when the web process handles
-it, so scrolling between the release request and that answer can enter the snapshot.
+Routing checks a candidate's pending Restore intent first, including after Started.
+It then checks the selected document, actual selected history, and dormant histories
+from most recently selected to oldest. Identity is always a visit binding, never URL
+equality. A dormant branch revives at the requested entry, including a middle entry.
+Otherwise selection cold-loads a new branch. Back uses a native back entry in the
+current open tree, or routes the forest parent when no eligible item exists.
 
-Pending navigation cancellation uses Navigation::failed. Checkpointing discards
-only a continuation owned by that view and checks the native list after the query. An unbound item, missing position, duplicate binding, or
-stale binding makes checkpointing fail. Entries without a Canopy visit, including
-about:blank and blob: documents, also make checkpointing fail. Release still destroys
-the view and permits a cold restore from SQLite. No form or script state survives.
+Candidates load hidden, without focus. Their successful commit writes the cursor,
+tree target and arrival once, in Browser's transaction, and synchronously promotes
+the candidate. The old widget is then hidden, the candidate shown and focused, and
+Ui raises chrome on its event. A failure before commit reports the normal error
+and preserves the old selected page and cursor. A retry routes normally. A second
+request cancels the candidate by its own ticket and destroys it; selecting the same
+pending visit reuses it. A cancelled or failed revival retains its checkpoint.
 
-Release disconnects handlers, clears item references, unparents the view, and
-destroys it. The lifecycle gate rejects native and capture callbacks during the
-scroll query and after release. The query completion alone can save the final
-scroll. Weak references and load and document generations also reject late work. Callers hold no selected
-slot borrow while calling observers. During the release wait, the slot is empty.
-Resize and focus tolerate that state. Navigation and capture requests return an
-error. Revival waits for release to complete before mounting a replacement.
+After promotion, the previous view cancels pending navigation through failed-load
+resolution, captures scroll with a 500 ms limit, serializes and is destroyed. The
+selected page stays usable. Go commands arriving during release enter a FIFO; path
+and branch-palette continuations travel with queued commands. They drain when
+release completes. Focus, resizing, cookies and downloads continue directly.
+A failed checkpoint drops the lane, leaving its visits available cold. Settling a
+tree discards its dormant lanes; a release completing after settlement cannot add
+them back. Its landing uses the same routing.
 
-Revival creates a fresh Navigation and view without loading HOME. Restoring the
-session starts no load. Validation checks list length, current position, native
-URLs, and stored visit URLs before rebinding every position. A mismatch or absent
-target takes the cold path. Alias-only targets reload their stored URL cold.
-The saved current entry wins over another entry showing the same visit and URL.
-SQLite scroll applies only when reviving the entry current at checkpoint time.
-Revived views follow their container allocation. Their scroll helper waits for
-two consecutive rendered frames with the same size before applying SQLite scroll, because
-WebKit can finish loading before receiving GTK's final viewport. The wait ends after
-30 frames even if the size keeps changing. Normal live-view
-restoration keeps its existing timing. Other entries retain WebKit's scroll,
-captured when the document was left.
-Native back and forward retain the open-tree restriction.
+A checkpoint owns session bytes, native-order entry bindings and current position,
+without native objects. Revival validates every position, URL and stored visit URL
+before rebinding the newly created item objects. Invalid bindings, absent targets,
+and POST targets fall back to cold GET. Restored POST entries require GET before
+native traversal. No checkpoint is written to SQLite. Restart creates only the
+cursor's cold page and restores stored scroll.
 
-A revival never resends a form. A POST target in a checkpoint takes the cold path
-with GET. Other restored POST entries remain ineligible for native traversal until
-loaded again in this view. Native Back or Forward to one of those entries is refused
-once and replaced by a GET of its stored visit address. The replacement excludes
-that native entry, so it cannot select the same refused entry again. A main-frame
-request supplies one method value, refreshed on redirects and consumed when its entry is bound. A GET reload
-refreshes an existing item's method. New same-document entries inherit the main
-document's method, including entries added by iframe navigation. Iframe decisions
-retain WebKit's behavior.
-Ordinary views retain WebKit's existing form navigation, including cached state and
-POST resubmission when the page cache has evicted a result. Pages ignore
-window.close() so page script cannot destroy the browser's page view.
+Revived hidden pages defer scroll restoration until visible. The helper waits for
+two equal frame sizes before restoring scroll. WebKit retains scroll for other
+history entries; SQLite supplies the checkpoint's current entry. Forms and scripts
+are lost when a branch is released. Shared PageContext services survive source-view
+destruction. Continuation cancellation checks the owning view's ticket.
 
-Commands that need a selected page check the slot before changing the forest.
-Startup can queue a landing without a page. Resume preserves that landing until a
-page is available. Policy decisions during release are refused while the final
-scroll query checks both the URL and the isolated world's document epoch.
-
-### Next PR
-
-A hidden revived view restores scroll only after it is shown. Its first visible
-frames can show the top. Revival refuses while a release is pending, so the old
-page cannot yet remain on screen until the revived page commits. Release can take
-500 ms, during which commands requiring a selected page fail.
+The next step may retain several live lanes under a measured memory budget. It
+must preserve this routing and selection transaction while replacing release at
+every switch with budget-driven release. There is no presence marker or reopening
+surface in this step.

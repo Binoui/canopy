@@ -143,6 +143,7 @@ pub struct Pages {
     container: gtk::Fixed,
     dormant: RefCell<Vec<live::Checkpoint>>,
     candidate: RefCell<Option<Rc<LivePage>>>,
+    candidate_saved: RefCell<Option<live::Checkpoint>>,
     commands: RefCell<std::collections::VecDeque<(Go, Option<Continuation>)>>,
     #[cfg(feature = "gui-smoke")]
     checkpoint: RefCell<Option<live::Checkpoint>>,
@@ -165,6 +166,7 @@ impl Pages {
             container: container.clone(),
             dormant: RefCell::new(Vec::new()),
             candidate: RefCell::new(None),
+            candidate_saved: RefCell::new(None),
             commands: RefCell::new(std::collections::VecDeque::new()),
             #[cfg(feature = "gui-smoke")]
             checkpoint: RefCell::new(None),
@@ -339,6 +341,9 @@ impl Pages {
         if let Some(page) = page {
             page.cancel();
         }
+        if let Some(saved) = self.candidate_saved.borrow_mut().take() {
+            self.dormant.borrow_mut().push(saved);
+        }
     }
 
     fn candidate_page(&self, visit: Option<VisitId>) -> Result<Rc<LivePage>> {
@@ -363,6 +368,7 @@ impl Pages {
             }
             _ => LivePage::empty(&self.container, self.me.clone(), &self.context)?,
         };
+        *self.candidate_saved.borrow_mut() = saved;
         page.native.hide();
         page.follow_container_bounds(&self.container);
         let page = Rc::new(page);
@@ -397,6 +403,7 @@ impl Pages {
             return;
         };
         self.candidate.borrow_mut().take();
+        self.candidate_saved.borrow_mut().take();
         let old = self.live.borrow_mut().replace(candidate.clone());
         if let Some(old) = old {
             old.native.hide();
@@ -407,7 +414,20 @@ impl Pages {
                 let saved = Self::release_page(pending);
                 if let Some(pages) = weak.upgrade() {
                     if let Ok(saved) = saved {
-                        pages.dormant.borrow_mut().push(saved);
+                        let open = pages
+                            .read(|b| {
+                                ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)
+                            })
+                            .is_ok_and(|forest| {
+                                saved.entries.iter().all(|e| {
+                                    forest.tree_of(e.visit).is_some_and(|tree| {
+                                        forest.open().iter().any(|t| t.id == tree)
+                                    })
+                                })
+                            });
+                        if open {
+                            pages.dormant.borrow_mut().push(saved);
+                        }
                     }
                     pages.releasing.set(false);
                     loop {
@@ -429,7 +449,6 @@ impl Pages {
             });
         }
         candidate.show();
-        self.receive(PageEvent::Changed);
     }
 
     fn receive_view(&self, view: crate::browser::ViewId, empty: bool, event: PageEvent) {
@@ -449,6 +468,9 @@ impl Pages {
             .as_ref()
             .is_some_and(|p| p.view() == view);
         if selected {
+            if matches!(event, PageEvent::Loading(true)) {
+                self.cancel_candidate();
+            }
             self.receive(event);
         }
     }
@@ -469,13 +491,10 @@ impl Pages {
         let before = page.pending_ticket();
         let result = match go {
             Go::Visit(visit) => self.route(visit),
-            Go::Parent => {
-                self.cancel_candidate();
-                match page.back_visit()? {
-                    Some(visit) => self.route(visit),
-                    None => Ok(()),
-                }
-            }
+            Go::Parent => match page.back_visit()? {
+                Some(visit) => self.route(visit),
+                None => Ok(()),
+            },
             Go::Tree(tree) => {
                 let visit = self.read(|b| b.tree_target(tree))?;
                 self.route(visit)
@@ -502,7 +521,17 @@ impl Pages {
 
     pub fn branch_from_queued(&self, visit: VisitId) -> Result<()> {
         self.go(Go::Visit(visit))?;
-        self.continue_with(Continuation::BranchPalette);
+        let pending = self
+            .candidate
+            .borrow()
+            .clone()
+            .or_else(|| self.live.borrow().clone())
+            .and_then(|page| page.pending_ticket());
+        if pending.is_none() && self.commands.borrow().is_empty() {
+            self.receive(PageEvent::OpenBranchPalette { visit });
+        } else {
+            self.continue_with(Continuation::BranchPalette);
+        }
         Ok(())
     }
     pub fn open_path(&self, first: Url, second: Url) -> Result<()> {
@@ -749,6 +778,7 @@ impl Pages {
                 live::Revival::Cold,
             ),
         };
+        page.native.show();
         page.follow_container_bounds(container);
         let page = Rc::new(page);
         *self.live.borrow_mut() = Some(page.clone());
