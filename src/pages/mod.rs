@@ -191,6 +191,7 @@ impl Pages {
             start: Cell::new(None),
         });
         let page = LivePage::new(container, Rc::downgrade(&pages), &pages.context)?;
+        page.follow_container_bounds(container);
         *pages.branches.live.borrow_mut() = Some(Rc::new(page));
         let weak = Rc::downgrade(&pages);
         pages.context.observe(move |event| {

@@ -713,8 +713,8 @@ fn revived_form_back() -> Result<()> {
     );
     assert_eq!(
         f.pages.revival_refusals(),
-        1,
-        "replacement must not traverse the refused item again"
+        0,
+        "noncurrent restored POST opens in a fresh branch"
     );
     let list = f.pages.selected_page().native.back_forward_list().unwrap();
     let mut paths: Vec<_> = list
@@ -734,7 +734,7 @@ fn revived_form_back() -> Result<()> {
             .path()
             .to_owned(),
     );
-    assert_eq!(paths, ["/a", "/post", "/next", "/post"]);
+    assert_eq!(paths, ["/post"], "N3: GET belongs to a fresh branch");
     f.pages.reload()?;
     f.arrived(post)?;
     f.release()?;
