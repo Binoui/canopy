@@ -30,12 +30,21 @@ struct Server {
 }
 fn page_body(path: &str) -> String {
     if path.starts_with("/colour/") {
-        let colour = if path.ends_with('a') {
+        let colour = if path == "/colour/third-busy" {
+            "#2040d0"
+        } else if path.ends_with('a') {
             "#d02040"
         } else {
             "#20b060"
         };
-        return format!("<!doctype html><body style='margin:0;background:{colour}'><a id='fork' href='/d'>fork</a><script>window.resizes=[];addEventListener('resize',()=>resizes.push([innerWidth,innerHeight]))</script>");
+        let busy = if path == "/colour/short-busy" {
+            "<script>const until=Date.now()+600;while(Date.now()<until){}</script>"
+        } else if path == "/colour/busy" || path == "/colour/third-busy" {
+            "<script>const until=Date.now()+4000;while(Date.now()<until){}</script>"
+        } else {
+            ""
+        };
+        return format!("<!doctype html><body style='margin:0;background:{colour}'><a id='fork' href='/d'>fork</a><script>window.resizes=[];addEventListener('resize',()=>resizes.push([innerWidth,innerHeight]))</script>{busy}");
     }
     format!("<!doctype html><title>{path}</title><body style='margin:0;height:10000px'><input id='field'><a id='fork' href='/d'>fork</a><div id='fragment' style='margin-top:5000px'>end</div></body>")
 }
@@ -277,9 +286,41 @@ impl U {
     }
     fn root(&self, path: &str) -> Result<VisitId> {
         self.ui.pages.open_roots(&[self.server.url(path)])?;
-        wait(&format!("root {path}"), || {
+        if let Err(error) = wait(&format!("root {path}"), || {
             self.cursor_path() == path && !self.loading()
-        })?;
+        }) {
+            let parent = self
+                .ui
+                .pages
+                .selected_page()
+                .native
+                .parent()
+                .unwrap()
+                .downcast::<gtk::Fixed>()
+                .unwrap();
+            let views: Vec<_> = parent
+                .children()
+                .into_iter()
+                .filter_map(|w| w.downcast::<webkit2gtk::WebView>().ok())
+                .map(|v| {
+                    (
+                        v.as_ptr() as usize,
+                        v.uri(),
+                        v.is_loading(),
+                        v.estimated_load_progress(),
+                        v.is_mapped(),
+                        v.allocation(),
+                    )
+                })
+                .collect();
+            eprintln!(
+                "ROOT_WAIT path={path} hits={} cursor={} selected_uri={} views={views:?}",
+                self.server.hits(path),
+                self.cursor_path(),
+                self.uri()
+            );
+            return Err(error);
+        }
         Ok(self.cursor().unwrap())
     }
     fn page_click(&self, id: &str, button: &str) -> Result<()> {
@@ -764,7 +805,16 @@ fn page_picture_never_blanks() -> Result<()> {
     for i in 0..24 {
         u.ui.pages.go(Go::Visit(roots[i % 2]))?;
         let start = Instant::now();
-        while start.elapsed() < Duration::from_millis(900) || u.cursor() != Some(roots[i % 2]) {
+        let target = if i % 2 == 0 {
+            [208, 32, 64]
+        } else {
+            [32, 176, 96]
+        };
+        let mut seen = false;
+        while start.elapsed() < Duration::from_millis(900)
+            || u.cursor() != Some(roots[i % 2])
+            || !seen
+        {
             assert!(
                 start.elapsed() < Duration::from_secs(8),
                 "switch must commit"
@@ -773,6 +823,14 @@ fn page_picture_never_blanks() -> Result<()> {
             let window = u.ui.window.window().context("window")?;
             let pixel = window.pixbuf(600, 600, 1, 1).context("pixel")?;
             let p = pixel.read_pixel_bytes();
+            let colour = [p[0], p[1], p[2]];
+            if seen {
+                assert_eq!(
+                    colour, target,
+                    "a shown incoming picture must not revert to the outgoing page"
+                );
+            }
+            seen |= colour == target;
             assert!(
                 (p[0] == 208 && p[1] == 32 && p[2] == 64)
                     || (p[0] == 32 && p[1] == 176 && p[2] == 96),
@@ -782,6 +840,123 @@ fn page_picture_never_blanks() -> Result<()> {
         }
         assert_eq!(u.cursor(), Some(roots[i % 2]));
     }
+    Ok(())
+}
+
+fn switch_while_picture_waits_for_script() -> Result<()> {
+    let u = U::new()?;
+    let a = u.root("/colour/a")?;
+    pump(500);
+    u.ui.pages.open_roots(&[u.server.url("/colour/busy")])?;
+    let started = Instant::now();
+    let mut switched = None;
+    let mut returned = false;
+    while started.elapsed() < Duration::from_secs(5) {
+        pump(3);
+        let window = u.ui.window.window().context("window")?;
+        let pixel = window.pixbuf(600, 600, 1, 1).context("pixel")?;
+        let p = pixel.read_pixel_bytes();
+        assert!(
+            (p[0] == 208 && p[1] == 32 && p[2] == 64) || (p[0] == 32 && p[1] == 176 && p[2] == 96),
+            "script wait must retain an outgoing or incoming picture: {:?}",
+            &p[..3]
+        );
+        if switched.is_none()
+            && u.cursor_path() == "/colour/busy"
+            && started.elapsed() > Duration::from_millis(500)
+        {
+            assert!(u.loading(), "the incoming script is still busy");
+            u.ui.pages.go(Go::Visit(a))?;
+            switched = Some(Instant::now());
+        }
+        if let Some(requested) = switched {
+            if u.cursor() == Some(a) && !u.loading() {
+                returned = true;
+            }
+            assert!(
+                returned || requested.elapsed() < Duration::from_secs(2),
+                "a later switch must not wait for the busy script to finish"
+            );
+        }
+    }
+    assert!(switched.is_some() && returned);
+    Ok(())
+}
+
+fn later_switch_keeps_the_picture_on_screen() -> Result<()> {
+    let u = U::new()?;
+    u.root("/colour/a")?;
+    pump(500);
+    u.ui.pages
+        .open_roots(&[u.server.url("/colour/short-busy")])?;
+    let held = Rc::new(std::cell::Cell::new(None));
+    let recorded = held.clone();
+    let weak = Rc::downgrade(&u.ui);
+    u.ui.pages.observe_release(move |event| {
+        if event.phase == canopy::pages::ReleasePhase::Holding {
+            if let Some(ui) = weak.upgrade() {
+                if ui
+                    .snapshot()
+                    .ok()
+                    .and_then(|s| s.current_visit().map(|v| v.url.path().to_string()))
+                    .as_deref()
+                    == Some("/colour/third-busy")
+                {
+                    if let Some(pixel) = ui.window.window().and_then(|w| w.pixbuf(600, 600, 1, 1)) {
+                        let p = pixel.read_pixel_bytes();
+                        recorded.set(Some([p[0], p[1], p[2]]));
+                    }
+                }
+            }
+        }
+    });
+    let started = Instant::now();
+    let mut requested = false;
+    let mut committed = false;
+    let mut old = [208, 32, 64];
+    let mut blue = false;
+    while started.elapsed() < Duration::from_secs(6) {
+        pump(3);
+        if !requested
+            && u.cursor_path() == "/colour/short-busy"
+            && started.elapsed() > Duration::from_millis(350)
+        {
+            u.ui.pages
+                .open_roots(&[u.server.url("/colour/third-busy")])?;
+            requested = true;
+        }
+        if !committed && u.cursor_path() == "/colour/third-busy" {
+            committed = true;
+            old = held.get().context("picture at the second commit")?;
+        }
+        let pixel =
+            u.ui.window
+                .window()
+                .unwrap()
+                .pixbuf(600, 600, 1, 1)
+                .context("pixel")?;
+        let p = pixel.read_pixel_bytes();
+        let colour = [p[0], p[1], p[2]];
+        if committed {
+            assert!(colour == old || colour == [32,64,208], "a late frame from another selection must not replace the held picture: old={old:?} actual={colour:?}");
+            if blue {
+                assert_eq!(
+                    colour,
+                    [32, 64, 208],
+                    "the incoming picture must not revert"
+                );
+            }
+            if colour == [32, 64, 208] {
+                blue = true;
+            }
+        } else {
+            assert!(
+                colour == [208, 32, 64] || colour == [32, 176, 96],
+                "switch picture must never be blank: {colour:?}"
+            );
+        }
+    }
+    assert!(requested && committed && blue);
     Ok(())
 }
 
@@ -889,6 +1064,8 @@ fn main() -> Result<()> {
     type Case = (&'static str, fn() -> Result<()>);
     let cases: &[Case] = &[
         ("picture", page_picture_never_blanks),
+        ("busy_picture", switch_while_picture_waits_for_script),
+        ("later_picture", later_switch_keeps_the_picture_on_screen),
         ("slot", layout_stays_in_slot),
         ("mouse", ui_mouse_back),
         ("allocation", ui_tab_collapse),

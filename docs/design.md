@@ -210,20 +210,23 @@ its persistent size request still matches the window width and cover height. The
 independent allocations let the same GtkFixed preserve both rules.
 
 Pages::select_candidate switches bookkeeping and keyboard focus at commit. It
-maps the incoming page under the outgoing native window, whose GDK input is made
-pass-through immediately. Only that outgoing picture is held. Two isolated-world
-animation frames after a body exists request a rendered snapshot. Pages::present_snapshot
-paints this actual document image after the incoming widget's default draw, so an
-empty native backing store cannot show through. Only after that draw does
-Pages::release_picture hide/checkpoint/release the outgoing view and drain the FIFO.
-Subsequent commands use that same queue, so another switch cannot retain a third
-page's picture. Failures/cancellation before commit never enter this handoff.
-The temporary image scales with the slot while resizing. Native draws are probed
-without the image; once the backing store matches it or contains rendered pixels
-rather than an empty transparent/grey/white frame, the image handler is removed.
-No timer reveals an empty backing store: both 300 ms and 1000 ms cutoffs failed
-pixel sampling under load. A renderer that never supplies a snapshot retains the
-outgoing picture. This deliberately favours a continuous picture over a deadline.
+maps the incoming page below the outgoing native window. The outgoing GDK window
+passes pointer input through, and Pages::register_view rejects input on any view
+that is no longer selected. The retiring picture is frozen so a late first frame
+cannot replace it after another branch commits.
+Two isolated-world animation frames after a body exists request a rendered snapshot.
+Pages::present_snapshot paints that image after the incoming widget's default draw,
+covering an empty backing store. If rendering takes 300 ms, the outgoing picture is
+copied into the incoming widget instead; there is no timeout that reveals grey.
+Only after that draw does Pages::release_picture hide/checkpoint/release the old
+view. Its existing FIFO then drains. In-place address navigation on the selected
+view can proceed when that queue is empty; another view's checkpoint cannot block
+it, and earlier queued commands retain their order.
+The temporary image scales with the slot during resize and remains until native
+pixels are available. Readiness work is cancelled on retirement or detachment.
+Native pixel probing uses one-shot timers scheduled after each check, so expensive
+draws cannot keep a repeating timer overdue and starve presentation or release.
+Failures and cancellation before commit never enter the picture handoff.
 Smoke instrumentation reports the outgoing view's identity at Holding, Checkpointing
 and Released. Exact container counts are captured in the Released callback, before
 queued commands are drained; the tests enforce a 1000 ms frame budget plus the
