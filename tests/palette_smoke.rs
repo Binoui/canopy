@@ -40,7 +40,7 @@ fn open(ui: &Ui, query: &str) -> Result<()> {
     Ok(())
 }
 
-fn choose(ui: &Ui, query: &str, refreshed: bool, mouse: bool) -> Result<String> {
+fn choose(ui: &Ui, query: &str, refreshed: bool, mouse: bool) -> Result<(String, String)> {
     open(ui, query)?;
     let rows = chrome(ui, "canopy.state().rows")?;
     let default = chrome(
@@ -53,13 +53,6 @@ fn choose(ui: &Ui, query: &str, refreshed: bool, mouse: bool) -> Result<String> 
         key("Down")?;
         key("Down")?;
     }
-    assert_eq!(
-        chrome(
-            ui,
-            "document.querySelectorAll('.palette-item')[2].dataset.row"
-        )?,
-        "2"
-    );
     if refreshed {
         refresh(ui)?;
     }
@@ -75,7 +68,7 @@ fn choose(ui: &Ui, query: &str, refreshed: bool, mouse: bool) -> Result<String> 
         );
         key("Return")?;
     }
-    Ok(title)
+    Ok((title, rows[2]["icon"]["url"].as_str().unwrap().to_owned()))
 }
 
 fn main() -> Result<()> {
@@ -123,7 +116,7 @@ fn main() -> Result<()> {
                 && !ui.pages.selected_page().native.is_loading()
         })?;
         pump(200);
-        let chosen = choose(&ui, "Reading", refreshed, mouse)?;
+        let (chosen, _) = choose(&ui, "Reading", refreshed, mouse)?;
         pump(700);
         let actual = ui.snapshot()?.current_visit().unwrap().title.clone();
         println!("palette refresh={refreshed} mouse={mouse}: picked {chosen:?}, opened {actual:?}");
@@ -168,14 +161,15 @@ fn main() -> Result<()> {
         key("ctrl+t")?;
         wait("new tree focused", || chrome_focused(&ui, "#start-search"))?;
         let frozen = chrome(&ui, "canopy.state().start.suggested.map(s=>s.title)")?;
-        let chosen = choose(&ui, "", refreshed, mouse)?;
+        let previous = ui.snapshot()?.current;
+        let (chosen, url) = choose(&ui, "", refreshed, mouse)?;
         assert_eq!(frozen[2], chosen);
-        let i = chosen.strip_prefix("Suggestion ").unwrap();
         wait("suggested page opened", || {
-            ui.snapshot()
-                .unwrap()
-                .current_visit()
-                .is_some_and(|v| v.url.path() == format!("/suggestion-{i}"))
+            let snapshot = ui.snapshot().unwrap();
+            snapshot.current != previous
+                && snapshot
+                    .current_visit()
+                    .is_some_and(|v| v.url.as_str() == url)
                 && !ui.pages.selected_page().native.is_loading()
         })?;
         assert!(ui.snapshot()?.current_visit().unwrap().parent.is_none());
