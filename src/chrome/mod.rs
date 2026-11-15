@@ -12,6 +12,7 @@ mod forest_layout;
 pub(crate) mod graph;
 mod palette;
 mod view;
+mod waiting;
 
 use std::{
     borrow::Cow,
@@ -59,6 +60,9 @@ type PaletteCache = (String, Vec<(Group, PaletteItem)>, usize);
 /// Everything the chrome shows, read from SQLite in one go.
 pub struct ChromeFrame {
     pub forest: ForestProjection,
+    /// Waiting pages that already have a live view. Nothing fills it yet: background
+    /// loading will, and the chrome then shows those pages as loaded with no other change.
+    pub loaded: std::collections::HashSet<VisitId>,
     pub capture_enabled: bool,
     pub theme: ThemeMode,
     pub suggestions: StartSuggestions,

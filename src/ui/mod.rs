@@ -238,6 +238,7 @@ impl Ui {
                 })
                 .collect();
             Ok(ChromeFrame {
+                loaded: Default::default(),
                 forest,
                 capture_enabled: browser.capture_enabled()?,
                 theme: browser.theme_mode()?,

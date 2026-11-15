@@ -81,7 +81,11 @@ function fav(url, opened, size) {
     + `<b style="font-size:${Math.round(size * 0.62)}px">${letter}</b>`
     + `<img src="${src}" alt="" onload="this.parentNode.style.background='none';this.previousSibling.style.visibility='hidden'" onerror="this.remove()"></span>`;
 }
-const visitFav = (v, size) => fav(v.url, !v.queued, size);
+const waitState = (v) => v.queued ? (v.loaded ? 'loaded' : 'unloaded') : null;
+const markClass = (v) => waitState(v) === 'loaded' ? ' pending loaded' : waitState(v) ? ' pending' : '';
+const visitFav = (v, size) => fav(v.url, waitState(v) !== 'unloaded', size);
+const markedFav = (v, size) => `<span class="mk">${visitFav(v, size)}`
+  + (waitState(v) ? `<i class="pending-dot${waitState(v) === 'loaded' ? ' loaded' : ''}"></i>` : '') + '</span>';
 
 // ---------- timers and layers, as the GTK chrome's presentation state machine ----------
 
@@ -314,7 +318,7 @@ function buildStrip(layout) {
       nodes.appendChild(el);
       strip.elements.set(n.id, el);
     }
-    el.className = `node ${n.kind}` + (n.kind === 'tile' && n.s < 24 ? ' sm' : '') + (v.queued ? ' pending' : '');
+    el.className = `node ${n.kind}` + (n.kind === 'tile' && n.s < 24 ? ' sm' : '') + markClass(v);
     el.setAttribute('aria-label', `${v.label}, ${v.site}`);
     const html = n.kind === 'bud' ? ''
       : n.kind === 'pill'
@@ -336,6 +340,7 @@ function buildStrip(layout) {
       dot.remove();
       strip.dots.delete(n.id);
     }
+    if (dot) dot.classList.toggle('loaded', waitState(v) === 'loaded');
     let badge = strip.badges.get(n.id);
     if (n.hidden.length) {
       if (!badge) {
@@ -857,9 +862,9 @@ function renderForest() {
     if (!v) return '';
     maxX = Math.max(maxX, n.x + n.w / 2);
     maxY = Math.max(maxY, n.y + n.s / 2);
-    const cls = `forest-node${n.settled ? ' settled' : ''}${S.forestLabels ? '' : ' icon-only'}${path.has(n.id) ? ' path' : ''}${v.queued ? ' pending' : ''}`;
+    const cls = `forest-node${n.settled ? ' settled' : ''}${S.forestLabels ? '' : ' icon-only'}${path.has(n.id) ? ' path' : ''}${markClass(v)}`;
     return `<button class="${cls}" data-id="${n.id}" title="${esc(v.label)}" style="left:${n.x - n.w / 2}px;top:${n.y - n.s / 2}px;width:${n.w}px;height:${n.s}px">`
-      + visitFav(v, 16) + (S.forestLabels ? `<span>${esc(v.label)}</span>` : '') + '</button>';
+      + markedFav(v, 16) + (S.forestLabels ? `<span>${esc(v.label)}</span>` : '') + '</button>';
   }).join('');
   const heads = layout.heads.map((h) => `<button class="forest-head${h.settled ? ' settled' : ''}" data-id="${h.id}" style="top:${h.y}px"><b>${esc(h.title)}</b><span>${esc(h.detail)}</span></button>`).join('');
   const edges = layout.nodes.map((b) => {

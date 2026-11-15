@@ -12,6 +12,7 @@ use super::{
     forest_layout,
     graph::{self, EdgeKind, NodeKind, StripLayout},
     palette::{Group, PaletteItem},
+    waiting::{self, WaitState, WaitingOrder},
     ChromeFrame, PageFile,
 };
 use crate::{
@@ -46,7 +47,10 @@ pub(crate) fn frame(frame: &ChromeFrame, width: f64) -> Value {
         let mut stack = vec![tree.id.root()];
         while let Some(id) = stack.pop() {
             if let Some(visit) = forest.visit(id) {
-                visits.insert(id.to_string(), visit_value(forest, visit, &tree.title));
+                visits.insert(
+                    id.to_string(),
+                    visit_value(forest, visit, &tree.title, &frame.loaded),
+                );
             }
             stack.extend(forest.children(id).iter().copied());
         }
@@ -57,6 +61,7 @@ pub(crate) fn frame(frame: &ChromeFrame, width: f64) -> Value {
         "tabs": tabs,
         "visits": visits,
         "strip": strip(forest, width),
+        "waiting": { "order": WaitingOrder::CHOSEN.label(), "ids": waiting::pages(forest).iter().map(|v| v.id.to_string()).collect::<Vec<_>>() },
         "files": files_value(&frame.files),
         "forest": {
             "count": if forest.settled().is_empty() {
@@ -242,7 +247,13 @@ fn forest_value(forest: &ForestProjection, labels: bool) -> Value {
     })
 }
 
-fn visit_value(forest: &ForestProjection, visit: &Visit, tree: &str) -> Value {
+fn visit_value(
+    forest: &ForestProjection,
+    visit: &Visit,
+    tree: &str,
+    loaded: &HashSet<VisitId>,
+) -> Value {
+    let wait = WaitState::of(visit, loaded);
     let source = visit.source.as_ref().map(|source| {
         let host = source.page_url.host_str().unwrap_or("the source");
         json!({
@@ -261,6 +272,8 @@ fn visit_value(forest: &ForestProjection, visit: &Visit, tree: &str) -> Value {
         "label": visit.label(),
         "site": site_line(visit),
         "queued": visit.state == VisitState::Queued,
+        "loaded": wait == Some(WaitState::Loaded),
+        "when": match wait { Some(WaitState::NotLoaded) => "not loaded".into(), Some(WaitState::Loaded) => "loaded".into(), None => ago(visit.opened_at.unwrap_or(visit.created_at)) },
         "after": forest.descendant_count(visit.id).unwrap_or(0),
         "tree": tree,
         "source": source,
@@ -476,6 +489,30 @@ mod tests {
     }
 
     #[test]
+    fn loaded_frame_serializes_all_three_states() {
+        let (forest, ids) = chain();
+        let mut frame = ChromeFrame {
+            forest,
+            loaded: HashSet::new(),
+            capture_enabled: true,
+            theme: ThemeMode::Dark,
+            suggestions: StartSuggestions::default(),
+            files: vec![],
+        };
+        let value = super::frame(&frame, 800.);
+        assert_eq!(value["visits"][ids[2].to_string()]["when"], "not loaded");
+        assert_eq!(value["waiting"]["ids"], json!([ids[2].to_string()]));
+        frame.loaded.extend(ids.iter().copied());
+        let value = super::frame(&frame, 800.);
+        assert_eq!(value["visits"][ids[2].to_string()]["loaded"], true);
+        assert_eq!(value["visits"][ids[2].to_string()]["queued"], true);
+        assert_eq!(value["visits"][ids[2].to_string()]["when"], "loaded");
+        assert_eq!(value["visits"][ids[0].to_string()]["loaded"], false);
+        assert_eq!(value["visits"][ids[0].to_string()]["queued"], false);
+        assert_ne!(value["visits"][ids[0].to_string()]["when"], "loaded");
+    }
+
+    #[test]
     fn tabs_list_only_open_trees_and_none_is_active_while_the_current_tree_is_settled() {
         use crate::browser::{Browser, Navigation, NavigationTarget, Visibility};
         let dir = tempfile::tempdir().unwrap();
@@ -501,6 +538,7 @@ mod tests {
         )
         .unwrap();
         let frame = ChromeFrame {
+            loaded: HashSet::new(),
             forest,
             capture_enabled: true,
             theme: ThemeMode::Dark,
@@ -518,6 +556,7 @@ mod tests {
     fn settled_pages_stay_in_the_visits_map_so_search_and_the_forest_can_open_them() {
         let (forest, ids) = chain_with_lifecycle(Lifecycle::Settled { since: 1 });
         let frame = ChromeFrame {
+            loaded: HashSet::new(),
             forest,
             capture_enabled: true,
             theme: ThemeMode::Dark,
@@ -540,6 +579,7 @@ mod tests {
     fn the_frame_carries_every_visit_and_both_strip_states() {
         let (forest, ids) = chain();
         let frame = ChromeFrame {
+            loaded: HashSet::new(),
             forest,
             capture_enabled: true,
             theme: ThemeMode::Dark,
@@ -583,6 +623,7 @@ mod tests {
             missing,
         };
         let frame = ChromeFrame {
+            loaded: HashSet::new(),
             forest,
             capture_enabled: true,
             theme: ThemeMode::Dark,
