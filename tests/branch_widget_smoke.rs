@@ -188,6 +188,13 @@ struct U {
     server: Server,
     _dir: tempfile::TempDir,
 }
+impl Drop for U {
+    fn drop(&mut self) {
+        self.server.gates.lock().unwrap().clear();
+        self.ui.window.close();
+        pump(50);
+    }
+}
 impl U {
     fn new() -> Result<Self> {
         let dir = tempfile::tempdir()?;
@@ -538,7 +545,6 @@ fn resize_and_show() -> Result<()> {
             );
             geometry(&u)?;
         }
-        u.ui.window.close();
     }
     Ok(())
 }
@@ -616,7 +622,6 @@ fn chrome_after_changes() -> Result<()> {
         "all kinds of view changes must place their native windows"
     );
     let _ = b;
-    u.ui.window.close();
     Ok(())
 }
 
@@ -647,7 +652,6 @@ fn forest_click_survives_frame() -> Result<()> {
         u.arrives(a, 6000),
         "unchanged forest frame must preserve a pressed page's click"
     );
-    u.ui.window.close();
     Ok(())
 }
 
@@ -675,7 +679,6 @@ fn palette_anchor_stable() -> Result<()> {
             "title update must preserve favicon element"
         );
     }
-    u.ui.window.close();
     Ok(())
 }
 
