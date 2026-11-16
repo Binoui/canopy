@@ -703,7 +703,7 @@ function renderLoginChip() {
   }
   if (S.popover?.kind === 'save-login' && !S.save) closePopover(false);
   if (S.popover?.kind === 'logins') {
-    if (names.length > 1 && !S.save) renderPopover();
+    if (names.length > 1 && !S.save) refreshPopover();
     else closePopover(false);
   }
   fitTabs();
@@ -734,6 +734,13 @@ function pickLogin(index) {
 function visitRow(v) {
   const detail = v.queued ? 'pending' : v.site.split(' · ').slice(1).join(' · ');
   return `<button class="menu-row" data-id="${v.id}">${visitFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(detail)}</span></button>`;
+}
+
+// A refresh rebuilds an open popover's rows. The row that had the keyboard keeps it.
+function refreshPopover() {
+  const index = [...$('popover').querySelectorAll('button')].indexOf(document.activeElement);
+  renderPopover();
+  if (index >= 0 && S.popover) $('popover').querySelectorAll('button')[index]?.focus();
 }
 
 function renderPopover() {
@@ -1405,7 +1412,7 @@ window.canopy = {
       if (!visit(S.card)) hideCard();
       else showCard(S.card);
     }
-    if (S.popover) renderPopover();
+    if (S.popover) refreshPopover();
     renderPaletteContext();
     syncLayer();
   },
@@ -1421,7 +1428,7 @@ window.canopy = {
     if (!S.frame) return;
     renderTabs();
     renderWaitingPin();
-    if (S.popover?.kind === 'waiting') renderPopover();
+    if (S.popover?.kind === 'waiting') refreshPopover();
     buildStrip(strip.target ?? targetLayout());
     renderStart();
     renderForest();
