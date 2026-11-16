@@ -13,7 +13,7 @@ use webkit2gtk::{DownloadExt, URIRequestExt, WebContextExt, WebViewExt};
 use super::PageEvent;
 type Observer = RefCell<Option<Rc<dyn Fn(PageEvent)>>>;
 type RecordDownload = dyn Fn(VisitId, &Path, u64, Option<&Url>) -> Result<()>;
-type PageLookup = Box<dyn Fn(Option<&Url>) -> Option<VisitId>>;
+type PageLookup = Box<dyn Fn(Option<&Url>) -> Result<Option<VisitId>>>;
 
 struct DownloadSource {
     view: glib::WeakRef<webkit2gtk::WebView>,
@@ -87,15 +87,18 @@ impl PageContext {
                         .upgrade()
                         .is_some_and(|v| Some(&v) == view.as_ref())
                 })
-                .and_then(|entry| (entry.page)(source.as_ref()));
-            save(download, context, page);
+                .map(|entry| (entry.page)(source.as_ref()));
+            match page.transpose() {
+                Ok(page) => save(download, context, page.flatten()),
+                Err(_) => download.cancel(),
+            }
         });
     }
 
     pub(crate) fn register_view(
         &self,
         view: &webkit2gtk::WebView,
-        page: impl Fn(Option<&Url>) -> Option<VisitId> + 'static,
+        page: impl Fn(Option<&Url>) -> Result<Option<VisitId>> + 'static,
     ) -> glib::SignalHandlerId {
         let mut sources = self.sources.borrow_mut();
         sources.retain(|entry| entry.view.upgrade().is_some());

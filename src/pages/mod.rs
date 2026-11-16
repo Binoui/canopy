@@ -172,6 +172,8 @@ struct Hidden {
 
 struct Branches {
     hidden: RefCell<Vec<Hidden>>,
+    background: RefCell<Vec<Hidden>>,
+    queued: RefCell<Vec<(u64, VisitId)>>,
     clock: Cell<u64>,
     live: RefCell<Option<Rc<LivePage>>>,
     dormant: RefCell<Vec<live::Checkpoint>>,
@@ -238,6 +240,7 @@ pub struct Pages {
     #[cfg(feature = "gui-smoke")]
     release_observer: RefCell<Option<ReleaseObserver>>,
     budget: crate::budget::Budget,
+    latest_sample: Cell<Option<u64>>,
     sampling: Cell<bool>,
     sample_started: Cell<Option<std::time::Instant>>,
     sample_scheduled: Cell<bool>,
@@ -260,6 +263,8 @@ impl Pages {
             context,
             branches: Branches {
                 hidden: RefCell::new(Vec::new()),
+                background: RefCell::new(Vec::new()),
+                queued: RefCell::new(Vec::new()),
                 clock: Cell::new(0),
                 live: RefCell::new(None),
                 dormant: RefCell::new(Vec::new()),
@@ -283,6 +288,7 @@ impl Pages {
             #[cfg(feature = "gui-smoke")]
             release_observer: RefCell::new(None),
             budget,
+            latest_sample: Cell::new(None),
             sampling: Cell::new(false),
             sample_started: Cell::new(None),
             sample_scheduled: Cell::new(false),
@@ -533,7 +539,13 @@ impl Pages {
         self.end_hold();
         let page = self.branches.candidate.borrow_mut().take();
         if let Some(page) = page {
-            if let Some(last_shown) = self.branches.candidate_live.take() {
+            if page.never_seen().is_some() {
+                let stamp = page.last_shown.get();
+                self.branches.background.borrow_mut().push(Hidden {
+                    page,
+                    last_shown: stamp,
+                });
+            } else if let Some(last_shown) = self.branches.candidate_live.take() {
                 page.cancel_foreground();
                 page.native.set_child_visible(false);
                 let mut hidden = self.branches.hidden.borrow_mut();
@@ -651,6 +663,27 @@ impl Pages {
             return Ok(());
         }
         self.cancel_candidate();
+        self.branches
+            .queued
+            .borrow_mut()
+            .retain(|(_, v)| *v != visit);
+        let background = self
+            .branches
+            .background
+            .borrow()
+            .iter()
+            .position(|h| h.page.never_seen() == Some(visit));
+        if let Some(index) = background {
+            let hidden = self.branches.background.borrow_mut().remove(index);
+            if hidden.page.current_visit().is_some() {
+                hidden.page.select()?;
+                self.promote_live(hidden.page);
+                self.receive(PageEvent::Changed);
+            } else {
+                *self.branches.candidate.borrow_mut() = Some(hidden.page);
+            }
+            return Ok(());
+        }
         let selected = self
             .branches
             .live
@@ -914,8 +947,115 @@ impl Pages {
         }
     }
 
+    #[cfg(feature = "gui-smoke")]
+    pub fn background_view(&self, visit: VisitId) -> Option<webkit2gtk::WebView> {
+        self.branches
+            .background
+            .borrow()
+            .iter()
+            .find(|h| h.page.never_seen() == Some(visit))
+            .map(|h| h.page.native.clone())
+    }
+
+    pub fn loaded_visits(&self) -> std::collections::HashSet<VisitId> {
+        self.branches
+            .background
+            .borrow()
+            .iter()
+            .filter_map(|h| h.page.current_visit())
+            .collect()
+    }
+
+    fn queue_background(&self, visit: VisitId) {
+        let open = self
+            .read(|b| {
+                let forest = ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)?;
+                Ok::<_, anyhow::Error>(forest.tree_of(visit).is_some_and(|id| {
+                    forest
+                        .trees()
+                        .iter()
+                        .any(|t| t.id == id && t.lifecycle.is_open())
+                }))
+            })
+            .unwrap_or(false);
+        if open {
+            let stamp = self.branches.clock.get() + 1;
+            self.branches.clock.set(stamp);
+            self.branches.queued.borrow_mut().push((stamp, visit));
+            self.start_background();
+            self.sample_memory();
+        }
+    }
+
+    fn start_background(&self) {
+        if self.busy()
+            || self.cooling.get()
+            || self
+                .latest_sample
+                .get()
+                .is_none_or(|used| used > self.budget.bytes())
+        {
+            return;
+        }
+        loop {
+            let running = self
+                .branches
+                .background
+                .borrow()
+                .iter()
+                .filter(|h| h.page.pending_ticket().is_some() || h.page.native.is_loading())
+                .count();
+            if running
+                + usize::from(
+                    self.branches
+                        .candidate
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|p| p.never_seen().is_some()),
+                )
+                >= 3
+            {
+                break;
+            }
+            let Some((stamp, visit)) = self.branches.queued.borrow_mut().pop() else {
+                break;
+            };
+            let Ok(page) = LivePage::empty(&self.container, self.me.clone(), &self.context) else {
+                continue;
+            };
+            let page = Rc::new(page);
+            page.last_shown.set(stamp);
+            self.branches.background.borrow_mut().push(Hidden {
+                page: page.clone(),
+                last_shown: stamp,
+            });
+            if page.background(visit).is_err() {
+                self.drop_background(page.view());
+            }
+        }
+    }
+
+    fn drop_background(&self, view: crate::browser::ViewId) {
+        let index = self
+            .branches
+            .background
+            .borrow()
+            .iter()
+            .position(|h| h.page.view() == view);
+        if let Some(index) = index {
+            let hidden = self.branches.background.borrow_mut().remove(index);
+            hidden.page.cancel();
+            self.receive(PageEvent::Changed);
+        }
+    }
+
     fn sample_memory(&self) {
-        if self.branches.hidden.borrow().is_empty() || self.busy() || self.cooling.get() {
+        if (self.branches.hidden.borrow().is_empty()
+            && self.branches.background.borrow().is_empty()
+            && self.branches.queued.borrow().is_empty())
+            || self.busy()
+            || self.cooling.get()
+        {
             return;
         }
         if let Some(delay) =
@@ -969,22 +1109,66 @@ impl Pages {
     }
 
     fn apply_sample(&self, used: u64) {
+        self.latest_sample.set(Some(used));
         if self.busy() || self.cooling.get() {
             return;
         }
-        let candidates: Vec<_> = self
+        let mut candidates: Vec<_> = self
             .branches
             .hidden
             .borrow()
             .iter()
             .filter(|h| !h.page.awaiting_download())
+            .filter(|_| {
+                self.branches
+                    .candidate
+                    .borrow()
+                    .as_ref()
+                    .is_none_or(|p| p.never_seen().is_none())
+            })
             .map(|h| crate::budget::Droppable {
                 page: h.page.view(),
                 last_shown: h.last_shown,
+                never_seen: false,
                 audible: h.page.native.is_playing_audio(),
             })
             .collect();
+        candidates.extend(self.branches.background.borrow().iter().map(|h| {
+            crate::budget::Droppable {
+                page: h.page.view(),
+                last_shown: h.last_shown,
+                never_seen: true,
+                audible: false,
+            }
+        }));
+        if used <= self.budget.bytes() {
+            self.start_background();
+        }
         if let Some(view) = crate::budget::next_to_drop(used, self.budget, &candidates) {
+            if self
+                .branches
+                .background
+                .borrow()
+                .iter()
+                .any(|h| h.page.view() == view)
+            {
+                let Ok(guard) = MEMORY_DROP.try_lock() else {
+                    return;
+                };
+                *self.memory_drop.borrow_mut() = Some(MemoryDrop { _guard: guard });
+                self.drop_background(view);
+                self.cooling.set(true);
+                self.memory_epoch.set(self.memory_epoch.get() + 1);
+                let weak = self.me.clone();
+                glib::timeout_add_local_once(std::time::Duration::from_secs(1), move || {
+                    if let Some(pages) = weak.upgrade() {
+                        pages.memory_drop.borrow_mut().take();
+                        pages.cooling.set(false);
+                        pages.sample_memory();
+                    }
+                });
+                return;
+            }
             let index = self
                 .branches
                 .hidden
@@ -1050,6 +1234,26 @@ impl Pages {
     }
 
     fn receive_view(&self, view: crate::browser::ViewId, empty: bool, event: PageEvent) {
+        if self
+            .branches
+            .background
+            .borrow()
+            .iter()
+            .any(|h| h.page.view() == view)
+        {
+            if matches!(event, PageEvent::Error(_))
+                || empty && matches!(event, PageEvent::Loading(false))
+            {
+                self.drop_background(view);
+            } else if matches!(event, PageEvent::Changed) {
+                self.receive(PageEvent::Changed);
+            }
+            if matches!(event, PageEvent::Loading(false) | PageEvent::Error(_)) {
+                self.start_background();
+                self.sample_memory();
+            }
+            return;
+        }
         let candidate = self.branches.candidate.borrow().clone();
         if candidate.as_ref().is_some_and(|p| p.view() == view) {
             if matches!(event, PageEvent::Error(_))
@@ -1057,6 +1261,14 @@ impl Pages {
                     && empty
                     && !candidate.as_ref().unwrap().awaiting_download()
             {
+                if candidate.as_ref().is_some_and(|p| p.never_seen().is_some()) {
+                    if let Some(page) = self.branches.candidate.borrow_mut().take() {
+                        page.cancel();
+                    }
+                    self.receive(PageEvent::Changed);
+                    self.sample_memory();
+                    return;
+                }
                 let failed = matches!(event, PageEvent::Error(_));
                 self.cancel_candidate();
                 self.receive(event);
@@ -1307,6 +1519,35 @@ impl Pages {
         anyhow::ensure!(self.branches.live.borrow().is_some(), "No selected page.");
         let forest =
             self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
+        let candidate = self.branches.candidate.borrow().clone();
+        if candidate
+            .as_ref()
+            .and_then(|p| p.never_seen())
+            .is_some_and(|v| forest.tree_of(v) == Some(tree))
+        {
+            if let Some(page) = self.branches.candidate.borrow_mut().take() {
+                page.cancel();
+            }
+        }
+        self.branches
+            .queued
+            .borrow_mut()
+            .retain(|(_, v)| forest.tree_of(*v) != Some(tree));
+        let removed: Vec<_> = self
+            .branches
+            .background
+            .borrow()
+            .iter()
+            .filter(|h| {
+                h.page
+                    .never_seen()
+                    .is_some_and(|v| forest.tree_of(v) == Some(tree))
+            })
+            .map(|h| h.page.view())
+            .collect();
+        for view in removed {
+            self.drop_background(view);
+        }
         let selected = self.branches.live.borrow().clone();
         if let Some(page) = selected.filter(|page| {
             page.current_visit()

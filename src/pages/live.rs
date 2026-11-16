@@ -116,6 +116,7 @@ struct NativeState {
     lifecycle: Cell<Lifecycle>,
     pages: Weak<Pages>,
     navigation: RefCell<Navigation>,
+    never_seen: Cell<Option<VisitId>>,
     download_origin: Option<VisitId>,
     issue: RefCell<Issue>,
     load_generation: Cell<u64>,
@@ -189,6 +190,15 @@ impl Drop for LivePage {
 }
 
 impl LivePage {
+    pub(super) fn never_seen(&self) -> Option<VisitId> {
+        self.state.never_seen.get()
+    }
+    pub(super) fn background(&self, visit: VisitId) -> Result<()> {
+        self.state.never_seen.set(Some(visit));
+        self.native.set_is_muted(true);
+        self.native.set_child_visible(false);
+        self.restore(visit)
+    }
     pub(super) fn pending_ticket(&self) -> Option<LoadTicket> {
         self.state.navigation.borrow().pending_ticket()
     }
@@ -311,6 +321,9 @@ impl LivePage {
         self.state.look_for_login_fields();
     }
     pub(super) fn show(&self) {
+        if self.state.never_seen.take().is_some() {
+            self.native.set_is_muted(false);
+        }
         if let Some(window) = self.native.window() {
             window.set_pass_through(false);
         }
@@ -435,6 +448,7 @@ impl LivePage {
             native: native.clone(),
             lifecycle: Cell::new(Lifecycle::Live),
             pages: pages.clone(),
+            never_seen: Cell::new(None),
             download_origin: pages.upgrade().and_then(|owner| {
                 owner
                     .branches
@@ -529,6 +543,10 @@ impl LivePage {
                     if let Some(state) = weak.upgrade() {
                         let owner = state.owner();
                         let view = state.navigation.borrow().view_id();
+                        if state.never_seen.get().is_some() {
+                            owner.drop_background(view);
+                            return;
+                        }
                         let index = owner
                             .branches
                             .hidden
@@ -728,6 +746,10 @@ impl LivePage {
                     if ticket.is_none() || ticket != state.navigation.borrow().pending_ticket() {
                         return true;
                     }
+                    if state.never_seen.get().is_some() {
+                        state.emit(PageEvent::Error(String::new()));
+                        return true;
+                    }
                     let cancelled = error.matches(NetworkError::Cancelled);
                     if let Some(ticket) = ticket {
                         state.navigation.borrow_mut().failed(ticket);
@@ -918,23 +940,29 @@ impl LivePage {
         }
         let weak = Rc::downgrade(&state);
         let favicon = context.register_view(&native, move |source| {
-            Pages::enter_native(&weak).and_then(|state| {
-                let page = state.download_page(source);
-                if let Some(ticket) = state.download_handover.take() {
-                    let generation = state.load_generation.get();
-                    let weak = Rc::downgrade(&state);
-                    glib::idle_add_local_once(move || {
-                        if let Some(state) = Pages::enter_native(&weak) {
-                            if state.load_generation.get() == generation
-                                && ticket.is_latest(&state.navigation.borrow())
-                            {
-                                state.emit(PageEvent::Loading(false));
+            Pages::enter_native(&weak)
+                .map(|state| {
+                    if state.never_seen.get().is_some() {
+                        state.emit(PageEvent::Error(String::new()));
+                        return Err(anyhow::anyhow!("Never-seen page download refused"));
+                    }
+                    let page = state.download_page(source);
+                    if let Some(ticket) = state.download_handover.take() {
+                        let generation = state.load_generation.get();
+                        let weak = Rc::downgrade(&state);
+                        glib::idle_add_local_once(move || {
+                            if let Some(state) = Pages::enter_native(&weak) {
+                                if state.load_generation.get() == generation
+                                    && ticket.is_latest(&state.navigation.borrow())
+                                {
+                                    state.emit(PageEvent::Loading(false));
+                                }
                             }
-                        }
-                    });
-                }
-                page
-            })
+                        });
+                    }
+                    Ok(page)
+                })
+                .unwrap_or_else(|| Err(anyhow::anyhow!("Page destroyed")))
         });
         signals.push((native.clone().upcast(), favicon));
         state.owner().register_view(&native);
@@ -1365,7 +1393,11 @@ impl NativeState {
                 if navigation.pending_ticket().is_some() {
                     return;
                 }
-                let ticket = navigation.native_request(url.clone());
+                let ticket = if let Some(visit) = self.never_seen.get() {
+                    navigation.request_queued(visit, url.clone())
+                } else {
+                    navigation.native_request(url.clone())
+                };
                 *self.issue.borrow_mut() = Issue::Loading(ticket);
                 ticket
             }
@@ -1706,6 +1738,16 @@ impl NativeState {
                     noted.and_then(|(ticket, url, page)| ticket.map(|ticket| (ticket, url, page))),
                 );
             }
+            if main
+                && self.never_seen.get().is_some()
+                && response
+                    .response()
+                    .is_some_and(|r| matches!(r.status_code(), 204 | 205))
+            {
+                decision.ignore();
+                self.emit(PageEvent::Error(String::new()));
+                return true;
+            }
             let attachment = main
                 && response
                     .response()
@@ -1714,6 +1756,11 @@ impl NativeState {
                     .is_some_and(|(disposition, _)| disposition.eq_ignore_ascii_case("attachment"));
             if response.is_mime_type_supported() && !attachment {
                 return false;
+            }
+            if self.never_seen.get().is_some() {
+                decision.ignore();
+                self.emit(PageEvent::Error(String::new()));
+                return true;
             }
             if main {
                 self.download_handover.set(self.loading_ticket());
@@ -1819,6 +1866,7 @@ impl NativeState {
                     .queue_link(ticket.visit, url.clone(), source);
             match result {
                 Ok(child) => {
+                    self.owner().queue_background(child);
                     self.emit(PageEvent::Changed);
                     self.context(&url, move |state, context| {
                         if !state.valid(&ticket) {
@@ -2023,6 +2071,14 @@ impl NativeState {
                 };
                 self.navigation.borrow_mut().publish(visit, stored.url);
             }
+        }
+        if self.never_seen.get().is_some() {
+            let result = self
+                .owner()
+                .browser
+                .borrow_mut()
+                .update_unopened_url(&mut self.navigation.borrow_mut(), url.clone());
+            self.report(result);
         }
         self.navigation.borrow_mut().same_document(url);
         if let Some(document) = self.ticket() {
