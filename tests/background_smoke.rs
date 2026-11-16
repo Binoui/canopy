@@ -44,6 +44,18 @@ impl Fixture {
                     let text = String::from_utf8_lossy(&request);
                     let path = text.split_whitespace().nth(1).unwrap_or("/");
                     *counts.lock().unwrap().entry(path.to_owned()).or_default() += 1;
+                    if path.starts_with("/hang") {
+                        let mut byte = [0];
+                        use std::io::Read;
+                        let _ = stream.read(&mut byte);
+                        return;
+                    }
+                    if path.starts_with("/image-page") {
+                        let body =
+                            "<!doctype html><title>image waiting</title><img src='/hang-image'>";
+                        let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                        return;
+                    }
                     if path == "/favicon.ico" {
                         let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",favicon.len());
                         let _ = stream.write_all(&favicon);
@@ -63,7 +75,7 @@ impl Fixture {
                     {
                         return;
                     }
-                    if path == "/fail" {
+                    if path == "/slow-drop" || path == "/fail" {
                         return;
                     }
                     if path == "/empty" {
@@ -319,6 +331,137 @@ fn opening_an_uncommitted_background_page_adopts_its_request() -> Result<()> {
     assert_eq!(view, f.ui.pages.selected_page().native);
     Ok(())
 }
+fn opening_pending_attachment_saves_once_with_one_request() -> Result<()> {
+    let f = Fixture::new()?;
+    f.root("/source")?;
+    let saved = std::path::Path::new(&std::env::var("XDG_CONFIG_HOME")?).join("saved");
+    let before = if saved.exists() {
+        std::fs::read_dir(&saved)?.count()
+    } else {
+        0
+    };
+    let q = f.queue("/attachment")?;
+    common::wait("attachment request pending", || f.hits("/attachment") == 1)?;
+    f.ui.pages.go(Go::Visit(q))?;
+    common::wait("adopted attachment recorded", || {
+        f.ui.downloads().is_ok_and(|d| d.len() == 1)
+    })?;
+    common::pump(800);
+    let downloads = f.ui.downloads()?;
+    assert_eq!(downloads.len(), 1);
+    assert_eq!(f.hits("/attachment"), 1);
+    assert_eq!(std::fs::read_dir(saved)?.count(), before + 1);
+    Ok(())
+}
+fn opening_pending_dropped_connection_reports_error_with_one_request() -> Result<()> {
+    let f = Fixture::new()?;
+    f.root("/source")?;
+    let q = f.queue("/slow-drop")?;
+    common::wait("failing request pending", || f.hits("/slow-drop") == 1)?;
+    f.ui.pages.go(Go::Visit(q))?;
+    common::wait("adopted failure reported", || {
+        common::toast_text(&f.ui).is_some_and(|t| t.contains("Could not load"))
+    })?;
+    assert_eq!(f.hits("/slow-drop"), 1);
+    Ok(())
+}
+fn unanswered_loads_expire_and_the_next_link_loads() -> Result<()> {
+    let f = Fixture::new()?;
+    f.root("/source")?;
+    f.ui.pages
+        .set_background_timeout(std::time::Duration::from_secs(3));
+    let mut stalled = Vec::new();
+    for path in ["/hang-a", "/hang-b", "/hang-c"] {
+        stalled.push(f.queue(path)?);
+    }
+    common::wait("three unanswered requests", || f.hits("/hang-c") == 1)?;
+    let next = f.queue("/plain-next")?;
+    assert_eq!(f.hits("/plain-next"), 0);
+    common::wait("waiting pin is hollow for real unloaded visit", || {
+        common::chrome(
+            &f.ui,
+            "!!document.querySelector('#waiting-pin .pending-dot:not(.loaded)')",
+        )
+        .is_ok_and(|v| v == true)
+    })?;
+    f.committed(next)?;
+    common::wait("waiting pin is full after commit", || {
+        common::chrome(
+            &f.ui,
+            "!!document.querySelector('#waiting-pin .pending-dot.loaded')",
+        )
+        .is_ok_and(|v| v == true)
+    })?;
+    common::wait("expired views removed", || {
+        stalled
+            .iter()
+            .all(|q| f.ui.pages.background_view(*q).is_none())
+    })?;
+    for q in stalled {
+        assert!(!f.ui.pages.loaded_visits().contains(&q));
+    }
+    assert_eq!(f.hits("/hang-a"), 1);
+    f.ui.pages
+        .set_background_timeout(std::time::Duration::from_secs(20));
+    Ok(())
+}
+fn committed_documents_with_pending_images_free_their_slots() -> Result<()> {
+    let f = Fixture::new()?;
+    f.root("/source")?;
+    let mut images = Vec::new();
+    for path in ["/image-page-a", "/image-page-b", "/image-page-c"] {
+        images.push(f.queue(path)?);
+    }
+    common::wait("documents committed while images wait", || {
+        images
+            .iter()
+            .all(|q| f.ui.pages.loaded_visits().contains(q))
+    })?;
+    assert!(images
+        .iter()
+        .all(|q| f.ui.pages.background_view(*q).unwrap().is_loading()));
+    let next = f.queue("/plain-next")?;
+    f.committed(next)?;
+    assert!(images
+        .iter()
+        .all(|q| f.ui.pages.loaded_visits().contains(q)));
+    Ok(())
+}
+fn a_burst_admits_only_reserved_pages_and_drops_none() -> Result<()> {
+    let f = Fixture::new()?;
+    f.root("/source")?;
+    let budget = canopy::budget::Budget::of_machine()?.bytes();
+    f.ui.pages
+        .inject_recent_memory_sample(budget - 2 * 256 * 1024 * 1024);
+    let mut visits = Vec::new();
+    for i in 0..5 {
+        visits.push(f.queue(&format!("/slow-budget-{i}"))?);
+    }
+    assert_eq!(
+        (0..5)
+            .map(|i| f.hits(&format!("/slow-budget-{i}")))
+            .sum::<usize>(),
+        2
+    );
+    assert_eq!(
+        visits
+            .iter()
+            .filter(|q| f.ui.pages.background_view(**q).is_some())
+            .count(),
+        2
+    );
+    f.ui.pages
+        .inject_recent_memory_sample(budget - 256 * 1024 * 1024);
+    common::wait("newest waiting link admitted by next sample", || {
+        f.hits("/slow-budget-4") == 1
+    })?;
+    assert_eq!(f.hits("/slow-budget-2"), 0);
+    assert_eq!(f.hits("/slow-budget-3"), 0);
+    assert!(visits[..2]
+        .iter()
+        .all(|q| f.ui.pages.background_view(*q).is_some()));
+    Ok(())
+}
 fn switching_elsewhere_keeps_an_adopted_background_load() -> Result<()> {
     let f = Fixture::new()?;
     f.root("/source")?;
@@ -572,6 +715,26 @@ fn main() -> Result<()> {
         (
             "settling_destroys_never_seen_and_pending_loads",
             settling_destroys_never_seen_and_pending_loads,
+        ),
+        (
+            "opening_pending_attachment_saves_once_with_one_request",
+            opening_pending_attachment_saves_once_with_one_request,
+        ),
+        (
+            "opening_pending_dropped_connection_reports_error_with_one_request",
+            opening_pending_dropped_connection_reports_error_with_one_request,
+        ),
+        (
+            "unanswered_loads_expire_and_the_next_link_loads",
+            unanswered_loads_expire_and_the_next_link_loads,
+        ),
+        (
+            "committed_documents_with_pending_images_free_their_slots",
+            committed_documents_with_pending_images_free_their_slots,
+        ),
+        (
+            "a_burst_admits_only_reserved_pages_and_drops_none",
+            a_burst_admits_only_reserved_pages_and_drops_none,
         ),
     ];
     for (name, case) in cases {
