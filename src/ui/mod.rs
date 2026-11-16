@@ -357,6 +357,9 @@ impl Ui {
         let Some(shortcut) = Shortcut::of(event) else {
             return glib::Propagation::Proceed;
         };
+        if !matches!(shortcut, Shortcut::Escape) {
+            self.pages.answer_form_return(false);
+        }
         self.pages.cancel_path_continuation();
         match shortcut {
             Shortcut::Palette(seed) => self.open_palette(seed),
