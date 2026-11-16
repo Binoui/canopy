@@ -31,6 +31,33 @@ it will reuse a document or send its form again. First submissions, GET history,
 and Canopy's GET-based Reload do not ask. Checkpoint entries with POST provenance
 still take the existing GET revival path before this guard.
 
+Frame form-result returns remain an unsupported case. A local no-store fixture
+with the WebKit page cache disabled measured BackForward POST policy actions for
+iframe-only Back and Forward, main-document Back restoring an iframe POST, and
+`history.back()` in either the frame or its parent. NavigationAction supplied no
+frame name for these unnamed frames; the fixture identifies the target frame.
+An iframe `location.reload()` instead reported Reload GET and sent no POST.
+
+Extending the hold to these actions prevents the POST, but does not provide the
+same Cancel contract. Measured iframe-only reproduction:
+
+1. Load a parent with an iframe containing a POST form.
+2. Submit it to a no-store result, then navigate that iframe to a GET page with
+   a text input. Type a value into the input; save the native current history item.
+3. Go Back in the WebView and hold the iframe's BackForward POST policy decision.
+4. Click Cancel and ignore the decision. The iframe still displays the GET page,
+   but WebKit's back-list position has moved from index 2 to 1, and Forward is
+   now available. The cursor remains there after three seconds.
+5. Traverse to the saved history item to restore the cursor. The iframe is
+   recreated and the typed value is lost, even with no additional network GET.
+
+Main-document Back is worse: the parent has already committed by the time its
+iframe's POST policy arrives. Ignoring it leaves the parent selected with an
+empty iframe instead of preserving the outgoing page. These are measurements of
+an experimental guard, which was removed. Frame support must preserve both the
+native cursor and the existing documents before that guard can be enabled;
+merely grouping policy decisions cannot undo an already committed parent.
+
 The live view retains one policy decision with a window-unique question number.
 Continue takes it out of the slot, runs the ordinary policy handler once, and
 uses the decision if that handler leaves it to WebKit. Cancel takes it out and
