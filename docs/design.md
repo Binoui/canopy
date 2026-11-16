@@ -23,6 +23,28 @@ Home was stopped. Started notifications for real page navigation retain ownershi
 
 The live page distinguishes an issued request from a started load. Only a started load is stopped and drained before its replacement is issued. The queued replacement retains its own ticket. A same-document request needs no Finished signal. A page-started load cannot adopt a request the live page has not issued.
 
+A return to a live form result is held at navigation policy, before normal history
+handling accepts an issue or records a restore. A main-document BackForward POST
+or FormResubmitted decision asks “Return to a form result?” in the HTML chrome.
+This includes page-cache returns: WebKit exposes the same policy action whether
+it will reuse a document or send its form again. First submissions, GET history,
+and Canopy's GET-based Reload do not ask. Checkpoint entries with POST provenance
+still take the existing GET revival path before this guard.
+
+The live view retains one policy decision with a window-unique question number.
+Continue takes it out of the slot, runs the ordinary policy handler once, and
+uses the decision if that handler leaves it to WebKit. Cancel takes it out and
+ignores it, discarding the owning ticket, issue, traversal, response bookkeeping
+and continuation. It creates no visit or event and never selects the target.
+The chrome defaults focus to Cancel; Escape and the scrim cancel too. Replies
+carry the question number, so a delayed reply cannot permit another decision.
+
+A replacement page command cancels the question before registering its own
+attempt. Native navigation policy also cancels an older question before handling
+the replacement. Selection, settling, release, window close and web-process death
+close the question. Hidden and never-seen views refuse these decisions silently.
+Only Continue enters the existing recording path; that path is unchanged.
+
 Server redirects belong to a single navigation. A reload or a restore does not create a visit. A failure keeps the last recorded position and shows an error.
 
 Persistent ids are ULIDs. URLs are not visit ids. Subresources and embedded frames do not become children. A native Reload is a candidate only when its request URL equals the current document URL. It becomes a restore only at main-frame Started, so an iframe reload cannot suspend document writes. A title updates the visit only while the document URL equals its stored URL.

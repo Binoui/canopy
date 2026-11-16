@@ -533,6 +533,8 @@ fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -
                 );
             } else {
                 ui.pages.go(canopy::pages::Go::Visit(post))?;
+                wait("form return question", || visible(ui, "#form-return"))?;
+                click_chrome(ui, "#form-return-continue")?;
             }
             arrived(ui, "/post")?;
             assert_eq!(

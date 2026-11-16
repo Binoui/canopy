@@ -187,3 +187,9 @@ name = "background_smoke"
 path = "tests/background_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
+
+[[test]]
+name = "resend_smoke"
+path = "tests/resend_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]

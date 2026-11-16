@@ -517,6 +517,20 @@ fn post_switch_back() -> Result<()> {
         .visit_with_path("/post-result")
         .ok_or_else(|| anyhow::anyhow!("POST visit missing after arrival"))?;
     let next = f.navigate("/after-post")?;
+    let pages = Rc::downgrade(&f.pages);
+    let errors = f.errors.clone();
+    f.pages.observe(move |event| match event {
+        PageEvent::FormReturn(Some(question)) => {
+            let pages = pages.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(pages) = pages.upgrade() {
+                    pages.answer_form_return_for(question, true);
+                }
+            });
+        }
+        PageEvent::Error(message) => errors.borrow_mut().push(message),
+        _ => {}
+    });
     f.pages.go(Go::Visit(post))?;
     anyhow::ensure!(f.arrives(post, 8000), "setup return to POST did not arrive");
     pump_for(800);
