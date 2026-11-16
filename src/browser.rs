@@ -695,6 +695,12 @@ ORDER BY r.created_at, r.rowid",
 
     /// Takes `tree` out of the tabs and says where the window goes. Settling a settled tree
     /// changes nothing and gives the landing again, so a failed landing can be retried.
+    pub fn show_start(&mut self) -> Result<()> {
+        self.connection
+            .execute("UPDATE session SET current_id=NULL WHERE singleton=1", [])?;
+        Ok(())
+    }
+
     pub fn settle_tree(&mut self, tree: TreeId) -> Result<Landing> {
         let tx = self.connection.transaction()?;
         let root = tree.0.to_string();
@@ -1316,7 +1322,7 @@ ORDER BY r.created_at, r.rowid",
                 }
             }
         }
-        self.current_id()
+        Ok(navigation.current.as_ref().map(|document| document.visit))
     }
 
     /// Attaches a saved file to the page it was downloaded from.

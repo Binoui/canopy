@@ -31,12 +31,14 @@ impl Budget {
 
     fn read_configured() -> Result<Self> {
         if let Ok(value) = std::env::var("CANOPY_MEMORY_BUDGET_MB") {
-            return Ok(Self(
-                value
-                    .parse::<u64>()?
-                    .checked_mul(1 << 20)
-                    .ok_or_else(|| anyhow::anyhow!("Memory budget overflow"))?,
-            ));
+            if let Some(bytes) = value
+                .parse::<u64>()
+                .ok()
+                .and_then(|n| n.checked_mul(1 << 20))
+            {
+                return Ok(Self(bytes));
+            }
+            eprintln!("Invalid CANOPY_MEMORY_BUDGET_MB={value:?}; using the default budget");
         }
         let info = std::fs::read_to_string("/proc/meminfo")?;
         let total = info
@@ -196,4 +198,27 @@ mod tests {
         );
         assert_eq!(next_to_drop(budget.bytes() * 2, budget, &pages[..1]), None);
     }
+}
+
+/// Time until another memory sample may start. Callers collapse requests into one timer.
+pub fn sample_delay(
+    last: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> Option<std::time::Duration> {
+    last.and_then(|last| std::time::Duration::from_secs(2).checked_sub(now.duration_since(last)))
+        .filter(|delay| !delay.is_zero())
+}
+
+#[cfg(test)]
+#[test]
+fn samples_start_at_most_once_every_two_seconds() {
+    use std::time::{Duration, Instant};
+    let now = Instant::now();
+    assert_eq!(sample_delay(None, now), None);
+    assert_eq!(
+        sample_delay(Some(now), now + Duration::from_millis(100)),
+        Some(Duration::from_millis(1900))
+    );
+    assert_eq!(sample_delay(Some(now), now + Duration::from_secs(2)), None);
+    assert_eq!(sample_delay(Some(now), now + Duration::from_secs(5)), None);
 }

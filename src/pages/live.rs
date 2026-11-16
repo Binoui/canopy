@@ -906,9 +906,7 @@ impl LivePage {
         let weak = Rc::downgrade(&state);
         let favicon = context.register_view(&native, move |source| {
             Pages::enter_native(&weak).and_then(|state| {
-                let page = state
-                    .download_page(source)
-                    .or_else(|| state.owner().read(|b| b.snapshot()).ok()?.current);
+                let page = state.download_page(source);
                 if let Some(ticket) = state.download_handover.take() {
                     let generation = state.load_generation.get();
                     let weak = Rc::downgrade(&state);

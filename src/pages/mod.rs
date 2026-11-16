@@ -160,7 +160,7 @@ type Observer = Rc<dyn Fn(PageEvent)>;
 type PlacementObserver = Rc<dyn Fn(&webkit2gtk::WebView)>;
 
 enum Command {
-    Go(Go, Option<Continuation>),
+    Go(Go, Option<Continuation>, bool),
     Settle(TreeId),
     Reload,
 }
@@ -239,6 +239,8 @@ pub struct Pages {
     release_observer: RefCell<Option<ReleaseObserver>>,
     budget: crate::budget::Budget,
     sampling: Cell<bool>,
+    sample_started: Cell<Option<std::time::Instant>>,
+    sample_scheduled: Cell<bool>,
     memory_epoch: Cell<u64>,
     cooling: Cell<bool>,
     releases: Cell<usize>,
@@ -282,6 +284,8 @@ impl Pages {
             release_observer: RefCell::new(None),
             budget,
             sampling: Cell::new(false),
+            sample_started: Cell::new(None),
+            sample_scheduled: Cell::new(false),
             memory_epoch: Cell::new(0),
             cooling: Cell::new(false),
             releases: Cell::new(0),
@@ -447,7 +451,7 @@ impl Pages {
         }) {
             self.schedule_continuation(ticket);
         }
-        self.selected_changed();
+        self.receive(PageEvent::Changed);
     }
 
     fn schedule_continuation(&self, ticket: LoadTicket) {
@@ -510,6 +514,22 @@ impl Pages {
     }
 
     fn cancel_candidate(&self) {
+        let weak = self.me.clone();
+        glib::idle_add_local_once(move || {
+            let Some(pages) = weak.upgrade() else { return };
+            if pages.retired_selected() && pages.branches.candidate.borrow().is_none() {
+                let result = LivePage::new(&pages.container, pages.me.clone(), &pages.context);
+                match result {
+                    Ok(page) => {
+                        if let Err(error) = pages.browser.borrow_mut().show_start() {
+                            pages.receive(PageEvent::Error(error.to_string()));
+                        }
+                        pages.promote_live(Rc::new(page));
+                    }
+                    Err(error) => pages.receive(PageEvent::Error(error.to_string())),
+                }
+            }
+        });
         self.end_hold();
         let page = self.branches.candidate.borrow_mut().take();
         if let Some(page) = page {
@@ -617,7 +637,7 @@ impl Pages {
         if retiring || same_retired_tree {
             self.commands
                 .borrow_mut()
-                .push_back(Command::Go(Go::Visit(visit), None));
+                .push_back(Command::Go(Go::Visit(visit), None, false));
             return Ok(());
         }
         let candidate = self.branches.candidate.borrow().clone();
@@ -733,6 +753,10 @@ impl Pages {
     }
 
     fn promote(&self, candidate: Rc<LivePage>) {
+        if self.retired_selected() {
+            self.promote_live(candidate);
+            return;
+        }
         self.end_hold();
         let last_shown = self.branches.clock.get();
         self.branches.clock.set(last_shown + 1);
@@ -747,6 +771,7 @@ impl Pages {
         if focus {
             candidate.focus();
         }
+        self.selected_changed();
         // Native commit notification advances its continuation before emitting login events.
         candidate.refresh_login();
     }
@@ -847,13 +872,22 @@ impl Pages {
     fn drain_commands(&self) {
         let count = self.commands.borrow().len();
         for _ in 0..count {
-            if self.busy() || !self.retiring.borrow().is_empty() {
+            if self.busy() || self.retired_selected() || !self.retiring.borrow().is_empty() {
                 break;
             }
             let command = self.commands.borrow_mut().pop_front();
             let Some(command) = command else { break };
             let result = match command {
-                Command::Go(go, continuation) => {
+                Command::Go(mut go, continuation, reparent) => {
+                    if let Go::Address { target, .. } = &mut go {
+                        if reparent && matches!(target, NavigationTarget::ChildOf(_)) {
+                            *target = self
+                                .read(|b| b.snapshot())
+                                .ok()
+                                .and_then(|s| s.current)
+                                .map_or(NavigationTarget::Root, NavigationTarget::ChildOf);
+                        }
+                    }
                     let result = self.go(go);
                     if let Some(continuation) = continuation {
                         self.continue_with(continuation);
@@ -870,13 +904,28 @@ impl Pages {
     }
 
     fn sample_memory(&self) {
-        if self.branches.hidden.borrow().is_empty()
-            || self.busy()
-            || self.cooling.get()
-            || self.sampling.replace(true)
-        {
+        if self.branches.hidden.borrow().is_empty() || self.busy() || self.cooling.get() {
             return;
         }
+        if let Some(delay) =
+            crate::budget::sample_delay(self.sample_started.get(), std::time::Instant::now())
+        {
+            if !self.sample_scheduled.replace(true) {
+                let weak = self.me.clone();
+                glib::timeout_add_local_once(delay, move || {
+                    if let Some(pages) = weak.upgrade() {
+                        pages.sample_scheduled.set(false);
+                        pages.sample_memory();
+                    }
+                });
+            }
+            return;
+        }
+        if self.sampling.get() {
+            return;
+        }
+        self.sample_started.set(Some(std::time::Instant::now()));
+        self.sampling.set(true);
         let epoch = self.memory_epoch.get();
         let global_epoch = MEMORY_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
         let (send, receive) = std::sync::mpsc::channel();
@@ -917,6 +966,7 @@ impl Pages {
             .hidden
             .borrow()
             .iter()
+            .filter(|h| !h.page.awaiting_download())
             .map(|h| crate::budget::Droppable {
                 page: h.page.view(),
                 last_shown: h.last_shown,
@@ -1070,7 +1120,31 @@ impl Pages {
         self.read(|b| b.tree_target(tree))
     }
 
+    fn retired_selected(&self) -> bool {
+        self.branches
+            .live
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| !p.native.is_sensitive())
+    }
+
     pub fn go(&self, go: Go) -> Result<()> {
+        if self.retired_selected()
+            && matches!(
+                go,
+                Go::Address {
+                    target: NavigationTarget::ChildOf(_),
+                    ..
+                } | Go::Citation(_)
+                    | Go::Saved(_)
+                    | Go::Parent
+            )
+        {
+            self.commands
+                .borrow_mut()
+                .push_back(Command::Go(go, None, true));
+            return Ok(());
+        }
         let in_place = self.commands.borrow().is_empty()
             && match &go {
                 Go::Address {
@@ -1085,7 +1159,9 @@ impl Pages {
                 _ => false,
             };
         if self.busy() && !in_place {
-            self.commands.borrow_mut().push_back(Command::Go(go, None));
+            self.commands
+                .borrow_mut()
+                .push_back(Command::Go(go, None, false));
             self.end_hold();
             return Ok(());
         }
@@ -1197,7 +1273,7 @@ impl Pages {
         Ok(())
     }
     fn continue_with(&self, action: Continuation) {
-        if let Some(Command::Go(_, continuation)) = self.commands.borrow_mut().back_mut() {
+        if let Some(Command::Go(_, continuation, _)) = self.commands.borrow_mut().back_mut() {
             *continuation = Some(action);
             return;
         }
@@ -1364,6 +1440,9 @@ impl Pages {
         }
     }
     pub fn reload(&self) -> Result<()> {
+        if self.retired_selected() {
+            return Ok(());
+        }
         if self.busy() && self.branches.live.borrow().is_some() {
             self.commands.borrow_mut().push_back(Command::Reload);
             self.end_hold();

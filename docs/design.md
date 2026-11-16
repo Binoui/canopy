@@ -149,15 +149,19 @@ web process leaves a checkpoint if possible, otherwise its visits are cold.
 The memory budget is one eighth of MemTotal in /proc/meminfo. Set
 CANOPY_MEMORY_BUDGET_MB to an integer MiB value before launch to override it (1
 forces pressure for desktop checks). Configuration is read once at desktop startup.
-There is no page-count limit. A worker samples PSS plus SwapPss of Canopy and its
+Malformed or overflowing CANOPY_MEMORY_BUDGET_MB values print one stderr line naming
+the variable and value, then use the default budget. There is no page-count limit. A worker samples PSS plus SwapPss of Canopy and its
 own descendants only, following each known process's /proc/PID/task/TID/children
 files rather than scanning other processes. Exited processes are skipped; any other
 read failure makes the sample incomplete, and no drop follows it.
 
 Sampling starts after a switch or committed navigation settles and every five seconds while hidden pages
-exist, never with only one live page. GTK uses the fresh complete result to drop the
+exist, never with only one live page. Sample starts are at least two seconds apart;
+requests during that interval collapse into one trailing sample. GTK uses the fresh complete result to drop the
 least recently shown hidden page. It reads is_playing_audio at that decision. The
-selected page, candidate, held outgoing page and every audible page are excluded.
+selected page, candidate, held outgoing page, every audible page and any page
+waiting for WebKit to hand over a download are excluded. After handover the transfer
+survives destruction of its source view.
 One budget drop is checkpointed and destroyed at a time across all windows; a
 shared permit remains held through the teardown grace. Samples started before a drop are
 invalidated. A one second teardown grace follows destruction before sampling again;
@@ -169,7 +173,14 @@ Settling immediately disables the selected page's input and native recording,
 mutes its audio, and clears its login offer, including when a landing is still loading. The real page
 may remain as the visual cover. All the tree's hidden pages are checkpointed and
 destroyed, even if audible. The selected page follows after its landing is shown;
-a live landing selects immediately. Settled checkpoints remain available for an
+a live landing selects immediately. A retired cover never receives commands.
+Addresses, citations, saved pages and Back/Parent wait in the FIFO until the landing
+shows; deferred addresses become children of that landing. Reload during landing is
+ignored. Visits, trees, new trees and another settle replace the pending landing.
+An empty, failed, downloaded or cancelled landing with no replacement falls back to
+the start page, clears the cursor and releases the retired cover before draining
+commands. Download attribution uses the initiating view's own current visit even
+when hidden; a source view never falls back to the window cursor. Settled checkpoints remain available for an
 explicit later reopening. A reopening requested during the settled branch's scroll
 capture waits for that checkpoint; live landings still select immediately. No
 checkpoint is persisted to SQLite.
