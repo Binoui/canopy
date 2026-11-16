@@ -149,7 +149,7 @@ own descendants only, following each known process's /proc/PID/task/TID/children
 files rather than scanning other processes. Exited processes are skipped; any other
 read failure makes the sample incomplete, and no drop follows it.
 
-Sampling starts after a switch settles and every five seconds while hidden pages
+Sampling starts after a switch or committed navigation settles and every five seconds while hidden pages
 exist, never with only one live page. GTK uses the fresh complete result to drop the
 least recently shown hidden page. It reads is_playing_audio at that decision. The
 selected page, candidate, held outgoing page and every audible page are excluded.

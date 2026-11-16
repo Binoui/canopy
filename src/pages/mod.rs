@@ -353,6 +353,7 @@ impl Pages {
 
     // Clone the observer and end every state borrow before WebKit, GTK or Ui can reenter.
     fn receive(&self, event: PageEvent) {
+        let settled = matches!(event, PageEvent::Loading(false));
         let continuation_selected = self.continuation.borrow().as_ref().is_none_or(|c| {
             self.branches
                 .live
@@ -380,6 +381,9 @@ impl Pages {
         let observer = self.observer.borrow().clone();
         if let Some(observer) = observer {
             observer(event);
+        }
+        if settled {
+            self.sample_memory();
         }
     }
 
@@ -956,6 +960,8 @@ impl Pages {
             if sensitive {
                 self.receive(event);
             }
+        } else if matches!(event, PageEvent::Loading(false)) {
+            self.sample_memory();
         } else if matches!(event, PageEvent::Changed) {
             let observer = self.observer.borrow().clone();
             if let Some(observer) = observer {

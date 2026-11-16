@@ -164,6 +164,38 @@ fn hidden_navigation_stays_in_its_branch_and_alert_returns() -> Result<()> {
     );
     Ok(())
 }
+fn selecting_a_live_page_keeps_its_inflight_navigation() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.root("/a")?;
+    let native = f.ui.pages.selected_page().native.clone();
+    f.root("/b")?;
+    native.evaluate_javascript(
+        "location.href='/slow'",
+        None,
+        None,
+        None::<&gio::Cancellable>,
+        |_| {},
+    );
+    common::wait("hidden navigation started", || {
+        f.hits("/slow") == 1 && native.is_loading()
+    })?;
+    f.ui.pages.go(Go::Visit(a))?;
+    assert_eq!(
+        f.ui.snapshot()?.current,
+        Some(a),
+        "selection moves while its navigation is in flight"
+    );
+    assert_eq!(f.ui.pages.selected_page().native, native);
+    assert!(native.is_loading());
+    assert_eq!(f.hits("/a"), 1);
+    common::wait("retained load commits", || {
+        f.ui.snapshot()
+            .is_ok_and(|s| s.current_visit().is_some_and(|v| v.url.path() == "/slow"))
+            && !native.is_loading()
+    })?;
+    assert_eq!(f.hits("/slow"), 1);
+    Ok(())
+}
 fn incomplete_sample_drops_nothing_and_fresh_sample_drops_oldest() -> Result<()> {
     let f = Fixture::new()?;
     let ancestor = f.root("/ancestor")?;
@@ -343,6 +375,10 @@ fn main() -> Result<()> {
         return small_budget_drops_hidden_page();
     }
     let cases: &[Case] = &[
+        (
+            "selecting_a_live_page_keeps_its_inflight_navigation",
+            selecting_a_live_page_keeps_its_inflight_navigation,
+        ),
         (
             "settled_page_rejects_clicks_while_dormant_landing_loads",
             settled_page_rejects_clicks_while_dormant_landing_loads,

@@ -1030,7 +1030,7 @@ ORDER BY r.created_at, r.rowid",
     }
 
     pub fn select_document(&mut self, navigation: &Navigation, document: &Document) -> Result<()> {
-        if !navigation.valid(document) {
+        if navigation.current.as_ref() != Some(document) {
             return Ok(());
         }
         let previous = self.current_id()?;
@@ -2180,7 +2180,10 @@ mod tests {
             .unwrap());
         assert_eq!(a.pending_ticket(), Some(replacement));
         a.failed(replacement);
+        let hidden_load = b.native_request(url("hidden-next"));
+        b.started(hidden_load);
         browser.select_document(&b, &document).unwrap();
+        assert_eq!(b.pending_ticket(), Some(hidden_load));
         assert_eq!(browser.snapshot().unwrap().current, Some(document.visit));
     }
 
