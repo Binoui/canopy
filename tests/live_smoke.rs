@@ -701,6 +701,7 @@ fn small_budget_drops_hidden_page() -> Result<()> {
     Ok(())
 }
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let download_home = tempfile::tempdir()?;
     std::fs::write(
         download_home.path().join("user-dirs.dirs"),

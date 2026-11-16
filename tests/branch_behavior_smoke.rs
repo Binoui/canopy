@@ -1,6 +1,7 @@
 // Branch navigation regressions.
 // Every selected case asserts behavior; diagnostic RESULT lines aid comparison.
 #![allow(dead_code, unused_imports, unused_variables)]
+mod common;
 #[path = "common/http.rs"]
 mod http;
 use anyhow::{bail, Context, Result};
@@ -1063,6 +1064,7 @@ fn no_content_ends_load() -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     // These checkpoint and teardown cases run under forced memory pressure.
     std::env::set_var("CANOPY_MEMORY_BUDGET_MB", "0");
     let environment = tempfile::tempdir()?;
