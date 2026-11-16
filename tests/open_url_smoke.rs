@@ -1,5 +1,7 @@
+#[path = "common/http.rs"]
+mod http;
 use std::{
-    io::{Read, Write},
+    io::Write,
     net::TcpListener,
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
@@ -284,9 +286,10 @@ impl Server {
                 };
                 let _ = stream.set_nonblocking(false);
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                let mut buffer = [0; 8192];
-                let size = stream.read(&mut buffer).unwrap_or(0);
-                let request = String::from_utf8_lossy(&buffer[..size]);
+                let Ok(buffer) = http::request(&mut stream) else {
+                    continue;
+                };
+                let request = String::from_utf8_lossy(&buffer);
                 let path = request.split_whitespace().nth(1).unwrap_or("/").to_owned();
                 let body = format!("<!doctype html><title>Page {path}</title><h1>Page {path}</h1>");
                 let _ = stream.write_all(

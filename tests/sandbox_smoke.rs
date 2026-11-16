@@ -1,8 +1,6 @@
-use std::{
-    io::{Read, Write},
-    net::TcpListener,
-    thread,
-};
+#[path = "common/http.rs"]
+mod http;
+use std::{io::Write, net::TcpListener, thread};
 
 use anyhow::Result;
 use canopy::ui::Ui;
@@ -24,8 +22,9 @@ fn main() -> Result<()> {
     thread::spawn(move || {
         for mut stream in listener.incoming().flatten() {
             let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
-            let mut request = [0; 4096];
-            let _ = stream.read(&mut request);
+            let Ok(request) = http::request(&mut stream) else {
+                continue;
+            };
             let request = String::from_utf8_lossy(&request);
             if request.starts_with("GET /red.mp4") {
                 let head = format!("HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", RED_VIDEO.len());

@@ -1,6 +1,8 @@
+#[path = "common/http.rs"]
+mod http;
 use std::{
     collections::BTreeMap,
-    io::{Read, Write},
+    io::Write,
     net::TcpListener,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -393,9 +395,10 @@ impl Fixture {
                     continue;
                 };
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                let mut bytes = [0; 8192];
-                let n = stream.read(&mut bytes).unwrap_or(0);
-                let request = String::from_utf8_lossy(&bytes[..n]);
+                let Ok(bytes) = http::request(&mut stream) else {
+                    continue;
+                };
+                let request = String::from_utf8_lossy(&bytes);
                 let path = request.split_whitespace().nth(1).unwrap_or("/");
                 *counts.lock().unwrap().entry(path.to_owned()).or_default() += 1;
                 let body = page(path);

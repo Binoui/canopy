@@ -1,7 +1,9 @@
+#[path = "common/http.rs"]
+mod http;
 use std::{
     cell::Cell,
     collections::BTreeMap,
-    io::{Read, Write},
+    io::Write,
     net::TcpListener,
     rc::Rc,
     sync::{Arc, Mutex},
@@ -73,14 +75,6 @@ fn main() -> Result<()> {
         .unwrap()
         .forward_list_with_limit(20)
         .is_empty());
-    let fork_item = ui
-        .pages
-        .selected_page()
-        .native
-        .back_forward_list()
-        .unwrap()
-        .current_item()
-        .unwrap();
     let before = server.hits("/next");
     ui.pages.selected_page().restore(b)?;
     assert_eq!(arrived(&ui, "/next")?, b);
@@ -90,10 +84,9 @@ fn main() -> Result<()> {
         "a removed item must be fetched, never traversed"
     );
     let list = ui.pages.selected_page().native.back_forward_list().unwrap();
-    assert_eq!(
-        list.back_item(),
-        Some(fork_item),
-        "stored restore must append after the fork"
+    assert!(
+        list.back_item().is_none(),
+        "a removed suffix opens in a fresh branch"
     );
     assert_eq!(
         list.current_item().unwrap().uri().as_deref(),
@@ -282,7 +275,10 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
             ui.pages
                 .selected_page()
                 .navigate(server.url("/next")?, NavigationTarget::ChildOf(a))?;
+            let issued = Instant::now();
+            let was_loading = ui.pages.selected_page().native.is_loading();
             pump(300);
+            eprintln!("JANK elapsed_ms={} loading_at_issue={was_loading} loading_now={} started={} uri={:?}", issued.elapsed().as_millis(), ui.pages.selected_page().native.is_loading(), started.get(), ui.pages.selected_page().native.uri());
             assert!(ui.pages.selected_page().native.is_loading());
             assert!(!started.get(), "replacement must precede Started");
             ui.pages
@@ -330,6 +326,7 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
             );
         }
         "adopt" => {
+            let source = ui.pages.selected_page().native.clone();
             let started = Rc::new(Cell::new(false));
             let observed = started.clone();
             let handler = ui
@@ -399,8 +396,8 @@ fn regression(case: &str, ui: &Rc<Ui>, server: &Server) -> Result<()> {
                 ui.snapshot()?.current_visit().unwrap().parent.is_none(),
                 "user requested a new root"
             );
-            ui.pages.selected_page().native.disconnect(handler);
-            ui.pages.selected_page().native.disconnect(policy);
+            source.disconnect(handler);
+            source.disconnect(policy);
         }
         "replace" => {
             eval(
@@ -526,8 +523,8 @@ fn regression2(case: &str, ui: &Rc<Ui>, server: &Server, db: &std::path::Path) -
                     weak.upgrade().is_none() && ui.pages.checkpoint_size().is_some()
                 })?;
                 assert!(
-                    ui.pages.revive_selected_page(&fixed, post)?,
-                    "POST target must restore cold"
+                    !ui.pages.revive_selected_page(&fixed, post)?,
+                    "POST target must retain valid history and load by GET"
                 );
             } else {
                 ui.pages.go(canopy::pages::Go::Visit(post))?;
@@ -869,11 +866,10 @@ impl Server {
                 let Ok(mut stream) = stream else { continue };
                 let counted = counted.clone();
                 thread::spawn(move || {
-                    let mut request = [0; 4096];
-                    let Ok(size) = stream.read(&mut request) else {
+                    let Ok(request) = http::request(&mut stream) else {
                         return;
                     };
-                    let request = String::from_utf8_lossy(&request[..size]);
+                    let request = String::from_utf8_lossy(&request);
                     let path = request.split_whitespace().nth(1).unwrap_or("/").to_owned();
                     let method = request.split_whitespace().next().unwrap_or("GET");
                     *counted

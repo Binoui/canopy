@@ -1,9 +1,11 @@
 //! Returning to a page: through WebKit's history while it still has the page, so scroll and
 //! live state survive; from the network otherwise, scrolled back to where it was left.
 
+#[path = "common/http.rs"]
+mod http;
 use std::{
     collections::BTreeMap,
-    io::{Read, Write},
+    io::Write,
     net::TcpListener,
     sync::{Arc, Mutex},
     thread,
@@ -182,11 +184,10 @@ impl Server {
         thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
-                let mut request = [0; 4096];
-                let Ok(size) = stream.read(&mut request) else {
+                let Ok(request) = http::request(&mut stream) else {
                     continue;
                 };
-                let request = String::from_utf8_lossy(&request[..size]);
+                let request = String::from_utf8_lossy(&request);
                 let path = request.split_whitespace().nth(1).unwrap_or("/").to_owned();
                 *counted.lock().unwrap().entry(path.clone()).or_insert(0) += 1;
                 let (status, body) = match path.as_str() {

@@ -15,6 +15,10 @@ impl LoadTicket {
     pub fn belongs_to(self, navigation: &Navigation) -> bool {
         self.view == navigation.view
     }
+
+    pub(crate) fn is_latest(self, navigation: &Navigation) -> bool {
+        self.belongs_to(navigation) && self.sequence == navigation.sequence
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -80,6 +84,10 @@ impl Default for Navigation {
 }
 
 impl Navigation {
+    pub(crate) fn view_id(&self) -> ViewId {
+        self.view
+    }
+
     pub(super) fn request(&mut self, intent: Intent, url: Url) -> LoadTicket {
         self.sequence += 1;
         let ticket = LoadTicket {
@@ -92,6 +100,20 @@ impl Navigation {
             url,
         };
         ticket
+    }
+
+    pub(crate) fn pending_restore(&self) -> Option<VisitId> {
+        match &self.pending {
+            Pending::Requested {
+                intent: Intent::Restore { visit },
+                ..
+            }
+            | Pending::Loading {
+                intent: Intent::Restore { visit },
+                ..
+            } => Some(*visit),
+            _ => None,
+        }
     }
 
     pub fn pending_ticket(&self) -> Option<LoadTicket> {
@@ -175,5 +197,39 @@ impl Navigation {
                 document.page_url = page_url;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completion_ticket_stays_identifiable_after_finish_but_not_after_another_load() {
+        let mut navigation = Navigation::default();
+        let url = Url::parse("https://example.test/").unwrap();
+        let first = navigation.request(
+            Intent::New {
+                parent: None,
+                source: None,
+            },
+            url.clone(),
+        );
+        navigation.started(first);
+        navigation.failed(first);
+        assert!(first.is_latest(&navigation));
+        let second = navigation.request(
+            Intent::New {
+                parent: None,
+                source: None,
+            },
+            url,
+        );
+        navigation.started(second);
+        navigation.failed(second);
+        assert!(navigation.pending_ticket().is_none());
+        assert!(!first.is_latest(&navigation));
+        assert!(second.is_latest(&navigation));
+        assert!(!second.is_latest(&Navigation::default()));
     }
 }

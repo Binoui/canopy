@@ -129,6 +129,24 @@ harness = false
 required-features = ["gui-smoke"]
 
 [[test]]
+name = "branch_smoke"
+path = "tests/branch_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]
+
+[[test]]
+name = "branch_behavior_smoke"
+path = "tests/branch_behavior_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]
+
+[[test]]
+name = "branch_widget_smoke"
+path = "tests/branch_widget_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]
+
+[[test]]
 name = "waiting_smoke"
 path = "tests/waiting_smoke.rs"
 harness = false

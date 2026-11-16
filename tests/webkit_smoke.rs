@@ -1,5 +1,7 @@
+#[path = "common/http.rs"]
+mod http;
 use std::{
-    io::{Read, Write},
+    io::Write,
     net::TcpListener,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -340,7 +342,17 @@ fn main() -> Result<()> {
     wait("palette anchored after the commit", || {
         visible(&ui, "#palette") && chrome_focused(&ui, "#palette-input")
     })?;
-    assert!(text(&ui, "#palette-context").contains("Link opened in another window"));
+    wait("palette context has the loaded page title", || {
+        text(&ui, "#palette-context").contains("Link opened in another window")
+    })?;
+    // A title delivered after the palette opens must update its anchor too.
+    eval(
+        &ui,
+        "JSON.stringify(document.title = 'Updated branch title')",
+    )?;
+    wait("palette context follows page title", || {
+        text(&ui, "#palette-context").contains("Updated branch title")
+    })?;
     key("Escape")?;
     println!("PASS a target=_blank link waits in the tree; New branch here activates it without a duplicate, then anchors the palette on it.");
 
@@ -649,9 +661,10 @@ impl Fixture {
                     continue;
                 };
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                let mut buffer = [0; 8192];
-                let size = stream.read(&mut buffer).unwrap_or(0);
-                let request = String::from_utf8_lossy(&buffer[..size]);
+                let Ok(buffer) = http::request(&mut stream) else {
+                    continue;
+                };
+                let request = String::from_utf8_lossy(&buffer);
                 let path = request.split_whitespace().nth(1).unwrap_or("/");
                 if path == "/favicon.ico" {
                     let head = format!("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", favicon.len());

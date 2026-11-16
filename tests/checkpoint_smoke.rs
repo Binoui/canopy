@@ -1,3 +1,5 @@
+#[path = "common/http.rs"]
+mod http;
 use anyhow::{bail, Result};
 use canopy::{
     browser::{Browser, NavigationTarget, VisitId},
@@ -9,7 +11,7 @@ use serde_json::{json, Value};
 use std::{
     cell::RefCell,
     collections::BTreeMap,
-    io::{Read, Write},
+    io::Write,
     net::TcpListener,
     rc::Rc,
     sync::{
@@ -70,11 +72,10 @@ impl Server {
                 let refuse = refuse.clone();
                 thread::spawn(move || {
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-                    let mut request = [0; 8192];
-                    let Ok(n) = stream.read(&mut request) else {
+                    let Ok(request) = http::request(&mut stream) else {
                         return;
                     };
-                    let text = String::from_utf8_lossy(&request[..n]);
+                    let text = String::from_utf8_lossy(&request);
                     let method = text.split_whitespace().next().unwrap_or("GET");
                     let path = text.split_whitespace().nth(1).unwrap_or("/").to_string();
                     *count
@@ -447,10 +448,12 @@ fn in_flight() -> Result<()> {
         .open_path(f.server.url("/slow"), f.server.url("/never"))?;
     wait("slow requested", || f.server.hits("/slow") > 0)?;
     assert!(f.pages.has_pending_continuation());
-    f.release()?;
-    assert!(!f.pages.has_pending_continuation());
+    f.pages.go(Go::Visit(a))?;
+    assert!(
+        !f.pages.has_pending_continuation(),
+        "replacing the candidate cancels its own continuation"
+    );
     f.server.held.store(false, Ordering::Relaxed);
-    assert!(!f.revive(a)?);
     settle();
     assert_eq!(f.server.hits("/never"), 0);
     assert_eq!(f.pages.read(|b| b.snapshot())?.visits.len(), 1);
@@ -711,8 +714,8 @@ fn revived_form_back() -> Result<()> {
     );
     assert_eq!(
         f.pages.revival_refusals(),
-        1,
-        "replacement must not traverse the refused item again"
+        0,
+        "noncurrent restored POST opens in a fresh branch"
     );
     let list = f.pages.selected_page().native.back_forward_list().unwrap();
     let mut paths: Vec<_> = list
@@ -732,7 +735,7 @@ fn revived_form_back() -> Result<()> {
             .path()
             .to_owned(),
     );
-    assert_eq!(paths, ["/a", "/post", "/next", "/post"]);
+    assert_eq!(paths, ["/post"], "GET belongs to a fresh branch");
     f.pages.reload()?;
     f.arrived(post)?;
     f.release()?;
@@ -770,21 +773,15 @@ fn revived_post_with_iframe_history() -> Result<()> {
     );
     f.release()?;
     assert!(
-        f.revive(post)?,
-        "a POST document remains a cold target after iframe navigation"
+        !f.revive(post)?,
+        "a POST document retains its history and uses GET after iframe navigation"
     );
     assert_eq!(f.server.hits("POST /post"), 1);
     assert_eq!(f.server.hits("GET /post"), 1);
-    assert_eq!(
-        f.pages
-            .selected_page()
-            .native
-            .back_forward_list()
-            .unwrap()
-            .length(),
-        1
-    );
-    assert_eq!(f.pages.revival_refusals(), 0);
+    assert!(f.pages.selected_history_visits().contains(&a));
+    assert_eq!(f.pages.revival_refusals(), 1);
+    f.pages.go(Go::Parent)?;
+    f.arrived(a)?;
     Ok(())
 }
 fn resize_during_restore() -> Result<()> {

@@ -895,10 +895,7 @@ function openPalette({ scope, text, typed = false }) {
   closePopover(false);
   S.palette = { scope, rows: [], selected: 0, seq: 0 };
   setLayer('palette');
-  const v = scope && visit(scope);
-  $('palette-context').innerHTML = v
-    ? `From ${visitFav(v, 12)}<span>${esc(v.label)}</span>`
-    : '<span class="tag">New tree</span>';
+  renderPaletteContext();
   $('palette-icon').innerHTML = icon('search');
   $('palette').hidden = false;
   const input = $('palette-input');
@@ -908,6 +905,22 @@ function openPalette({ scope, text, typed = false }) {
   else input.select();
   queryPalette();
   syncLayer();
+}
+
+function renderPaletteContext() {
+  if (!S.palette) return;
+  const v = S.palette.scope && visit(S.palette.scope);
+  const content = v
+    ? `From ${visitFav(v, 12)}<span></span>`
+    : '<span class="tag">New tree</span>';
+  const anchor = $('palette-context');
+  if (anchor.__content !== content) {
+    anchor.innerHTML = content;
+    anchor.__content = content;
+  }
+  if (v && anchor.lastElementChild.textContent !== v.label) {
+    anchor.lastElementChild.textContent = v.label;
+  }
 }
 
 function closePalette(returnFocus = true) {
@@ -1244,7 +1257,12 @@ function renderForest() {
   svg.innerHTML = edges;
   const d = layout.divider;
   const divider = d ? `<div class="forest-divider" style="top:${d.y}px"><b>${esc(d.title)}</b><span>${esc(d.detail)}</span></div>` : '';
-  $('forest-nodes').innerHTML = heads + divider + nodes;
+  const content = heads + divider + nodes;
+  const layer = $('forest-nodes');
+  if (layer.__content !== content) {
+    layer.innerHTML = content;
+    layer.__content = content;
+  }
   applyCamera();
 }
 
@@ -1386,6 +1404,7 @@ window.canopy = {
       else showCard(S.card);
     }
     if (S.popover) renderPopover();
+    renderPaletteContext();
     syncLayer();
   },
   strip(layouts) {
@@ -1396,6 +1415,7 @@ window.canopy = {
   },
   icons(revision) {
     S.rev = revision;
+    renderPaletteContext();
     if (!S.frame) return;
     renderTabs();
     renderWaitingPin();

@@ -1,6 +1,8 @@
+#[path = "common/http.rs"]
+mod http;
 use std::{
     collections::BTreeSet,
-    io::{Read, Write},
+    io::Write,
     net::{TcpListener, TcpStream},
     path::Path,
     sync::{
@@ -477,9 +479,10 @@ impl Fixture {
                 thread::spawn(move || {
                     let _ = stream.set_nonblocking(false);
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-                    let mut bytes = [0; 8192];
-                    let n = stream.read(&mut bytes).unwrap_or(0);
-                    let request = String::from_utf8_lossy(&bytes[..n]);
+                    let Ok(bytes) = http::request(&mut stream) else {
+                        return;
+                    };
+                    let request = String::from_utf8_lossy(&bytes);
                     let path = request.split_whitespace().nth(1).unwrap_or("/");
                     match path {
                     "/report" => respond(

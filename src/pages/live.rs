@@ -23,7 +23,7 @@ mod mouse;
 use crate::{
     address::web_url,
     browser::{
-        Capture, CaptureKind, CapturePayload, Document, LoadTicket, Navigation, NavigationTarget,
+        CaptureKind, CapturePayload, Document, LoadTicket, Navigation, NavigationTarget,
         SourceContext, Visibility, VisitId,
     },
 };
@@ -76,6 +76,7 @@ enum Issue {
         decided: bool,
     },
     Loading(LoadTicket),
+    Cancelling(LoadTicket),
     Retiring {
         ticket: LoadTicket,
         next: (LoadTicket, Url),
@@ -97,7 +98,7 @@ impl Issue {
                 *self = Self::Issued { ticket, decided };
                 None
             }
-            Self::Idle => None,
+            Self::Idle | Self::Cancelling(_) => None,
         }
     }
 }
@@ -132,13 +133,13 @@ struct NativeState {
     traversal: RefCell<Option<(LoadTicket, BackForwardListItem)>>,
     /// Where to scroll once a visit reloaded from the network finishes loading.
     pending_scroll: Cell<Option<(VisitId, i64)>>,
-    restoration_viewport: Cell<Option<(i32, i32)>>,
     /// The address of the main frame's last response that has not become a page, and the
     /// page its file belongs to if it becomes a download instead. WebKit may report that
     /// load as failed before it reports the download, and the navigation is forgotten then.
-    response_page: RefCell<Option<(Url, Option<VisitId>)>>,
+    response_page: RefCell<Option<(LoadTicket, Url, Option<VisitId>)>>,
+    download_handover: Cell<Option<LoadTicket>>,
     reload_candidate: RefCell<Option<Url>>,
-    main_frame_post: Cell<Option<bool>>,
+    main_frame_post: Cell<Option<(LoadTicket, bool)>>,
     #[cfg(feature = "gui-smoke")]
     revival_refusals: Cell<usize>,
 }
@@ -188,6 +189,150 @@ impl LivePage {
         self.state.navigation.borrow().pending_ticket()
     }
 
+    pub(super) fn empty(
+        container: &gtk::Fixed,
+        pages: Weak<Pages>,
+        context: &Rc<super::native::PageContext>,
+    ) -> Result<Self> {
+        Self::build(container, pages, context, InitialPage::Session)
+    }
+    pub(super) fn view(&self) -> crate::browser::ViewId {
+        self.state.navigation.borrow().view_id()
+    }
+    pub(super) fn owns(&self, ticket: LoadTicket) -> bool {
+        ticket.belongs_to(&self.state.navigation.borrow())
+    }
+    pub(super) fn current_visit(&self) -> Option<VisitId> {
+        self.state
+            .navigation
+            .borrow()
+            .current
+            .as_ref()
+            .map(|d| d.visit)
+    }
+    pub(super) fn pending_visit(&self) -> Option<VisitId> {
+        self.state.navigation.borrow().pending_restore()
+    }
+    pub(super) fn contains(&self, visit: VisitId) -> bool {
+        let Some(list) = self.native.back_forward_list() else {
+            return false;
+        };
+        let entries = live_entries(&list);
+        self.state
+            .history
+            .borrow()
+            .iter()
+            .any(|e| e.visit == visit && entries.contains(&e.item))
+    }
+    pub(super) fn cancel_foreground(&self) {
+        let state = &self.state;
+        state.end_response();
+        state
+            .owner()
+            .discard_view_continuation(&state.navigation.borrow());
+        state
+            .foreground_generation
+            .set(state.foreground_generation.get().wrapping_add(1));
+        state
+            .load_generation
+            .set(state.load_generation.get().wrapping_add(1));
+        if let Some(ticket) = self.pending_ticket() {
+            state.navigation.borrow_mut().failed(ticket);
+        }
+        // A request stopped before policy acceptance has no Finished signal.
+        // Accepted requests can still deliver Started after a busy beforeunload;
+        // drain those too so they cannot cancel the candidate or commit later.
+        let draining = match *state.issue.borrow() {
+            Issue::Loading(ticket)
+            | Issue::Issued {
+                ticket,
+                decided: true,
+            } if self.native.is_loading() => Some(ticket),
+            _ => None,
+        };
+        *state.issue.borrow_mut() = draining.map(Issue::Cancelling).unwrap_or(Issue::Idle);
+        state.issued.borrow_mut().take();
+        state.traversal.borrow_mut().take();
+        state.same_document_request.borrow_mut().take();
+        state.reload_candidate.borrow_mut().take();
+        state.pending_scroll.set(None);
+        self.native.stop_loading();
+    }
+
+    pub(super) fn awaiting_download(&self) -> bool {
+        self.state.download_handover.get().is_some()
+    }
+
+    pub(super) fn requires_get(&self, visit: VisitId) -> bool {
+        self.state.history_document.get() != 0
+            && self
+                .state
+                .history
+                .borrow()
+                .iter()
+                .any(|e| e.visit == visit && e.needs_get)
+    }
+
+    pub(super) fn cancel(&self) {
+        self.state
+            .owner()
+            .discard_view_continuation(&self.state.navigation.borrow());
+        if let Some(ticket) = self.pending_ticket() {
+            self.state.navigation.borrow_mut().failed(ticket);
+        }
+        self.detach();
+    }
+    pub(super) fn show(&self) {
+        self.native.set_child_visible(true);
+        self.native.show();
+        self.state.owner().place_view(&self.native);
+        self.state.restore_scroll();
+    }
+    pub(super) fn native_back(&self) -> Option<BackForwardListItem> {
+        let list = self.native.back_forward_list()?;
+        let mut items = list.back_list();
+        // WebKit returns nearest first; frame and pushState entries share a document.
+        items.sort_by_key(|item| {
+            (1..=list.length())
+                .find(|n| list.nth_item(-(*n as i32)).as_ref() == Some(item))
+                .unwrap_or(u32::MAX)
+        });
+        let allowed = |item: &&BackForwardListItem| {
+            self.state
+                .history
+                .borrow()
+                .iter()
+                .any(|e| e.item == **item && self.state.native_history_allowed(e.visit))
+        };
+        items
+            .iter()
+            .filter(allowed)
+            .find(|item| {
+                self.state
+                    .history
+                    .borrow()
+                    .iter()
+                    .any(|e| e.item == **item && Some(e.visit) != self.current_visit())
+            })
+            .or_else(|| {
+                if self.back_visit().ok().flatten().is_some() {
+                    return None;
+                }
+                items
+                    .iter()
+                    .filter(allowed)
+                    .find(|item| item.uri() != self.native.uri())
+            })
+            .cloned()
+    }
+    pub(super) fn back_visit(&self) -> Result<Option<VisitId>> {
+        let Some(visit) = self.current_visit() else {
+            return Ok(None);
+        };
+        let parent = self.state.owner().browser.borrow().visit(visit)?.parent;
+        Ok(parent.filter(|v| self.state.native_history_allowed(*v)))
+    }
+
     pub fn new(
         container: &gtk::Fixed,
         pages: Weak<Pages>,
@@ -226,17 +371,23 @@ impl LivePage {
         let mut signals = Vec::new();
         signals.push((native.clone().upcast(), native.connect_close(|_| {})));
         signals.extend(
-            mouse::setup(&native)
+            mouse::setup(&native, pages.clone())
                 .into_iter()
                 .map(|id| (native.clone().upcast(), id)),
         );
-        native.set_size_request(200, 200);
         container.put(&native, 0, 0);
+        native.set_child_visible(matches!(initial, InitialPage::Home));
+        native.show();
+        if container.is_realized() {
+            native.realize();
+        }
         if matches!(initial, InitialPage::Home) {
             native.load_html(HOME, None);
         }
-        native.show_all();
-        native.grab_focus();
+        if matches!(initial, InitialPage::Home) {
+            native.show_all();
+            native.grab_focus();
+        }
         let manager = native
             .user_content_manager()
             .context("The JavaScript context is unavailable.")?;
@@ -265,8 +416,8 @@ impl LivePage {
             history_cursor: RefCell::new(None),
             traversal: RefCell::new(None),
             pending_scroll: Cell::new(None),
-            restoration_viewport: Cell::new(None),
             response_page: RefCell::new(None),
+            download_handover: Cell::new(None),
             reload_candidate: RefCell::new(None),
             main_frame_post: Cell::new(None),
             #[cfg(feature = "gui-smoke")]
@@ -302,6 +453,16 @@ impl LivePage {
                     let url = native.uri().and_then(|uri| web_url(&uri).ok());
                     match event {
                         LoadEvent::Started => {
+                            if matches!(*state.issue.borrow(), Issue::Cancelling(_)) {
+                                return;
+                            }
+                            let bootstrap = url.is_none()
+                                && state.navigation.borrow().current.is_none()
+                                && state.navigation.borrow().pending_ticket().is_none();
+                            if !bootstrap {
+                                state.foreground_requested();
+                            }
+                            state.end_response();
                             state.main_frame_post.set(None);
                             if matches!(*state.issue.borrow(), Issue::Issued { decided: false, .. })
                             {
@@ -389,7 +550,10 @@ impl LivePage {
                             state.complete_same_document();
                             state.update_title();
                             state.restore_scroll();
-                            state.emit(PageEvent::Loading(false));
+                            if state.download_handover.get().is_none() {
+                                state.end_response();
+                                state.emit(PageEvent::Loading(false));
+                            }
                             state.look_for_login_fields();
                             let enabled = state
                                 .owner()
@@ -447,9 +611,8 @@ impl LivePage {
                     }
                     // A response turned into a download ends the page load this way; the page
                     // the user was reading stays.
-                    if error.matches(PolicyError::FrameLoadInterruptedByPolicyChange) {
-                        state.emit(PageEvent::Loading(false));
-                    } else if !cancelled {
+                    if !error.matches(PolicyError::FrameLoadInterruptedByPolicyChange) && !cancelled
+                    {
                         state.emit(PageEvent::Error(format!(
                             "Could not load this page. {}",
                             error.message()
@@ -602,9 +765,11 @@ impl LivePage {
                     let Some(state) = Pages::enter_native(&weak) else {
                         return;
                     };
-                    state
-                        .main_frame_post
-                        .set(Some(request.http_method().as_deref() == Some("POST")));
+                    state.main_frame_post.set(
+                        state.loading_ticket().map(|ticket| {
+                            (ticket, request.http_method().as_deref() == Some("POST"))
+                        }),
+                    );
                     let weak = Rc::downgrade(&state);
                     // The typed binding treats the absent redirect response as non-null.
                     resource.connect_local("sent-request", false, move |values| {
@@ -619,7 +784,9 @@ impl LivePage {
                             if state.native.main_resource().as_ref() == Some(&resource) {
                                 state
                                     .main_frame_post
-                                    .set(Some(request.http_method().as_deref() == Some("POST")));
+                                    .set(state.loading_ticket().map(|ticket| {
+                                        (ticket, request.http_method().as_deref() == Some("POST"))
+                                    }));
                             }
                         }
                         None
@@ -629,9 +796,28 @@ impl LivePage {
         }
         let weak = Rc::downgrade(&state);
         let favicon = context.register_view(&native, move |source| {
-            Pages::enter_native(&weak).and_then(|state| state.download_page(source))
+            Pages::enter_native(&weak).and_then(|state| {
+                let page = state
+                    .download_page(source)
+                    .or_else(|| state.owner().read(|b| b.snapshot()).ok()?.current);
+                if let Some(ticket) = state.download_handover.take() {
+                    let generation = state.load_generation.get();
+                    let weak = Rc::downgrade(&state);
+                    glib::idle_add_local_once(move || {
+                        if let Some(state) = Pages::enter_native(&weak) {
+                            if state.load_generation.get() == generation
+                                && ticket.is_latest(&state.navigation.borrow())
+                            {
+                                state.emit(PageEvent::Loading(false));
+                            }
+                        }
+                    });
+                }
+                page
+            })
         });
         signals.push((native.clone().upcast(), favicon));
+        state.owner().register_view(&native);
         Ok(Self {
             native,
             state,
@@ -660,6 +846,7 @@ impl LivePage {
     }
 
     fn detach(&self) {
+        self.state.end_response();
         if self.state.lifecycle.replace(Lifecycle::Released) == Lifecycle::Released {
             return;
         }
@@ -826,13 +1013,13 @@ impl LivePage {
         page.native.restore_session_state(&session);
         let binding = (|| -> Result<Vec<HistoryEntry>> {
             let shows_target = |e: &&CheckpointEntry| e.visit == visit && e.uri == e.stored_url;
-            let target = saved
+            let _target = saved
                 .entries
                 .get(saved.current)
                 .filter(shows_target)
                 .or_else(|| saved.entries.iter().rev().find(shows_target))
                 .context("Visit has no traversable entry in checkpoint.")?;
-            anyhow::ensure!(!target.post, "POST target requires GET.");
+
             let (items, current) =
                 ordered_entries(&page.native.back_forward_list().context("No history.")?)?;
             let urls = items
@@ -890,54 +1077,9 @@ impl LivePage {
         }
     }
 
-    pub(super) fn follow_container_bounds(&self, container: &gtk::Fixed) {
-        let weak = Rc::downgrade(&self.state);
-        let signal = container.connect_size_allocate(move |_, allocation| {
-            if let Some(state) = weak.upgrade() {
-                let width = allocation.width().max(1);
-                let height = (allocation.height() - super::CHROME_HEIGHT as i32).max(1);
-                state.restoration_viewport.set(Some((width, height)));
-                state.native.size_allocate(&gtk::Allocation::new(
-                    0,
-                    super::CHROME_HEIGHT as i32,
-                    width,
-                    height,
-                ));
-            }
-        });
-        self.signals
-            .borrow_mut()
-            .push((container.clone().upcast(), signal));
-        self.state.restoration_viewport.set(Some((
-            container.allocated_width(),
-            container.allocated_height() - super::CHROME_HEIGHT as i32,
-        )));
-        self.set_bounds(
-            0.,
-            super::CHROME_HEIGHT,
-            container.allocated_width() as f64,
-            container.allocated_height() as f64 - super::CHROME_HEIGHT,
-        );
-    }
-
-    /// Places the page in its container, in logical pixels.
-    pub fn set_bounds(&self, x: f64, y: f64, width: f64, height: f64) {
-        if self.state.restoration_viewport.get().is_some() {
-            self.state.restoration_viewport.set(Some((
-                width.max(1.).round() as i32,
-                height.max(1.).round() as i32,
-            )));
-        }
-        self.native.size_allocate(&gtk::Allocation::new(
-            x.round() as i32,
-            y.round() as i32,
-            width.max(1.).round() as i32,
-            height.max(1.).round() as i32,
-        ));
-    }
-
     pub fn focus(&self) {
         self.native.grab_focus();
+        self.state.owner().place_view(&self.native);
     }
 
     pub fn navigate(&self, url: Url, target: NavigationTarget) -> Result<()> {
@@ -1011,19 +1153,6 @@ impl LivePage {
         Ok(())
     }
 
-    pub fn back(&self) -> Result<()> {
-        let request = self
-            .state
-            .owner()
-            .browser
-            .borrow_mut()
-            .back(&mut self.state.navigation.borrow_mut())?;
-        if let Some(url) = request {
-            self.state.load(url);
-        }
-        Ok(())
-    }
-
     pub fn reload(&self) -> Result<()> {
         let request = self
             .state
@@ -1050,32 +1179,23 @@ impl LivePage {
         Ok(())
     }
 
-    pub fn open_saved(&self, capture: &Capture) -> Result<()> {
+    pub(super) fn open_saved(&self, capture: &crate::browser::Capture) -> Result<()> {
         let target = capture
             .citation_url
             .clone()
             .unwrap_or_else(|| capture.document_url.clone());
-        let visit = self.state.owner().browser.borrow().visit(capture.visit)?;
-        let url = if target == visit.url {
-            self.state
-                .owner()
-                .browser
-                .borrow_mut()
-                .restore(&mut self.state.navigation.borrow_mut(), visit.id)?
-        } else {
-            let source = SourceContext {
-                page_url: capture.document_url.clone(),
-                citation_url: capture.citation_url.clone(),
-                link_text: capture.title.clone(),
-                excerpt: capture.text.chars().take(1000).collect(),
-            };
-            self.state.owner().browser.borrow_mut().follow_link(
-                &mut self.state.navigation.borrow_mut(),
-                visit.id,
-                target,
-                source,
-            )?
+        let source = SourceContext {
+            page_url: capture.document_url.clone(),
+            citation_url: capture.citation_url.clone(),
+            link_text: capture.title.clone(),
+            excerpt: capture.text.chars().take(1000).collect(),
         };
+        let url = self.state.owner().browser.borrow_mut().follow_link(
+            &mut self.state.navigation.borrow_mut(),
+            capture.visit,
+            target,
+            source,
+        )?;
         self.state.load(url);
         Ok(())
     }
@@ -1107,6 +1227,7 @@ impl NativeState {
             Issue::Idle => None,
             Issue::Issued { ticket, .. }
             | Issue::Loading(ticket)
+            | Issue::Cancelling(ticket)
             | Issue::Retiring { ticket, .. } => Some(ticket),
         }
     }
@@ -1139,9 +1260,18 @@ impl NativeState {
         }
     }
 
+    /// Response metadata belongs only to the current load ticket.
+    fn end_response(&self) {
+        self.main_frame_post.set(None);
+        self.download_handover.set(None);
+        self.response_page.borrow_mut().take();
+    }
+
     fn loading_ticket(&self) -> Option<LoadTicket> {
         match *self.issue.borrow() {
-            Issue::Loading(ticket) | Issue::Retiring { ticket, .. } => Some(ticket),
+            Issue::Loading(ticket) | Issue::Cancelling(ticket) | Issue::Retiring { ticket, .. } => {
+                Some(ticket)
+            }
             _ => None,
         }
     }
@@ -1150,11 +1280,28 @@ impl NativeState {
         let Some(ticket) = self.loading_ticket() else {
             return Ok(false);
         };
-        let committed = self.owner().browser.borrow_mut().commit_load(
+        let owner = self.owner();
+        let foreground = owner
+            .branches
+            .live
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| p.owns(ticket))
+            || owner
+                .branches
+                .candidate
+                .borrow()
+                .as_ref()
+                .is_some_and(|p| p.owns(ticket));
+        let committed = owner.browser.borrow_mut().commit_load(
             &mut self.navigation.borrow_mut(),
             ticket,
             url,
-            Visibility::Selected,
+            if foreground {
+                Visibility::Selected
+            } else {
+                Visibility::Hidden
+            },
         )?;
         if committed {
             let visit = self
@@ -1177,7 +1324,14 @@ impl NativeState {
 
     fn emit(&self, event: PageEvent) {
         if self.lifecycle.get() == Lifecycle::Live {
-            self.owner().receive(event);
+            let (view, empty) = {
+                let navigation = self.navigation.borrow();
+                (
+                    navigation.view_id(),
+                    navigation.current.is_none() && navigation.pending_ticket().is_none(),
+                )
+            };
+            self.owner().receive_view(view, empty, event);
         }
     }
 
@@ -1217,7 +1371,22 @@ impl NativeState {
         self.ticket().as_ref() == Some(ticket)
     }
 
+    fn foreground_requested(&self) {
+        let owner = self.owner();
+        let selected = owner
+            .branches
+            .live
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| p.native == self.native);
+        if selected {
+            owner.cancel_candidate();
+        }
+    }
+
     fn load(self: &Rc<Self>, url: Url) {
+        self.foreground_requested();
+        self.end_response();
         // Every caller registers its intent first; an address with no attempt has no visit to
         // commit to.
         let Some(requested) = self.navigation.borrow().pending_ticket() else {
@@ -1227,6 +1396,13 @@ impl NativeState {
             let mut issue = self.issue.borrow_mut();
             if let Issue::Retiring { next, .. } = &mut *issue {
                 *next = (requested, url);
+                return;
+            }
+            if let Issue::Cancelling(ticket) = *issue {
+                *issue = Issue::Retiring {
+                    ticket,
+                    next: (requested, url),
+                };
                 return;
             }
         }
@@ -1398,14 +1574,17 @@ impl NativeState {
                         .browser
                         .borrow()
                         .download_page(&self.navigation.borrow(), Some(&url));
-                    (url, page.ok().flatten())
+                    (self.loading_ticket(), url, page.ok().flatten())
                 });
-                self.response_page.replace(noted);
+                self.response_page.replace(
+                    noted.and_then(|(ticket, url, page)| ticket.map(|ticket| (ticket, url, page))),
+                );
             }
             if response.is_mime_type_supported() {
                 return false;
             }
             if main {
+                self.download_handover.set(self.loading_ticket());
                 decision.download();
             } else {
                 decision.ignore();
@@ -1448,6 +1627,18 @@ impl NativeState {
             #[cfg(feature = "gui-smoke")]
             self.revival_refusals.set(self.revival_refusals.get() + 1);
             decision.ignore();
+            if self.history_document.get() != 0 {
+                if let Some(visit) = self.current_entry_visit() {
+                    self.report(self.owner().cold_restore(visit));
+                }
+                return true;
+            }
+            // At initial revival the POST is current in the native list. Its GET
+            // appends after it; page Back skips the duplicate visit.
+            if let Some(document) = self.current_entry_document() {
+                self.history_document.set(document);
+            }
+            self.back_forward_commit.set(false);
             let visit = self.current_entry_visit();
             if let Some(visit) = visit {
                 let result = self
@@ -1727,7 +1918,11 @@ impl NativeState {
                     .rev()
                     .find(|entry| entry.document == self.history_document.get())
             });
-        let method = self.main_frame_post.take();
+        let method = self
+            .main_frame_post
+            .take()
+            .filter(|(ticket, _)| Some(*ticket) == self.loading_ticket())
+            .map(|(_, post)| post);
         let post = method.unwrap_or_else(|| previous.is_some_and(|entry| entry.post));
         let needs_get = method.is_none() && previous.is_some_and(|entry| entry.needs_get);
         history.retain(|entry| entry.item != current && live.contains(&entry.item));
@@ -1753,7 +1948,7 @@ impl NativeState {
             .chain(history.iter().rev())
             .find(|entry| {
                 entry.visit == visit
-                    && !entry.needs_get
+                    && (!entry.needs_get || self.history_document.get() == 0)
                     && entry.document != self.history_document.get()
                     && (self.history_document.get() == 0 || Some(&entry.item) != current.as_ref())
                     && live.contains(&entry.item)
@@ -1785,17 +1980,21 @@ impl NativeState {
     }
 
     fn restore_scroll(self: &Rc<Self>) {
+        if !self.native.is_mapped() {
+            return;
+        }
         // A cancelled earlier load can finish first; keep the target for the visit it names.
         let Some((visit, y)) = self.pending_scroll.get() else {
             return;
         };
         if self.ticket().is_some_and(|ticket| ticket.visit == visit) {
             self.pending_scroll.set(None);
-            let viewport = self
-                .restoration_viewport
-                .get()
-                .map(|(width, height)| format!("[{width},{height}]"))
-                .unwrap_or_else(|| "null".into());
+            let (width, height) = self.owner().viewport.get();
+            let viewport = format!(
+                "[{},{}]",
+                width.max(1),
+                (height - super::CHROME_HEIGHT as i32).max(1)
+            );
             let script = format!(
                 "JSON.stringify(globalThis.__canopyMemory?.restoreScroll({y}, {viewport}) ?? null)"
             );
@@ -1805,12 +2004,13 @@ impl NativeState {
 
     /// The page a download from `source` that starts now belongs to.
     fn download_page(&self, source: Option<&Url>) -> Option<VisitId> {
-        let noted = self
-            .response_page
-            .borrow_mut()
-            .take_if(|(url, _)| Some(&*url) == source);
+        let noted = self.response_page.borrow_mut().take_if(|(ticket, url, _)| {
+            Some(&*url) == source
+                && (self.loading_ticket() == Some(*ticket)
+                    || self.download_handover.get() == Some(*ticket))
+        });
         match noted {
-            Some((_, page)) => page,
+            Some((_, _, page)) => page,
             None => {
                 let page = self
                     .owner()

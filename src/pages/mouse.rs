@@ -7,9 +7,13 @@ use gtk::{
     gdk::{EventButton, EventMask, ModifierType},
     prelude::*,
 };
+use javascriptcore::ValueExt;
 use webkit2gtk::{SettingsExt, WebView, WebViewExt};
 
-pub(super) fn setup(webview: &WebView) -> Vec<glib::SignalHandlerId> {
+pub(super) fn setup(
+    webview: &WebView,
+    pages: std::rc::Weak<super::super::Pages>,
+) -> Vec<glib::SignalHandlerId> {
     webview.add_events(EventMask::BUTTON1_MOTION_MASK | EventMask::BUTTON_PRESS_MASK);
 
     let bf_state = BackForwardState(Rc::new(RefCell::new(0)));
@@ -57,12 +61,22 @@ pub(super) fn setup(webview: &WebView) -> Vec<glib::SignalHandlerId> {
             8 => {
                 inhibit = true;
                 bf_state_c.remove(BACK);
+                let pages = pages.clone();
                 webview.evaluate_javascript(
                     &create_js_mouse_event(webview, event, false, &bf_state_c),
                     None,
                     None,
                     None::<&gtk::gio::Cancellable>,
-                    |_| {},
+                    move |result| {
+                        if result.is_ok_and(|value| value.to_str().as_str() == "true") {
+                            if let Some(pages) = pages.upgrade() {
+                                if let Err(error) = pages.go(super::super::Go::Parent) {
+                                    pages
+                                        .receive(super::super::PageEvent::Error(error.to_string()));
+                                }
+                            }
+                        }
+                    },
                 );
             }
             9 => {
@@ -151,13 +165,11 @@ fn create_js_mouse_event(
         }});
         el.dispatchEvent(ev)
         if (!ev.defaultPrevented && "{event_name}" === "mouseup") {{
-          if (ev.button === 3) {{
-            window.history.back();
-          }}
           if (ev.button === 4) {{
             window.history.forward();
           }}
         }}
+        return !ev.defaultPrevented;
       }})()"#,
         event_name = event_name,
         x = x,

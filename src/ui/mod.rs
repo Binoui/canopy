@@ -69,6 +69,7 @@ impl Ui {
         window.add(&scroller);
         let pages = Pages::mount(&fixed, browser, &data_dir.join("profile"))?;
         let chrome = HtmlChrome::mount(&fixed, pages.favicons())?;
+        pages.set_chrome(&chrome.native());
         {
             use webkit2gtk::{WebContextExt, WebViewExt};
             let confined = pages.sandbox_enabled()
@@ -126,6 +127,7 @@ impl Ui {
         let weak = Rc::downgrade(&ui);
         ui.pages.observe(move |event| {
             let Some(ui) = weak.upgrade() else { return };
+            ui.chrome.raise();
             match event {
                 PageEvent::Changed | PageEvent::Loading(false) => ui.schedule_refresh(),
                 PageEvent::Loading(true) => {}

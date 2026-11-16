@@ -439,6 +439,11 @@ impl Inner {
     fn apply_bounds(&self) {
         let (width, height) = self.size.get();
         let height = self.cover.get().map_or(height, |cover| cover.min(height));
+        use gtk::prelude::WidgetExt;
+        use wry::WebViewExtUnix;
+        self.view
+            .webview()
+            .set_size_request(width.round() as i32, height.round() as i32);
         let _ = self.view.set_bounds(rect(0., 0., width, height));
         self.raise();
     }
