@@ -338,13 +338,19 @@ pub fn element_point(ui: &Ui, id: &str) -> Result<(i32, i32)> {
 }
 
 pub fn save_window(ui: &Ui, path: &str) -> Result<()> {
+    let path = std::path::Path::new(path);
+    let path = if path.parent() == Some(std::path::Path::new("/tmp")) {
+        std::env::temp_dir().join(path.file_name().context("capture file name")?)
+    } else {
+        path.to_owned()
+    };
     pump(150);
     if let Some(window) = ui.window.window() {
         let a = ui.window.allocation();
         window
             .pixbuf(0, 0, a.width(), a.height())
             .context("window capture")?
-            .savev(path, "png", &[])?;
+            .savev(&path, "png", &[])?;
     }
     Ok(())
 }
