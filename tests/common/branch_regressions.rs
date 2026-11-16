@@ -903,8 +903,9 @@ fn script_during_switch() -> Result<()> {
         f.cursor_path() == "/after-script"
     })?;
     f.server.gate("script-switch", false);
-    pump_for(500);
-    assert_eq!(f.cursor_path(), "/after-script");
+    wait("owner switch survives script navigation", || {
+        f.cursor_path() == "/gate/script-switch/target"
+    })?;
     Ok(())
 }
 fn failed_loading_signal() -> Result<()> {

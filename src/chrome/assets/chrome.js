@@ -1393,13 +1393,15 @@ window.canopy = {
   start(value) { if (!S.frame) return; S.frame.start = value; renderStart(); },
   present(frame) {
     const previous = current();
+    const previousTree = S.frame?.tabs.find((tab) => tab.active)?.id;
     S.frame = frame;
     applyStrip(frame.strip);
     renderWaitingPin();
     applyTheme();
     if (frame.current !== previous) {
       setOverlay(null);
-      if (S.surface !== 'reading') setSurface('reading');
+      const sameTree = previousTree && previousTree === frame.tabs.find((tab) => tab.active)?.id;
+      if (S.surface !== 'reading' && !(S.surface === 'start' && sameTree)) setSurface('reading');
     }
     if (!frame.tabs.length && S.surface === 'reading') setSurface('start');
     if (S.popover?.kind === 'rename' && !frame.tabs.some((tree) => tree.id === S.popover.data)) closePopover();

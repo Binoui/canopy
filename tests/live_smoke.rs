@@ -69,6 +69,9 @@ impl Fixture {
                     if path.starts_with("/plain") {
                         body = body.replace("setInterval(()=>counter++,100)", "");
                     }
+                    if path.starts_with("/loop") {
+                        body.push_str("<script>setTimeout(()=>location.href='/loop?n='+Date.now(),100)</script>");
+                    }
                     if path == "/heavy" {
                         body.push_str("<script>window.memory=new Uint8Array(128*1024*1024);memory.fill(42)</script>");
                     }
@@ -700,6 +703,94 @@ fn small_budget_drops_hidden_page() -> Result<()> {
     })?;
     Ok(())
 }
+fn redirect_loop_commands() -> Result<()> {
+    for command in ["new-tree", "palette", "tab", "settle", "middle"] {
+        let f = Fixture::new()?;
+        let other = f.root("/slow-other")?;
+        f.root("/loop")?;
+        common::wait("redirect loop active", || {
+            f.hits
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(p, _)| p.starts_with("/loop"))
+                .map(|(_, n)| *n)
+                .sum::<usize>()
+                >= 3
+        })?;
+        match command {
+            "new-tree" | "palette" => {
+                common::key(if command == "new-tree" {
+                    "ctrl+t"
+                } else {
+                    "ctrl+k"
+                })?;
+                common::wait("address editor focused", || {
+                    common::chrome_focused(
+                        &f.ui,
+                        if command == "new-tree" {
+                            "#start-search"
+                        } else {
+                            "#palette-input"
+                        },
+                    )
+                })?;
+                common::type_text(f.url("/slow-new").as_str())?;
+                common::key(if command == "palette" {
+                    "alt+Return"
+                } else {
+                    "Return"
+                })?;
+            }
+            "tab" => {
+                let (x, y, w, h) = common::rect(&f.ui, &format!(".tab[data-id='{other}']"))?;
+                let (x, y) = common::screen_point(
+                    &f.ui,
+                    &f.ui.chrome.native(),
+                    (x + w / 2.) as i32,
+                    (y + h / 2.) as i32,
+                )?;
+                common::click_at(x, y)?;
+            }
+            "settle" => common::key("ctrl+w")?,
+            "middle" => {
+                let (x, y) = common::page_point(&f.ui, 50, 130)?;
+                common::move_to(x, y)?;
+                common::xdo(&["click", "2"])?;
+            }
+            _ => unreachable!(),
+        }
+        let result = common::wait("owner command lands during redirect loop", || {
+            let snapshot = f.ui.snapshot().unwrap();
+            if command == "middle" {
+                snapshot.visits.iter().any(|v| v.url.path() == "/clicked")
+            } else {
+                snapshot.current_visit().is_some_and(|v| {
+                    v.url.path()
+                        == if command == "tab" || command == "settle" {
+                            "/slow-other"
+                        } else {
+                            "/slow-new"
+                        }
+                })
+            }
+        });
+        println!(
+            "REDIRECT {command}: {}",
+            if result.is_ok() { "landed" } else { "FAILED" }
+        );
+        result?;
+        if command == "middle" {
+            assert!(
+                f.ui.snapshot()?
+                    .current_visit()
+                    .is_some_and(|v| v.url.path() == "/loop"),
+                "middle-click queues without selecting its destination"
+            );
+        }
+    }
+    Ok(())
+}
 fn main() -> Result<()> {
     let _runtime = common::private_runtime()?;
     let download_home = tempfile::tempdir()?;
@@ -721,7 +812,11 @@ fn main() -> Result<()> {
     if std::env::args().nth(1).as_deref() == Some("small-budget") {
         return small_budget_drops_hidden_page();
     }
+    if std::env::args().nth(1).as_deref() == Some("redirect-loop") {
+        return redirect_loop_commands();
+    }
     let cases: &[Case] = &[
+        ("redirect_loop_commands", redirect_loop_commands),
         (
             "a_fragment_navigation_does_not_protect_a_hidden_page_from_eviction",
             a_fragment_navigation_does_not_protect_a_hidden_page_from_eviction,

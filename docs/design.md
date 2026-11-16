@@ -255,8 +255,12 @@ existing refreshes.
 
 Starting a candidate fails all pending foreground work in the old view and invalidates
 its asynchronous link decisions. The old committed document remains usable. Main-frame
-Started for another document cancels the candidate; same-document changes (pushState,
-replaceState and fragments) and subframe policy decisions do not. Settling cancels
+policy for a user gesture to another document cancels the candidate; same-document
+changes (pushState, replaceState and fragments) and subframe policy decisions do not.
+A page's script, timer or automatic refresh never cancels an owner-requested switch
+or new tree. Started alone does not establish user intent. The new-tree address
+editor stays open across cursor updates within the outgoing tree; a redirect cannot
+close it while the owner types. Settling cancels
 only a candidate targeting that tree. Settling the last tree creates a fresh home view, so the next branch cannot inherit settled history. Release
 keeps valid checkpoints, including those of settled trees.
 

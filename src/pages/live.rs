@@ -670,9 +670,6 @@ impl LivePage {
                             let bootstrap = url.is_none()
                                 && state.navigation.borrow().current.is_none()
                                 && state.navigation.borrow().pending_ticket().is_none();
-                            if !bootstrap {
-                                state.foreground_requested();
-                            }
                             state.end_response();
                             state.awaiting_response.set(!bootstrap);
                             state.main_frame_post.set(None);
@@ -1837,6 +1834,22 @@ impl NativeState {
                 let main_action = action.request().and_then(|r| r.uri()) == self.native.uri();
                 if main_action {
                     self.answer_form_return(false);
+                    // A timer or script in the outgoing page cannot revoke an owner's switch.
+                    // Same-document gestures keep the candidate too.
+                    if action.is_user_gesture()
+                        && action.request().and_then(|r| r.uri()).is_some_and(|uri| {
+                            self.navigation
+                                .borrow()
+                                .current
+                                .as_ref()
+                                .is_some_and(|document| {
+                                    web_url(&uri)
+                                        .is_ok_and(|url| !same_resource(&document.page_url, &url))
+                                })
+                        })
+                    {
+                        self.foreground_requested();
+                    }
                 }
                 let returning = action.navigation_type() == NavigationType::BackForward
                     && action
