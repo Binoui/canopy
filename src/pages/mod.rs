@@ -710,6 +710,8 @@ impl Pages {
             if !old.native.is_sensitive() {
                 self.release_outgoing(old);
             } else {
+                // A later checkpoint of this page must sort where the hidden page did.
+                old.last_shown.set(last_shown);
                 self.branches.hidden.borrow_mut().push(Hidden {
                     page: old,
                     last_shown,
@@ -827,6 +829,7 @@ impl Pages {
                 return;
             }
             if hold.outgoing.current_visit().is_some() {
+                hold.outgoing.last_shown.set(hold.last_shown);
                 self.branches.hidden.borrow_mut().push(Hidden {
                     page: hold.outgoing,
                     last_shown: hold.last_shown,
