@@ -1,5 +1,6 @@
 pub mod address;
 pub mod browser;
+pub mod budget;
 pub mod download;
 pub mod forest;
 pub mod import;
@@ -53,6 +54,7 @@ fn keep_video_colours_on_nvidia() {
 pub fn init_desktop() -> anyhow::Result<()> {
     use anyhow::Context;
 
+    budget::Budget::of_machine()?;
     // wry creates subprocesses before exposing its native contexts.
     std::env::set_var("WEBKIT_FORCE_SANDBOX", "1");
     keep_video_colours_on_nvidia();

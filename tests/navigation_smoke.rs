@@ -142,9 +142,14 @@ fn main() -> Result<()> {
     println!(
         "PASS hash, pushState and replaceState entries alias the visit through native traversal."
     );
+    let live_alias = ui.pages.selected_page().native.uri();
     regression("fragment", &ui, &server)?;
     ui.pages.selected_page().restore(a)?;
-    assert_eq!(arrived(&ui, "/long")?, a);
+    wait("live return retains its same-document URL", || {
+        ui.snapshot().is_ok_and(|s| s.current == Some(a))
+            && ui.pages.selected_page().native.uri() == live_alias
+            && !ui.pages.selected_page().native.is_loading()
+    })?;
     let count = ui.snapshot()?.visits.len();
     ui.pages
         .selected_page()

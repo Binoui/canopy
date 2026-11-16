@@ -12,8 +12,8 @@ use webkit2gtk::{
     BackForwardListExt, BackForwardListItem, BackForwardListItemExt, LoadEvent,
     NavigationPolicyDecision, NavigationPolicyDecisionExt, NavigationType, NetworkError,
     PolicyDecision, PolicyDecisionExt, PolicyDecisionType, PolicyError, ResponsePolicyDecision,
-    ResponsePolicyDecisionExt, URIRequestExt, UserContentInjectedFrames, UserContentManagerExt,
-    UserScript, UserScriptInjectionTime, WebViewExt,
+    ResponsePolicyDecisionExt, URIRequestExt, URIResponseExt, UserContentInjectedFrames,
+    UserContentManagerExt, UserScript, UserScriptInjectionTime, WebViewExt,
 };
 #[path = "login_fields.rs"]
 mod login_fields;
@@ -46,6 +46,7 @@ pub(super) struct CheckpointEntry {
 // The per-branch PR calls the checkpoint lifecycle.
 #[cfg_attr(not(feature = "gui-smoke"), allow(dead_code))]
 pub(super) struct Checkpoint {
+    pub(super) last_shown: u64,
     pub(super) bytes: glib::Bytes,
     pub(super) entries: Vec<CheckpointEntry>,
     pub(super) current: usize,
@@ -115,6 +116,7 @@ struct NativeState {
     lifecycle: Cell<Lifecycle>,
     pages: Weak<Pages>,
     navigation: RefCell<Navigation>,
+    download_origin: Option<VisitId>,
     issue: RefCell<Issue>,
     load_generation: Cell<u64>,
     foreground_generation: Cell<u64>,
@@ -138,6 +140,7 @@ struct NativeState {
     /// load as failed before it reports the download, and the navigation is forgotten then.
     response_page: RefCell<Option<(LoadTicket, Url, Option<VisitId>)>>,
     download_handover: Cell<Option<LoadTicket>>,
+    awaiting_response: Cell<bool>,
     reload_candidate: RefCell<Option<Url>>,
     main_frame_post: Cell<Option<(LoadTicket, bool)>>,
     #[cfg(feature = "gui-smoke")]
@@ -173,6 +176,7 @@ impl Pages {
 }
 
 pub(super) struct LivePage {
+    pub(super) last_shown: Cell<u64>,
     pub(super) native: webkit2gtk::WebView,
     state: Rc<NativeState>,
     signals: RefCell<Vec<(glib::Object, glib::SignalHandlerId)>>,
@@ -209,6 +213,9 @@ impl LivePage {
             .current
             .as_ref()
             .map(|d| d.visit)
+    }
+    pub(super) fn pending_anchor(&self) -> Option<VisitId> {
+        self.state.navigation.borrow().pending_anchor()
     }
     pub(super) fn pending_visit(&self) -> Option<VisitId> {
         self.state.navigation.borrow().pending_restore()
@@ -260,7 +267,8 @@ impl LivePage {
     }
 
     pub(super) fn awaiting_download(&self) -> bool {
-        self.state.download_handover.get().is_some()
+        self.state.awaiting_response.get() && self.native.is_loading()
+            || self.state.download_handover.get().is_some()
     }
 
     pub(super) fn requires_get(&self, visit: VisitId) -> bool {
@@ -282,7 +290,31 @@ impl LivePage {
         }
         self.detach();
     }
+    pub(super) fn retire(&self) {
+        self.native.set_sensitive(false);
+        self.native.set_is_muted(true);
+        self.cancel_foreground();
+        self.state.lifecycle.set(Lifecycle::CapturingScroll);
+    }
+    pub(super) fn select(&self) -> Result<()> {
+        let navigation = self.state.navigation.borrow();
+        if let Some(document) = navigation.current.as_ref() {
+            self.state
+                .owner()
+                .browser
+                .borrow_mut()
+                .select_document(&navigation, document)?;
+        }
+        Ok(())
+    }
+    pub(super) fn refresh_login(&self) {
+        self.state.look_for_login_fields();
+    }
     pub(super) fn show(&self) {
+        if let Some(window) = self.native.window() {
+            window.set_pass_through(false);
+        }
+        self.native.set_sensitive(true);
         self.native.set_child_visible(true);
         self.native.show();
         self.state.owner().place_view(&self.native);
@@ -402,7 +434,15 @@ impl LivePage {
         let state = Rc::new(NativeState {
             native: native.clone(),
             lifecycle: Cell::new(Lifecycle::Live),
-            pages,
+            pages: pages.clone(),
+            download_origin: pages.upgrade().and_then(|owner| {
+                owner
+                    .branches
+                    .live
+                    .borrow()
+                    .as_ref()
+                    .and_then(|page| page.current_visit())
+            }),
             navigation: RefCell::new(Navigation::default()),
             issue: RefCell::new(Issue::Idle),
             load_generation: Cell::new(0),
@@ -418,11 +458,93 @@ impl LivePage {
             pending_scroll: Cell::new(None),
             response_page: RefCell::new(None),
             download_handover: Cell::new(None),
+            awaiting_response: Cell::new(false),
             reload_candidate: RefCell::new(None),
             main_frame_post: Cell::new(None),
             #[cfg(feature = "gui-smoke")]
             revival_refusals: Cell::new(0),
         });
+        // WebKit defaults may present modal UI even for an unmapped view.
+        {
+            let weak = state.pages.clone();
+            signals.push((
+                native.clone().upcast(),
+                native.connect_script_dialog(move |view, dialog| {
+                    if !is_selected(&weak, view) {
+                        if matches!(
+                            dialog.dialog_type(),
+                            webkit2gtk::ScriptDialogType::Confirm
+                                | webkit2gtk::ScriptDialogType::BeforeUnloadConfirm
+                        ) {
+                            dialog.confirm_set_confirmed(false);
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                }),
+            ));
+            let weak = state.pages.clone();
+            signals.push((
+                native.clone().upcast(),
+                native.connect_permission_request(move |view, request| {
+                    if !is_selected(&weak, view) {
+                        use webkit2gtk::PermissionRequestExt;
+                        request.deny();
+                        true
+                    } else {
+                        false
+                    }
+                }),
+            ));
+            let weak = state.pages.clone();
+            signals.push((
+                native.clone().upcast(),
+                native.connect_run_file_chooser(move |view, request| {
+                    if !is_selected(&weak, view) {
+                        use webkit2gtk::FileChooserRequestExt;
+                        request.cancel();
+                        true
+                    } else {
+                        false
+                    }
+                }),
+            ));
+            let weak = state.pages.clone();
+            signals.push((
+                native.clone().upcast(),
+                native.connect_enter_fullscreen(move |view| !is_selected(&weak, view)),
+            ));
+            let weak = state.pages.clone();
+            signals.push((
+                native.clone().upcast(),
+                native.connect_print(move |view, _| !is_selected(&weak, view)),
+            ));
+        }
+        {
+            let weak = Rc::downgrade(&state);
+            signals.push((
+                native.clone().upcast(),
+                native.connect_web_process_terminated(move |_, _| {
+                    if let Some(state) = weak.upgrade() {
+                        let owner = state.owner();
+                        let view = state.navigation.borrow().view_id();
+                        let index = owner
+                            .branches
+                            .hidden
+                            .borrow()
+                            .iter()
+                            .position(|h| h.page.view() == view);
+                        if let Some(index) = index {
+                            let hidden = owner.branches.hidden.borrow_mut().remove(index);
+                            if let Ok(saved) = hidden.page.checkpoint() {
+                                owner.remember_checkpoint(saved);
+                            }
+                        }
+                    }
+                }),
+            ));
+        }
         manager.register_script_message_handler_in_world(SCROLLED, WORLD);
         {
             let weak = Rc::downgrade(&state);
@@ -463,6 +585,7 @@ impl LivePage {
                                 state.foreground_requested();
                             }
                             state.end_response();
+                            state.awaiting_response.set(!bootstrap);
                             state.main_frame_post.set(None);
                             if matches!(*state.issue.borrow(), Issue::Issued { decided: false, .. })
                             {
@@ -743,10 +866,9 @@ impl LivePage {
             signals.push((
                 native.clone().upcast(),
                 native.connect_decide_policy(move |_, decision, kind| {
-                    if weak
-                        .upgrade()
-                        .is_some_and(|state| state.lifecycle.get() != Lifecycle::Live)
-                    {
+                    if weak.upgrade().is_some_and(|state| {
+                        state.lifecycle.get() != Lifecycle::Live || !state.native.is_sensitive()
+                    }) {
                         decision.ignore();
                         return true;
                     }
@@ -797,9 +919,7 @@ impl LivePage {
         let weak = Rc::downgrade(&state);
         let favicon = context.register_view(&native, move |source| {
             Pages::enter_native(&weak).and_then(|state| {
-                let page = state
-                    .download_page(source)
-                    .or_else(|| state.owner().read(|b| b.snapshot()).ok()?.current);
+                let page = state.download_page(source);
                 if let Some(ticket) = state.download_handover.take() {
                     let generation = state.load_generation.get();
                     let weak = Rc::downgrade(&state);
@@ -819,6 +939,7 @@ impl LivePage {
         signals.push((native.clone().upcast(), favicon));
         state.owner().register_view(&native);
         Ok(Self {
+            last_shown: Cell::new(0),
             native,
             state,
             signals: RefCell::new(signals),
@@ -993,6 +1114,7 @@ impl LivePage {
             .and_then(|s| s.serialize())
             .context("No session state.")?;
         Ok(Checkpoint {
+            last_shown: self.last_shown.get(),
             bytes,
             entries,
             current,
@@ -1264,6 +1386,7 @@ impl NativeState {
     fn end_response(&self) {
         self.main_frame_post.set(None);
         self.download_handover.set(None);
+        self.awaiting_response.set(false);
         self.response_page.borrow_mut().take();
     }
 
@@ -1387,6 +1510,7 @@ impl NativeState {
     fn load(self: &Rc<Self>, url: Url) {
         self.foreground_requested();
         self.end_response();
+        self.awaiting_response.set(true);
         // Every caller registers its intent first; an address with no attempt has no visit to
         // commit to.
         let Some(requested) = self.navigation.borrow().pending_ticket() else {
@@ -1490,6 +1614,7 @@ impl NativeState {
         self.accept_issue();
         self.start_attempt(target.clone());
         let committed = self.commit_attempt(target.clone());
+        self.awaiting_response.set(false);
         match committed {
             Ok(true) => {
                 *self.issue.borrow_mut() = Issue::Idle;
@@ -1564,6 +1689,7 @@ impl NativeState {
             };
             let main = response.is_main_frame_main_resource();
             if main {
+                self.awaiting_response.set(false);
                 let url = response
                     .request()
                     .and_then(|request| request.uri())
@@ -1580,7 +1706,13 @@ impl NativeState {
                     noted.and_then(|(ticket, url, page)| ticket.map(|ticket| (ticket, url, page))),
                 );
             }
-            if response.is_mime_type_supported() {
+            let attachment = main
+                && response
+                    .response()
+                    .and_then(|r| r.http_headers())
+                    .and_then(|headers| headers.content_disposition())
+                    .is_some_and(|(disposition, _)| disposition.eq_ignore_ascii_case("attachment"));
+            if response.is_mime_type_supported() && !attachment {
                 return false;
             }
             if main {
@@ -1830,7 +1962,13 @@ impl NativeState {
             )
         })();
         let Ok(forest) = projection else { return false };
-        let Some(tree) = forest.current().and_then(|id| forest.tree_of(id)) else {
+        let Some(tree) = self
+            .navigation
+            .borrow()
+            .current
+            .as_ref()
+            .and_then(|d| forest.tree_of(d.visit))
+        else {
             return false;
         };
         forest.tree_of(visit) == Some(tree) && forest.open().iter().any(|open| open.id == tree)
@@ -1889,12 +2027,14 @@ impl NativeState {
         self.navigation.borrow_mut().same_document(url);
         if let Some(document) = self.ticket() {
             self.bind_document();
-            let result = self
-                .owner()
-                .browser
-                .borrow_mut()
-                .select_document(&self.navigation.borrow(), &document);
-            self.report(result);
+            if is_selected(&self.pages, &self.native) {
+                let result = self
+                    .owner()
+                    .browser
+                    .borrow_mut()
+                    .select_document(&self.navigation.borrow(), &document);
+                self.report(result);
+            }
             self.emit(PageEvent::Changed);
         }
     }
@@ -2009,7 +2149,7 @@ impl NativeState {
                 && (self.loading_ticket() == Some(*ticket)
                     || self.download_handover.get() == Some(*ticket))
         });
-        match noted {
+        let page = match noted {
             Some((_, _, page)) => page,
             None => {
                 let page = self
@@ -2019,7 +2159,15 @@ impl NativeState {
                     .download_page(&self.navigation.borrow(), source);
                 page.ok().flatten()
             }
-        }
+        };
+        page.or_else(|| {
+            self.navigation
+                .borrow()
+                .current
+                .is_none()
+                .then_some(self.download_origin)
+                .flatten()
+        })
     }
 
     fn update_title(&self) {
@@ -2097,6 +2245,17 @@ impl NativeState {
             }
         });
     }
+}
+
+fn is_selected(weak: &Weak<Pages>, view: &webkit2gtk::WebView) -> bool {
+    weak.upgrade().is_some_and(|pages| {
+        pages
+            .branches
+            .live
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| p.native == *view && view.is_sensitive())
+    })
 }
 
 fn ordered_entries(
@@ -2278,6 +2437,7 @@ mod checkpoint_tests {
         let b = Url::parse("https://example.org/b").unwrap();
         let ids = browser.add_roots(&[a.clone(), b.clone()]).unwrap();
         let mut saved = Checkpoint {
+            last_shown: 0,
             bytes: glib::Bytes::from_static(&[]),
             entries: vec![
                 CheckpointEntry {

@@ -543,7 +543,7 @@ fn geometry(u: &U) -> Result<()> {
     wait("chrome responds immediately", || visible(&u.ui, "#palette"))?;
     key("Escape")?;
     if let Some(original) = u.cursor() {
-        eval(&u.ui, "scrollTo(0,0);document.getElementById('fork').style.cssText='display:block;margin-top:150px;height:60px';JSON.stringify(true)")?;
+        eval(&u.ui, "scrollTo(0,0);document.getElementById('fork').href='/d';document.getElementById('fork').style.cssText='display:block;margin-top:150px;height:60px';JSON.stringify(true)")?;
         eval(&u.ui, "window.name='[]';window.__placementEvents=[];for(const kind of ['resize','pointerdown'])addEventListener(kind,e=>{__placementEvents.push({kind,t:performance.now(),w:innerWidth,h:innerHeight,x:e.clientX,y:e.clientY,target:e.target?.id});window.name=JSON.stringify(__placementEvents)},true);JSON.stringify(true)")?;
         let click_at = clock.elapsed().as_millis();
         u.page_click("fork", "1")?;
@@ -843,7 +843,7 @@ fn watch_hold(u: &U) -> Rc<HoldWatch> {
                 record.started.set(Some(Instant::now()));
                 record.ended.set(None);
             }
-            Checkpointing => {
+            Hidden => {
                 assert_eq!(record.held.replace(None), Some(event.widget));
                 let elapsed = record.started.get().unwrap().elapsed().as_millis();
                 assert!(elapsed <= 1100, "hold cap exceeded: {elapsed} ms");
@@ -851,7 +851,7 @@ fn watch_hold(u: &U) -> Rc<HoldWatch> {
                 record.ended.set(Some(Instant::now()));
                 println!("MEASURE hold_ms={elapsed}");
             }
-            Released => {}
+            Checkpointing | Released => {}
         }
     });
     state
@@ -884,7 +884,13 @@ fn structure(u: &U, state: &HoldWatch) {
         }
     }
 }
-fn hold_covers_until_ready() -> Result<()> {
+fn live_returns_paint_without_hold() -> Result<()> {
+    picture_returns(false)
+}
+fn dormant_returns_paint_under_the_real_page_hold() -> Result<()> {
+    picture_returns(true)
+}
+fn picture_returns(dormant: bool) -> Result<()> {
     let u = U::new()?;
     let roots = [u.root("/colour/a")?, u.root("/colour/b")?];
     pump(1200);
@@ -893,11 +899,17 @@ fn hold_covers_until_ready() -> Result<()> {
     for i in 0..24 {
         let old = colours[1 - i % 2];
         let target = colours[i % 2];
+        if dormant {
+            u.ui.pages.inject_memory_sample(Some(u64::MAX));
+            wait("target checkpointed before revival", || {
+                !u.ui.pages.live_visits().contains(&roots[i % 2])
+            })?;
+            pump(1200);
+        }
         state.started.set(None);
         state.ended.set(None);
         u.ui.pages.go(Go::Visit(roots[i % 2]))?;
         let start = Instant::now();
-        let mut seen_hold = false;
         let mut blank_start = None;
         let mut presented_ms = 0;
         let mut actual_start = None;
@@ -913,9 +925,8 @@ fn hold_covers_until_ready() -> Result<()> {
             );
             pump(3);
             structure(&u, &state);
-            seen_hold |= state.started.get().is_some();
             let colour = pixel(&u)?;
-            if seen_hold && state.held.get().is_none() {
+            if state.held.get().is_none() {
                 if colour == [246, 245, 244] || colour == [255, 255, 255] {
                     if colour == [246, 245, 244] {
                         grey_samples += 1;
@@ -933,18 +944,15 @@ fn hold_covers_until_ready() -> Result<()> {
                 }
             }
             if state.held.get().is_some() {
-                seen_hold = true;
                 assert_eq!(colour, old, "the real outgoing page covers the entire hold");
-            } else if seen_hold {
-                if colour != target {
-                    assert!(!painted, "incoming page must not revert");
-                    blank_start.get_or_insert(Instant::now());
-                } else {
-                    if let Some(at) = blank_start.take() {
-                        presented_ms += at.elapsed().as_millis();
-                    }
-                    painted = true;
+            } else if colour != target {
+                assert!(!painted, "incoming page must not revert");
+                blank_start.get_or_insert(Instant::now());
+            } else {
+                if let Some(at) = blank_start.take() {
+                    presented_ms += at.elapsed().as_millis();
                 }
+                painted = true;
             }
             assert!(
                 colour == old
@@ -959,9 +967,13 @@ fn hold_covers_until_ready() -> Result<()> {
             actual_ms <= 50,
             "after-hold blank exceeded 50 ms: {actual_ms}"
         );
-        assert!(seen_hold && painted);
+        assert!(painted);
         assert!(
-            presented_ms <= 100,
+            state.started.get().is_some() == dormant,
+            "dormant revival uses a hold; live return shows directly"
+        );
+        assert!(
+            dormant || presented_ms <= 100,
             "incoming colour was not presented within 100 ms: {presented_ms}"
         );
     }
@@ -1047,7 +1059,7 @@ fn page_views_have_no_paint_handlers() -> Result<()> {
             && !source.contains(".draw("),
         "Canopy must never install page draw handlers or paint page windows"
     );
-    hold_covers_until_ready()
+    live_returns_paint_without_hold()
 }
 
 fn page_focus_survives_inactive_switch() -> Result<()> {
@@ -1195,7 +1207,11 @@ fn main() -> Result<()> {
     let cases: &[Case] = &[
         ("first_address", first_address_survives_initial_home),
         ("inactive_focus", page_focus_survives_inactive_switch),
-        ("picture", hold_covers_until_ready),
+        ("picture", live_returns_paint_without_hold),
+        (
+            "dormant_picture",
+            dormant_returns_paint_under_the_real_page_hold,
+        ),
         ("structure", page_views_have_no_paint_handlers),
         ("busy_picture", switch_while_picture_waits_for_script),
         ("later_picture", later_switch_releases_first_cover),

@@ -39,7 +39,7 @@ Pages keeps branch-palette and path continuations by LoadTicket. A continuation 
 
 Downloads find their source with WebKit's download webview lookup. PageContext asks that view's weakly registered state for the visit at transfer start. A transfer retains the context, which reports through a weak Pages reference to record the saved file. Saving and recording do not depend on the source view surviving while the window owner remains alive. Its event sink retains no page. Favicons retains the database and observes database changes and page icon notifications through weak cache references.
 
-Pages clones a live-page handle or observer before calling it. Browser, navigation and continuation borrows end before WebKit or GTK operations or observer callbacks that can reenter. The native adapter clones a document before binding its JavaScript epoch. Read closures contain database queries only. The selected branch has one view. Other branches retain in-memory native history checkpoints; visits outside those histories stay in SQLite.
+Pages clones a live-page handle or observer before calling it. Browser, navigation and continuation borrows end before WebKit or GTK operations or observer callbacks that can reenter. The native adapter clones a document before binding its JavaScript epoch. Read closures contain database queries only. Each live branch has one view. Dropped branches retain in-memory native history checkpoints; visits outside those histories stay in SQLite.
 
 Back uses an entry still present in WebKit's history only when its visit belongs to the current open tree, otherwise the parent in the forest. Page-script and mouse Back cannot reopen a settled tree or cross into another open tree. Back from the blank start page does nothing. The list's changed signals drop the bindings of removed entries and bind same-document entries to their visit. Each entry also keeps its native document group, because a return can move the list before Started. This group tells a return within the same document from a full load, even at an identical URL. A full commit gets a fresh group unless it is a back or forward traversal. A traversal onto an unbound entry falls back to the forest parent. The native cursor is read at changed or Committed, never at notify::uri. A restore only traverses an entry from another native document. On a pushState route, F5 and a visit-node click load the stored visit URL, so neither leaves an attempt waiting for load signals that a same-document traversal never sends. A cold resume reloads the URL and restores the recorded scroll. WebKit's page cache can keep the DOM and the forms of an entry still present.
 
@@ -106,38 +106,85 @@ In-app changes inside web applications remain a separate case. The MVP does not 
 
 ## Branch registry and switching
 
-Pages owns the selected live branch, an optional candidate, and a linear MRU list
-of dormant branch checkpoints. There is no visit-to-branch index. Each checkpoint
-is the continuation of its lane's native history; lane membership is not persisted.
-A view follows links and forks in place. WebKit removes abandoned forward entries;
-opening those stored visits later starts fresh branches. Roots and first activations
-of queued visits also start fresh branches. Queuing never fetches a page.
+Pages owns one selected live branch, hidden live branches ordered by their last
+shown stamp, dormant checkpoints, and at most one candidate. The window increments
+its own counter at selection. There is no visit-to-branch index and routing never
+compares URLs. Routing checks a candidate's pending Restore, the selected document
+and history, then hidden live and dormant histories in MRU order. A tree-tab return
+uses the most recently shown branch's current document, including hidden redirects;
+a specific visit-node selection still requests that historical visit. A view follows
+links and forks in place; queued visits still wait until first selection to load.
 
-Routing checks a candidate's pending Restore intent first, including after Started.
-It then checks the selected document, actual selected history, and dormant histories
-from most recently selected to oldest. Identity is always a visit binding, never URL
-equality. A dormant branch revives at the requested entry, including a middle entry.
-Otherwise selection cold-loads a new branch. Back uses a native back entry in the
-current open tree, or routes the forest parent when no eligible item exists.
+Returning to the current document in a hidden live branch selects its existing
+Document in Browser's selection transaction, with no load or request. Forms,
+JavaScript, scroll and audio survive. A different history entry traverses that
+branch's existing native history. Dormant and cold targets use hidden candidates;
+only their commit changes the cursor. Cancelled checkpoint revivals keep their
+checkpoint. Selected events refresh address, title, loading, Back and login offers;
+focus follows the page only if the outgoing page owned it. Selected-document
+notifications publish the chrome frame immediately; background changes remain
+coalesced. A deferred old cursor frame cannot hide a newly opened chrome editor.
 
-Candidates load hidden, without focus. Their successful commit writes the cursor,
-tree target and arrival once, in Browser's transaction, and synchronously promotes
-the candidate. The old widget is then unmapped with GTK child visibility and the candidate shown. It takes
-focus only when the previous page held it, preserving an active chrome editor.
-Pages places and raises each view at creation, show and map, before page events.
-Candidates are realized while hidden. A failure before commit reports the normal error
-and preserves the old selected page and cursor. A retry routes normally. A second
-request cancels the candidate by its own ticket and destroys it; selecting the same
-pending visit reuses it. A cancelled or failed revival retains its checkpoint.
+Candidate switches keep the outgoing real page above the incoming page until the
+existing snapshot/frame handshake completes, with its one second cap. Returning
+to a retained document shows it directly and hides the outgoing view; the live
+view already owns rendered content. An initial Xvfb comparison found medians of 17.4 ms for direct live returns and
+34.7 ms with the hold, without observed blank pixels in 20 direct returns. After
+synchronous chrome bookkeeping, final medians were 17.7 ms live and 239.0 ms dormant. Only real
+page views cover pages. After the hold the outgoing page is hidden and retained;
+the blank startup view is discarded. Pages::place_view remains the sole owner of
+all page allocations, including hidden views, at creation, resize, show and map.
 
-After promotion, the previous view cancels pending navigation through failed-load
-resolution, captures scroll with a 500 ms limit, serializes and is destroyed. The
-selected page stays usable. Navigation, reload and settle commands arriving during release enter a FIFO; path
-and branch-palette continuations travel with queued commands. They drain when
-release completes. Focus, resizing, cookies and downloads continue directly.
-A failed checkpoint drops the lane, leaving its visits available cold. Settling a
-tree discards its dormant lanes; a release completing after settlement cannot add
-them back. Its landing uses the same routing.
+Hidden pages keep running. Their native Navigation records redirects, scripts,
+titles, icons and scroll against their own visits. Hidden commits never select a
+window visit, and hidden loading, error and login events never reach the chrome.
+Tree changes still refresh the forest. Native history is restricted to the page's
+own open tree. Hidden script dialogs are dismissed (confirm and beforeunload answer
+false; prompt cancels). Permissions and fullscreen are denied; file choosers cancel;
+printing is handled without presenting a dialog. New-window links retain the existing
+queue-without-selection policy; unhandled WebKit creates have no window factory.
+Downloads keep the source view's visit and proceed through PageContext. A dead hidden
+web process leaves a checkpoint if possible, otherwise its visits are cold.
+
+The memory budget is one eighth of MemTotal in /proc/meminfo. Set
+CANOPY_MEMORY_BUDGET_MB to an integer MiB value before launch to override it (1
+forces pressure for desktop checks). Configuration is read once at desktop startup.
+Malformed or overflowing CANOPY_MEMORY_BUDGET_MB values print one stderr line naming
+the variable and value, then use the default budget. There is no page-count limit. A worker samples PSS plus SwapPss of Canopy and its
+own descendants only, following each known process's /proc/PID/task/TID/children
+files rather than scanning other processes. Exited processes are skipped; any other
+read failure makes the sample incomplete, and no drop follows it.
+
+Sampling starts after a switch or committed navigation settles and every five seconds while hidden pages
+exist, never with only one live page. Sample starts are at least two seconds apart;
+requests during that interval collapse into one trailing sample. GTK uses the fresh complete result to drop the
+least recently shown hidden page. It reads is_playing_audio at that decision. The
+selected page, candidate, held outgoing page, every audible page and any page
+waiting for WebKit to hand over a download are excluded. A load awaiting its main
+response is also protected until policy can distinguish a document from a download. After handover the transfer
+survives destruction of its source view.
+One budget drop is checkpointed and destroyed at a time across all windows; a
+shared permit remains held through the teardown grace. Samples started before a drop are
+invalidated. A one second teardown grace follows destruction before sampling again;
+protected-only registries wait for the ordinary slow period. Checkpointing uses the
+existing scroll capture (500 ms cap), native session bytes and history bindings.
+Commands queue during holds or checkpoint capture and drain afterward.
+
+Settling immediately disables the selected page's input and native recording,
+mutes its audio, and clears its login offer, including when a landing is still loading. The real page
+may remain as the visual cover. All the tree's hidden pages are checkpointed and
+destroyed, even if audible. The selected page follows after its landing is shown;
+a live landing selects immediately. A retired cover never receives commands.
+Addresses, citations, saved pages and Back/Parent wait in the FIFO until the landing
+shows; deferred addresses become children of that landing. Reload during landing is
+ignored. Visits, trees, new trees and another settle replace the pending landing.
+An empty, failed, downloaded or cancelled landing with no replacement falls back to
+the start page, clears the cursor and releases the retired cover before draining
+commands. Download attribution uses the initiating view's own current visit even
+when hidden; a source view never falls back to the window cursor. Settled checkpoints remain available for an
+explicit later reopening. A reopening requested during the settled branch's scroll
+capture waits for that checkpoint; live landings still select immediately. No
+checkpoint is persisted to SQLite.
 
 A checkpoint owns session bytes, native-order entry bindings and current position,
 without native objects. Revival validates every position, URL and stored visit URL
@@ -152,10 +199,8 @@ history entries; SQLite supplies the checkpoint's current entry. Forms and scrip
 are lost when a branch is released. Shared PageContext services survive source-view
 destruction. Continuation cancellation checks the owning view's ticket.
 
-The next step may retain several live lanes under a measured memory budget. It
-must preserve this routing and selection transaction while replacing release at
-every switch with budget-driven release. There is no presence marker or reopening
-surface in this step.
+Live presence has no marker in the strip or forest. Background loading of queued
+pages remains outside this page registry.
 
 ### Switch cancellation and page Back
 
@@ -164,7 +209,7 @@ its asynchronous link decisions. The old committed document remains usable. Main
 Started for another document cancels the candidate; same-document changes (pushState,
 replaceState and fragments) and subframe policy decisions do not. Settling cancels
 only a candidate targeting that tree. Settling the last tree creates a fresh home view, so the next branch cannot inherit settled history. Release
-keeps a valid checkpoint when its current entry belongs to an open tree.
+keeps valid checkpoints, including those of settled trees.
 
 A restored POST that is current at initial revival is fetched by GET. Its duplicate
 native entry is skipped by page Back; the GET drops forward entries, retaining the
@@ -215,9 +260,9 @@ independent allocations let the same GtkFixed preserve both rules.
 Nothing but a real page view may cover a page. Canopy never paints an image
 over a page or draws into its window. Pages::select_candidate switches bookkeeping,
 events, focus and sign-in ownership at commit. Pages::hold_page maps the incoming
-view in the same rectangle beneath the outgoing view and below chrome. Only the
+view in the same rectangle beneath the outgoing view and below chrome. The
 outgoing window is promoted to a native GDK window, so GtkFixed draw order cannot
-paint the incoming view over it. Incoming windows retain their normal backing. The outgoing
+paint the incoming view over it. A returning view can already have a native window. The outgoing
 window passes pointer input through; the event filter rejects nonselected input.
 The commit transfers logical GTK page focus even when the host window is inactive,
 without activating that window; global input focus alone cannot identify its focus owner.
@@ -226,15 +271,13 @@ The hold ends after an isolated-world script sees a body and two animation frame
 a visible-region snapshot completes (its image is discarded), and one further
 animation frame completes. It also ends at 1000 ms, another commit or cancellation,
 a queued switch or settle, or unmapping of the incoming view. Pages::end_hold
-cancels readiness and removes the cap timer before hiding, checkpointing and releasing
-the outgoing page. At most one outgoing view is held. The FIFO drains after release;
-in-place navigation proceeds when that queue is empty. A short blank after release,
-including after the cap when a page is busy, is accepted. No stale image is retained.
-Smoke instrumentation reports the outgoing view's identity at Holding, Checkpointing
-and Released. Exact container counts are captured in the Released callback, before
-queued commands are drained; the tests enforce a 1000 ms frame budget plus the
-checkpoint reader's 500 ms limit. A missing completion fails that bound rather
-than waiting for a count to fall and potentially hiding a leak.
+cancels readiness and removes the cap timer before hiding and retaining the
+outgoing page. At most one outgoing view is held. The FIFO drains after the hold;
+in-place navigation proceeds when that queue is empty. A short blank after the
+cap when a page is busy is accepted. No stale image is retained. Smoke
+instrumentation reports Holding, Hidden, Checkpointing and Released independently.
+The hold remains bounded by 1000 ms and checkpoint scroll capture by 500 ms;
+a memory-policy decision, rather than a switch, now separates those phases.
 Pages derives the content rectangle from the host window even when a late Fixed
 allocation still reflects the old child requests, preventing a shrink from being
 undone by the Fixed's own size-allocate signal.

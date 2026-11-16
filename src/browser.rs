@@ -695,6 +695,12 @@ ORDER BY r.created_at, r.rowid",
 
     /// Takes `tree` out of the tabs and says where the window goes. Settling a settled tree
     /// changes nothing and gives the landing again, so a failed landing can be retried.
+    pub fn show_start(&mut self) -> Result<()> {
+        self.connection
+            .execute("UPDATE session SET current_id=NULL WHERE singleton=1", [])?;
+        Ok(())
+    }
+
     pub fn settle_tree(&mut self, tree: TreeId) -> Result<Landing> {
         let tx = self.connection.transaction()?;
         let root = tree.0.to_string();
@@ -1030,7 +1036,7 @@ ORDER BY r.created_at, r.rowid",
     }
 
     pub fn select_document(&mut self, navigation: &Navigation, document: &Document) -> Result<()> {
-        if !navigation.valid(document) {
+        if navigation.current.as_ref() != Some(document) {
             return Ok(());
         }
         let previous = self.current_id()?;
@@ -1289,7 +1295,8 @@ ORDER BY r.created_at, r.rowid",
     /// The page a download starting now belongs to. A navigation that turns into a download
     /// leaves no page of its own, so its file goes to the page that navigation came from: the
     /// parent it was given, or the parent of the pending page it tried to open. Any other
-    /// download, and a navigation that came from no page, belongs to the page on screen.
+    /// download belongs to this navigation's committed document. A fresh candidate
+    /// keeps its opening page separately until it has a document of its own.
     pub fn download_page(
         &self,
         navigation: &Navigation,
@@ -1316,7 +1323,7 @@ ORDER BY r.created_at, r.rowid",
                 }
             }
         }
-        self.current_id()
+        Ok(navigation.current.as_ref().map(|document| document.visit))
     }
 
     /// Attaches a saved file to the page it was downloaded from.
@@ -2180,7 +2187,10 @@ mod tests {
             .unwrap());
         assert_eq!(a.pending_ticket(), Some(replacement));
         a.failed(replacement);
+        let hidden_load = b.native_request(url("hidden-next"));
+        b.started(hidden_load);
         browser.select_document(&b, &document).unwrap();
+        assert_eq!(b.pending_ticket(), Some(hidden_load));
         assert_eq!(browser.snapshot().unwrap().current, Some(document.visit));
     }
 

@@ -671,6 +671,10 @@ fn saved_routing() -> Result<()> {
         f.history().contains(&a),
         "saved capture lost its branch history"
     );
+    assert!(
+        wait_for(8000, || !f.pages.live_visits().contains(&r)),
+        "the branch is checkpointed before testing its revival"
+    );
     f.pages.go(Go::Visit(r2))?;
     let back = f.arrives(r2, 6000);
     pump_for(500);

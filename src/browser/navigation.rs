@@ -102,6 +102,17 @@ impl Navigation {
         ticket
     }
 
+    pub(crate) fn pending_anchor(&self) -> Option<VisitId> {
+        let intent = match &self.pending {
+            Pending::Requested { intent, .. } | Pending::Loading { intent, .. } => intent,
+            Pending::Idle => return None,
+        };
+        match intent {
+            Intent::New { parent, .. } => *parent,
+            Intent::Restore { visit } => Some(*visit),
+        }
+    }
+
     pub(crate) fn pending_restore(&self) -> Option<VisitId> {
         match &self.pending {
             Pending::Requested {

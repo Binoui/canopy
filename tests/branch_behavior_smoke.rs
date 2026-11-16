@@ -1063,6 +1063,8 @@ fn no_content_ends_load() -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    // These checkpoint and teardown cases run under forced memory pressure.
+    std::env::set_var("CANOPY_MEMORY_BUDGET_MB", "0");
     let environment = tempfile::tempdir()?;
     let home = environment.path().join("home");
     let config = environment.path().join("config");
