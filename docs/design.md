@@ -156,10 +156,10 @@ files rather than scanning other processes. Exited processes are skipped; any ot
 read failure makes the sample incomplete, and no drop follows it.
 
 Sampling starts after a switch or committed navigation settles and every five seconds while hidden pages
-exist, never with only one live page. Sample starts are at least two seconds apart;
+exist, and on queued-page admission even with only one live page. Sample starts are at least two seconds apart;
 requests during that interval collapse into one trailing sample. GTK uses the fresh complete result to drop the
 least recently shown hidden page. It reads is_playing_audio at that decision. The
-selected page, candidate, held outgoing page, every audible page and any page
+selected page, candidate, held outgoing page, every audible seen page and any seen page
 waiting for WebKit to hand over a download are excluded. A load awaiting its main
 response is also protected until policy can distinguish a document from a download. After handover the transfer
 survives destruction of its source view.
@@ -290,3 +290,36 @@ the matching response metadata and emits completion without a view-wide timer.
 
 Forward cannot leave a POST result opened by GET in a fresh revived branch, because
 that fresh native view has no forward history.
+
+### Queued pages loading before first showing
+
+A middle-click queues the visit as before, then Pages admits that session's queued
+visit to `Branches::background`, a registry separate from hidden seen pages and
+from the switch candidate. `Branches::queued` is a newest-first pending stack;
+three loads at most run, counting an adopted never-seen candidate. Admission needs
+a complete memory sample within budget, including when only one page is live.
+The latest over-budget sample blocks admission. Pending work survives switches;
+startup does not enroll waiting visits from earlier sessions. Failed and dropped
+views are removed without retry.
+
+A never-seen view is muted before loading and uses the same hidden-page refusals
+for dialogs, permission, fullscreen, print, file pickers, focus and login offers.
+Downloads are refused both at response policy and the context download callback;
+204/205, failures and cancellations destroy the view silently. Its queued visit is
+pinned through script navigation and redirects. Hidden commits update its URL,
+title and favicon while preserving NULL opened_at, selection, last visit and the
+arrival log. The existing coalesced chrome refresh reads committed background
+visits into ChromeFrame::loaded; destruction clears the mark without losing metadata.
+
+Opening a committed background page selects and shows the same view immediately,
+records its first opening and arrival, unmutes it and stamps last shown. Opening
+before commit transfers the same view to the candidate slot and uses the ordinary
+commit hold. Cancelling that switch returns it to the background registry. A cold
+queued visit retains the existing loading path.
+
+Pressure destroys never-seen views without checkpoints before dropping any seen
+page, oldest queued first, ignoring WebKit's audio flag for never-seen pages. The
+existing shared drop permit, fresh sample between drops, two-second sampling
+limit and teardown grace apply. Settling removes that tree's pending stack entries
+and destroys its never-seen views, including an adopted candidate; queueing in a
+settled tree enrolls no work. Seen-page checkpoints, holds and revival are unchanged.

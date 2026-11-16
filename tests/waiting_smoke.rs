@@ -83,7 +83,7 @@ fn main() -> Result<()> {
         .find(|v| v.state == VisitState::Queued)
         .unwrap()
         .id;
-    ui.pages.selected_page().restore(branch)?;
+    ui.pages.go(canopy::pages::Go::Visit(branch))?;
     wait("branch loaded", || {
         ui.snapshot().unwrap().current == Some(branch)
             && !ui.pages.selected_page().native.is_loading()
@@ -111,7 +111,9 @@ fn main() -> Result<()> {
         queued.iter().map(|v| v.id.to_string()).collect::<Vec<_>>()
     );
     assert_eq!(text(&ui, "#tab-row .tab.on .count"), "26");
-    assert!(visible(&ui, "#waiting-pin .pending-dot:not(.loaded)"));
+    wait("newest waiting page loaded", || {
+        visible(&ui, "#waiting-pin .pending-dot.loaded")
+    })?;
     assert!(chrome(&ui, "document.querySelector('#waiting-pin img').getAttribute('src').includes(encodeURIComponent(S.frame.visits[canopy.state().waiting[0]].url))")? == true);
     assert!(chrome(&ui, "[...S.strip.open.nodes].some(n => n.hidden.some(id => canopy.state().waiting.includes(id)))")? == true);
     println!(
@@ -173,13 +175,13 @@ fn main() -> Result<()> {
             text(&ui, "#popover .menu-row:first-of-type kbd"),
             "Ctrl Tab"
         );
-        assert!(chrome(&ui, "[...document.querySelectorAll('#popover .menu-row .menu-detail')].every(e => e.textContent === 'not loaded')")? == true);
+        assert!(chrome(&ui, "[...document.querySelectorAll('#popover .menu-row .menu-detail')].every(e => e.textContent === (S.frame.visits[e.closest('.menu-row').dataset.id].loaded ? 'loaded' : 'not loaded'))")? == true);
         assert_eq!(strip_height(&ui), 52);
         assert!(chrome(&ui, "(() => {const d=document.querySelector('#popover .mk .pending-dot').getBoundingClientRect(), i=document.querySelector('#popover .mk .fav').getBoundingClientRect();return d.x+d.width/2 > i.x+i.width/2 && d.y+d.height/2 < i.y+i.height/2})()")? == true);
         shots(&ui, &format!("{theme}-list"))?;
         chrome(&ui, "(canopy.present(S.frame), true)")?;
         assert!(visible(&ui, "#popover.waiting"));
-        chrome(&ui, "(() => { window.unloadedFrame = structuredClone(S.frame); const v=S.frame.visits[S.frame.waiting.ids[0]]; v.loaded=true; v.when='loaded'; canopy.present(S.frame); return true; })()")?;
+        chrome(&ui, "(() => { window.unloadedFrame = structuredClone(S.frame); const v=S.frame.visits[S.frame.waiting.ids[0]]; v.loaded=true; v.when='loaded'; const u=S.frame.visits[S.frame.waiting.ids[1]]; u.loaded=false; u.when='not loaded'; canopy.present(S.frame); return true; })()")?;
         assert!(visible(&ui, "#waiting-pin .pending-dot.loaded"));
         assert!(chrome(&ui, "getComputedStyle(document.querySelector('.node.bud.pending.loaded')).borderTopStyle === 'none'")? == true);
         chrome(&ui, "(canopy.toggleForest(), true)")?;
@@ -432,7 +434,7 @@ fn prove_tree_sheet(ui: &Ui) -> Result<()> {
         pump(100);
         tree_shot(ui, &format!("{theme}-tree"))?;
         click_chrome(ui, "[data-side=list]")?;
-        assert!(chrome(ui, "document.querySelectorAll('.tree-row').length === S.frame.treeView.rows.length && !!document.querySelector('.tree-row.current') && [...document.querySelectorAll('.tree-row.pending')].every(r=>r.textContent.includes('not loaded'))")? == true);
+        assert!(chrome(ui, "document.querySelectorAll('.tree-row').length === S.frame.treeView.rows.length && !!document.querySelector('.tree-row.current') && [...document.querySelectorAll('.tree-row.pending')].every(r=>r.querySelector('.menu-detail').textContent === (S.frame.visits[r.dataset.id].loaded ? 'loaded' : 'not loaded'))")? == true);
         assert!(chrome(ui, "document.querySelector('#tree-list').scrollHeight > document.querySelector('#tree-list').clientHeight")? == true);
         tree_shot(ui, &format!("{theme}-list"))?;
     }
@@ -505,7 +507,7 @@ fn small_tree_shots(ui: &Ui, base: &str) -> Result<()> {
     ui.pages.selected_page().restore(root)?;
     loaded(ui, "/sheet-root")?;
     queue(ui, "link2")?;
-    ui.pages.selected_page().restore(branch)?;
+    ui.pages.go(canopy::pages::Go::Visit(branch))?;
     loaded(ui, "/sheet-branch")?;
     ui.pages.selected_page().navigate(
         web_url(&format!("{base}/sheet-current"))?,

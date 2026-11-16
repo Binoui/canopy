@@ -74,15 +74,16 @@ fn main() -> Result<()> {
         .iter()
         .skip(1)
         .all(|v| v.parent == Some(source_id)));
-    assert_eq!(
-        fixture.hits("/article-a") + fixture.hits("/article-b") + fixture.hits("/article-c"),
-        0
-    );
+    wait("queued articles requested in background", || {
+        fixture.hits("/article-a") == 1
+            && fixture.hits("/article-b") == 1
+            && fixture.hits("/article-c") == 1
+    })?;
     assert_eq!(
         ui.pages.selected_page().native.uri().unwrap().as_str(),
         original_url.as_str()
     );
-    println!("PASS Ctrl-click, middle-click and target=_blank queue three contextual siblings without fetching or moving.");
+    println!("PASS Ctrl-click, middle-click and target=_blank queue three contextual siblings with background requests and without moving.");
 
     let article = snapshot
         .visits
@@ -90,7 +91,7 @@ fn main() -> Result<()> {
         .find(|v| v.url.path() == "/article-a")
         .unwrap()
         .id;
-    ui.pages.selected_page().restore(article)?;
+    ui.pages.go(canopy::pages::Go::Visit(article))?;
     loaded(&ui, "/article-a")?;
     wait("automatic text capture", || {
         !ui.search_hits("amber otter cache").unwrap().is_empty()

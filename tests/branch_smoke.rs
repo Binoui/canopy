@@ -487,7 +487,9 @@ fn owner_fork_queue_scroll() -> Result<()> {
     f.pages.go(Go::Parent)?;
     f.arrived(search)?;
     let q = queued(&f, "/d")?;
-    assert_eq!(f.server.hits("/d"), 0);
+    wait("queued page requested in background", || {
+        f.server.hits("/d") == 1
+    })?;
     f.eval("scrollTo(0,1600); return true;")?;
     settle();
     f.pages.go(Go::Visit(q))?;
