@@ -42,6 +42,7 @@ pub(crate) fn frame(
                 "id": tree.id.root().to_string(),
                 "title": tree.title,
                 "pages": tree.page_count,
+                "live": frame.live.contains(&tree.last_visit),
                 "pending": tree.pending_count,
                 "active": Some(tree.id) == active,
                 "pinned": tree.pin.is_some(),
@@ -56,7 +57,7 @@ pub(crate) fn frame(
             if let Some(visit) = forest.visit(id) {
                 visits.insert(
                     id.to_string(),
-                    visit_value(forest, visit, &tree.title, &frame.loaded),
+                    visit_value(forest, visit, &tree.title, &frame.loaded, &frame.live),
                 );
             }
             stack.extend(forest.children(id).iter().copied());
@@ -288,6 +289,7 @@ fn visit_value(
     visit: &Visit,
     tree: &str,
     loaded: &HashSet<VisitId>,
+    live: &HashSet<VisitId>,
 ) -> Value {
     let wait = WaitState::of(visit, loaded);
     let source = visit.source.as_ref().map(|source| {
@@ -309,6 +311,7 @@ fn visit_value(
         "site": site_line(visit),
         "queued": visit.state == VisitState::Queued,
         "loaded": wait == Some(WaitState::Loaded),
+        "live": live.contains(&visit.id),
         "when": match wait { Some(WaitState::NotLoaded) => "not loaded".into(), Some(WaitState::Loaded) => "loaded".into(), None => ago(visit.opened_at.unwrap_or(visit.created_at)) },
         "after": forest.descendant_count(visit.id).unwrap_or(0),
         "tree": tree,
@@ -578,6 +581,7 @@ mod tests {
         let mut frame = ChromeFrame {
             forest,
             loaded: HashSet::new(),
+            live: HashSet::new(),
             capture_enabled: true,
             theme: ThemeMode::Dark,
             declined: Default::default(),
@@ -624,6 +628,7 @@ mod tests {
         .unwrap();
         let frame = ChromeFrame {
             loaded: HashSet::new(),
+            live: HashSet::new(),
             forest,
             capture_enabled: true,
             theme: ThemeMode::Dark,
@@ -643,6 +648,7 @@ mod tests {
         let (forest, ids) = chain_with_lifecycle(Lifecycle::Settled { since: 1 });
         let frame = ChromeFrame {
             loaded: HashSet::new(),
+            live: HashSet::new(),
             forest,
             capture_enabled: true,
             theme: ThemeMode::Dark,
@@ -667,6 +673,7 @@ mod tests {
         let (forest, ids) = chain();
         let frame = ChromeFrame {
             loaded: HashSet::new(),
+            live: HashSet::new(),
             forest,
             capture_enabled: true,
             theme: ThemeMode::Dark,
@@ -712,6 +719,7 @@ mod tests {
         };
         let frame = ChromeFrame {
             loaded: HashSet::new(),
+            live: HashSet::new(),
             forest,
             capture_enabled: true,
             theme: ThemeMode::Dark,

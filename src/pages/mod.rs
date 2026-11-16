@@ -909,6 +909,7 @@ impl Pages {
                     last_shown: hold.last_shown,
                 });
             }
+            self.receive(PageEvent::Changed);
             self.drain_commands();
             self.sample_memory();
         }
@@ -968,6 +969,16 @@ impl Pages {
             .iter()
             .find(|h| h.page.background_visit() == Some(visit))
             .map(|h| h.page.native.clone())
+    }
+
+    /// Current documents of retained, previously shown pages; no database reads.
+    pub fn hidden_visits(&self) -> std::collections::HashSet<VisitId> {
+        self.branches
+            .hidden
+            .borrow()
+            .iter()
+            .filter_map(|h| h.page.current_visit())
+            .collect()
     }
 
     pub fn loaded_visits(&self) -> std::collections::HashSet<VisitId> {
@@ -1247,6 +1258,7 @@ impl Pages {
                 *self.memory_drop.borrow_mut() = Some(MemoryDrop { _guard: guard });
                 let hidden = self.branches.hidden.borrow_mut().remove(index);
                 self.release_outgoing(hidden.page);
+                self.receive(PageEvent::Changed);
             }
         }
     }

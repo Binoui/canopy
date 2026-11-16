@@ -274,6 +274,7 @@ impl Ui {
                 .collect();
             Ok(ChromeFrame {
                 loaded: self.pages.loaded_visits(),
+                live: self.pages.hidden_visits(),
                 forest,
                 capture_enabled: browser.capture_enabled()?,
                 theme: browser.theme_mode()?,

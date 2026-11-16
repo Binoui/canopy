@@ -95,6 +95,7 @@ const waitState = (v) => v.queued ? (v.loaded ? 'loaded' : 'unloaded') : null;
 const markClass = (v) => waitState(v) === 'loaded' ? ' pending loaded' : waitState(v) ? ' pending' : '';
 const visitFav = (v, size) => fav(v.url, waitState(v) !== 'unloaded', size);
 const markedFav = (v, size) => `<span class="mk">${visitFav(v, size)}`
+  + (v.live ? '<i class="live-dot"></i>' : '')
   + (waitState(v) ? `<i class="pending-dot${waitState(v) === 'loaded' ? ' loaded' : ''}"></i>` : '') + '</span>';
 
 // ---------- timers and layers, as the GTK chrome's presentation state machine ----------
@@ -200,7 +201,7 @@ function renderTabs() {
     const pending = tree.pending ? `, ${tree.pending} pending` : '';
     const key = index < 9 ? ` · Ctrl+${index + 1}` : '';
     return `<button class="tab${tree.active ? ' on' : ''}" data-id="${tree.id}" title="${esc(`${tree.title} · ${pages}${pending}${key}`)}" aria-label="${esc(`${tree.title}, ${pages}${pending}`)}">`
-      + (root ? visitFav(root, 14) : '')
+      + (root ? `<span class="mk">${visitFav(root, 14)}${tree.live ? '<i class="live-dot"></i>' : ''}</span>` : '')
       + `<span class="tab-title">${esc(tree.title)}</span>`
       + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Pinned">${icon('pinned')}</span>` : '')
       + (tree.pending ? `<span class="count">${tree.pending}</span>` : '')
@@ -331,10 +332,11 @@ function buildStrip(layout) {
     }
     el.className = `node ${n.kind}` + (n.kind === 'tile' && n.s < 24 ? ' sm' : '') + markClass(v);
     el.setAttribute('aria-label', `${v.label}, ${v.site}`);
-    const html = n.kind === 'bud' ? ''
+    const html = (n.kind === 'bud' ? ''
       : n.kind === 'pill'
         ? visitFav(v, 16) + `<span class="pill-text"><span class="pill-title">${esc(v.label)}</span><span class="pill-site">${esc(v.site)}</span></span>`
-        : visitFav(v, iconSize(n.kind, n.s));
+        : visitFav(v, iconSize(n.kind, n.s)))
+      + (v.live && n.kind !== 'bud' ? '<i class="live-dot"></i>' : '');
     if (el.dataset.html !== html) {
       el.innerHTML = html;
       el.dataset.html = html;
@@ -554,7 +556,7 @@ function renderCard(preview) {
   const card = $('card');
   card.innerHTML = `<div class="card-head">${visitFav(v, 16)}<div class="card-title">${esc(preview.title)}</div></div>`
     + '<div class="card-body">'
-    + `<div class="card-meta">${esc(preview.meta)}</div>`
+    + `<div class="card-meta">${esc(preview.meta)}${v.live ? ' · Open in memory' : ''}</div>`
     + (tags.length ? `<div class="card-tags">${tags.map((t) => `<span class="tag">${t}</span>`).join('')}</div>` : '')
     + (preview.snippet ? `<div class="card-snippet">${esc(preview.snippet)}</div>` : '')
     + (source ? `<div class="card-source"><div class="card-meta">${esc(source.text)}</div><div class="card-actions">`
@@ -1007,11 +1009,11 @@ function renderSheet(reveal) {
   $('tree-edges').innerHTML = view.edges.map((e) => `<path class="${e.kind}" d="M${e.c[0]} C${e.c[1]} ${e.c[2]} ${e.c[3]}"/>`).join('');
   $('tree-nodes').innerHTML = view.tiles.map((t) => {
     const v = visit(t.id);
-    return `<button class="tree-tile${t.path ? ' path' : ''}${t.id === current() ? ' current' : ''}${markClass(v)}" data-id="${t.id}" title="${esc(v.label)}" style="left:${t.x-t.w/2}px;top:${t.y-t.s/2}px;width:${t.w}px;height:${t.s}px">${markedFav(v, 16)}<span class="t">${esc(v.label)}</span></button>`;
+    return `<button class="tree-tile${t.path ? ' path' : ''}${t.id === current() ? ' current' : ''}${markClass(v)}" data-id="${t.id}" title="${esc(v.label + (v.live ? ' · Open in memory' : ''))}" style="left:${t.x-t.w/2}px;top:${t.y-t.s/2}px;width:${t.w}px;height:${t.s}px">${markedFav(v, 16)}<span class="t">${esc(v.label)}</span></button>`;
   }).join('');
   $('tree-list').innerHTML = view.rows.map((r) => {
     const v = visit(r.id);
-    return `<button class="tree-row${r.path ? ' path' : ''}${r.id === current() ? ' current' : ''}${markClass(v)}" data-id="${r.id}" style="padding-left:${8+r.depth*22}px">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.when)}</span></button>`;
+    return `<button class="tree-row${r.path ? ' path' : ''}${r.id === current() ? ' current' : ''}${markClass(v)}" data-id="${r.id}" style="padding-left:${8+r.depth*22}px">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.when)}${v.live ? ' · Open in memory' : ''}</span></button>`;
   }).join('');
   setTreeSide(S.treeSide, reveal);
 }
@@ -1239,7 +1241,7 @@ function renderForest() {
     maxX = Math.max(maxX, n.x + n.w / 2);
     maxY = Math.max(maxY, n.y + n.s / 2);
     const cls = `forest-node${n.settled ? ' settled' : ''}${S.forestLabels ? '' : ' icon-only'}${path.has(n.id) ? ' path' : ''}${markClass(v)}`;
-    return `<button class="${cls}" data-id="${n.id}" title="${esc(v.label)}" style="left:${n.x - n.w / 2}px;top:${n.y - n.s / 2}px;width:${n.w}px;height:${n.s}px">`
+    return `<button class="${cls}" data-id="${n.id}" title="${esc(v.label + (v.live ? ' · Open in memory' : ''))}" style="left:${n.x - n.w / 2}px;top:${n.y - n.s / 2}px;width:${n.w}px;height:${n.s}px">`
       + markedFav(v, 16) + (S.forestLabels ? `<span>${esc(v.label)}</span>` : '') + '</button>';
   }).join('');
   const heads = layout.heads.map((h) => `<button class="forest-head${h.settled ? ' settled' : ''}" data-id="${h.id}" style="top:${h.y}px"><b>${esc(h.title)}</b><span>${esc(h.detail)}</span></button>`).join('');

@@ -67,6 +67,8 @@ pub struct ChromeFrame {
     /// Waiting pages that already have a live view. Nothing fills it yet: background
     /// loading will, and the chrome then shows those pages as loaded with no other change.
     pub loaded: std::collections::HashSet<VisitId>,
+    /// Current documents retained in hidden, previously shown pages.
+    pub live: std::collections::HashSet<VisitId>,
     pub capture_enabled: bool,
     pub theme: ThemeMode,
     pub declined: std::collections::HashSet<crate::suggest::SuggestionKey>,

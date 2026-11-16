@@ -570,6 +570,7 @@ impl LivePage {
                             if let Ok(saved) = hidden.page.checkpoint() {
                                 owner.remember_checkpoint(saved);
                             }
+                            owner.receive(PageEvent::Changed);
                         }
                     }
                 }),
