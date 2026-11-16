@@ -899,7 +899,12 @@ fn hold_covers_until_ready() -> Result<()> {
         let start = Instant::now();
         let mut seen_hold = false;
         let mut blank_start = None;
-        let mut blank_ms = 0;
+        let mut presented_ms = 0;
+        let mut actual_start = None;
+        let mut actual_ms = 0u128;
+        let mut grey_samples = 0usize;
+        let mut white_samples = 0usize;
+        let mut old_samples = 0usize;
         let mut painted = false;
         while start.elapsed() < Duration::from_millis(1400) || !painted {
             assert!(
@@ -910,6 +915,23 @@ fn hold_covers_until_ready() -> Result<()> {
             structure(&u, &state);
             seen_hold |= state.started.get().is_some();
             let colour = pixel(&u)?;
+            if seen_hold && state.held.get().is_none() {
+                if colour == [246, 245, 244] || colour == [255, 255, 255] {
+                    if colour == [246, 245, 244] {
+                        grey_samples += 1;
+                    } else {
+                        white_samples += 1;
+                    }
+                    actual_start.get_or_insert(Instant::now());
+                } else {
+                    if colour == old {
+                        old_samples += 1;
+                    }
+                    if let Some(at) = actual_start.take() {
+                        actual_ms += at.elapsed().as_millis();
+                    }
+                }
+            }
             if state.held.get().is_some() {
                 seen_hold = true;
                 assert_eq!(colour, old, "the real outgoing page covers the entire hold");
@@ -919,7 +941,7 @@ fn hold_covers_until_ready() -> Result<()> {
                     blank_start.get_or_insert(Instant::now());
                 } else {
                     if let Some(at) = blank_start.take() {
-                        blank_ms += at.elapsed().as_millis();
+                        presented_ms += at.elapsed().as_millis();
                     }
                     painted = true;
                 }
@@ -932,11 +954,15 @@ fn hold_covers_until_ready() -> Result<()> {
                 "no third page colour: {colour:?}"
             );
         }
-        println!("MEASURE switch={i} blank_ms={blank_ms}");
+        println!("MEASURE switch={i} blank_ms={actual_ms} presented_ms={presented_ms} grey_samples={grey_samples} white_samples={white_samples} old_after_hold={old_samples}");
+        assert!(
+            actual_ms <= 50,
+            "after-hold blank exceeded 50 ms: {actual_ms}"
+        );
         assert!(seen_hold && painted);
         assert!(
-            blank_ms <= 100,
-            "after-hold blank exceeded 100 ms: {blank_ms}"
+            presented_ms <= 100,
+            "incoming colour was not presented within 100 ms: {presented_ms}"
         );
     }
     Ok(())
