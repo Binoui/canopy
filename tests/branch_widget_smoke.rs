@@ -796,6 +796,12 @@ fn overlay_check(ui: &Ui, state: &str, surface: &str) -> Result<()> {
             dim[1] > dim[0] + 10 && dim[1] > dim[2] + 10 && dim[1] < 160,
             "{state} {surface}: dimming must preserve the green page: {dim:?}"
         );
+    } else {
+        // HOME is neutral #0f0f0f; its scrim must transmit that surface, too.
+        anyhow::ensure!(
+            dim.iter().all(|c| *c > 0 && *c < 15),
+            "new-tree {surface}: dimming must transmit HOME rather than opaque black: {dim:?}"
+        );
     }
     Ok(())
 }
