@@ -238,6 +238,34 @@ fn a_link_parent_in_another_tree_gets_its_own_branch() -> Result<()> {
     assert_eq!(f.hits("/b"), 1, "live landing is retained");
     Ok(())
 }
+fn settling_a_tree_cancels_its_loading_child_candidate() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.root("/a")?;
+    let tree = f
+        .ui
+        .pages
+        .read(|b| canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?
+        .tree_of(a)
+        .unwrap();
+    let b = f.root("/b")?;
+    f.ui.pages.go(Go::Address {
+        url: f.url("/slow"),
+        target: canopy::browser::NavigationTarget::ChildOf(a),
+    })?;
+    common::wait("child candidate requested", || f.hits("/slow") == 1)?;
+    f.ui.pages.settle_tree(tree)?;
+    common::pump(2400);
+    assert_eq!(f.ui.snapshot()?.current, Some(b));
+    assert!(
+        !f.ui
+            .snapshot()?
+            .visits
+            .iter()
+            .any(|v| v.url.path() == "/slow"),
+        "settled candidate must not reopen its tree at commit"
+    );
+    Ok(())
+}
 fn selecting_a_live_page_keeps_its_inflight_navigation() -> Result<()> {
     let f = Fixture::new()?;
     let a = f.root("/a")?;
@@ -481,6 +509,10 @@ fn main() -> Result<()> {
         return small_budget_drops_hidden_page();
     }
     let cases: &[Case] = &[
+        (
+            "settling_a_tree_cancels_its_loading_child_candidate",
+            settling_a_tree_cancels_its_loading_child_candidate,
+        ),
         (
             "a_link_parent_in_another_tree_gets_its_own_branch",
             a_link_parent_in_another_tree_gets_its_own_branch,

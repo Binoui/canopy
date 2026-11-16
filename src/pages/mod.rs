@@ -1225,7 +1225,7 @@ impl Pages {
             .candidate
             .borrow()
             .as_ref()
-            .and_then(|p| p.pending_visit());
+            .and_then(|p| p.pending_anchor());
         if target.is_some_and(|visit| forest.tree_of(visit) == Some(tree)) {
             self.cancel_candidate();
         }

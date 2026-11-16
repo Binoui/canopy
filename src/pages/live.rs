@@ -212,6 +212,9 @@ impl LivePage {
             .as_ref()
             .map(|d| d.visit)
     }
+    pub(super) fn pending_anchor(&self) -> Option<VisitId> {
+        self.state.navigation.borrow().pending_anchor()
+    }
     pub(super) fn pending_visit(&self) -> Option<VisitId> {
         self.state.navigation.borrow().pending_restore()
     }
