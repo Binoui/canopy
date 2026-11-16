@@ -1,0 +1,81 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
+    font: 13px -apple-system, "Inter", sans-serif; color: #e6e9e4; user-select: none; }
+  #strip { height: 44px; box-sizing: border-box; display: flex; align-items: center; gap: 8px;
+    padding: 0 12px; background: #191a19; border-bottom: 1px solid #2c2f2b; }
+  .logo { color: #6fcf7a; font-weight: 600; margin-right: 6px; white-space: nowrap; }
+  button { font: inherit; color: inherit; background: #262826; border: 1px solid #343733;
+    border-radius: 6px; padding: 4px 10px; white-space: nowrap; }
+  button:hover { background: #2f322e; }
+  .tab { display: flex; align-items: center; gap: 6px; max-width: 170px; }
+  .tab span.name { overflow: hidden; text-overflow: ellipsis; }
+  .tab.selected { border-color: #6fcf7a; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: #555; flex: none; }
+  .tab.live .dot { background: #6fcf7a; }
+  .tab.saved .dot { background: #d6a54a; }
+  #address { flex: 1; min-width: 80px; font: inherit; color: inherit; background: #101110;
+    border: 1px solid #343733; border-radius: 6px; padding: 5px 10px; user-select: text; }
+  #overlay { position: fixed; inset: 0; display: none; }
+  #overlay.open { display: block; }
+  #card { position: absolute; left: 50%; top: 110px; transform: translateX(-50%); width: 560px;
+    background: #191a19; border: 1px solid #3a3e39; border-radius: 12px; padding: 18px 20px;
+    box-shadow: 0 18px 60px rgba(0,0,0,.55); }
+  #card h2 { margin: 0 0 8px; font-size: 15px; color: #6fcf7a; }
+  #card p { margin: 0 0 10px; color: #b7bcb4; line-height: 1.45; }
+  pre { margin: 0; white-space: pre-wrap; font: 12px ui-monospace, Menlo, monospace; color: #cfd4cb; }
+</style>
+</head>
+<body>
+<div id="strip">
+  <span class="logo">Canopy · Mac prototype</span>
+  <button class="tab" data-slot="0"><i class="dot"></i><span class="name">A</span></button>
+  <button class="tab" data-slot="1"><i class="dot"></i><span class="name">B</span></button>
+  <button class="tab" data-slot="2"><i class="dot"></i><span class="name">C</span></button>
+  <button data-send="back">Back</button>
+  <input id="address" placeholder="Address, then Enter" spellcheck="false">
+  <button data-send="checkpoint" title="Save this page's history, destroy the page, rebuild it">Save + revive</button>
+  <button data-send="drop" title="Save this page's history and destroy the page">Drop</button>
+  <button data-send="video">Video</button>
+  <button data-send="memory">Memory</button>
+  <button data-send="palette:open">Overlay</button>
+</div>
+<div id="overlay">
+  <div id="card">
+    <h2>Transparent overlay</h2>
+    <p>The chrome now covers the whole window. The page must stay visible around this card,
+       and a click outside the card must close the overlay without reaching the page.</p>
+    <pre id="note"></pre>
+  </div>
+</div>
+<script>
+  window.__proto = { clicks: 0 };
+  const send = (message) => window.ipc.postMessage(message);
+  addEventListener('click', (event) => {
+    window.__proto.clicks++;
+    const button = event.target.closest('button');
+    if (button && button.dataset.slot) return send('tab:' + button.dataset.slot);
+    if (button && button.dataset.send) return send(button.dataset.send);
+    if (event.target.id === 'overlay') send('palette:close');
+  });
+  document.getElementById('address').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') send('go:' + event.target.value.trim());
+  });
+  function update(state) {
+    document.querySelectorAll('.tab').forEach((tab) => {
+      const page = state.pages[Number(tab.dataset.slot)];
+      tab.className = 'tab ' + page.state + (Number(tab.dataset.slot) === state.selected ? ' selected' : '');
+      tab.querySelector('.name').textContent = page.title || 'ABC'[Number(tab.dataset.slot)];
+    });
+    const address = document.getElementById('address');
+    if (document.activeElement !== address) address.value = state.pages[state.selected].url || '';
+    document.getElementById('overlay').classList.toggle('open', state.expanded);
+    document.getElementById('note').textContent = state.note || '';
+  }
+</script>
+</body>
+</html>

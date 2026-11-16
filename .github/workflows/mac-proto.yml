@@ -1,0 +1,38 @@
+name: mac-proto
+
+on:
+  push:
+    branches: [proto/mac]
+  workflow_dispatch:
+
+jobs:
+  scripted-run:
+    runs-on: macos-15
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: prototypes/mac
+    steps:
+      - uses: actions/checkout@v4
+      - name: Machine
+        run: sw_vers && uname -m && rustc --version && system_profiler SPDisplaysDataType | grep -i resolution || true
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            prototypes/mac/target
+          key: mac-proto-${{ hashFiles('prototypes/mac/Cargo.lock') }}
+      - name: Build
+        run: cargo build --locked
+      - name: Scripted run
+        run: ./target/debug/canopy-mac-proto --self-test out
+        timeout-minutes: 8
+      - name: Report
+        if: always()
+        run: cat out/report.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-proto-run
+          path: prototypes/mac/out
