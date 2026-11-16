@@ -565,6 +565,8 @@ impl Pages {
                     .position(|h| h.last_shown > last_shown)
                     .unwrap_or(hidden.len());
                 hidden.insert(index, Hidden { page, last_shown });
+                drop(hidden);
+                self.receive(PageEvent::Changed);
             } else {
                 page.cancel();
             }
@@ -750,6 +752,7 @@ impl Pages {
             }
             self.branches.candidate_live.set(Some(hidden.last_shown));
             *self.branches.candidate.borrow_mut() = Some(hidden.page.clone());
+            self.receive(PageEvent::Changed);
             return hidden.page.restore(visit);
         }
         self.candidate_page(Some(visit))?.restore_revived(visit)

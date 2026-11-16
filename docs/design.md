@@ -207,7 +207,9 @@ forest, tree sheet tree/list and tabs share the mark; a tab uses its tree's last
 visit. Preview metadata, node tooltips and tree list details say “Open in memory”.
 Never-seen pages keep their separate top-right waiting dot. Absolute positioning
 preserves node geometry. Hold completion, pressure removal and hidden process death
-notify Changed; selection, hidden navigation and settling use existing refreshes.
+notify Changed; candidate history routing and cancellation also notify when a page
+leaves or rejoins the hidden registry. Selection, hidden navigation and settling use
+existing refreshes.
 
 ### Switch cancellation and page Back
 
