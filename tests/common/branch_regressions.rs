@@ -519,8 +519,11 @@ fn post_switch_back() -> Result<()> {
     let next = f.navigate("/after-post")?;
     let pages = Rc::downgrade(&f.pages);
     let errors = f.errors.clone();
+    let questions = Rc::new(std::cell::Cell::new(0));
+    let count = questions.clone();
     f.pages.observe(move |event| match event {
         PageEvent::FormReturn(Some(question)) => {
+            count.set(count.get() + 1);
             let pages = pages.clone();
             glib::idle_add_local_once(move || {
                 if let Some(pages) = pages.upgrade() {
@@ -534,6 +537,14 @@ fn post_switch_back() -> Result<()> {
     f.pages.go(Go::Visit(post))?;
     anyhow::ensure!(f.arrives(post, 8000), "setup return to POST did not arrive");
     pump_for(800);
+    assert_eq!(questions.get(), 1, "setup return asks exactly once");
+    let errors = f.errors.clone();
+    let count = questions.clone();
+    f.pages.observe(move |event| match event {
+        PageEvent::FormReturn(Some(_)) => count.set(count.get() + 1),
+        PageEvent::Error(message) => errors.borrow_mut().push(message),
+        _ => {}
+    });
     f.open_root("/root")?;
     pump_for(800);
     let posts_before = f.server.hits("POST /post-result");
@@ -551,6 +562,11 @@ fn post_switch_back() -> Result<()> {
         f.server.hits("GET /post-result"),
     );
     assert!(arrived);
+    assert_eq!(
+        questions.get(),
+        1,
+        "switch to current document raises no question"
+    );
     assert!(f.history().contains(&form), "POST revival lost back list");
     assert!(f.history().contains(&a));
     assert!(!f.history().contains(&next), "GET drops forward entries");

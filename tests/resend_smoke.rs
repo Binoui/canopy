@@ -74,6 +74,8 @@ fn main() -> Result<()> {
     let posts = server.hits("POST /post");
     let visits = ui.snapshot()?.visits.len();
     let can_back = ui.pages.selected_page().native.can_go_back();
+    let displayed = chrome(&ui, "[document.getElementById('search-pill').innerText, current(), document.querySelector('.node.current')?.dataset.id]")?;
+    let window_title = ui.window.title();
     ui.pages.go(Go::Parent)?;
     question(&ui)?;
     pump(200);
@@ -90,6 +92,8 @@ fn main() -> Result<()> {
             &format!("{}/.tmp/form-return-light.png", env!("CARGO_MANIFEST_DIR")),
         )?;
     }
+    assert_eq!(chrome(&ui, "[document.getElementById('search-pill').innerText, current(), document.querySelector('.node.current')?.dataset.id]")?, displayed);
+    assert_eq!(ui.window.title(), window_title);
     assert_eq!(server.hits("POST /post"), posts);
     assert_eq!(ui.snapshot()?.current, Some(next));
     assert_eq!(
@@ -211,6 +215,102 @@ fn main() -> Result<()> {
     ui.pages.go(Go::Visit(next))?;
     arrived(&ui, "/next")?;
     println!("PASS a hidden page refuses a return to a form result silently");
+    ui.pages.go(Go::Visit(other))?;
+    arrived(&ui, "/long")?;
+    ui.pages.go(Go::Visit(post))?;
+    question(&ui)?;
+    assert_eq!(ui.snapshot()?.current, Some(next));
+    assert_eq!(
+        page_eval(&ui, "JSON.stringify(location.pathname)")?,
+        json!("/next")
+    );
+    assert_eq!(server.hits("POST /post"), sent + 1);
+    click_chrome(&ui, "#form-return-cancel")?;
+    pump(150);
+    assert_eq!(arrived(&ui, "/next")?, next);
+    ui.pages.go(Go::Visit(other))?;
+    arrived(&ui, "/long")?;
+    ui.pages.go(Go::Visit(post))?;
+    question(&ui)?;
+    click_chrome(&ui, "#form-return-continue")?;
+    assert_eq!(arrived(&ui, "/post")?, post);
+    assert_eq!(server.hits("POST /post"), sent + 2);
+    println!("PASS another tree's older form result shows its current page and asks; Cancel permits another click and Continue sends once");
+    // Keep the remaining original assertions relative to this deliberate resend.
+    let sent = sent + 1;
+    ui.pages.go(Go::Visit(next))?;
+    arrived(&ui, "/next")?;
+    ui.pages.go(Go::Parent)?;
+    question(&ui)?;
+    key("alt+Left")?;
+    pump(600);
+    question(&ui)?;
+    assert_eq!(ui.snapshot()?.current, Some(next));
+    assert_eq!(server.hits("POST /post"), sent + 1);
+    println!("PASS Back while asked asks again for the same entry without sending or skipping");
+    for _ in 0..2 {
+        key("shift+Tab")?;
+        pump(100);
+        assert_eq!(
+            chrome(&ui, "!!document.activeElement.closest('.form-return-box')")?,
+            json!(true)
+        );
+    }
+    println!("PASS Shift+Tab keeps focus inside the question");
+    click_chrome(&ui, "#search-pill")?;
+    pump(200);
+    type_text("abc")?;
+    pump(150);
+    assert_eq!(
+        chrome(&ui, "document.getElementById('palette-input').value")?,
+        json!("abc")
+    );
+    assert!(!visible(&ui, "#form-return"));
+    key("Escape")?;
+    println!("PASS typing after clicking the search pill reaches the palette");
+
+    page_eval(&ui, "(()=>{const f=document.createElement('iframe');document.body.append(f);let n=0;window.rot=setInterval(()=>{f.src='/inner?'+(++n)},700);return JSON.stringify(true)})()")?;
+    ui.pages.go(Go::Parent)?;
+    question(&ui)?;
+    pump(2200);
+    assert!(
+        visible(&ui, "#form-return"),
+        "iframe navigation must leave question open"
+    );
+    assert_eq!(server.hits("POST /post"), sent + 1);
+    click_chrome(&ui, "#form-return-cancel")?;
+    page_eval(&ui, "JSON.stringify(clearInterval(window.rot) ?? true)")?;
+    println!("PASS iframe navigation every 700 ms keeps the question open until answered");
+
+    ui.pages.go(Go::Visit(post))?;
+    question(&ui)?;
+    click_chrome(&ui, "#form-return-continue")?;
+    arrived(&ui, "/post")?;
+    let sent = sent + 1;
+    page_eval(&ui, "(()=>{const a=document.createElement('a');a.id='branch-child';a.href='/third';a.textContent='child';document.body.append(a);return JSON.stringify(true)})()")?;
+    pump(150);
+    let point = page_eval(&ui, "JSON.stringify((()=>{const r=document.getElementById('branch-child').getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2]})())")?;
+    let (x, y) = screen_point(
+        &ui,
+        &ui.pages.selected_page().native,
+        point[0].as_f64().unwrap() as i32,
+        point[1].as_f64().unwrap() as i32,
+    )?;
+    move_to(x, y)?;
+    xdo(&["click", "2"])?;
+    pump(700);
+    ui.pages.go(Go::Visit(next))?;
+    arrived(&ui, "/next")?;
+    key("ctrl+Tab")?;
+    arrived(&ui, "/third")?;
+    ui.pages.go(Go::Parent)?;
+    question(&ui)?;
+    assert_eq!(ui.snapshot()?.current, Some(next));
+    assert_eq!(server.hits("POST /post"), sent + 1);
+    click_chrome(&ui, "#form-return-cancel")?;
+    arrived(&ui, "/next")?;
+    println!("PASS Back from a middle-clicked branch asks at its parent's older form result");
+
     ui.pages.go(Go::Visit(post))?;
     question(&ui)?;
     ui.pages.reload()?;
