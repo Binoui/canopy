@@ -544,7 +544,7 @@ impl LivePage {
                         let owner = state.owner();
                         let view = state.navigation.borrow().view_id();
                         if state.never_seen.get().is_some() {
-                            owner.drop_background(view);
+                            state.emit(PageEvent::Error(String::new()));
                             return;
                         }
                         let index = owner
