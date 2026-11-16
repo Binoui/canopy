@@ -75,6 +75,7 @@ pub struct Droppable {
     pub page: ViewId,
     /// When the page was last shown or asked for, on the window's clock: higher is more recent.
     pub last_shown: u64,
+    pub never_seen: bool,
     /// WebKit reports the page playing audio. Read from the webview at each decision, never
     /// cached, so the exemption ends when the sound does.
     pub audible: bool,
@@ -90,8 +91,8 @@ pub fn next_to_drop(used: u64, budget: Budget, pages: &[Droppable]) -> Option<Vi
     }
     pages
         .iter()
-        .filter(|page| !page.audible)
-        .min_by_key(|page| page.last_shown)
+        .filter(|page| page.never_seen || !page.audible)
+        .min_by_key(|page| (!page.never_seen, page.last_shown))
         .map(|page| page.page)
 }
 
@@ -162,6 +163,7 @@ mod tests {
         Droppable {
             page: crate::browser::Navigation::default().view_id(),
             last_shown,
+            never_seen: false,
             audible,
         }
     }
@@ -185,6 +187,19 @@ mod tests {
         assert_eq!(
             next_to_drop(budget.bytes() + 1, budget, &pages),
             Some(pages[1].page)
+        );
+    }
+
+    #[test]
+    fn never_seen_pages_go_first_even_if_webkit_reports_audio() {
+        let mut old = page(4, true);
+        old.never_seen = true;
+        let mut new = page(5, false);
+        new.never_seen = true;
+        let seen = page(1, false);
+        assert_eq!(
+            next_to_drop(u64::MAX, Budget::of_total(8), &[seen, new, old]),
+            Some(old.page)
         );
     }
 

@@ -1018,8 +1018,8 @@ ORDER BY r.created_at, r.rowid",
             }
             Intent::Restore { visit } => {
                 let changed = transaction.execute(
-                    "UPDATE visits SET url = ?1, opened_at=COALESCE(opened_at, ?3) WHERE id = ?2",
-                    params![url.as_str(), visit.to_string(), now],
+                    "UPDATE visits SET url = ?1, opened_at=CASE WHEN ?4 THEN COALESCE(opened_at, ?3) ELSE opened_at END WHERE id = ?2",
+                    params![url.as_str(), visit.to_string(), now, visibility == Visibility::Selected],
                 )?;
                 if changed != 1 {
                     bail!("This visit no longer exists.")
@@ -1035,6 +1035,26 @@ ORDER BY r.created_at, r.rowid",
         Ok(true)
     }
 
+    pub(crate) fn update_unopened_url(
+        &mut self,
+        navigation: &mut Navigation,
+        url: Url,
+    ) -> Result<()> {
+        let Some(document) = navigation.current.as_ref() else {
+            return Ok(());
+        };
+        web_url(url.as_str())?;
+        let visit = document.visit;
+        let changed = self.connection.execute(
+            "UPDATE visits SET url=?1 WHERE id=?2 AND opened_at IS NULL",
+            params![url.as_str(), visit.to_string()],
+        )?;
+        if changed == 1 {
+            navigation.publish(visit, url);
+        }
+        Ok(())
+    }
+
     pub fn select_document(&mut self, navigation: &Navigation, document: &Document) -> Result<()> {
         if navigation.current.as_ref() != Some(document) {
             return Ok(());
@@ -1044,7 +1064,12 @@ ORDER BY r.created_at, r.rowid",
             return Ok(());
         }
         let transaction = self.connection.transaction()?;
-        record_selection(&transaction, document.visit, previous, "return", now_ms()?)?;
+        let now = now_ms()?;
+        transaction.execute(
+            "UPDATE visits SET opened_at=COALESCE(opened_at, ?1) WHERE id=?2",
+            params![now, document.visit.to_string()],
+        )?;
+        record_selection(&transaction, document.visit, previous, "return", now)?;
         transaction.commit()?;
         Ok(())
     }
@@ -2124,6 +2149,48 @@ mod tests {
         let state = &b.tree_states().unwrap()[0];
         assert_eq!(state.last_visit, child);
         assert_eq!(state.last_event_at, Some(100));
+    }
+
+    #[test]
+    fn unopened_hidden_commits_and_script_routes_keep_selection_and_arrivals() {
+        let mut b = memory();
+        let source_visit = follow(&mut b, "source", NavigationTarget::Root);
+        let q = b
+            .queue_link(
+                source_visit,
+                url("queued"),
+                SourceContext {
+                    page_url: url("source"),
+                    citation_url: None,
+                    link_text: String::new(),
+                    excerpt: String::new(),
+                },
+            )
+            .unwrap();
+        let targets = b.tree_states().unwrap();
+        let arrivals = events(&b.browser);
+        let mut background = Navigation::default();
+        b.browser.restore(&mut background, q).unwrap();
+        let ticket = background.pending_ticket().unwrap();
+        background.started(ticket);
+        b.browser
+            .commit_load(&mut background, ticket, url("final"), Visibility::Hidden)
+            .unwrap();
+        assert!(b.visit(q).unwrap().opened_at.is_none());
+        b.browser
+            .update_unopened_url(&mut background, url("script-route"))
+            .unwrap();
+        assert_eq!(b.visit(q).unwrap().url, url("script-route"));
+        assert_eq!(b.snapshot().unwrap().visits.len(), 2);
+        assert_eq!(b.current_id().unwrap(), Some(source_visit));
+        assert_eq!(b.tree_states().unwrap(), targets);
+        assert_eq!(events(&b.browser), arrivals);
+        b.browser
+            .select_document(&background, background.current.as_ref().unwrap())
+            .unwrap();
+        assert!(b.visit(q).unwrap().opened_at.is_some());
+        assert_eq!(b.current_id().unwrap(), Some(q));
+        assert_eq!(events(&b.browser).len(), arrivals.len() + 1);
     }
 
     #[test]
