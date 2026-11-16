@@ -207,6 +207,12 @@ struct Hold {
     cap: Option<glib::SourceId>,
 }
 
+thread_local! {
+    static BACKGROUND_WINDOWS: RefCell<Vec<Weak<Pages>>> = const { RefCell::new(Vec::new()) };
+    static SCHEDULING_BACKGROUND: Cell<bool> = const { Cell::new(false) };
+    static QUEUE_CLOCK: Cell<u64> = const { Cell::new(0) };
+}
+
 static MEMORY_DROP: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static MEMORY_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -346,6 +352,7 @@ impl Pages {
             pages.sample_memory();
             glib::ControlFlow::Continue
         });
+        BACKGROUND_WINDOWS.with(|windows| windows.borrow_mut().push(Rc::downgrade(&pages)));
         Ok(pages)
     }
 
@@ -979,8 +986,11 @@ impl Pages {
             })
             .unwrap_or(false);
         if open {
-            let stamp = self.branches.clock.get() + 1;
-            self.branches.clock.set(stamp);
+            let stamp = QUEUE_CLOCK.with(|clock| {
+                let stamp = clock.get() + 1;
+                clock.set(stamp);
+                stamp
+            });
             self.branches.queued.borrow_mut().push((stamp, visit));
             self.start_background();
             self.sample_memory();
@@ -988,51 +998,75 @@ impl Pages {
     }
 
     fn start_background(&self) {
-        if self.busy()
-            || self.cooling.get()
-            || self
-                .latest_sample
-                .get()
-                .is_none_or(|used| used > self.budget.bytes())
-        {
+        if SCHEDULING_BACKGROUND.with(|scheduling| scheduling.replace(true)) {
             return;
         }
+        let windows: Vec<_> = BACKGROUND_WINDOWS.with(|registry| {
+            let mut registry = registry.borrow_mut();
+            registry.retain(|window| window.strong_count() != 0);
+            registry.iter().filter_map(Weak::upgrade).collect()
+        });
         loop {
-            let running = self
-                .branches
-                .background
-                .borrow()
+            let running: usize = windows
                 .iter()
-                .filter(|h| h.page.pending_ticket().is_some() || h.page.native.is_loading())
-                .count();
-            if running
-                + usize::from(
-                    self.branches
-                        .candidate
+                .map(|window| {
+                    window
+                        .branches
+                        .background
                         .borrow()
-                        .as_ref()
-                        .is_some_and(|p| p.never_seen().is_some()),
-                )
-                >= 3
-            {
+                        .iter()
+                        .filter(|h| h.page.pending_ticket().is_some() || h.page.native.is_loading())
+                        .count()
+                        + usize::from(
+                            window
+                                .branches
+                                .candidate
+                                .borrow()
+                                .as_ref()
+                                .is_some_and(|p| p.never_seen().is_some()),
+                        )
+                })
+                .sum();
+            if running >= 3 {
                 break;
             }
-            let Some((stamp, visit)) = self.branches.queued.borrow_mut().pop() else {
-                break;
-            };
-            let Ok(page) = LivePage::empty(&self.container, self.me.clone(), &self.context) else {
+            let window = windows
+                .iter()
+                .filter(|window| {
+                    !window.busy()
+                        && !window.cooling.get()
+                        && window
+                            .latest_sample
+                            .get()
+                            .is_some_and(|used| used <= window.budget.bytes())
+                })
+                .filter_map(|window| {
+                    window
+                        .branches
+                        .queued
+                        .borrow()
+                        .last()
+                        .map(|(stamp, _)| (*stamp, window))
+                })
+                .max_by_key(|(stamp, _)| *stamp)
+                .map(|(_, window)| window);
+            let Some(window) = window else { break };
+            let (stamp, visit) = window.branches.queued.borrow_mut().pop().unwrap();
+            let Ok(page) = LivePage::empty(&window.container, window.me.clone(), &window.context)
+            else {
                 continue;
             };
             let page = Rc::new(page);
             page.last_shown.set(stamp);
-            self.branches.background.borrow_mut().push(Hidden {
+            window.branches.background.borrow_mut().push(Hidden {
                 page: page.clone(),
                 last_shown: stamp,
             });
             if page.background(visit).is_err() {
-                self.drop_background(page.view());
+                window.drop_background(page.view());
             }
         }
+        SCHEDULING_BACKGROUND.with(|scheduling| scheduling.set(false));
     }
 
     fn drop_background(&self, view: crate::browser::ViewId) {

@@ -353,6 +353,27 @@ fn three_loads_run_and_newest_pending_starts_first() -> Result<()> {
     f.committed(old)?;
     Ok(())
 }
+fn windows_share_three_background_load_slots() -> Result<()> {
+    let first = Fixture::new()?;
+    first.root("/source")?;
+    for path in ["/slow-one", "/slow-two", "/slow-three"] {
+        first.queue(path)?;
+    }
+    common::wait("first window fills slots", || {
+        first.hits("/slow-three") == 1
+    })?;
+    let second = Fixture::new()?;
+    second.root("/source")?;
+    let q = second.queue("/plain")?;
+    assert_eq!(
+        second.hits("/plain"),
+        0,
+        "other window waits for a shared slot"
+    );
+    second.committed(q)?;
+    assert_eq!(second.hits("/plain"), 1);
+    Ok(())
+}
 fn pressure_drops_oldest_never_seen_before_seen_and_reopening_fetches() -> Result<()> {
     let f = Fixture::new()?;
     let seen = f.root("/seen")?;
@@ -512,6 +533,10 @@ fn main() -> Result<()> {
     }
     type Case = (&'static str, fn() -> Result<()>);
     let cases: &[Case] = &[
+        (
+            "windows_share_three_background_load_slots",
+            windows_share_three_background_load_slots,
+        ),
         (
             "switching_elsewhere_keeps_an_adopted_background_load",
             switching_elsewhere_keeps_an_adopted_background_load,

@@ -296,7 +296,8 @@ that fresh native view has no forward history.
 A middle-click queues the visit as before, then Pages admits that session's queued
 visit to `Branches::background`, a registry separate from hidden seen pages and
 from the switch candidate. `Branches::queued` is a newest-first pending stack;
-three loads at most run, counting an adopted never-seen candidate. Admission needs
+three loads at most run across windows, counting an adopted never-seen candidate.
+A weak window registry dispatches the newest eligible pending visit globally. Admission needs
 a complete memory sample within budget, including when only one page is live.
 The latest over-budget sample blocks admission. Pending work survives switches;
 startup does not enroll waiting visits from earlier sessions. Failed and dropped
