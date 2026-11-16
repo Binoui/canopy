@@ -267,7 +267,8 @@ impl LivePage {
     }
 
     pub(super) fn awaiting_download(&self) -> bool {
-        self.state.awaiting_response.get() || self.state.download_handover.get().is_some()
+        self.state.awaiting_response.get() && self.native.is_loading()
+            || self.state.download_handover.get().is_some()
     }
 
     pub(super) fn requires_get(&self, visit: VisitId) -> bool {
@@ -1613,6 +1614,7 @@ impl NativeState {
         self.accept_issue();
         self.start_attempt(target.clone());
         let committed = self.commit_attempt(target.clone());
+        self.awaiting_response.set(false);
         match committed {
             Ok(true) => {
                 *self.issue.borrow_mut() = Issue::Idle;

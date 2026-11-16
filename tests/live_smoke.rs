@@ -620,6 +620,30 @@ fn commands_wait_for_a_settle_landing() -> Result<()> {
     }
     Ok(())
 }
+fn a_fragment_navigation_does_not_protect_a_hidden_page_from_eviction() -> Result<()> {
+    let f = Fixture::new()?;
+    let root = f.root("/fragment")?;
+    f.ui.pages.go(Go::Address {
+        url: f.url("/fragment#part"),
+        target: canopy::browser::NavigationTarget::ChildOf(root),
+    })?;
+    common::wait("fragment selected", || {
+        f.ui.pages
+            .selected_page()
+            .native
+            .uri()
+            .is_some_and(|u| u.ends_with("#part"))
+            && !f.ui.pages.selected_page().native.is_loading()
+    })?;
+    let fragment = f.ui.snapshot()?.current.unwrap();
+    f.root("/other")?;
+    common::pump(1200);
+    f.ui.pages.inject_memory_sample(Some(u64::MAX));
+    common::wait("hidden fragment page evicted", || {
+        !f.ui.pages.live_visits().contains(&fragment)
+    })?;
+    Ok(())
+}
 fn hidden_download_uses_its_source_visit() -> Result<()> {
     let f = Fixture::new()?;
     let source = f.root("/source")?;
@@ -697,6 +721,10 @@ fn main() -> Result<()> {
         return small_budget_drops_hidden_page();
     }
     let cases: &[Case] = &[
+        (
+            "a_fragment_navigation_does_not_protect_a_hidden_page_from_eviction",
+            a_fragment_navigation_does_not_protect_a_hidden_page_from_eviction,
+        ),
         (
             "commands_wait_for_a_settle_landing",
             commands_wait_for_a_settle_landing,
