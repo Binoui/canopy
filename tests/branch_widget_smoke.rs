@@ -935,8 +935,8 @@ fn hold_covers_until_ready() -> Result<()> {
         println!("MEASURE switch={i} blank_ms={blank_ms}");
         assert!(seen_hold && painted);
         assert!(
-            blank_ms <= 250,
-            "after-hold blank exceeded 250 ms: {blank_ms}"
+            blank_ms <= 100,
+            "after-hold blank exceeded 100 ms: {blank_ms}"
         );
     }
     Ok(())
