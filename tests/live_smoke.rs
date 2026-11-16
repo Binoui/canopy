@@ -318,6 +318,74 @@ fn windows_share_one_eviction_at_a_time() -> Result<()> {
     assert!(!second.ui.pages.live_visits().contains(&c));
     Ok(())
 }
+fn a_candidate_hold_does_not_finish_another_pages_checkpoint() -> Result<()> {
+    let f = Fixture::new()?;
+    let ancestor = f.root("/ancestor")?;
+    f.ui.pages.go(Go::Address {
+        url: f.url("/a"),
+        target: canopy::browser::NavigationTarget::ChildOf(ancestor),
+    })?;
+    common::wait("source committed", || {
+        f.ui.snapshot()
+            .is_ok_and(|s| s.current_visit().is_some_and(|v| v.url.path() == "/a"))
+            && !f.ui.pages.selected_page().native.is_loading()
+    })?;
+    let a = f.ui.snapshot()?.current.unwrap();
+    let source = f.ui.pages.selected_page().native.as_ptr() as usize;
+    f.root("/b")?;
+    let outgoing = f.ui.pages.selected_page().native.as_ptr() as usize;
+    common::pump(1200);
+    f.ui.pages.open_roots(&[f.url("/slow")])?;
+    common::wait("candidate requested", || f.hits("/slow") == 1)?;
+    let held_ended = std::rc::Rc::new(std::cell::Cell::new(false));
+    let called = std::rc::Rc::new(std::cell::Cell::new(false));
+    let observed = called.clone();
+    let ended = held_ended.clone();
+    let weak = std::rc::Rc::downgrade(&f.ui);
+    let hits = f.hits.clone();
+    f.ui.pages.observe_release(move |event| {
+        if event.widget == outgoing && event.phase == canopy::pages::ReleasePhase::Hidden {
+            ended.set(true);
+        }
+        if event.widget != source
+            || event.phase != canopy::pages::ReleasePhase::Checkpointing
+            || observed.replace(true)
+        {
+            return;
+        }
+        let ui = weak.upgrade().unwrap();
+        common::wait(
+            "candidate finishes while checkpoint observer retains the source",
+            || {
+                ui.snapshot()
+                    .is_ok_and(|s| s.current_visit().is_some_and(|v| v.url.path() == "/slow"))
+                    && !ui.pages.selected_page().native.is_loading()
+                    && ended.get()
+            },
+        )
+        .unwrap();
+        ui.pages.go(Go::Visit(a)).unwrap();
+        common::pump(150);
+        assert_eq!(
+            *hits.lock().unwrap().get("/a").unwrap(),
+            1,
+            "the return waits for the outstanding checkpoint instead of loading cold"
+        );
+        assert_eq!(
+            ui.snapshot().unwrap().current_visit().unwrap().url.path(),
+            "/slow"
+        );
+    });
+    f.ui.pages.inject_memory_sample(Some(u64::MAX));
+    assert!(called.get());
+    common::wait("return uses completed checkpoint", || {
+        f.ui.snapshot().is_ok_and(|s| s.current == Some(a))
+            && !f.ui.pages.selected_page().native.is_loading()
+    })?;
+    assert!(f.ui.pages.selected_history_visits().contains(&ancestor));
+    assert_eq!(f.hits("/a"), 2);
+    Ok(())
+}
 fn incomplete_sample_drops_nothing_and_fresh_sample_drops_oldest() -> Result<()> {
     let f = Fixture::new()?;
     let ancestor = f.root("/ancestor")?;
@@ -509,6 +577,10 @@ fn main() -> Result<()> {
         return small_budget_drops_hidden_page();
     }
     let cases: &[Case] = &[
+        (
+            "a_candidate_hold_does_not_finish_another_pages_checkpoint",
+            a_candidate_hold_does_not_finish_another_pages_checkpoint,
+        ),
         (
             "settling_a_tree_cancels_its_loading_child_candidate",
             settling_a_tree_cancels_its_loading_child_candidate,

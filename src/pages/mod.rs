@@ -240,7 +240,7 @@ pub struct Pages {
     sampling: Cell<bool>,
     memory_epoch: Cell<u64>,
     cooling: Cell<bool>,
-    releasing: Cell<bool>,
+    releases: Cell<usize>,
     memory_drop: RefCell<Option<MemoryDrop>>,
     continuation: RefCell<Option<PendingContinuation>>,
     observer: RefCell<Option<Observer>>,
@@ -283,7 +283,7 @@ impl Pages {
             sampling: Cell::new(false),
             memory_epoch: Cell::new(0),
             cooling: Cell::new(false),
-            releasing: Cell::new(false),
+            releases: Cell::new(0),
             memory_drop: RefCell::new(None),
             continuation: RefCell::new(None),
             observer: RefCell::new(None),
@@ -699,7 +699,6 @@ impl Pages {
         if let Some(old) = old {
             old.native.set_child_visible(false);
             if !old.native.is_sensitive() {
-                self.releasing.set(true);
                 self.release_outgoing(old);
             } else {
                 self.branches.hidden.borrow_mut().push(Hidden {
@@ -750,7 +749,6 @@ impl Pages {
         }
         incoming.show();
         let incoming = &incoming.native;
-        self.releasing.set(true);
         let cancel = gio::Cancellable::new();
         *self.hold.borrow_mut() = Some(Hold {
             last_shown,
@@ -824,16 +822,19 @@ impl Pages {
                     last_shown: hold.last_shown,
                 });
             }
-            self.releasing.set(false);
             self.drain_commands();
             self.sample_memory();
         }
     }
 
+    fn busy(&self) -> bool {
+        self.releases.get() != 0 || self.hold.borrow().is_some()
+    }
+
     fn drain_commands(&self) {
         let count = self.commands.borrow().len();
         for _ in 0..count {
-            if self.releasing.get() || !self.retiring.borrow().is_empty() {
+            if self.busy() || !self.retiring.borrow().is_empty() {
                 break;
             }
             let command = self.commands.borrow_mut().pop_front();
@@ -857,7 +858,7 @@ impl Pages {
 
     fn sample_memory(&self) {
         if self.branches.hidden.borrow().is_empty()
-            || self.releasing.get()
+            || self.busy()
             || self.cooling.get()
             || self.sampling.replace(true)
         {
@@ -895,7 +896,7 @@ impl Pages {
     }
 
     fn apply_sample(&self, used: u64) {
-        if self.releasing.get() || self.cooling.get() {
+        if self.busy() || self.cooling.get() {
             return;
         }
         let candidates: Vec<_> = self
@@ -922,7 +923,6 @@ impl Pages {
                 };
                 *self.memory_drop.borrow_mut() = Some(MemoryDrop { _guard: guard });
                 let hidden = self.branches.hidden.borrow_mut().remove(index);
-                self.releasing.set(true);
                 self.release_outgoing(hidden.page);
             }
         }
@@ -938,6 +938,7 @@ impl Pages {
     }
 
     fn release_outgoing(&self, old: Rc<LivePage>) {
+        self.releases.set(self.releases.get() + 1);
         MEMORY_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.cooling.set(true);
         self.memory_epoch.set(self.memory_epoch.get() + 1);
@@ -960,7 +961,7 @@ impl Pages {
                 }
                 #[cfg(feature = "gui-smoke")]
                 pages.emit_release(event);
-                pages.releasing.set(false);
+                pages.releases.set(pages.releases.get() - 1);
                 pages.drain_commands();
                 let weak = pages.me.clone();
                 glib::timeout_add_local_once(std::time::Duration::from_secs(1), move || {
@@ -1070,7 +1071,7 @@ impl Pages {
                     .is_some_and(|page| page.current_visit() == Some(*parent)),
                 _ => false,
             };
-        if self.releasing.get() && !in_place {
+        if self.busy() && !in_place {
             self.commands.borrow_mut().push_back(Command::Go(go, None));
             self.end_hold();
             return Ok(());
@@ -1214,7 +1215,7 @@ impl Pages {
             page.retire();
             self.receive(PageEvent::Login(LoginEvent::NewDocument));
         }
-        if self.releasing.get() {
+        if self.busy() {
             self.commands.borrow_mut().push_back(Command::Settle(tree));
             self.end_hold();
             return Ok(());
@@ -1350,7 +1351,7 @@ impl Pages {
         }
     }
     pub fn reload(&self) -> Result<()> {
-        if self.releasing.get() && self.branches.live.borrow().is_some() {
+        if self.busy() && self.branches.live.borrow().is_some() {
             self.commands.borrow_mut().push_back(Command::Reload);
             self.end_hold();
             return Ok(());
@@ -1630,11 +1631,11 @@ impl Pages {
             .borrow_mut()
             .take()
             .ok_or_else(|| anyhow::anyhow!("No live page."))?;
-        self.releasing.set(true);
+        self.releases.set(self.releases.get() + 1);
         let weak = self.me.clone();
         let finish = move |result| {
             if let Some(pages) = weak.upgrade() {
-                pages.releasing.set(false);
+                pages.releases.set(pages.releases.get() - 1);
             }
             done(result);
         };
@@ -1683,7 +1684,7 @@ impl Pages {
         saved: Option<&live::Checkpoint>,
         visit: VisitId,
     ) -> Result<live::Revival> {
-        anyhow::ensure!(!self.releasing.get(), "Page release still pending.");
+        anyhow::ensure!(!self.busy(), "Page release still pending.");
         anyhow::ensure!(self.branches.live.borrow().is_none(), "Page still live.");
         let (page, cold) = match saved {
             Some(saved) => {
