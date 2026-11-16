@@ -64,7 +64,7 @@ impl Ui {
             .hscrollbar_policy(gtk::PolicyType::External)
             .vscrollbar_policy(gtk::PolicyType::External)
             .build();
-        let fixed = gtk::Fixed::new();
+        let fixed = crate::pages::stack::Stack::fixed();
         scroller.add(&fixed);
         window.add(&scroller);
         let pages = Pages::mount(&fixed, browser, &data_dir.join("profile"))?;
@@ -282,6 +282,7 @@ impl Ui {
                 .collect();
             Ok(ChromeFrame {
                 loaded: self.pages.loaded_visits(),
+                live: self.pages.hidden_visits(),
                 forest,
                 capture_enabled: browser.capture_enabled()?,
                 theme: browser.theme_mode()?,

@@ -1,5 +1,6 @@
 mod live;
 mod native;
+pub(crate) mod stack;
 
 use crate::{
     address::WebOrigin,
@@ -566,6 +567,8 @@ impl Pages {
                     .position(|h| h.last_shown > last_shown)
                     .unwrap_or(hidden.len());
                 hidden.insert(index, Hidden { page, last_shown });
+                drop(hidden);
+                self.receive(PageEvent::Changed);
             } else {
                 page.cancel();
             }
@@ -751,6 +754,7 @@ impl Pages {
             }
             self.branches.candidate_live.set(Some(hidden.last_shown));
             *self.branches.candidate.borrow_mut() = Some(hidden.page.clone());
+            self.receive(PageEvent::Changed);
             return hidden.page.restore(visit);
         }
         self.candidate_page(Some(visit))?.restore_revived(visit)
@@ -831,11 +835,6 @@ impl Pages {
     /// Only the real outgoing view covers the incoming view. All work belongs
     /// to this hold and is cancelled before the outgoing page is checkpointed.
     fn hold_page(&self, old: Rc<LivePage>, incoming: &LivePage, last_shown: u64) {
-        // A native outgoing window stacks independently of GtkFixed's draw order.
-        // The incoming view stays non-native, so it cannot inherit the cover's pixels.
-        if let Some(window) = old.native.window() {
-            window.ensure_native();
-        }
         incoming.show();
         let incoming = &incoming.native;
         let cancel = gio::Cancellable::new();
@@ -847,9 +846,6 @@ impl Pages {
         });
         if let Some(window) = old.native.window() {
             window.set_pass_through(true);
-        }
-        if let Some(window) = old.native.window() {
-            window.restack(incoming.window().as_ref(), true);
         }
         self.place_view(incoming); // also raises the chrome
         #[cfg(feature = "gui-smoke")]
@@ -912,6 +908,7 @@ impl Pages {
                     last_shown: hold.last_shown,
                 });
             }
+            self.receive(PageEvent::Changed);
             self.drain_commands();
             self.sample_memory();
         }
@@ -971,6 +968,16 @@ impl Pages {
             .iter()
             .find(|h| h.page.background_visit() == Some(visit))
             .map(|h| h.page.native.clone())
+    }
+
+    /// Current documents of retained, previously shown pages; no database reads.
+    pub fn hidden_visits(&self) -> std::collections::HashSet<VisitId> {
+        self.branches
+            .hidden
+            .borrow()
+            .iter()
+            .filter_map(|h| h.page.current_visit())
+            .collect()
     }
 
     pub fn loaded_visits(&self) -> std::collections::HashSet<VisitId> {
@@ -1250,6 +1257,7 @@ impl Pages {
                 *self.memory_drop.borrow_mut() = Some(MemoryDrop { _guard: guard });
                 let hidden = self.branches.hidden.borrow_mut().remove(index);
                 self.release_outgoing(hidden.page);
+                self.receive(PageEvent::Changed);
             }
         }
     }
@@ -1933,15 +1941,17 @@ impl Pages {
         if view.allocation() != rect {
             view.size_allocate(&rect);
         }
-        if let Some(window) = self
-            .chrome
+        let chrome = self.chrome.borrow().as_ref().and_then(|w| w.upgrade());
+        let held = self
+            .hold
             .borrow()
             .as_ref()
-            .and_then(|weak| weak.upgrade())
-            .and_then(|chrome| chrome.window())
-        {
-            window.raise();
-        }
+            .map(|h| h.outgoing.native.clone());
+        stack::Stack::order(
+            &self.container,
+            chrome.as_ref().map(|w| w.upcast_ref()),
+            held.as_ref().map(|w| w.upcast_ref()),
+        );
         #[cfg(feature = "gui-smoke")]
         if view.is_mapped() {
             let observer = self.placement_observer.borrow().clone();

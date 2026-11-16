@@ -67,6 +67,8 @@ pub struct ChromeFrame {
     /// Waiting pages that already have a live view. Nothing fills it yet: background
     /// loading will, and the chrome then shows those pages as loaded with no other change.
     pub loaded: std::collections::HashSet<VisitId>,
+    /// Current documents retained in hidden, previously shown pages.
+    pub live: std::collections::HashSet<VisitId>,
     pub capture_enabled: bool,
     pub theme: ThemeMode,
     pub declined: std::collections::HashSet<crate::suggest::SuggestionKey>,
@@ -456,6 +458,14 @@ impl Inner {
             .webview()
             .set_size_request(width.round() as i32, height.round() as i32);
         let _ = self.view.set_bounds(rect(0., 0., width, height));
+        // wry recognizes GtkFixed by exact type name, so its bounds setter skips
+        // allocation for our Fixed subclass. Keep chrome's allocation with its request.
+        self.view.webview().size_allocate(&gtk::Allocation::new(
+            0,
+            0,
+            width.round() as i32,
+            height.round() as i32,
+        ));
         self.raise();
     }
 

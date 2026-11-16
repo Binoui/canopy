@@ -29,6 +29,9 @@ struct Server {
     gates: Arc<Mutex<HashSet<String>>>,
 }
 fn page_body(path: &str) -> String {
+    if path == "/colour/overlay-hold" {
+        return "<!doctype html><body style='margin:0;background:#20b060'><script>const b=document.body;b.remove();setTimeout(()=>document.documentElement.append(b),750)</script>".into();
+    }
     if path.starts_with("/colour/") {
         let colour = if path == "/colour/third-busy" {
             "#2040d0"
@@ -741,6 +744,171 @@ fn chrome_after_changes() -> Result<()> {
     Ok(())
 }
 
+fn screen(ui: &Ui) -> Result<gtk::gdk_pixbuf::Pixbuf> {
+    let (_, x, y) = ui.window.window().context("window")?.origin();
+    let a = ui.window.allocation();
+    gdk::Screen::default()
+        .context("screen")?
+        .root_window()
+        .context("root")?
+        .pixbuf(x, y, a.width(), a.height())
+        .context("composed root capture")
+}
+fn screen_pixel(image: &gtk::gdk_pixbuf::Pixbuf, x: i32, y: i32) -> [u8; 3] {
+    let bytes = image.read_pixel_bytes();
+    let offset = (y * image.rowstride() + x * image.n_channels()) as usize;
+    [bytes[offset], bytes[offset + 1], bytes[offset + 2]]
+}
+fn overlay_check(ui: &Ui, state: &str, surface: &str) -> Result<()> {
+    let selector = if surface == "forest" {
+        ".forest-pop"
+    } else {
+        ".palette-box"
+    };
+    let (x, y, w, h) = rect(ui, selector)?;
+    anyhow::ensure!(
+        x >= 0. && y >= 0. && w > 40. && h > 32.,
+        "{state} {surface} must be open: {x},{y},{w},{h}"
+    );
+    let image = screen(ui)?;
+    if let Ok(dir) = std::env::var("OVERLAY_SHOTS") {
+        std::fs::create_dir_all(&dir)?;
+        image.savev(format!("{dir}/{state}-{surface}.png"), "png", &[])?;
+    }
+    let pop = screen_pixel(&image, (x + w - 20.) as i32, (y + h - 16.) as i32);
+    let dim = screen_pixel(&image, 5, image.height() / 2);
+    let chrome = ui.chrome.native().window().unwrap();
+    for (i, window) in chrome.parent().unwrap().children().iter().enumerate() {
+        println!(
+            "STACK {state} {i} chrome={} native={} visible={}",
+            *window == chrome,
+            window.has_native(),
+            window.is_visible()
+        );
+    }
+    println!("PIXELS {state} {surface} pop={pop:?} dim={dim:?}");
+    anyhow::ensure!(
+        pop.iter().max().unwrap() - pop.iter().min().unwrap() < 30 && pop[1] < 100,
+        "{state} {surface}: composed pop-in is covered: {pop:?}"
+    );
+    if state != "new-tree" {
+        anyhow::ensure!(
+            dim[1] > dim[0] + 10 && dim[1] > dim[2] + 10 && dim[1] < 160,
+            "{state} {surface}: dimming must preserve the green page: {dim:?}"
+        );
+    } else {
+        // HOME is neutral #0f0f0f; its scrim must transmit that surface, too.
+        anyhow::ensure!(
+            dim.iter().all(|c| *c > 0 && *c < 15),
+            "new-tree {surface}: dimming must transmit HOME rather than opaque black: {dim:?}"
+        );
+    }
+    Ok(())
+}
+fn overlays(u: &U, state: &str) -> Result<()> {
+    for (keyname, surface) in [("ctrl+e", "forest"), ("ctrl+k", "palette")] {
+        key(keyname)?;
+        wait("overlay allocated", || {
+            rect(
+                &u.ui,
+                if surface == "forest" {
+                    ".forest-pop"
+                } else {
+                    ".palette-box"
+                },
+            )
+            .is_ok_and(|(_, y, w, h)| y >= 0. && w > 40. && h > 40.)
+        })?;
+        pump(150);
+        overlay_check(&u.ui, state, surface)?;
+        key("Escape")?;
+        pump(100);
+    }
+    println!("PASS overlay {state}");
+    Ok(())
+}
+fn overlay_pixels() -> Result<()> {
+    let u = U::new()?;
+    let a = u.nav("/colour/b")?;
+    pump(1200);
+    overlays(&u, "first")?;
+    let b = u.root("/colour/b-second")?;
+    pump(1200);
+    overlays(&u, "second")?;
+    u.ui.pages.go(Go::Visit(a))?;
+    anyhow::ensure!(u.arrives(a, 6000), "live return");
+    overlays(&u, "live")?;
+    u.ui.pages.inject_memory_sample(Some(u64::MAX));
+    wait("checkpoint", || !u.ui.pages.live_visits().contains(&b))?;
+    u.ui.pages.go(Go::Visit(b))?;
+    anyhow::ensure!(u.arrives(b, 6000), "checkpoint return");
+    pump(1200);
+    overlays(&u, "revived")?;
+    // A middle click loads a hidden branch before adoption.
+    eval(
+        &u.ui,
+        "document.querySelector('#fork').href='/colour/b-background';JSON.stringify(true)",
+    )?;
+    let (x, y) = page_point(&u.ui, 12, 102)?;
+    move_to(x, y)?;
+    xdo(&["click", "2"])?;
+    pump(1200);
+    key("ctrl+e")?;
+    pump(250);
+    let pending = chrome(
+        &u.ui,
+        "document.querySelector('.forest-node.pending')?.dataset.id",
+    )?;
+    key("Escape")?;
+    if let Some(id) = pending.as_str() {
+        u.ui.pages.go(Go::Visit(id.parse()?))?;
+        pump(1200);
+        overlays(&u, "background")?;
+    } else {
+        bail!("middle click must create a background page");
+    }
+    for (keyname, surface) in [("ctrl+e", "forest"), ("ctrl+k", "palette")] {
+        key(keyname)?;
+        pump(250);
+        let sample = Rc::new(std::cell::RefCell::new(None));
+        let recorded = sample.clone();
+        let ui = u.ui.clone();
+        u.ui.pages.observe_release(move |event| {
+            if event.phase == canopy::pages::ReleasePhase::Holding {
+                *recorded.borrow_mut() = Some(overlay_check(&ui, "holding", surface));
+            }
+        });
+        u.ui.pages
+            .open_roots(&[u.server.url("/colour/overlay-hold")])?;
+        wait("overlay hold sampled", || sample.borrow().is_some())?;
+        sample.borrow_mut().take().unwrap()?;
+        pump(1200);
+        if !visible(
+            &u.ui,
+            if surface == "forest" {
+                "#forest"
+            } else {
+                "#palette"
+            },
+        ) {
+            key(keyname)?;
+        }
+        pump(250);
+        overlay_check(&u.ui, "after-hold", surface)?;
+        key("Escape")?;
+    }
+    u.ui.window.resize(1000, 740);
+    pump(400);
+    overlays(&u, "resized")?;
+    key("ctrl+w")?;
+    pump(1200);
+    overlays(&u, "closed")?;
+    key("ctrl+t")?;
+    pump(400);
+    overlays(&u, "new-tree")?;
+    Ok(())
+}
+
 fn forest_click_survives_frame() -> Result<()> {
     let u = U::new()?;
     let a = u.root("/a")?;
@@ -1205,6 +1373,7 @@ fn main() -> Result<()> {
         .collect();
     type Case = (&'static str, fn() -> Result<()>);
     let cases: &[Case] = &[
+        ("overlay", overlay_pixels),
         ("first_address", first_address_survives_initial_home),
         ("inactive_focus", page_focus_survives_inactive_switch),
         ("picture", live_returns_paint_without_hold),

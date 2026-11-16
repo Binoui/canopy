@@ -238,8 +238,18 @@ history entries; SQLite supplies the checkpoint's current entry. Forms and scrip
 are lost when a branch is released. Shared PageContext services survive source-view
 destruction. Continuation cancellation checks the owning view's ticket.
 
-Live presence has no marker in the strip or forest. Background loading of queued
-pages remains outside this page registry.
+Hidden seen pages expose their current Document visit as a live set in the existing
+chrome frame. Building it scans hidden handles once (O(hidden pages), no database
+queries). Only that current visit gets a filled grey bottom-left dot (green is kept
+for pages not read yet, whose top-right dot is larger);
+selected pages, native back entries and dormant checkpoints do not. The strip,
+forest, tree sheet tree/list and tabs share the mark; a tab uses its tree's last
+visit. Preview metadata, node tooltips and tree list details say “Open in memory”.
+Never-seen pages keep their separate top-right waiting dot. Absolute positioning
+preserves node geometry. Hold completion, pressure removal and hidden process death
+notify Changed; candidate history routing and cancellation also notify when a page
+leaves or rejoins the hidden registry. Selection, hidden navigation and settling use
+existing refreshes.
 
 ### Switch cancellation and page Back
 
@@ -296,12 +306,24 @@ Adding, removing, showing or hiding page views never changes chrome allocation;
 its persistent size request still matches the window width and cover height. These
 independent allocations let the same GtkFixed preserve both rules.
 
+The Fixed is a CanopyPageStack subclass. GtkFixed draws its private insertion
+list even when GDK child windows have been raised into a different order. A
+view realized after chrome therefore used to cover an opened forest or palette
+while clicks still reached chrome. PageStack uses GtkContainer’s standard draw
+propagation and orders its traversal: ordinary pages, the held outgoing page,
+then chrome. Chrome explicitly allocates its bounds because wry’s exact-type
+GtkFixed check skips subclasses. Pages::place_view supplies those roles and applies the same order
+to GDK windows. No widget is reparented or unrealized, and no page image is painted.
+The composed root-window pixel case in branch_widget_smoke checks both the opaque
+pop-ins and page colour transmitted through their scrims; widget snapshots do
+not test this composition.
+
 Nothing but a real page view may cover a page. Canopy never paints an image
 over a page or draws into its window. Pages::select_candidate switches bookkeeping,
 events, focus and sign-in ownership at commit. Pages::hold_page maps the incoming
 view in the same rectangle beneath the outgoing view and below chrome. The
-outgoing window is promoted to a native GDK window, so GtkFixed draw order cannot
-paint the incoming view over it. A returning view can already have a native window. The outgoing
+outgoing window remains non-native; PageStack’s traversal draws the real outgoing
+widget after the incoming widget and before chrome. The outgoing
 window passes pointer input through; the event filter rejects nonselected input.
 The commit transfers logical GTK page focus even when the host window is inactive,
 without activating that window; global input focus alone cannot identify its focus owner.
