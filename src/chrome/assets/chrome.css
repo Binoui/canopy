@@ -391,6 +391,18 @@ body[data-overlay="tree"] #pins .pin:not(.on) { visibility: hidden; }
 .forest-divider { position: absolute; left: 34px; white-space: nowrap; display: flex; gap: 12px; align-items: baseline; color: var(--muted); font-size: 12px; }
 .forest-divider b { font-weight: 500; }
 
+#form-return { position: absolute; inset: 94px 0 0; z-index: 100; }
+.form-return-box {
+  position: absolute; left: 50%; top: 30%; transform: translate(-50%, -50%);
+  width: 470px; max-width: calc(100% - 40px); padding: 20px;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 13px;
+  box-shadow: 0 10px 30px var(--shadow);
+}
+.form-return-box h2 { margin: 0 0 12px; font-size: 18px; }
+.form-return-box p { line-height: 1.5; }
+.form-return-box > div { display: flex; justify-content: flex-end; gap: 12px; }
+.form-return-box button { padding: 8px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--tile); }
+
 /* Grey means the page is still in memory. Green stays for pages not read yet. */
 .live-dot { position: absolute; left: -2px; bottom: -2px; width: 8px; height: 8px; border-radius: 50%; background: var(--memory); box-shadow: 0 0 0 1.5px var(--chrome); pointer-events: none; }
 .mk .live-dot { left: -3px; bottom: -3px; }

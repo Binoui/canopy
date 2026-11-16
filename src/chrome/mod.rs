@@ -97,6 +97,10 @@ pub enum PaletteSeed {
 /// What the chrome asks the browser to do.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChromeIntent {
+    AnswerFormReturn {
+        question: u64,
+        proceed: bool,
+    },
     SelectTree(TreeId),
     SettleTree(TreeId),
     SettleCurrent,
@@ -316,6 +320,13 @@ impl HtmlChrome {
         forest.current().and_then(|id| forest.tree_of(id))
     }
 
+    pub fn form_return(&self, open: Option<u64>) {
+        self.inner.call("formReturn", &[json!(open)]);
+        if open.is_some() {
+            let _ = self.inner.view.focus();
+        }
+    }
+
     pub fn settle_current(&self) {
         self.inner.call("settleCurrent", &[]);
     }
@@ -511,6 +522,16 @@ impl Inner {
                     }
                 } else {
                     self.view.focus()?;
+                }
+            }
+            "form-return" => {
+                if let Some(host) = self.host() {
+                    if let Some(question) = message["question"].as_u64() {
+                        host.dispatch(ChromeIntent::AnswerFormReturn {
+                            question,
+                            proceed: message["proceed"].as_bool().unwrap_or(false),
+                        });
+                    }
                 }
             }
             "intent" => {

@@ -113,6 +113,13 @@ impl Ui {
             }
         });
         let weak = Rc::downgrade(&ui);
+        ui.window.connect_delete_event(move |_, _| {
+            if let Some(ui) = weak.upgrade() {
+                ui.pages.answer_form_return(false);
+            }
+            glib::Propagation::Proceed
+        });
+        let weak = Rc::downgrade(&ui);
         scroller.connect_size_allocate(move |_, allocation| {
             if let Some(ui) = weak.upgrade() {
                 let (width, height) = (
@@ -129,6 +136,7 @@ impl Ui {
             let Some(ui) = weak.upgrade() else { return };
             ui.chrome.raise();
             match event {
+                PageEvent::FormReturn(open) => ui.chrome.form_return(open),
                 PageEvent::Selected => ui.refresh(),
                 PageEvent::Changed | PageEvent::Loading(false) => ui.schedule_refresh(),
                 PageEvent::Loading(true) => {}
@@ -328,6 +336,7 @@ impl Ui {
     }
 
     fn open_palette(&self, seed: PaletteSeed) {
+        self.pages.answer_form_return(false);
         let current = self.snapshot().ok().and_then(|s| s.current);
         let scope = current.map_or(PaletteScope::NewTree, PaletteScope::From);
         self.chrome.open_palette(scope, seed);
@@ -349,6 +358,17 @@ impl Ui {
         let Some(shortcut) = Shortcut::of(event) else {
             return glib::Propagation::Proceed;
         };
+        if !matches!(shortcut, Shortcut::Escape) && self.pages.has_form_return() {
+            self.pages.answer_form_return(false);
+            let weak = self.me.clone();
+            let event = event.clone();
+            self.pages.after_form_return_cancel(move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.shortcut(&event);
+                }
+            });
+            return glib::Propagation::Stop;
+        }
         self.pages.cancel_path_continuation();
         match shortcut {
             Shortcut::Palette(seed) => self.open_palette(seed),
@@ -506,8 +526,19 @@ impl ChromeHost for Ui {
 
     fn dispatch(&self, intent: ChromeIntent) {
         let Some(ui) = self.me.upgrade() else { return };
+        if let ChromeIntent::AnswerFormReturn { question, proceed } = intent {
+            self.pages.answer_form_return_for(question, proceed);
+            return;
+        }
+        if self.pages.has_form_return() {
+            self.pages.answer_form_return(false);
+            self.pages
+                .after_form_return_cancel(move || ui.dispatch(intent));
+            return;
+        }
         self.pages.cancel_continuation();
         let result = match intent {
+            ChromeIntent::AnswerFormReturn { .. } => unreachable!(),
             ChromeIntent::CancelContinuation => Ok(()),
             ChromeIntent::OpenPath { first, second } => self.pages.open_path(first, second),
             ChromeIntent::Bookmark { url, title } => {
