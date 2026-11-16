@@ -160,7 +160,8 @@ exist, never with only one live page. Sample starts are at least two seconds apa
 requests during that interval collapse into one trailing sample. GTK uses the fresh complete result to drop the
 least recently shown hidden page. It reads is_playing_audio at that decision. The
 selected page, candidate, held outgoing page, every audible page and any page
-waiting for WebKit to hand over a download are excluded. After handover the transfer
+waiting for WebKit to hand over a download are excluded. A load awaiting its main
+response is also protected until policy can distinguish a document from a download. After handover the transfer
 survives destruction of its source view.
 One budget drop is checkpointed and destroyed at a time across all windows; a
 shared permit remains held through the teardown grace. Samples started before a drop are

@@ -12,8 +12,8 @@ use webkit2gtk::{
     BackForwardListExt, BackForwardListItem, BackForwardListItemExt, LoadEvent,
     NavigationPolicyDecision, NavigationPolicyDecisionExt, NavigationType, NetworkError,
     PolicyDecision, PolicyDecisionExt, PolicyDecisionType, PolicyError, ResponsePolicyDecision,
-    ResponsePolicyDecisionExt, URIRequestExt, UserContentInjectedFrames, UserContentManagerExt,
-    UserScript, UserScriptInjectionTime, WebViewExt,
+    ResponsePolicyDecisionExt, URIRequestExt, URIResponseExt, UserContentInjectedFrames,
+    UserContentManagerExt, UserScript, UserScriptInjectionTime, WebViewExt,
 };
 #[path = "login_fields.rs"]
 mod login_fields;
@@ -140,6 +140,7 @@ struct NativeState {
     /// load as failed before it reports the download, and the navigation is forgotten then.
     response_page: RefCell<Option<(LoadTicket, Url, Option<VisitId>)>>,
     download_handover: Cell<Option<LoadTicket>>,
+    awaiting_response: Cell<bool>,
     reload_candidate: RefCell<Option<Url>>,
     main_frame_post: Cell<Option<(LoadTicket, bool)>>,
     #[cfg(feature = "gui-smoke")]
@@ -266,7 +267,7 @@ impl LivePage {
     }
 
     pub(super) fn awaiting_download(&self) -> bool {
-        self.state.download_handover.get().is_some()
+        self.state.awaiting_response.get() || self.state.download_handover.get().is_some()
     }
 
     pub(super) fn requires_get(&self, visit: VisitId) -> bool {
@@ -456,6 +457,7 @@ impl LivePage {
             pending_scroll: Cell::new(None),
             response_page: RefCell::new(None),
             download_handover: Cell::new(None),
+            awaiting_response: Cell::new(false),
             reload_candidate: RefCell::new(None),
             main_frame_post: Cell::new(None),
             #[cfg(feature = "gui-smoke")]
@@ -582,6 +584,7 @@ impl LivePage {
                                 state.foreground_requested();
                             }
                             state.end_response();
+                            state.awaiting_response.set(!bootstrap);
                             state.main_frame_post.set(None);
                             if matches!(*state.issue.borrow(), Issue::Issued { decided: false, .. })
                             {
@@ -1382,6 +1385,7 @@ impl NativeState {
     fn end_response(&self) {
         self.main_frame_post.set(None);
         self.download_handover.set(None);
+        self.awaiting_response.set(false);
         self.response_page.borrow_mut().take();
     }
 
@@ -1505,6 +1509,7 @@ impl NativeState {
     fn load(self: &Rc<Self>, url: Url) {
         self.foreground_requested();
         self.end_response();
+        self.awaiting_response.set(true);
         // Every caller registers its intent first; an address with no attempt has no visit to
         // commit to.
         let Some(requested) = self.navigation.borrow().pending_ticket() else {
@@ -1682,6 +1687,7 @@ impl NativeState {
             };
             let main = response.is_main_frame_main_resource();
             if main {
+                self.awaiting_response.set(false);
                 let url = response
                     .request()
                     .and_then(|request| request.uri())
@@ -1698,7 +1704,12 @@ impl NativeState {
                     noted.and_then(|(ticket, url, page)| ticket.map(|ticket| (ticket, url, page))),
                 );
             }
-            if response.is_mime_type_supported() {
+            let attachment = response
+                .response()
+                .and_then(|r| r.http_headers())
+                .and_then(|headers| headers.content_disposition())
+                .is_some_and(|(disposition, _)| disposition.eq_ignore_ascii_case("attachment"));
+            if response.is_mime_type_supported() && !attachment {
                 return false;
             }
             if main {

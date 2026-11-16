@@ -50,6 +50,7 @@ impl Fixture {
                         return;
                     }
                     if path == "/attachment" {
+                        thread::sleep(std::time::Duration::from_millis(700));
                         let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=hidden.txt\r\nContent-Length: 4\r\nConnection: close\r\n\r\nfile");
                         return;
                     }
@@ -625,6 +626,12 @@ fn hidden_download_uses_its_source_visit() -> Result<()> {
     let view = f.ui.pages.selected_page().native.clone();
     f.root("/visible")?;
     eval_native(&view, "location.href='/attachment';JSON.stringify(true)")?;
+    common::pump(100);
+    f.ui.pages.inject_memory_sample(Some(u64::MAX));
+    assert!(
+        f.ui.pages.live_visits().contains(&source),
+        "an unclassified response may become a download and must keep its source"
+    );
     common::wait("hidden download recorded", || {
         f.ui.downloads().is_ok_and(|d| !d.is_empty())
     })?;
