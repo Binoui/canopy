@@ -2,6 +2,7 @@ use std::{
     cell::{Cell, RefCell},
     rc::{Rc, Weak},
 };
+use webkit2gtk::AuthenticationRequestExt;
 
 use anyhow::{bail, Context, Result};
 use gtk::prelude::*;
@@ -117,6 +118,7 @@ struct NativeState {
     pages: Weak<Pages>,
     navigation: RefCell<Navigation>,
     never_seen: Cell<Option<VisitId>>,
+    adopted: Cell<bool>,
     download_origin: Option<VisitId>,
     issue: RefCell<Issue>,
     load_generation: Cell<u64>,
@@ -191,7 +193,16 @@ impl Drop for LivePage {
 
 impl LivePage {
     pub(super) fn never_seen(&self) -> Option<VisitId> {
-        self.state.never_seen.get()
+        self.state
+            .background_visit()
+            .filter(|_| !self.state.adopted.get())
+    }
+    pub(super) fn background_visit(&self) -> Option<VisitId> {
+        self.state.background_visit()
+    }
+    pub(super) fn adopt(&self) {
+        self.state.adopted.set(true);
+        self.native.set_is_muted(false);
     }
     pub(super) fn background(&self, visit: VisitId) -> Result<()> {
         self.state.never_seen.set(Some(visit));
@@ -449,6 +460,7 @@ impl LivePage {
             lifecycle: Cell::new(Lifecycle::Live),
             pages: pages.clone(),
             never_seen: Cell::new(None),
+            adopted: Cell::new(false),
             download_origin: pages.upgrade().and_then(|owner| {
                 owner
                     .branches
@@ -543,7 +555,7 @@ impl LivePage {
                     if let Some(state) = weak.upgrade() {
                         let owner = state.owner();
                         let view = state.navigation.borrow().view_id();
-                        if state.never_seen.get().is_some() {
+                        if state.is_background() {
                             state.emit(PageEvent::Error(String::new()));
                             return;
                         }
@@ -560,6 +572,22 @@ impl LivePage {
                             }
                         }
                     }
+                }),
+            ));
+        }
+        {
+            let weak = Rc::downgrade(&state);
+            signals.push((
+                native.clone().upcast(),
+                native.connect_authenticate(move |_, request| {
+                    if let Some(state) = Pages::enter_native(&weak) {
+                        if state.is_background() {
+                            request.cancel();
+                            state.emit(PageEvent::Error(String::new()));
+                            return true;
+                        }
+                    }
+                    false
                 }),
             ));
         }
@@ -746,7 +774,12 @@ impl LivePage {
                     if ticket.is_none() || ticket != state.navigation.borrow().pending_ticket() {
                         return true;
                     }
-                    if state.never_seen.get().is_some() {
+                    if state.is_background() {
+                        if error.matches(NetworkError::Cancelled)
+                            && state.navigation.borrow().current.is_some()
+                        {
+                            return true;
+                        }
                         state.emit(PageEvent::Error(String::new()));
                         return true;
                     }
@@ -942,7 +975,7 @@ impl LivePage {
         let favicon = context.register_view(&native, move |source| {
             Pages::enter_native(&weak)
                 .map(|state| {
-                    if state.never_seen.get().is_some() {
+                    if state.is_background() {
                         state.emit(PageEvent::Error(String::new()));
                         return Err(anyhow::anyhow!("Never-seen page download refused"));
                     }
@@ -1382,6 +1415,14 @@ impl NativeState {
         }
     }
 
+    fn background_visit(&self) -> Option<VisitId> {
+        self.never_seen.get()
+    }
+
+    fn is_background(&self) -> bool {
+        self.never_seen.get().is_some() && !self.adopted.get()
+    }
+
     fn start_attempt(&self, url: Url) {
         let mut navigation = self.navigation.borrow_mut();
         if matches!(*self.issue.borrow(), Issue::Issued { decided: false, .. }) {
@@ -1739,7 +1780,7 @@ impl NativeState {
                 );
             }
             if main
-                && self.never_seen.get().is_some()
+                && self.is_background()
                 && response
                     .response()
                     .is_some_and(|r| matches!(r.status_code(), 204 | 205))
@@ -1757,7 +1798,7 @@ impl NativeState {
             if response.is_mime_type_supported() && !attachment {
                 return false;
             }
-            if self.never_seen.get().is_some() {
+            if self.is_background() {
                 decision.ignore();
                 self.emit(PageEvent::Error(String::new()));
                 return true;
@@ -2072,7 +2113,7 @@ impl NativeState {
                 self.navigation.borrow_mut().publish(visit, stored.url);
             }
         }
-        if self.never_seen.get().is_some() {
+        if self.is_background() {
             let result = self
                 .owner()
                 .browser

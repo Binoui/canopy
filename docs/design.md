@@ -296,9 +296,15 @@ that fresh native view has no forward history.
 A middle-click queues the visit as before, then Pages admits that session's queued
 visit to `Branches::background`, a registry separate from hidden seen pages and
 from the switch candidate. `Branches::queued` is a newest-first pending stack;
-three loads at most run across windows, counting an adopted never-seen candidate.
+three loads at most run across windows, from start until first commit. Adopted
+pages and committed documents still fetching resources hold no slot. A load with
+no document after 20 seconds is silently destroyed without retry.
 A weak window registry dispatches the newest eligible pending visit globally. Admission needs
-a complete memory sample within budget, including when only one page is live.
+a first complete memory sample. Admission requires that sample plus 256 MiB
+for each background start since sampling began, including the proposed start,
+fit the budget. Queuing and background commits request a sample, limited to once
+per two seconds. Waiting links remain unloaded and are reconsidered newest first
+on each sample; admission never drops another page to make room.
 The latest over-budget sample blocks admission. Pending work survives switches;
 startup does not enroll waiting visits from earlier sessions. Failed and dropped
 views are removed without retry.
@@ -306,7 +312,9 @@ views are removed without retry.
 A never-seen view is muted before loading and uses the same hidden-page refusals
 for dialogs, permission, fullscreen, print, file pickers, focus and login offers.
 Downloads are refused both at response policy and the context download callback;
-204/205, failures and cancellations destroy the view silently. Its queued visit is
+204/205 and failures without a document destroy the view silently. Basic-auth
+challenges are immediately cancelled. A self-replacing navigation or window.stop()
+cancellation preserves an already committed document. Its queued visit is
 pinned through script navigation and redirects. Hidden commits update its URL,
 title and favicon while preserving NULL opened_at, selection, last visit and the
 arrival log. The existing coalesced chrome refresh reads committed background
@@ -315,7 +323,11 @@ visits into ChromeFrame::loaded; destruction clears the mark without losing meta
 Opening a committed background page selects and shows the same view immediately,
 records its first opening and arrival, unmutes it and stamps last shown. Opening
 before commit transfers the same view to the candidate slot and uses the ordinary
-commit hold. Cancelling that switch returns it to the background registry. A cold
+commit hold. Adoption immediately ends background-only refusals: downloads are
+saved and recorded, 204/205 follow the cold-open path, and load and certificate
+errors are reported. It also unmutes the view; opened_at, current visit, tree last
+visit and arrival remain tied to first showing. Cancelling that switch preserves
+the request in the background registry. A cold
 queued visit retains the existing loading path.
 
 Pressure destroys never-seen views without checkpoints before dropping any seen

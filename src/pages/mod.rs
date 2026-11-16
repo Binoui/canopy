@@ -207,9 +207,14 @@ struct Hold {
     cap: Option<glib::SourceId>,
 }
 
+const BACKGROUND_PAGE_RESERVE: u64 = 256 * 1024 * 1024;
+
 thread_local! {
     static BACKGROUND_WINDOWS: RefCell<Vec<Weak<Pages>>> = const { RefCell::new(Vec::new()) };
     static SCHEDULING_BACKGROUND: Cell<bool> = const { Cell::new(false) };
+    static SAMPLE_STARTS: Cell<u64> = const { Cell::new(0) };
+    static BACKGROUND_STARTS: Cell<u64> = const { Cell::new(0) };
+    static BACKGROUND_TIMEOUT: Cell<std::time::Duration> = const { Cell::new(std::time::Duration::from_secs(20)) };
     static QUEUE_CLOCK: Cell<u64> = const { Cell::new(0) };
     static LATEST_MEMORY_SAMPLE: Cell<Option<u64>> = const { Cell::new(None) };
 }
@@ -545,7 +550,7 @@ impl Pages {
         self.end_hold();
         let page = self.branches.candidate.borrow_mut().take();
         if let Some(page) = page {
-            if page.never_seen().is_some() {
+            if page.background_visit().is_some() {
                 let stamp = page.last_shown.get();
                 self.branches.background.borrow_mut().push(Hidden {
                     page,
@@ -678,9 +683,10 @@ impl Pages {
             .background
             .borrow()
             .iter()
-            .position(|h| h.page.never_seen() == Some(visit));
+            .position(|h| h.page.background_visit() == Some(visit));
         if let Some(index) = background {
             let hidden = self.branches.background.borrow_mut().remove(index);
+            hidden.page.adopt();
             if hidden.page.current_visit().is_some() {
                 hidden.page.select()?;
                 self.promote_live(hidden.page);
@@ -688,6 +694,7 @@ impl Pages {
             } else {
                 *self.branches.candidate.borrow_mut() = Some(hidden.page);
             }
+            self.start_background();
             return Ok(());
         }
         let selected = self
@@ -959,7 +966,7 @@ impl Pages {
             .background
             .borrow()
             .iter()
-            .find(|h| h.page.never_seen() == Some(visit))
+            .find(|h| h.page.background_visit() == Some(visit))
             .map(|h| h.page.native.clone())
     }
 
@@ -1014,16 +1021,10 @@ impl Pages {
                         .background
                         .borrow()
                         .iter()
-                        .filter(|h| h.page.pending_ticket().is_some() || h.page.native.is_loading())
+                        .filter(|h| {
+                            h.page.never_seen().is_some() && h.page.current_visit().is_none()
+                        })
                         .count()
-                        + usize::from(
-                            window
-                                .branches
-                                .candidate
-                                .borrow()
-                                .as_ref()
-                                .is_some_and(|p| p.never_seen().is_some()),
-                        )
                 })
                 .sum();
             if running >= 3 {
@@ -1036,7 +1037,16 @@ impl Pages {
                         && !window.cooling.get()
                         && LATEST_MEMORY_SAMPLE
                             .with(|sample| sample.get())
-                            .is_some_and(|used| used <= window.budget.bytes())
+                            .is_some_and(|used| {
+                                let reserve = BACKGROUND_STARTS
+                                    .with(|n| {
+                                        n.get()
+                                            .saturating_sub(SAMPLE_STARTS.with(Cell::get))
+                                            .saturating_add(1)
+                                    })
+                                    .saturating_mul(BACKGROUND_PAGE_RESERVE);
+                                used.saturating_add(reserve) <= window.budget.bytes()
+                            })
                 })
                 .filter_map(|window| {
                     window
@@ -1059,6 +1069,22 @@ impl Pages {
             window.branches.background.borrow_mut().push(Hidden {
                 page: page.clone(),
                 last_shown: stamp,
+            });
+            BACKGROUND_STARTS.with(|n| n.set(n.get() + 1));
+            let weak = window.me.clone();
+            let view = page.view();
+            glib::timeout_add_local_once(BACKGROUND_TIMEOUT.with(Cell::get), move || {
+                if let Some(window) = weak.upgrade() {
+                    let expired = window.branches.background.borrow().iter().any(|h| {
+                        h.page.view() == view
+                            && h.page.never_seen().is_some()
+                            && h.page.current_visit().is_none()
+                    });
+                    if expired {
+                        window.drop_background(view);
+                        window.start_background();
+                    }
+                }
             });
             if page.background(visit).is_err() {
                 window.drop_background(page.view());
@@ -1109,6 +1135,7 @@ impl Pages {
         }
         self.sample_started.set(Some(std::time::Instant::now()));
         self.sampling.set(true);
+        let starts = BACKGROUND_STARTS.with(Cell::get);
         let epoch = self.memory_epoch.get();
         let global_epoch = MEMORY_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
         let (send, receive) = std::sync::mpsc::channel();
@@ -1133,15 +1160,21 @@ impl Pages {
                 && MEMORY_EPOCH.load(std::sync::atomic::Ordering::Relaxed) == global_epoch
             {
                 if let Ok(used) = sample {
-                    pages.apply_sample(used);
+                    pages.apply_sample_since(used, starts);
                 }
             }
             glib::ControlFlow::Break
         });
     }
 
+    #[cfg(feature = "gui-smoke")]
     fn apply_sample(&self, used: u64) {
+        self.apply_sample_since(used, BACKGROUND_STARTS.with(Cell::get));
+    }
+
+    fn apply_sample_since(&self, used: u64, starts: u64) {
         LATEST_MEMORY_SAMPLE.with(|sample| sample.set(Some(used)));
+        SAMPLE_STARTS.with(|n| n.set(starts));
         if self.busy() || self.cooling.get() {
             return;
         }
@@ -1280,7 +1313,10 @@ impl Pages {
             } else if matches!(event, PageEvent::Changed) {
                 self.receive(PageEvent::Changed);
             }
-            if matches!(event, PageEvent::Loading(false) | PageEvent::Error(_)) {
+            if matches!(
+                event,
+                PageEvent::Changed | PageEvent::Loading(false) | PageEvent::Error(_)
+            ) {
                 self.start_background();
                 self.sample_memory();
             }
@@ -1566,7 +1602,7 @@ impl Pages {
         let candidate = self.branches.candidate.borrow().clone();
         if candidate
             .as_ref()
-            .and_then(|p| p.never_seen())
+            .and_then(|p| p.background_visit())
             .is_some_and(|v| forest.tree_of(v) == Some(tree))
         {
             if let Some(page) = self.branches.candidate.borrow_mut().take() {
@@ -1584,7 +1620,7 @@ impl Pages {
             .iter()
             .filter(|h| {
                 h.page
-                    .never_seen()
+                    .background_visit()
                     .is_some_and(|v| forest.tree_of(v) == Some(tree))
             })
             .map(|h| h.page.view())
@@ -1883,6 +1919,18 @@ impl Pages {
                 .filter_map(|h| h.outgoing.current_visit()),
         );
         visits
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn inject_recent_memory_sample(&self, used: u64) {
+        self.memory_epoch.set(self.memory_epoch.get() + 1);
+        self.sample_started.set(Some(std::time::Instant::now()));
+        self.apply_sample(used);
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn set_background_timeout(&self, timeout: std::time::Duration) {
+        BACKGROUND_TIMEOUT.with(|limit| limit.set(timeout));
     }
 
     #[cfg(feature = "gui-smoke")]
