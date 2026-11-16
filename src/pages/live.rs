@@ -775,9 +775,7 @@ impl LivePage {
                         return true;
                     }
                     if state.is_background() {
-                        if error.matches(NetworkError::Cancelled)
-                            && state.navigation.borrow().current.is_some()
-                        {
+                        if state.navigation.borrow().current.is_some() {
                             return true;
                         }
                         state.emit(PageEvent::Error(String::new()));
