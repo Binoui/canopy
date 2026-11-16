@@ -1555,7 +1555,7 @@ window.canopy = {
   /// calls held back while a button is down.
   state() {
     return {
-      start: S.frame?.start, deferred: [...refresh.pending.keys()],
+      buttons: refresh.buttons, start: S.frame?.start, deferred: [...refresh.pending.keys()],
       surface: S.surface, overlay: S.overlay, treeSide: S.treeSide, open: S.open, animating: !!strip.anim, card: S.card, layer: S.layer, palette: !!S.palette,
       reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported, logins: loginNames(), save: S.save, locked: S.locked,
       dark: document.documentElement.classList.contains('dark'),

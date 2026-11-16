@@ -202,6 +202,9 @@ fn main() -> Result<()> {
     let (x, y) = chrome_point(&ui, &format!(".pinned-card[data-id='{root}']"))?;
     move_to(x, y)?;
     xdo(&["mousedown", "1"])?;
+    wait("chrome received the held card press", || {
+        chrome(&ui, "canopy.state().buttons").is_ok_and(|buttons| buttons == 1)
+    })?;
     ui.dispatch(ChromeIntent::RenameTree(tree(&ui, other), "Held".into()));
     wait("a refresh while the button is down", || {
         chrome(&ui, "canopy.state().deferred.includes('present')").is_ok_and(|held| held == true)
