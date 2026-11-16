@@ -201,7 +201,8 @@ destruction. Continuation cancellation checks the owning view's ticket.
 
 Hidden seen pages expose their current Document visit as a live set in the existing
 chrome frame. Building it scans hidden handles once (O(hidden pages), no database
-queries). Only that current visit gets a filled accent-green bottom-left dot;
+queries). Only that current visit gets a filled grey bottom-left dot (green is kept
+for pages not read yet, whose top-right dot is larger);
 selected pages, native back entries and dormant checkpoints do not. The strip,
 forest, tree sheet tree/list and tabs share the mark; a tab uses its tree's last
 visit. Preview metadata, node tooltips and tree list details say “Open in memory”.

@@ -459,7 +459,7 @@ function drawStrip() {
     const dot = strip.dots.get(id);
     if (dot) {
       const raw = el.classList.contains('raw');
-      const size = raw ? 5 : 7, inset = raw ? 2 : 3;
+      const size = raw ? 6 : 9, inset = raw ? 2 : 4;
       dot.style.width = dot.style.height = `${size}px`;
       dot.style.left = `${r.x + r.w / 2 + inset - size}px`;
       dot.style.top = `${r.y - r.s / 2 - inset}px`;

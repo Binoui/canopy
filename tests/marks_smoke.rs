@@ -263,7 +263,12 @@ fn marks_share_surfaces_without_moving_nodes() -> Result<()> {
         before,
         "dot cannot move or resize a node"
     );
-    common::chrome(&f.ui, "(canopy.present(S.frame),true)")?;
+    // The strip keeps a node whose markup is unchanged, so forget the edited markup first.
+    common::chrome(
+        &f.ui,
+        &format!("(delete document.querySelector(\"{selector}\").dataset.html,canopy.present(S.frame),true)"),
+    )?;
+    common::wait("root marked again", || strip_marked(&f, root))?;
     for theme in ["dark", "light"] {
         common::chrome(
             &f.ui,
