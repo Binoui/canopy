@@ -543,7 +543,7 @@ fn geometry(u: &U) -> Result<()> {
     wait("chrome responds immediately", || visible(&u.ui, "#palette"))?;
     key("Escape")?;
     if let Some(original) = u.cursor() {
-        eval(&u.ui, "scrollTo(0,0);document.getElementById('fork').style.cssText='display:block;margin-top:150px;height:60px';JSON.stringify(true)")?;
+        eval(&u.ui, "scrollTo(0,0);document.getElementById('fork').href='/d';document.getElementById('fork').style.cssText='display:block;margin-top:150px;height:60px';JSON.stringify(true)")?;
         eval(&u.ui, "window.name='[]';window.__placementEvents=[];for(const kind of ['resize','pointerdown'])addEventListener(kind,e=>{__placementEvents.push({kind,t:performance.now(),w:innerWidth,h:innerHeight,x:e.clientX,y:e.clientY,target:e.target?.id});window.name=JSON.stringify(__placementEvents)},true);JSON.stringify(true)")?;
         let click_at = clock.elapsed().as_millis();
         u.page_click("fork", "1")?;
