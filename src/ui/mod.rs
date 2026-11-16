@@ -129,6 +129,7 @@ impl Ui {
             let Some(ui) = weak.upgrade() else { return };
             ui.chrome.raise();
             match event {
+                PageEvent::Selected => ui.refresh(),
                 PageEvent::Changed | PageEvent::Loading(false) => ui.schedule_refresh(),
                 PageEvent::Loading(true) => {}
                 PageEvent::Error(message) => ui.chrome.toast(Toast::Error(message)),

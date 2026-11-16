@@ -92,6 +92,9 @@ pub(super) fn run() -> Result<()> {
                 "MEASURE dormant_input_to_pixels_ms_median20={:.3}",
                 median(dormant)
             );
+            if std::env::var_os("CANOPY_MEASURE_SWITCHES_ONLY").is_some() {
+                return Ok(());
+            }
         }
         {
             let f = Fixture::new()?;

@@ -123,6 +123,22 @@ fn eval_native(view: &webkit2gtk::WebView, script: &str) -> Result<serde_json::V
     let text = result.borrow_mut().take().unwrap()?;
     Ok(serde_json::from_str(&text)?)
 }
+fn a_new_tree_editor_keeps_focus_after_an_instant_live_return() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.root("/a")?;
+    f.root("/b")?;
+    f.ui.pages.go(Go::Visit(a))?;
+    f.ui.chrome.new_tree();
+    common::wait("new tree editor focused after live return", || {
+        common::chrome_focused(&f.ui, "#start-search")
+    })?;
+    common::pump(200);
+    assert!(
+        common::chrome_focused(&f.ui, "#start-search"),
+        "a late selected-page frame must not hide the newly opened editor"
+    );
+    Ok(())
+}
 fn live_switch_keeps_document_and_running_script() -> Result<()> {
     let f = Fixture::new()?;
     let a = f.root("/a")?;
@@ -577,6 +593,10 @@ fn main() -> Result<()> {
         return small_budget_drops_hidden_page();
     }
     let cases: &[Case] = &[
+        (
+            "a_new_tree_editor_keeps_focus_after_an_instant_live_return",
+            a_new_tree_editor_keeps_focus_after_an_instant_live_return,
+        ),
         (
             "a_candidate_hold_does_not_finish_another_pages_checkpoint",
             a_candidate_hold_does_not_finish_another_pages_checkpoint,

@@ -121,13 +121,16 @@ JavaScript, scroll and audio survive. A different history entry traverses that
 branch's existing native history. Dormant and cold targets use hidden candidates;
 only their commit changes the cursor. Cancelled checkpoint revivals keep their
 checkpoint. Selected events refresh address, title, loading, Back and login offers;
-focus follows the page only if the outgoing page owned it.
+focus follows the page only if the outgoing page owned it. Selected-document
+notifications publish the chrome frame immediately; background changes remain
+coalesced. A deferred old cursor frame cannot hide a newly opened chrome editor.
 
 Candidate switches keep the outgoing real page above the incoming page until the
 existing snapshot/frame handshake completes, with its one second cap. Returning
 to a retained document shows it directly and hides the outgoing view; the live
-view already owns rendered content. Xvfb pixel measurements found medians of 17.4 ms for direct live returns and
-34.7 ms with the hold, without observed blank pixels in 20 direct returns. Only real
+view already owns rendered content. An initial Xvfb comparison found medians of 17.4 ms for direct live returns and
+34.7 ms with the hold, without observed blank pixels in 20 direct returns. After
+synchronous chrome bookkeeping, final medians were 17.7 ms live and 239.0 ms dormant. Only real
 page views cover pages. After the hold the outgoing page is hidden and retained;
 the blank startup view is discarded. Pages::place_view remains the sole owner of
 all page allocations, including hidden views, at creation, resize, show and map.

@@ -31,6 +31,7 @@ pub enum Go {
 }
 
 pub enum PageEvent {
+    Selected,
     Changed,
     Loading(bool),
     Error(String),
@@ -401,6 +402,13 @@ impl Pages {
         }
     }
 
+    fn selected_changed(&self) {
+        let observer = self.observer.borrow().clone();
+        if let Some(observer) = observer {
+            observer(PageEvent::Selected);
+        }
+    }
+
     fn advance_continuation(&self, event: ContinuationEvent) -> Option<LoadTicket> {
         let mut pending = self.continuation.borrow_mut();
         let c = pending.as_mut()?;
@@ -439,6 +447,7 @@ impl Pages {
         }) {
             self.schedule_continuation(ticket);
         }
+        self.selected_changed();
     }
 
     fn schedule_continuation(&self, ticket: LoadTicket) {
@@ -712,6 +721,7 @@ impl Pages {
         }
         self.receive(PageEvent::Login(LoginEvent::NewDocument));
         incoming.refresh_login();
+        self.selected_changed();
         let weak = self.me.clone();
         glib::idle_add_local_once(move || {
             if let Some(pages) = weak.upgrade() {
