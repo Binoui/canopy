@@ -1706,11 +1706,12 @@ impl NativeState {
                     noted.and_then(|(ticket, url, page)| ticket.map(|ticket| (ticket, url, page))),
                 );
             }
-            let attachment = response
-                .response()
-                .and_then(|r| r.http_headers())
-                .and_then(|headers| headers.content_disposition())
-                .is_some_and(|(disposition, _)| disposition.eq_ignore_ascii_case("attachment"));
+            let attachment = main
+                && response
+                    .response()
+                    .and_then(|r| r.http_headers())
+                    .and_then(|headers| headers.content_disposition())
+                    .is_some_and(|(disposition, _)| disposition.eq_ignore_ascii_case("attachment"));
             if response.is_mime_type_supported() && !attachment {
                 return false;
             }
