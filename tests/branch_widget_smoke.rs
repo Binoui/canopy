@@ -885,6 +885,12 @@ fn structure(u: &U, state: &HoldWatch) {
     }
 }
 fn live_returns_paint_without_hold() -> Result<()> {
+    picture_returns(false)
+}
+fn dormant_returns_paint_under_the_real_page_hold() -> Result<()> {
+    picture_returns(true)
+}
+fn picture_returns(dormant: bool) -> Result<()> {
     let u = U::new()?;
     let roots = [u.root("/colour/a")?, u.root("/colour/b")?];
     pump(1200);
@@ -893,6 +899,13 @@ fn live_returns_paint_without_hold() -> Result<()> {
     for i in 0..24 {
         let old = colours[1 - i % 2];
         let target = colours[i % 2];
+        if dormant {
+            u.ui.pages.inject_memory_sample(Some(u64::MAX));
+            wait("target checkpointed before revival", || {
+                !u.ui.pages.live_visits().contains(&roots[i % 2])
+            })?;
+            pump(1200);
+        }
         state.started.set(None);
         state.ended.set(None);
         u.ui.pages.go(Go::Visit(roots[i % 2]))?;
@@ -956,11 +969,11 @@ fn live_returns_paint_without_hold() -> Result<()> {
         );
         assert!(painted);
         assert!(
-            state.started.get().is_none(),
-            "live return uses direct show without a hold"
+            state.started.get().is_some() == dormant,
+            "dormant revival uses a hold; live return shows directly"
         );
         assert!(
-            presented_ms <= 100,
+            dormant || presented_ms <= 100,
             "incoming colour was not presented within 100 ms: {presented_ms}"
         );
     }
@@ -1195,6 +1208,10 @@ fn main() -> Result<()> {
         ("first_address", first_address_survives_initial_home),
         ("inactive_focus", page_focus_survives_inactive_switch),
         ("picture", live_returns_paint_without_hold),
+        (
+            "dormant_picture",
+            dormant_returns_paint_under_the_real_page_hold,
+        ),
         ("structure", page_views_have_no_paint_handlers),
         ("busy_picture", switch_while_picture_waits_for_script),
         ("later_picture", later_switch_releases_first_cover),

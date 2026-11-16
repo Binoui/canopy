@@ -41,8 +41,17 @@ impl Fixture {
                     let text = String::from_utf8_lossy(&request);
                     let path = text.split_whitespace().nth(1).unwrap_or("/");
                     *counts.lock().unwrap().entry(path.to_owned()).or_default() += 1;
-                    if path == "/slow" {
+                    if path.starts_with("/slow") {
                         thread::sleep(std::time::Duration::from_secs(2));
+                    }
+                    if path == "/slow-fail"
+                        && counts.lock().unwrap().get(path).copied().unwrap_or(0) > 1
+                    {
+                        return;
+                    }
+                    if path == "/attachment" {
+                        let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Disposition: attachment; filename=hidden.txt\r\nContent-Length: 4\r\nConnection: close\r\n\r\nfile");
+                        return;
                     }
                     let body = "<!doctype html><title>live</title><body style='height:10000px'><input id=field><a id=link href='/clicked' style='display:block;height:100px'>click</a><script>window.counter=0;setInterval(()=>counter++,100)</script>";
                     let colour = if path.starts_with("/red") {
@@ -544,6 +553,84 @@ fn settled_page_rejects_clicks_while_dormant_landing_loads() -> Result<()> {
     assert_eq!(f.hits("/slow"), 2);
     Ok(())
 }
+fn commands_wait_for_a_settle_landing() -> Result<()> {
+    for action in ["address", "reload", "failure"] {
+        let f = Fixture::new()?;
+        let path = if action == "failure" {
+            "/slow-fail"
+        } else {
+            "/slow"
+        };
+        let landing = f.root(path)?;
+        let old = f.root("/old")?;
+        common::pump(1200);
+        f.ui.pages.inject_memory_sample(Some(u64::MAX));
+        common::wait("landing dropped", || {
+            !f.ui.pages.live_visits().contains(&landing)
+        })?;
+        let old_view = f.ui.pages.selected_page().native.clone();
+        let tree =
+            f.ui.pages
+                .read(|b| {
+                    canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)
+                })?
+                .tree_of(old)
+                .unwrap();
+        f.ui.pages.settle_tree(tree)?;
+        common::pump(100);
+        if action == "address" {
+            f.ui.pages.go(Go::Address {
+                url: f.url("/typed"),
+                target: canopy::browser::NavigationTarget::ChildOf(old),
+            })?;
+            assert_eq!(f.hits("/typed"), 0, "address waits for the landing");
+        } else {
+            f.ui.pages.reload()?;
+        }
+        common::wait("landing and queued command complete", || {
+            let snapshot = f.ui.snapshot().unwrap();
+            match action {
+                "address" => snapshot
+                    .current_visit()
+                    .is_some_and(|v| v.url.path() == "/typed"),
+                "reload" => {
+                    snapshot.current == Some(landing)
+                        && !f.ui.pages.selected_page().native.is_loading()
+                }
+                _ => snapshot.current.is_none() && f.ui.pages.selected_page().native != old_view,
+            }
+        })?;
+        common::pump(700);
+        assert!(old_view.parent().is_none(), "retired page is released");
+        assert!(f.ui.pages.selected_page().native.is_sensitive());
+        assert_eq!(f.hits(path), 2, "reload during landing is ignored");
+        if action == "address" {
+            assert_eq!(
+                f.ui.snapshot()?.current_visit().unwrap().parent,
+                Some(landing)
+            );
+        }
+        if action == "failure" {
+            f.root("/usable")?;
+        }
+        let (x, y) = common::element_point(&f.ui, "link")?;
+        common::xdo(&["mousemove", &x.to_string(), &y.to_string(), "click", "1"])?;
+        common::wait("real click after landing", || f.hits("/clicked") == 1)?;
+    }
+    Ok(())
+}
+fn hidden_download_uses_its_source_visit() -> Result<()> {
+    let f = Fixture::new()?;
+    let source = f.root("/source")?;
+    let view = f.ui.pages.selected_page().native.clone();
+    f.root("/visible")?;
+    eval_native(&view, "location.href='/attachment';JSON.stringify(true)")?;
+    common::wait("hidden download recorded", || {
+        f.ui.downloads().is_ok_and(|d| !d.is_empty())
+    })?;
+    assert_eq!(f.ui.downloads()?[0].visit, source);
+    Ok(())
+}
 fn audible_hidden_page_is_protected() -> Result<()> {
     let f = Fixture::new()?;
     let a = f.root("/audio")?;
@@ -583,6 +670,16 @@ fn small_budget_drops_hidden_page() -> Result<()> {
     Ok(())
 }
 fn main() -> Result<()> {
+    let download_home = tempfile::tempdir()?;
+    std::fs::write(
+        download_home.path().join("user-dirs.dirs"),
+        format!(
+            "XDG_DOWNLOAD_DIR=\"{}/Saved files\"\n",
+            download_home.path().display()
+        ),
+    )?;
+    std::env::set_var("XDG_CONFIG_HOME", download_home.path());
+
     let directory = tempfile::tempdir()?;
     common::start(directory.path())?;
     type Case = (&'static str, fn() -> Result<()>);
@@ -593,6 +690,14 @@ fn main() -> Result<()> {
         return small_budget_drops_hidden_page();
     }
     let cases: &[Case] = &[
+        (
+            "commands_wait_for_a_settle_landing",
+            commands_wait_for_a_settle_landing,
+        ),
+        (
+            "hidden_download_uses_its_source_visit",
+            hidden_download_uses_its_source_visit,
+        ),
         (
             "a_new_tree_editor_keeps_focus_after_an_instant_live_return",
             a_new_tree_editor_keeps_focus_after_an_instant_live_return,

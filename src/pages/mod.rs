@@ -160,7 +160,7 @@ type Observer = Rc<dyn Fn(PageEvent)>;
 type PlacementObserver = Rc<dyn Fn(&webkit2gtk::WebView)>;
 
 enum Command {
-    Go(Go, Option<Continuation>, bool),
+    Go(Box<Go>, Option<Continuation>, bool),
     Settle(TreeId),
     Reload,
 }
@@ -635,9 +635,11 @@ impl Pages {
             false
         };
         if retiring || same_retired_tree {
-            self.commands
-                .borrow_mut()
-                .push_back(Command::Go(Go::Visit(visit), None, false));
+            self.commands.borrow_mut().push_back(Command::Go(
+                Box::new(Go::Visit(visit)),
+                None,
+                false,
+            ));
             return Ok(());
         }
         let candidate = self.branches.candidate.borrow().clone();
@@ -872,13 +874,21 @@ impl Pages {
     fn drain_commands(&self) {
         let count = self.commands.borrow().len();
         for _ in 0..count {
-            if self.busy() || self.retired_selected() || !self.retiring.borrow().is_empty() {
+            if self.busy()
+                || !self.retiring.borrow().is_empty()
+                || self.retired_selected()
+                    && matches!(
+                        self.commands.borrow().front(),
+                        Some(Command::Go(_, _, true))
+                    )
+            {
                 break;
             }
             let command = self.commands.borrow_mut().pop_front();
             let Some(command) = command else { break };
             let result = match command {
-                Command::Go(mut go, continuation, reparent) => {
+                Command::Go(go, continuation, reparent) => {
+                    let mut go = *go;
                     if let Go::Address { target, .. } = &mut go {
                         if reparent && matches!(target, NavigationTarget::ChildOf(_)) {
                             *target = self
@@ -1142,7 +1152,7 @@ impl Pages {
         {
             self.commands
                 .borrow_mut()
-                .push_back(Command::Go(go, None, true));
+                .push_back(Command::Go(Box::new(go), None, true));
             return Ok(());
         }
         let in_place = self.commands.borrow().is_empty()
@@ -1161,7 +1171,7 @@ impl Pages {
         if self.busy() && !in_place {
             self.commands
                 .borrow_mut()
-                .push_back(Command::Go(go, None, false));
+                .push_back(Command::Go(Box::new(go), None, false));
             self.end_hold();
             return Ok(());
         }
