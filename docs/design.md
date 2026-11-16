@@ -262,7 +262,8 @@ list even when GDK child windows have been raised into a different order. A
 view realized after chrome therefore used to cover an opened forest or palette
 while clicks still reached chrome. PageStack uses GtkContainer’s standard draw
 propagation and orders its traversal: ordinary pages, the held outgoing page,
-then chrome. Pages::place_view supplies those roles and applies the same order
+then chrome. Chrome explicitly allocates its bounds because wry’s exact-type
+GtkFixed check skips subclasses. Pages::place_view supplies those roles and applies the same order
 to GDK windows. No widget is reparented or unrealized, and no page image is painted.
 The composed root-window pixel case in branch_widget_smoke checks both the opaque
 pop-ins and page colour transmitted through their scrims; widget snapshots do

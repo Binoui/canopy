@@ -445,6 +445,14 @@ impl Inner {
             .webview()
             .set_size_request(width.round() as i32, height.round() as i32);
         let _ = self.view.set_bounds(rect(0., 0., width, height));
+        // wry recognizes GtkFixed by exact type name, so its bounds setter skips
+        // allocation for our Fixed subclass. Keep chrome's allocation with its request.
+        self.view.webview().size_allocate(&gtk::Allocation::new(
+            0,
+            0,
+            width.round() as i32,
+            height.round() as i32,
+        ));
         self.raise();
     }
 
