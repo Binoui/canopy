@@ -141,9 +141,9 @@ pub fn measure() -> Result<u64> {
                 pending.extend(children);
             }
             Err(error)
-                if error
-                    .downcast_ref::<std::io::Error>()
-                    .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) => {}
+                if error.downcast_ref::<std::io::Error>().is_some_and(|e| {
+                    e.kind() == std::io::ErrorKind::NotFound || e.raw_os_error() == Some(3)
+                }) => {}
             Err(error) => return Err(error),
         }
     }

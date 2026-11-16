@@ -282,7 +282,30 @@ impl LivePage {
         }
         self.detach();
     }
+    pub(super) fn retire(&self) {
+        self.native.set_sensitive(false);
+        self.cancel_foreground();
+        self.state.lifecycle.set(Lifecycle::CapturingScroll);
+    }
+    pub(super) fn select(&self) -> Result<()> {
+        let navigation = self.state.navigation.borrow();
+        if let Some(document) = navigation.current.as_ref() {
+            self.state
+                .owner()
+                .browser
+                .borrow_mut()
+                .select_document(&navigation, document)?;
+        }
+        Ok(())
+    }
+    pub(super) fn refresh_login(&self) {
+        self.state.look_for_login_fields();
+    }
     pub(super) fn show(&self) {
+        if let Some(window) = self.native.window() {
+            window.set_pass_through(false);
+        }
+        self.native.set_sensitive(true);
         self.native.set_child_visible(true);
         self.native.show();
         self.state.owner().place_view(&self.native);
@@ -423,6 +446,87 @@ impl LivePage {
             #[cfg(feature = "gui-smoke")]
             revival_refusals: Cell::new(0),
         });
+        // WebKit defaults may present modal UI even for an unmapped view.
+        {
+            let weak = pages_for_state(&state);
+            signals.push((
+                native.clone().upcast(),
+                native.connect_script_dialog(move |view, dialog| {
+                    if !is_selected(&weak, view) {
+                        if matches!(
+                            dialog.dialog_type(),
+                            webkit2gtk::ScriptDialogType::Confirm
+                                | webkit2gtk::ScriptDialogType::BeforeUnloadConfirm
+                        ) {
+                            dialog.confirm_set_confirmed(false);
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                }),
+            ));
+            let weak = pages_for_state(&state);
+            signals.push((
+                native.clone().upcast(),
+                native.connect_permission_request(move |view, request| {
+                    if !is_selected(&weak, view) {
+                        use webkit2gtk::PermissionRequestExt;
+                        request.deny();
+                        true
+                    } else {
+                        false
+                    }
+                }),
+            ));
+            let weak = pages_for_state(&state);
+            signals.push((
+                native.clone().upcast(),
+                native.connect_run_file_chooser(move |view, request| {
+                    if !is_selected(&weak, view) {
+                        use webkit2gtk::FileChooserRequestExt;
+                        request.cancel();
+                        true
+                    } else {
+                        false
+                    }
+                }),
+            ));
+            let weak = pages_for_state(&state);
+            signals.push((
+                native.clone().upcast(),
+                native.connect_enter_fullscreen(move |view| !is_selected(&weak, view)),
+            ));
+            let weak = pages_for_state(&state);
+            signals.push((
+                native.clone().upcast(),
+                native.connect_print(move |view, _| !is_selected(&weak, view)),
+            ));
+        }
+        {
+            let weak = Rc::downgrade(&state);
+            signals.push((
+                native.clone().upcast(),
+                native.connect_web_process_terminated(move |_, _| {
+                    if let Some(state) = weak.upgrade() {
+                        let owner = state.owner();
+                        let view = state.navigation.borrow().view_id();
+                        let index = owner
+                            .branches
+                            .hidden
+                            .borrow()
+                            .iter()
+                            .position(|h| h.page.view() == view);
+                        if let Some(index) = index {
+                            let hidden = owner.branches.hidden.borrow_mut().remove(index);
+                            if let Ok(saved) = hidden.page.checkpoint() {
+                                owner.branches.dormant.borrow_mut().push(saved);
+                            }
+                        }
+                    }
+                }),
+            ));
+        }
         manager.register_script_message_handler_in_world(SCROLLED, WORLD);
         {
             let weak = Rc::downgrade(&state);
@@ -743,10 +847,9 @@ impl LivePage {
             signals.push((
                 native.clone().upcast(),
                 native.connect_decide_policy(move |_, decision, kind| {
-                    if weak
-                        .upgrade()
-                        .is_some_and(|state| state.lifecycle.get() != Lifecycle::Live)
-                    {
+                    if weak.upgrade().is_some_and(|state| {
+                        state.lifecycle.get() != Lifecycle::Live || !state.native.is_sensitive()
+                    }) {
                         decision.ignore();
                         return true;
                     }
@@ -1830,7 +1933,13 @@ impl NativeState {
             )
         })();
         let Ok(forest) = projection else { return false };
-        let Some(tree) = forest.current().and_then(|id| forest.tree_of(id)) else {
+        let Some(tree) = self
+            .navigation
+            .borrow()
+            .current
+            .as_ref()
+            .and_then(|d| forest.tree_of(d.visit))
+        else {
             return false;
         };
         forest.tree_of(visit) == Some(tree) && forest.open().iter().any(|open| open.id == tree)
@@ -2097,6 +2206,20 @@ impl NativeState {
             }
         });
     }
+}
+
+fn pages_for_state(state: &NativeState) -> Weak<Pages> {
+    state.pages.clone()
+}
+fn is_selected(weak: &Weak<Pages>, view: &webkit2gtk::WebView) -> bool {
+    weak.upgrade().is_some_and(|pages| {
+        pages
+            .branches
+            .live
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| p.native == *view && view.is_sensitive())
+    })
 }
 
 fn ordered_entries(

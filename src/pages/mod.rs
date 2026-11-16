@@ -164,7 +164,14 @@ enum Command {
     Reload,
 }
 
+struct Hidden {
+    page: Rc<LivePage>,
+    last_shown: u64,
+}
+
 struct Branches {
+    hidden: RefCell<Vec<Hidden>>,
+    clock: Cell<u64>,
     live: RefCell<Option<Rc<LivePage>>>,
     dormant: RefCell<Vec<live::Checkpoint>>,
     candidate: RefCell<Option<Rc<LivePage>>>,
@@ -175,6 +182,7 @@ struct Branches {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReleasePhase {
     Holding,
+    Hidden,
     Checkpointing,
     Released,
 }
@@ -213,6 +221,10 @@ pub struct Pages {
     placement_observer: RefCell<Option<PlacementObserver>>,
     #[cfg(feature = "gui-smoke")]
     release_observer: RefCell<Option<ReleaseObserver>>,
+    budget: crate::budget::Budget,
+    sampling: Cell<bool>,
+    memory_epoch: Cell<u64>,
+    cooling: Cell<bool>,
     releasing: Cell<bool>,
     continuation: RefCell<Option<PendingContinuation>>,
     observer: RefCell<Option<Observer>>,
@@ -222,11 +234,14 @@ pub struct Pages {
 impl Pages {
     pub fn mount(container: &gtk::Fixed, browser: Browser, profile: &Path) -> Result<Rc<Self>> {
         let context = native::PageContext::new(profile)?;
+        let budget = crate::budget::Budget::of_machine()?;
         let pages = Rc::new_cyclic(|me| Self {
             me: me.clone(),
             browser: RefCell::new(browser),
             context,
             branches: Branches {
+                hidden: RefCell::new(Vec::new()),
+                clock: Cell::new(0),
                 live: RefCell::new(None),
                 dormant: RefCell::new(Vec::new()),
                 candidate: RefCell::new(None),
@@ -246,6 +261,10 @@ impl Pages {
             placement_observer: RefCell::new(None),
             #[cfg(feature = "gui-smoke")]
             release_observer: RefCell::new(None),
+            budget,
+            sampling: Cell::new(false),
+            memory_epoch: Cell::new(0),
+            cooling: Cell::new(false),
             releasing: Cell::new(false),
             continuation: RefCell::new(None),
             observer: RefCell::new(None),
@@ -289,6 +308,14 @@ impl Pages {
                     .record_download(visit, path, size, source);
                 result.map(|_| ())
             });
+        let weak = Rc::downgrade(&pages);
+        glib::timeout_add_local(std::time::Duration::from_secs(5), move || {
+            let Some(pages) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            pages.sample_memory();
+            glib::ControlFlow::Continue
+        });
         Ok(pages)
     }
 
@@ -367,6 +394,15 @@ impl Pages {
 
     fn committed(self: &Rc<Self>, ticket: LoadTicket, visit: VisitId) {
         self.select_candidate(ticket);
+        if !self
+            .branches
+            .live
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| p.owns(ticket))
+        {
+            return;
+        }
         let same_document = self
             .branches
             .live
@@ -538,6 +574,30 @@ impl Pages {
                 };
             }
         }
+        let index = self
+            .branches
+            .hidden
+            .borrow()
+            .iter()
+            .rposition(|h| h.page.contains(visit));
+        if let Some(index) = index {
+            let hidden = self.branches.hidden.borrow_mut().remove(index);
+            if hidden.page.current_visit() == Some(visit) {
+                hidden.page.select()?;
+                self.promote_live(hidden.page);
+                self.receive(PageEvent::Changed);
+                let loading = self
+                    .branches
+                    .live
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|p| p.native.is_loading());
+                self.receive(PageEvent::Loading(loading));
+                return Ok(());
+            }
+            *self.branches.candidate.borrow_mut() = Some(hidden.page.clone());
+            return hidden.page.restore(visit);
+        }
         self.candidate_page(Some(visit))?.restore_revived(visit)
     }
 
@@ -548,7 +608,43 @@ impl Pages {
         };
         self.branches.candidate.borrow_mut().take();
         self.branches.candidate_saved.borrow_mut().take();
+        self.promote(candidate);
+    }
+
+    fn promote_live(&self, incoming: Rc<LivePage>) {
         self.end_hold();
+        self.branches.clock.set(self.branches.clock.get() + 1);
+        let old = self.branches.live.borrow_mut().replace(incoming.clone());
+        let focus = old.as_ref().is_some_and(|p| p.native.is_focus());
+        incoming.show();
+        if let Some(old) = old {
+            old.native.set_child_visible(false);
+            if !old.native.is_sensitive() {
+                self.releasing.set(true);
+                self.release_outgoing(old);
+            } else {
+                self.branches.hidden.borrow_mut().push(Hidden {
+                    page: old,
+                    last_shown: self.branches.clock.get(),
+                });
+            }
+        }
+        if focus {
+            incoming.focus();
+        }
+        self.receive(PageEvent::Login(LoginEvent::NewDocument));
+        incoming.refresh_login();
+        let weak = self.me.clone();
+        glib::idle_add_local_once(move || {
+            if let Some(pages) = weak.upgrade() {
+                pages.sample_memory();
+            }
+        });
+    }
+
+    fn promote(&self, candidate: Rc<LivePage>) {
+        self.end_hold();
+        self.branches.clock.set(self.branches.clock.get() + 1);
         let old = self.branches.live.borrow_mut().replace(candidate.clone());
         let focus = old.as_ref().is_some_and(|page| page.native.is_focus());
         if let Some(old) = old {
@@ -559,6 +655,8 @@ impl Pages {
         if focus {
             candidate.focus();
         }
+        self.receive(PageEvent::Login(LoginEvent::NewDocument));
+        candidate.refresh_login();
     }
 
     /// Only the real outgoing view covers the incoming view. All work belongs
@@ -631,11 +729,110 @@ impl Pages {
             if let Some(cap) = hold.cap {
                 cap.remove();
             }
-            self.release_outgoing(hold.outgoing);
+            hold.outgoing.native.set_child_visible(false);
+            #[cfg(feature = "gui-smoke")]
+            self.release_event(&hold.outgoing, ReleasePhase::Hidden);
+            if !hold.outgoing.native.is_sensitive() {
+                self.release_outgoing(hold.outgoing);
+                return;
+            }
+            if hold.outgoing.current_visit().is_some() {
+                self.branches.hidden.borrow_mut().push(Hidden {
+                    page: hold.outgoing,
+                    last_shown: self.branches.clock.get(),
+                });
+            }
+            self.releasing.set(false);
+            self.drain_commands();
+            self.sample_memory();
+        }
+    }
+
+    fn drain_commands(&self) {
+        while !self.releasing.get() {
+            let command = self.commands.borrow_mut().pop_front();
+            let Some(command) = command else { break };
+            let result = match command {
+                Command::Go(go, continuation) => {
+                    let result = self.go(go);
+                    if let Some(continuation) = continuation {
+                        self.continue_with(continuation);
+                    }
+                    result
+                }
+                Command::Settle(tree) => self.settle_tree(tree),
+                Command::Reload => self.reload(),
+            };
+            if let Err(error) = result {
+                self.receive(PageEvent::Error(error.to_string()));
+            }
+        }
+    }
+
+    fn sample_memory(&self) {
+        if self.branches.hidden.borrow().is_empty()
+            || self.releasing.get()
+            || self.cooling.get()
+            || self.sampling.replace(true)
+        {
+            return;
+        }
+        let epoch = self.memory_epoch.get();
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = send.send(crate::budget::measure());
+        });
+        let weak = self.me.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(20), move || {
+            let Some(pages) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            let Ok(sample) = receive.try_recv() else {
+                return glib::ControlFlow::Continue;
+            };
+            pages.sampling.set(false);
+            if pages.memory_epoch.get() == epoch {
+                if let Ok(used) = sample {
+                    pages.apply_sample(used);
+                }
+            }
+            glib::ControlFlow::Break
+        });
+    }
+
+    fn apply_sample(&self, used: u64) {
+        if self.releasing.get() || self.cooling.get() {
+            return;
+        }
+        let candidates: Vec<_> = self
+            .branches
+            .hidden
+            .borrow()
+            .iter()
+            .map(|h| crate::budget::Droppable {
+                page: h.page.view(),
+                last_shown: h.last_shown,
+                audible: h.page.native.is_playing_audio(),
+            })
+            .collect();
+        if let Some(view) = crate::budget::next_to_drop(used, self.budget, &candidates) {
+            let index = self
+                .branches
+                .hidden
+                .borrow()
+                .iter()
+                .position(|h| h.page.view() == view);
+            if let Some(index) = index {
+                let hidden = self.branches.hidden.borrow_mut().remove(index);
+                self.releasing.set(true);
+                self.release_outgoing(hidden.page);
+            }
         }
     }
 
     fn release_outgoing(&self, old: Rc<LivePage>) {
+        self.cooling.set(true);
+        self.memory_epoch.set(self.memory_epoch.get() + 1);
         #[cfg(feature = "gui-smoke")]
         self.release_event(&old, ReleasePhase::Checkpointing);
         #[cfg(feature = "gui-smoke")]
@@ -651,43 +848,19 @@ impl Pages {
             let saved = Self::release_page(pending);
             if let Some(pages) = weak.upgrade() {
                 if let Ok(saved) = saved {
-                    let open = pages
-                        .read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))
-                        .is_ok_and(|forest| {
-                            saved.entries.get(saved.current).is_some_and(|e| {
-                                forest
-                                    .tree_of(e.visit)
-                                    .is_some_and(|tree| forest.open().iter().any(|t| t.id == tree))
-                            })
-                        });
-                    if open {
-                        pages.branches.dormant.borrow_mut().push(saved);
-                    }
+                    pages.branches.dormant.borrow_mut().push(saved);
                 }
                 #[cfg(feature = "gui-smoke")]
                 pages.emit_release(event);
                 pages.releasing.set(false);
-                loop {
-                    let command = pages.commands.borrow_mut().pop_front();
-                    let Some(command) = command else { break };
-                    let result = match command {
-                        Command::Go(go, continuation) => {
-                            let result = pages.go(go);
-                            if let Some(continuation) = continuation {
-                                pages.continue_with(continuation);
-                            }
-                            result
-                        }
-                        Command::Settle(tree) => pages.settle_tree(tree),
-                        Command::Reload => pages.reload(),
-                    };
-                    if let Err(error) = result {
-                        pages.receive(PageEvent::Error(error.to_string()));
+                pages.drain_commands();
+                let weak = pages.me.clone();
+                glib::timeout_add_local_once(std::time::Duration::from_secs(1), move || {
+                    if let Some(pages) = weak.upgrade() {
+                        pages.cooling.set(false);
+                        pages.sample_memory();
                     }
-                    if pages.releasing.get() {
-                        break;
-                    }
-                }
+                });
             }
         });
     }
@@ -716,7 +889,20 @@ impl Pages {
             .as_ref()
             .is_some_and(|p| p.view() == view);
         if selected {
-            self.receive(event);
+            let sensitive = self
+                .branches
+                .live
+                .borrow()
+                .as_ref()
+                .is_some_and(|p| p.native.is_sensitive());
+            if sensitive {
+                self.receive(event);
+            }
+        } else if matches!(event, PageEvent::Changed) {
+            let observer = self.observer.borrow().clone();
+            if let Some(observer) = observer {
+                observer(PageEvent::Changed);
+            }
         }
     }
 
@@ -856,15 +1042,23 @@ impl Pages {
     }
 
     pub fn settle_tree(&self, tree: TreeId) -> Result<()> {
-        if self.releasing.get() && self.branches.live.borrow().is_some() {
+        anyhow::ensure!(self.branches.live.borrow().is_some(), "No selected page.");
+        let forest =
+            self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
+        let selected = self.branches.live.borrow().clone();
+        if let Some(page) = selected.filter(|page| {
+            page.current_visit()
+                .is_some_and(|visit| forest.tree_of(visit) == Some(tree))
+        }) {
+            page.retire();
+            self.receive(PageEvent::Login(LoginEvent::NewDocument));
+        }
+        if self.releasing.get() {
             self.commands.borrow_mut().push_back(Command::Settle(tree));
             self.end_hold();
             return Ok(());
         }
-        anyhow::ensure!(self.branches.live.borrow().is_some(), "No selected page.");
         self.cancel_continuation();
-        let forest =
-            self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
         let target = self
             .branches
             .candidate
@@ -874,12 +1068,31 @@ impl Pages {
         if target.is_some_and(|visit| forest.tree_of(visit) == Some(tree)) {
             self.cancel_candidate();
         }
-        self.branches.dormant.borrow_mut().retain(|saved| {
-            !saved
-                .entries
-                .iter()
-                .any(|e| forest.tree_of(e.visit) == Some(tree))
+        let belongs = |page: &LivePage| {
+            page.current_visit()
+                .is_some_and(|visit| forest.tree_of(visit) == Some(tree))
+        };
+        let mut removed = Vec::new();
+        self.branches.hidden.borrow_mut().retain(|hidden| {
+            if belongs(&hidden.page) {
+                removed.push(hidden.page.clone());
+                false
+            } else {
+                true
+            }
         });
+        for page in removed {
+            let weak = self.me.clone();
+            page.native.set_sensitive(false);
+            let pending = page.clone();
+            page.capture_checkpoint_scroll(move || {
+                if let Ok(saved) = Self::release_page(pending) {
+                    if let Some(pages) = weak.upgrade() {
+                        pages.branches.dormant.borrow_mut().push(saved);
+                    }
+                }
+            });
+        }
         let landing = self.browser.borrow_mut().settle_tree(tree)?;
         self.receive(PageEvent::Changed);
         match landing {
@@ -892,9 +1105,7 @@ impl Pages {
                     &self.context,
                 )?);
 
-                let previous = self.branches.live.borrow_mut().replace(page.clone());
-                drop(previous);
-                page.show();
+                self.promote(page);
                 Ok(())
             }
         }
@@ -1079,6 +1290,38 @@ impl Pages {
             if let Some(observer) = observer {
                 observer(view);
             }
+        }
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn live_visits(&self) -> Vec<VisitId> {
+        let mut visits: Vec<_> = self
+            .branches
+            .hidden
+            .borrow()
+            .iter()
+            .filter_map(|h| h.page.current_visit())
+            .collect();
+        visits.extend(
+            self.branches
+                .live
+                .borrow()
+                .iter()
+                .filter_map(|p| p.current_visit()),
+        );
+        visits.extend(
+            self.hold
+                .borrow()
+                .iter()
+                .filter_map(|h| h.outgoing.current_visit()),
+        );
+        visits
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn inject_memory_sample(&self, sample: Option<u64>) {
+        if let Some(used) = sample {
+            self.apply_sample(used);
         }
     }
 
