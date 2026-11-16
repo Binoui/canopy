@@ -63,7 +63,7 @@ fn main() -> Result<()> {
         url: server.url("/long")?,
         target: NavigationTarget::Root,
     })?;
-    arrived(&ui, "/long")?;
+    let root = arrived(&ui, "/long")?;
     page_eval(&ui,"const f=document.createElement('form');f.method='POST';f.action='/post';document.body.append(f);f.submit();JSON.stringify(true)")?;
     let post = arrived(&ui, "/post")?;
     ui.pages.go(Go::Address {
@@ -145,13 +145,15 @@ fn main() -> Result<()> {
     ui.pages.go(Go::Visit(post))?;
     question(&ui)?;
     // The chrome remains actionable above the scrim.
-    click_chrome(&ui, &format!(".node[data-id='{next}']"))?;
+    click_chrome(&ui, &format!(".node[data-id='{root}']"))?;
     wait("chrome navigation closes question", || {
         !visible(&ui, "#form-return")
     })?;
-    assert_eq!(ui.snapshot()?.current, Some(next));
+    assert_eq!(arrived(&ui, "/long")?, root);
     assert_eq!(server.hits("POST /post"), posts);
-    println!("PASS a link in the chrome cancels the held decision");
+    ui.pages.go(Go::Visit(next))?;
+    arrived(&ui, "/next")?;
+    println!("PASS a link in the chrome cancels the held decision and navigates");
     ui.pages.go(Go::Visit(post))?;
     question(&ui)?;
     key("ctrl+l")?;
