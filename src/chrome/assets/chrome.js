@@ -336,7 +336,7 @@ function buildStrip(layout) {
       : n.kind === 'pill'
         ? visitFav(v, 16) + `<span class="pill-text"><span class="pill-title">${esc(v.label)}</span><span class="pill-site">${esc(v.site)}</span></span>`
         : visitFav(v, iconSize(n.kind, n.s)))
-      + (v.live && n.kind !== 'bud' ? '<i class="live-dot"></i>' : '');
+      + (v.live && n.kind !== 'bud' ? `<i class="live-dot${filesOf(n.id).length ? ' above-leaves' : ''}"></i>` : '');
     if (el.dataset.html !== html) {
       el.innerHTML = html;
       el.dataset.html = html;

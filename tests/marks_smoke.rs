@@ -184,7 +184,12 @@ fn pressure_removes_the_mark_and_reopening_restores_it() -> Result<()> {
     let start = std::time::Instant::now();
     f.ui.pages.inject_memory_sample(Some(u64::MAX));
     common::wait("dropped mark removed", || !marked(&f, a))?;
-    assert!(start.elapsed() < std::time::Duration::from_secs(1));
+    // The drop itself tells the chrome. Without that, the mark waits for the next
+    // unrelated refresh, close to a second later.
+    assert!(
+        start.elapsed() < std::time::Duration::from_millis(500),
+        "a dropped page loses its mark at once"
+    );
     common::pump(1600);
     f.select(a)?;
     f.select(b)?;

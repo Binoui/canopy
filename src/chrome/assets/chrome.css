@@ -394,5 +394,9 @@ body[data-overlay="tree"] #pins .pin:not(.on) { visibility: hidden; }
 /* Grey means the page is still in memory. Green stays for pages not read yet. */
 .live-dot { position: absolute; left: -2px; bottom: -2px; width: 8px; height: 8px; border-radius: 50%; background: var(--memory); box-shadow: 0 0 0 1.5px var(--chrome); pointer-events: none; }
 .mk .live-dot { left: -3px; bottom: -3px; }
+/* Stacked small tiles overlap, so their dot stays inside the tile. */
+.node.sm > .live-dot { left: 1px; bottom: 1px; width: 6px; height: 6px; box-shadow: 0 0 0 1.5px var(--tile); }
+/* Download leaves own the bottom-left corner; the dot moves up the left edge. */
+.node > .live-dot.above-leaves { bottom: 9px; }
 
 .tree-tile > .live-dot, .forest-node > .live-dot { left: 2px; bottom: 2px; }
