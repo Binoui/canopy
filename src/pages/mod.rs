@@ -1429,6 +1429,30 @@ impl Pages {
         }
     }
 
+    pub fn after_form_return_cancel(&self, action: impl FnOnce() + 'static) {
+        let page = self.branches.live.borrow().clone();
+        let mut action = Some(action);
+        glib::timeout_add_local(std::time::Duration::from_millis(10), move || {
+            if page
+                .as_ref()
+                .is_none_or(|p| p.form_return_cursor_restored())
+            {
+                action.take().unwrap()();
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+    }
+
+    pub fn has_form_return(&self) -> bool {
+        self.branches
+            .live
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| p.has_form_return())
+    }
+
     pub fn answer_form_return(&self, proceed: bool) {
         let page = self.branches.live.borrow().clone();
         if let Some(page) = page {
@@ -1437,7 +1461,18 @@ impl Pages {
     }
 
     pub fn go(&self, go: Go) -> Result<()> {
-        self.answer_form_return(false);
+        if self.has_form_return() {
+            self.answer_form_return(false);
+            let weak = self.me.clone();
+            self.after_form_return_cancel(move || {
+                if let Some(pages) = weak.upgrade() {
+                    if let Err(error) = pages.go(go) {
+                        pages.receive(PageEvent::Error(error.to_string()));
+                    }
+                }
+            });
+            return Ok(());
+        }
         if self.retired_selected()
             && matches!(
                 go,

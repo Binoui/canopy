@@ -122,6 +122,7 @@ struct NativeState {
     download_origin: Option<VisitId>,
     issue: RefCell<Issue>,
     form_return: RefCell<Option<(u64, PolicyDecision)>>,
+    form_return_cancelled: Cell<bool>,
     load_generation: Cell<u64>,
     foreground_generation: Cell<u64>,
     same_document_request: RefCell<Option<Url>>,
@@ -263,6 +264,26 @@ impl LivePage {
         if matches {
             self.answer_form_return(proceed);
         }
+    }
+
+    pub(super) fn form_return_cursor_restored(&self) -> bool {
+        let current = self
+            .native
+            .back_forward_list()
+            .and_then(|l| l.current_item());
+        let restored = self.state.lifecycle.get() == Lifecycle::Released
+            || self.state.history.borrow().iter().any(|e| {
+                Some(&e.item) == current.as_ref() && e.document == self.state.history_document.get()
+            });
+        if restored {
+            self.state.form_return_cancelled.set(false);
+        }
+        restored
+    }
+
+    pub(super) fn has_form_return(&self) -> bool {
+        self.state.form_return.borrow().is_some()
+            || (self.state.form_return_cancelled.get() && !self.form_return_cursor_restored())
     }
 
     pub(super) fn answer_form_return(&self, proceed: bool) {
@@ -490,6 +511,7 @@ impl LivePage {
             navigation: RefCell::new(Navigation::default()),
             issue: RefCell::new(Issue::Idle),
             form_return: RefCell::new(None),
+            form_return_cancelled: Cell::new(false),
             load_generation: Cell::new(0),
             foreground_generation: Cell::new(0),
             same_document_request: RefCell::new(None),
@@ -1798,17 +1820,23 @@ impl NativeState {
             self.traversal.borrow_mut().take();
             self.pending_scroll.set(None);
             self.end_response();
+            self.form_return_cancelled.set(true);
             decision.ignore();
         }
     }
 
     fn decide(self: &Rc<Self>, decision: &PolicyDecision, kind: PolicyDecisionType) -> bool {
         if kind == PolicyDecisionType::NavigationAction {
-            self.answer_form_return(false);
             if let Some(mut action) = decision
                 .downcast_ref::<NavigationPolicyDecision>()
                 .and_then(|n| n.navigation_action())
             {
+                // A main-frame action changes WebKit's provisional URI already at policy.
+                // An unnamed iframe can have no frame_name too, so name alone is insufficient.
+                let main_action = action.request().and_then(|r| r.uri()) == self.native.uri();
+                if main_action {
+                    self.answer_form_return(false);
+                }
                 let returning = action.navigation_type() == NavigationType::BackForward
                     && action
                         .request()
@@ -1821,6 +1849,21 @@ impl NativeState {
                         e.needs_get && Some(&e.item) == self.history_cursor.borrow().as_ref()
                     });
                     if main && !restored {
+                        let owner = self.owner();
+                        let candidate = owner.branches.candidate.borrow().clone();
+                        if let Some(page) = candidate.filter(|p| {
+                            p.native == self.native && owner.branches.candidate_live.get().is_some()
+                        }) {
+                            if let Err(error) = page.select() {
+                                owner.cancel_candidate();
+                                decision.ignore();
+                                owner.receive(PageEvent::Error(error.to_string()));
+                                return true;
+                            }
+                            owner.branches.candidate.borrow_mut().take();
+                            owner.branches.candidate_live.take();
+                            owner.promote_live(page);
+                        }
                         let selected = self
                             .owner()
                             .branches

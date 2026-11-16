@@ -1711,23 +1711,31 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme
 
 post({ t: 'ready' });
 
-function answerFormReturn(proceed) {
+function answerFormReturn(proceed, focusPage = true) {
   if (!S.formReturn) return;
   const question = S.formReturn;
   canopy.formReturn(null);
   post({ t: 'form-return', question, proceed });
-  post({ t: 'focus', target: 'page' });
+  if (focusPage) post({ t: 'focus', target: 'page' });
 }
 $('form-return-cancel').addEventListener('click', () => answerFormReturn(false));
 $('form-return-continue').addEventListener('click', () => answerFormReturn(true));
 $('form-return').querySelector('.scrim').addEventListener('mousedown', () => answerFormReturn(false));
 document.addEventListener('mousedown', (event) => {
-  if (S.formReturn && !event.target.closest('.form-return-box')) answerFormReturn(false);
+  if (S.formReturn && !event.target.closest('.form-return-box')) {
+    answerFormReturn(false, !!event.target.closest('#form-return .scrim'));
+  }
 }, true);
 document.addEventListener('keydown', (event) => {
-  if (!S.formReturn || event.key !== 'Tab') return;
+  if (!S.formReturn || !['Tab', 'ISO_Left_Tab'].includes(event.key)) return;
   event.preventDefault();
   const cancel = $('form-return-cancel');
   const proceed = $('form-return-continue');
   (document.activeElement === cancel ? proceed : cancel).focus();
 });
+
+document.addEventListener('focusin', (event) => {
+  if (S.formReturn && !event.target.closest('.form-return-box')) {
+    $('form-return-cancel').focus();
+  }
+}, true);

@@ -357,8 +357,16 @@ impl Ui {
         let Some(shortcut) = Shortcut::of(event) else {
             return glib::Propagation::Proceed;
         };
-        if !matches!(shortcut, Shortcut::Escape) {
+        if !matches!(shortcut, Shortcut::Escape) && self.pages.has_form_return() {
             self.pages.answer_form_return(false);
+            let weak = self.me.clone();
+            let event = event.clone();
+            self.pages.after_form_return_cancel(move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.shortcut(&event);
+                }
+            });
+            return glib::Propagation::Stop;
         }
         self.pages.cancel_path_continuation();
         match shortcut {
@@ -521,7 +529,12 @@ impl ChromeHost for Ui {
             self.pages.answer_form_return_for(question, proceed);
             return;
         }
-        self.pages.answer_form_return(false);
+        if self.pages.has_form_return() {
+            self.pages.answer_form_return(false);
+            self.pages
+                .after_form_return_cancel(move || ui.dispatch(intent));
+            return;
+        }
         self.pages.cancel_continuation();
         let result = match intent {
             ChromeIntent::AnswerFormReturn { .. } => unreachable!(),
