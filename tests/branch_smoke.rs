@@ -920,6 +920,9 @@ fn overlapping_ancestors() -> Result<()> {
     assert!(f.pages.selected_history_visits().contains(&a));
     assert!(!f.pages.selected_history_visits().contains(&q1));
     assert!(!f.pages.selected_history_visits().contains(&q2));
+    wait("older queued page checkpointed under pressure", || {
+        !f.pages.live_visits().contains(&q1)
+    })?;
     f.pages.go(Go::Visit(q1))?;
     f.arrived(q1)?;
     assert_eq!(f.pages.selected_history_visits(), vec![q1]);

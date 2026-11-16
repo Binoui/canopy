@@ -148,6 +148,10 @@ impl Navigation {
         }
     }
 
+    pub(crate) fn request_queued(&mut self, visit: VisitId, url: Url) -> LoadTicket {
+        self.request(Intent::Restore { visit }, url)
+    }
+
     pub fn native_request(&mut self, url: Url) -> LoadTicket {
         let parent = self.current.as_ref().map(|d| d.visit);
         self.request(
