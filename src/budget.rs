@@ -1,4 +1,4 @@
-//! Which live pages Canopy keeps: a memory budget and the least-recently-shown order.
+//! Which live pages Canopy keeps: never-seen pages first, then least recently shown.
 //!
 //! The policy is [`next_to_drop`], a pure function tests call without a display. [`measure`] and
 //! [`Budget::of_machine`] read `/proc`; nothing here touches GTK or WebKit.
@@ -67,17 +67,17 @@ impl Budget {
 
 /// A live page the policy may drop.
 ///
-/// The caller lists only hidden pages that have committed a load and are not being opened. The
-/// page on screen and the page being opened are never in the list, so they cannot be dropped
-/// whatever the budget says.
+/// The caller lists hidden seen pages that have committed, and never-seen pages including
+/// unfinished loads. The page on screen and the switch candidate are never in the list.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Droppable {
     pub page: ViewId,
-    /// When the page was last shown or asked for, on the window's clock: higher is more recent.
+    /// Last shown on the window clock, or queued on the shared queue clock when never seen.
+    /// Higher is more recent; the two clocks are compared only within their own tier.
     pub last_shown: u64,
     pub never_seen: bool,
     /// WebKit reports the page playing audio. Read from the webview at each decision, never
-    /// cached, so the exemption ends when the sound does.
+    /// cached, so the exemption ends when the sound does. Never-seen pages ignore this flag.
     pub audible: bool,
 }
 
