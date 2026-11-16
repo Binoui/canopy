@@ -205,6 +205,39 @@ fn hidden_navigation_stays_in_its_branch_and_alert_returns() -> Result<()> {
     assert_eq!(f.hits("/after"), 1);
     Ok(())
 }
+fn a_link_parent_in_another_tree_gets_its_own_branch() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.root("/a")?;
+    let tree = f
+        .ui
+        .pages
+        .read(|b| canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?
+        .tree_of(a)
+        .unwrap();
+    let b = f.root("/b")?;
+    let landing = f.ui.pages.selected_page().native.clone();
+    f.ui.pages.go(Go::Address {
+        url: f.url("/child"),
+        target: canopy::browser::NavigationTarget::ChildOf(a),
+    })?;
+    common::wait("child in its own branch", || {
+        f.ui.snapshot()
+            .is_ok_and(|s| s.current_visit().is_some_and(|v| v.url.path() == "/child"))
+            && !f.ui.pages.selected_page().native.is_loading()
+    })?;
+    assert_ne!(f.ui.pages.selected_page().native, landing);
+    assert!(
+        !f.ui.pages.selected_history_visits().contains(&b),
+        "history cannot mix two trees"
+    );
+    f.ui.pages.settle_tree(tree)?;
+    common::wait("live landing selected", || {
+        f.ui.snapshot().is_ok_and(|s| s.current == Some(b))
+            && f.ui.pages.selected_page().native == landing
+    })?;
+    assert_eq!(f.hits("/b"), 1, "live landing is retained");
+    Ok(())
+}
 fn selecting_a_live_page_keeps_its_inflight_navigation() -> Result<()> {
     let f = Fixture::new()?;
     let a = f.root("/a")?;
@@ -436,6 +469,10 @@ fn main() -> Result<()> {
         return small_budget_drops_hidden_page();
     }
     let cases: &[Case] = &[
+        (
+            "a_link_parent_in_another_tree_gets_its_own_branch",
+            a_link_parent_in_another_tree_gets_its_own_branch,
+        ),
         (
             "windows_share_one_eviction_at_a_time",
             windows_share_one_eviction_at_a_time,

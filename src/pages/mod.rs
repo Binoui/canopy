@@ -585,18 +585,27 @@ impl Pages {
     }
 
     fn route(&self, visit: VisitId) -> Result<()> {
-        if self
+        let retiring = self
             .retiring
             .borrow()
             .iter()
-            .any(|page| page.contains(visit))
-            || self
-                .branches
-                .live
-                .borrow()
-                .as_ref()
-                .is_some_and(|page| !page.native.is_sensitive() && page.contains(visit))
-        {
+            .any(|page| page.contains(visit));
+        let retired = self
+            .branches
+            .live
+            .borrow()
+            .clone()
+            .filter(|page| !page.native.is_sensitive());
+        let same_retired_tree = if let Some(page) = retired.filter(|page| page.contains(visit)) {
+            let forest =
+                self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
+            page.current_visit()
+                .and_then(|current| forest.tree_of(current))
+                == forest.tree_of(visit)
+        } else {
+            false
+        };
+        if retiring || same_retired_tree {
             self.commands
                 .borrow_mut()
                 .push_back(Command::Go(Go::Visit(visit), None));
@@ -610,7 +619,12 @@ impl Pages {
             return Ok(());
         }
         self.cancel_candidate();
-        let selected = self.branches.live.borrow().clone();
+        let selected = self
+            .branches
+            .live
+            .borrow()
+            .clone()
+            .filter(|page| page.native.is_sensitive());
         if let Some(page) = selected {
             if page.current_visit() == Some(visit) || page.pending_visit() == Some(visit) {
                 return Ok(());
@@ -817,7 +831,11 @@ impl Pages {
     }
 
     fn drain_commands(&self) {
-        while !self.releasing.get() && self.retiring.borrow().is_empty() {
+        let count = self.commands.borrow().len();
+        for _ in 0..count {
+            if self.releasing.get() || !self.retiring.borrow().is_empty() {
+                break;
+            }
             let command = self.commands.borrow_mut().pop_front();
             let Some(command) = command else { break };
             let result = match command {
@@ -1086,7 +1104,18 @@ impl Pages {
                 self.route(visit)
             }
             Go::Address { url, target } => {
-                if matches!(target, NavigationTarget::Root) && page.current_visit().is_some() {
+                let crossing_tree = if let NavigationTarget::ChildOf(parent) = target {
+                    let forest = self.read(|b| {
+                        ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)
+                    })?;
+                    page.current_visit().and_then(|visit| forest.tree_of(visit))
+                        != forest.tree_of(parent)
+                } else {
+                    false
+                };
+                if crossing_tree
+                    || matches!(target, NavigationTarget::Root) && page.current_visit().is_some()
+                {
                     self.candidate_page(None)?.navigate(url, target)
                 } else {
                     self.cancel_candidate();
