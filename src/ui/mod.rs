@@ -64,7 +64,7 @@ impl Ui {
             .hscrollbar_policy(gtk::PolicyType::External)
             .vscrollbar_policy(gtk::PolicyType::External)
             .build();
-        let fixed = gtk::Fixed::new();
+        let fixed = crate::pages::stack::Stack::fixed();
         scroller.add(&fixed);
         window.add(&scroller);
         let pages = Pages::mount(&fixed, browser, &data_dir.join("profile"))?;
