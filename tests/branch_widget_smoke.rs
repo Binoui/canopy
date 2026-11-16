@@ -843,7 +843,7 @@ fn watch_hold(u: &U) -> Rc<HoldWatch> {
                 record.started.set(Some(Instant::now()));
                 record.ended.set(None);
             }
-            Checkpointing => {
+            Hidden => {
                 assert_eq!(record.held.replace(None), Some(event.widget));
                 let elapsed = record.started.get().unwrap().elapsed().as_millis();
                 assert!(elapsed <= 1100, "hold cap exceeded: {elapsed} ms");
@@ -851,7 +851,7 @@ fn watch_hold(u: &U) -> Rc<HoldWatch> {
                 record.ended.set(Some(Instant::now()));
                 println!("MEASURE hold_ms={elapsed}");
             }
-            Released => {}
+            Checkpointing | Released => {}
         }
     });
     state

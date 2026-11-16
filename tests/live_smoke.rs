@@ -1,0 +1,318 @@
+mod common;
+#[path = "common/http.rs"]
+mod http;
+#[path = "common/live_measure.rs"]
+mod measurements;
+use anyhow::Result;
+use canopy::pages::Go;
+use gtk::prelude::*;
+use std::{
+    collections::BTreeMap,
+    io::Write,
+    net::TcpListener,
+    sync::{Arc, Mutex},
+    thread,
+};
+use webkit2gtk::WebViewExt;
+
+struct Fixture {
+    ui: std::rc::Rc<canopy::ui::Ui>,
+    origin: String,
+    hits: Arc<Mutex<BTreeMap<String, usize>>>,
+    _directory: tempfile::TempDir,
+}
+impl Fixture {
+    fn new() -> Result<Self> {
+        let directory = tempfile::tempdir()?;
+        let ui = canopy::ui::Ui::new(directory.path())?;
+        ui.window.show_all();
+        common::ready(&ui)?;
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let origin = format!("http://{}", listener.local_addr()?);
+        let hits = Arc::new(Mutex::new(BTreeMap::<String, usize>::new()));
+        let counts = hits.clone();
+        thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let counts = counts.clone();
+                thread::spawn(move || {
+                    let Ok(request) = http::request(&mut stream) else {
+                        return;
+                    };
+                    let text = String::from_utf8_lossy(&request);
+                    let path = text.split_whitespace().nth(1).unwrap_or("/");
+                    *counts.lock().unwrap().entry(path.to_owned()).or_default() += 1;
+                    if path == "/slow" {
+                        thread::sleep(std::time::Duration::from_secs(2));
+                    }
+                    let body = "<!doctype html><title>live</title><body style='height:10000px'><input id=field><a id=link href='/clicked' style='display:block;height:100px'>click</a><script>window.counter=0;setInterval(()=>counter++,100)</script>";
+                    let colour = if path.starts_with("/red") {
+                        "#ff0000"
+                    } else if path.starts_with("/blue") {
+                        "#0000ff"
+                    } else {
+                        "#ffffff"
+                    };
+                    let mut body = body.replace(
+                        "height:10000px",
+                        &format!("height:10000px;background:{colour}"),
+                    );
+                    if path.starts_with("/plain") {
+                        body = body.replace("setInterval(()=>counter++,100)", "");
+                    }
+                    if path == "/heavy" {
+                        body.push_str("<script>window.memory=new Uint8Array(128*1024*1024);memory.fill(42)</script>");
+                    }
+                    let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                });
+            }
+        });
+        Ok(Self {
+            ui,
+            origin,
+            hits,
+            _directory: directory,
+        })
+    }
+    fn root(&self, path: &str) -> Result<canopy::browser::VisitId> {
+        self.ui.pages.open_roots(&[self.url(path)])?;
+        common::wait("root visible", || {
+            self.ui
+                .snapshot()
+                .is_ok_and(|s| s.current_visit().is_some_and(|v| v.url.path() == path))
+                && !self.ui.pages.selected_page().native.is_loading()
+        })?;
+        common::pump(200);
+        Ok(self.ui.snapshot()?.current.unwrap())
+    }
+    fn url(&self, path: &str) -> url::Url {
+        format!("{}{path}", self.origin).parse().unwrap()
+    }
+    fn select(&self, visit: canopy::browser::VisitId) -> Result<()> {
+        self.ui.pages.go(Go::Visit(visit))?;
+        common::wait("visit selected", || {
+            self.ui.snapshot().is_ok_and(|s| s.current == Some(visit))
+                && !self.ui.pages.selected_page().native.is_loading()
+        })?;
+        common::pump(200);
+        Ok(())
+    }
+    fn hits(&self, path: &str) -> usize {
+        *self.hits.lock().unwrap().get(path).unwrap_or(&0)
+    }
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        self.ui.window.close();
+        common::pump(100);
+    }
+}
+fn live_switch_keeps_document_and_running_script() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.root("/a")?;
+    common::eval(
+        &f.ui,
+        "field.value='kept';scrollTo(0,800);window.startCounter=counter;JSON.stringify(true)",
+    )?;
+    f.root("/b")?;
+    let sample = thread::spawn(canopy::budget::measure).join().unwrap();
+    println!(
+        "MEASURE sandbox={} sample={sample:?}",
+        f.ui.pages.sandbox_enabled()
+    );
+    sample?;
+    common::pump(1200);
+    f.select(a)?;
+    assert_eq!(f.hits("/a"), 1, "live return must send no request");
+    let state = common::eval(
+        &f.ui,
+        "JSON.stringify([field.value,counter>startCounter,scrollY])",
+    )?;
+    assert_eq!(state[0], "kept");
+    assert_eq!(state[1], true);
+    assert_eq!(state[2], 800);
+    Ok(())
+}
+fn hidden_navigation_stays_in_its_branch_and_alert_returns() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.root("/a")?;
+    let native = f.ui.pages.selected_page().native.clone();
+    let b = f.root("/b")?;
+    native.evaluate_javascript(
+        "alert('hidden');location.href='/after'",
+        None,
+        None,
+        None::<&gio::Cancellable>,
+        |_| {},
+    );
+    common::wait("hidden navigation recorded", || {
+        f.ui.snapshot().is_ok_and(|s| {
+            s.visits
+                .iter()
+                .any(|v| v.url.path() == "/after" && v.parent == Some(a))
+        })
+    })?;
+    assert_eq!(f.ui.snapshot()?.current, Some(b));
+    assert_eq!(
+        f.ui.pages.selected_page().native.uri().as_deref(),
+        Some(f.url("/b").as_str())
+    );
+    Ok(())
+}
+fn incomplete_sample_drops_nothing_and_fresh_sample_drops_oldest() -> Result<()> {
+    let f = Fixture::new()?;
+    let ancestor = f.root("/ancestor")?;
+    f.ui.pages.go(Go::Address {
+        url: f.url("/a"),
+        target: canopy::browser::NavigationTarget::ChildOf(ancestor),
+    })?;
+    common::wait("child committed", || {
+        f.ui.snapshot()
+            .is_ok_and(|s| s.current_visit().is_some_and(|v| v.url.path() == "/a"))
+            && !f.ui.pages.selected_page().native.is_loading()
+    })?;
+    let a = f.ui.snapshot()?.current.unwrap();
+    common::eval(&f.ui, "scrollTo(0,900);JSON.stringify(true)")?;
+    let b = f.root("/b")?;
+    let c = f.root("/c")?;
+    common::pump(1200);
+    f.ui.pages.inject_memory_sample(None);
+    assert!(f.ui.pages.live_visits().contains(&a));
+    f.ui.pages.inject_memory_sample(Some(u64::MAX));
+    f.ui.pages.inject_memory_sample(Some(u64::MAX));
+    common::wait("oldest dropped", || !f.ui.pages.live_visits().contains(&a))?;
+    assert!(
+        f.ui.pages.live_visits().contains(&b),
+        "only one drop may use this sample"
+    );
+    assert!(
+        f.ui.pages.live_visits().contains(&c),
+        "selected is protected"
+    );
+    common::pump(700);
+    f.select(a)?;
+    assert_eq!(f.hits("/a"), 2, "dropped page must reload");
+    assert!(
+        f.ui.pages.selected_history_visits().contains(&ancestor),
+        "checkpoint restores back list"
+    );
+    common::wait("checkpoint scroll restored", || {
+        common::eval(&f.ui, "JSON.stringify(scrollY)").is_ok_and(|y| y == 900)
+    })?;
+    Ok(())
+}
+fn selected_and_candidate_are_protected() -> Result<()> {
+    let f = Fixture::new()?;
+    f.root("/a")?;
+    let b = f.root("/b")?;
+    f.ui.pages.open_roots(&[f.url("/slow")])?;
+    common::wait("candidate requested", || f.hits("/slow") == 1)?;
+    f.ui.pages.inject_memory_sample(Some(u64::MAX));
+    common::wait("candidate commits", || {
+        f.ui.snapshot()
+            .is_ok_and(|s| s.current_visit().is_some_and(|v| v.url.path() == "/slow"))
+    })?;
+    assert_eq!(f.hits("/slow"), 1);
+    assert!(
+        f.ui.pages.live_visits().contains(&b),
+        "outgoing is protected while held"
+    );
+    Ok(())
+}
+fn settle_removes_live_pages_and_disables_old_input() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.root("/a")?;
+    let native = f.ui.pages.selected_page().native.clone();
+    let tree = f
+        .ui
+        .pages
+        .read(|b| canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?
+        .tree_of(a)
+        .unwrap();
+    let b = f.root("/b")?;
+    f.select(a)?;
+    f.ui.pages.settle_tree(tree)?;
+    assert!(
+        !native.is_sensitive(),
+        "settled view rejects input immediately"
+    );
+    common::wait("landing selected", || {
+        f.ui.snapshot().is_ok_and(|s| s.current == Some(b))
+    })?;
+    common::pump(1300);
+    assert!(!f.ui.pages.live_visits().contains(&a));
+    Ok(())
+}
+fn audible_hidden_page_is_protected() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.root("/audio")?;
+    common::eval(&f.ui, "window.audio=new AudioContext();window.osc=audio.createOscillator();osc.connect(audio.destination);osc.start();audio.resume();JSON.stringify(true)")?;
+    common::pump(1200);
+    let native = f.ui.pages.selected_page().native.clone();
+    if !native.is_playing_audio() {
+        println!("UNTESTED WebKit does not report oscillator audio under this Xvfb audio setup");
+        return Ok(());
+    }
+    f.root("/other")?;
+    common::pump(1200);
+    f.ui.pages.inject_memory_sample(Some(u64::MAX));
+    common::pump(700);
+    assert!(f.ui.pages.live_visits().contains(&a));
+    Ok(())
+}
+fn small_budget_drops_hidden_page() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.root("/a")?;
+    f.root("/b")?;
+    common::wait("small budget drops hidden page", || {
+        !f.ui.pages.live_visits().contains(&a)
+    })?;
+    Ok(())
+}
+fn main() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    common::start(directory.path())?;
+    type Case = (&'static str, fn() -> Result<()>);
+    if std::env::args().nth(1).as_deref() == Some("measurements") {
+        return measurements::run();
+    }
+    if std::env::args().nth(1).as_deref() == Some("small-budget") {
+        return small_budget_drops_hidden_page();
+    }
+    let cases: &[Case] = &[
+        (
+            "audible_hidden_page_is_protected",
+            audible_hidden_page_is_protected,
+        ),
+        (
+            "live_switch_keeps_document_and_running_script",
+            live_switch_keeps_document_and_running_script,
+        ),
+        (
+            "hidden_navigation_stays_in_its_branch_and_alert_returns",
+            hidden_navigation_stays_in_its_branch_and_alert_returns,
+        ),
+        (
+            "incomplete_sample_drops_nothing_and_fresh_sample_drops_oldest",
+            incomplete_sample_drops_nothing_and_fresh_sample_drops_oldest,
+        ),
+        (
+            "selected_and_candidate_are_protected",
+            selected_and_candidate_are_protected,
+        ),
+        (
+            "settle_removes_live_pages_and_disables_old_input",
+            settle_removes_live_pages_and_disables_old_input,
+        ),
+    ];
+    for (name, case) in cases {
+        case()?;
+        println!("PASS {name}");
+    }
+    let status = std::process::Command::new(std::env::current_exe()?)
+        .arg("small-budget")
+        .env("CANOPY_MEMORY_BUDGET_MB", "1")
+        .status()?;
+    assert!(status.success(), "small budget child");
+    println!("PASS small_budget_drops_hidden_page");
+    Ok(())
+}
