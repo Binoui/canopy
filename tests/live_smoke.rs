@@ -162,6 +162,19 @@ fn hidden_navigation_stays_in_its_branch_and_alert_returns() -> Result<()> {
         f.ui.pages.selected_page().native.uri().as_deref(),
         Some(f.url("/b").as_str())
     );
+    let tree = f
+        .ui
+        .pages
+        .read(|b| canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?
+        .tree_of(a)
+        .unwrap();
+    f.ui.pages.go(Go::Tree(tree))?;
+    assert_eq!(
+        f.ui.snapshot()?.current_visit().unwrap().url.path(),
+        "/after",
+        "tree return shows the branch's latest hidden document"
+    );
+    assert_eq!(f.hits("/after"), 1);
     Ok(())
 }
 fn selecting_a_live_page_keeps_its_inflight_navigation() -> Result<()> {
@@ -194,6 +207,26 @@ fn selecting_a_live_page_keeps_its_inflight_navigation() -> Result<()> {
             && !native.is_loading()
     })?;
     assert_eq!(f.hits("/slow"), 1);
+    Ok(())
+}
+fn windows_share_one_eviction_at_a_time() -> Result<()> {
+    let first = Fixture::new()?;
+    let a = first.root("/a")?;
+    first.root("/b")?;
+    let second = Fixture::new()?;
+    let c = second.root("/c")?;
+    second.root("/d")?;
+    common::pump(1200);
+    first.ui.pages.inject_memory_sample(Some(u64::MAX));
+    second.ui.pages.inject_memory_sample(Some(u64::MAX));
+    assert!(!first.ui.pages.live_visits().contains(&a));
+    assert!(
+        second.ui.pages.live_visits().contains(&c),
+        "another window must wait for the first drop"
+    );
+    common::pump(1700);
+    second.ui.pages.inject_memory_sample(Some(u64::MAX));
+    assert!(!second.ui.pages.live_visits().contains(&c));
     Ok(())
 }
 fn incomplete_sample_drops_nothing_and_fresh_sample_drops_oldest() -> Result<()> {
@@ -375,6 +408,10 @@ fn main() -> Result<()> {
         return small_budget_drops_hidden_page();
     }
     let cases: &[Case] = &[
+        (
+            "windows_share_one_eviction_at_a_time",
+            windows_share_one_eviction_at_a_time,
+        ),
         (
             "selecting_a_live_page_keeps_its_inflight_navigation",
             selecting_a_live_page_keeps_its_inflight_navigation,

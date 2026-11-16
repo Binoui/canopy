@@ -110,7 +110,9 @@ Pages owns one selected live branch, hidden live branches ordered by their last
 shown stamp, dormant checkpoints, and at most one candidate. The window increments
 its own counter at selection. There is no visit-to-branch index and routing never
 compares URLs. Routing checks a candidate's pending Restore, the selected document
-and history, then hidden live and dormant histories in MRU order. A view follows
+and history, then hidden live and dormant histories in MRU order. A tree-tab return
+uses the most recently shown branch's current document, including hidden redirects;
+a specific visit-node selection still requests that historical visit. A view follows
 links and forks in place; queued visits still wait until first selection to load.
 
 Returning to the current document in a hidden live branch selects its existing
@@ -153,7 +155,8 @@ Sampling starts after a switch or committed navigation settles and every five se
 exist, never with only one live page. GTK uses the fresh complete result to drop the
 least recently shown hidden page. It reads is_playing_audio at that decision. The
 selected page, candidate, held outgoing page and every audible page are excluded.
-One page is checkpointed and destroyed at a time. Samples started before a drop are
+One budget drop is checkpointed and destroyed at a time across all windows; a
+shared permit remains held through the teardown grace. Samples started before a drop are
 invalidated. A one second teardown grace follows destruction before sampling again;
 protected-only registries wait for the ordinary slow period. Checkpointing uses the
 existing scroll capture (500 ms cap), native session bytes and history bindings.

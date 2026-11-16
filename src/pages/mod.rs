@@ -204,6 +204,18 @@ struct Hold {
     cap: Option<glib::SourceId>,
 }
 
+static MEMORY_DROP: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static MEMORY_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+struct MemoryDrop {
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+impl Drop for MemoryDrop {
+    fn drop(&mut self) {
+        MEMORY_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 pub struct Pages {
     me: Weak<Pages>,
     browser: RefCell<Browser>,
@@ -229,6 +241,7 @@ pub struct Pages {
     memory_epoch: Cell<u64>,
     cooling: Cell<bool>,
     releasing: Cell<bool>,
+    memory_drop: RefCell<Option<MemoryDrop>>,
     continuation: RefCell<Option<PendingContinuation>>,
     observer: RefCell<Option<Observer>>,
     start: Cell<Option<StartPage>>,
@@ -271,6 +284,7 @@ impl Pages {
             memory_epoch: Cell::new(0),
             cooling: Cell::new(false),
             releasing: Cell::new(false),
+            memory_drop: RefCell::new(None),
             continuation: RefCell::new(None),
             observer: RefCell::new(None),
             start: Cell::new(None),
@@ -576,6 +590,12 @@ impl Pages {
             .borrow()
             .iter()
             .any(|page| page.contains(visit))
+            || self
+                .branches
+                .live
+                .borrow()
+                .as_ref()
+                .is_some_and(|page| !page.native.is_sensitive() && page.contains(visit))
         {
             self.commands
                 .borrow_mut()
@@ -826,6 +846,7 @@ impl Pages {
             return;
         }
         let epoch = self.memory_epoch.get();
+        let global_epoch = MEMORY_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
         let (send, receive) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let _ = send.send(crate::budget::measure());
@@ -844,7 +865,9 @@ impl Pages {
                 }
             };
             pages.sampling.set(false);
-            if pages.memory_epoch.get() == epoch {
+            if pages.memory_epoch.get() == epoch
+                && MEMORY_EPOCH.load(std::sync::atomic::Ordering::Relaxed) == global_epoch
+            {
                 if let Ok(used) = sample {
                     pages.apply_sample(used);
                 }
@@ -876,6 +899,10 @@ impl Pages {
                 .iter()
                 .position(|h| h.page.view() == view);
             if let Some(index) = index {
+                let Ok(guard) = MEMORY_DROP.try_lock() else {
+                    return;
+                };
+                *self.memory_drop.borrow_mut() = Some(MemoryDrop { _guard: guard });
                 let hidden = self.branches.hidden.borrow_mut().remove(index);
                 self.releasing.set(true);
                 self.release_outgoing(hidden.page);
@@ -893,6 +920,7 @@ impl Pages {
     }
 
     fn release_outgoing(&self, old: Rc<LivePage>) {
+        MEMORY_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.cooling.set(true);
         self.memory_epoch.set(self.memory_epoch.get() + 1);
         #[cfg(feature = "gui-smoke")]
@@ -919,6 +947,7 @@ impl Pages {
                 let weak = pages.me.clone();
                 glib::timeout_add_local_once(std::time::Duration::from_secs(1), move || {
                     if let Some(pages) = weak.upgrade() {
+                        pages.memory_drop.borrow_mut().take();
                         pages.cooling.set(false);
                         pages.sample_memory();
                     }
@@ -970,6 +999,45 @@ impl Pages {
         }
     }
 
+    fn tree_target(&self, tree: TreeId) -> Result<VisitId> {
+        let forest =
+            self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
+        let mut targets: Vec<_> = self
+            .branches
+            .hidden
+            .borrow()
+            .iter()
+            .filter_map(|h| h.page.current_visit().map(|visit| (h.last_shown, visit)))
+            .collect();
+        targets.extend(
+            self.branches
+                .live
+                .borrow()
+                .iter()
+                .filter_map(|p| p.current_visit().map(|visit| (p.last_shown.get(), visit))),
+        );
+        targets.extend(
+            self.retiring
+                .borrow()
+                .iter()
+                .filter_map(|p| p.current_visit().map(|visit| (p.last_shown.get(), visit))),
+        );
+        targets.extend(self.branches.dormant.borrow().iter().filter_map(|saved| {
+            saved
+                .entries
+                .get(saved.current)
+                .map(|e| (saved.last_shown, e.visit))
+        }));
+        if let Some((_, visit)) = targets
+            .into_iter()
+            .filter(|(_, visit)| forest.tree_of(*visit) == Some(tree))
+            .max_by_key(|(stamp, _)| *stamp)
+        {
+            return Ok(visit);
+        }
+        self.read(|b| b.tree_target(tree))
+    }
+
     pub fn go(&self, go: Go) -> Result<()> {
         let in_place = self.commands.borrow().is_empty()
             && match &go {
@@ -1014,7 +1082,7 @@ impl Pages {
                 }
             }
             Go::Tree(tree) => {
-                let visit = self.read(|b| b.tree_target(tree))?;
+                let visit = self.tree_target(tree)?;
                 self.route(visit)
             }
             Go::Address { url, target } => {

@@ -207,9 +207,14 @@ fn main() -> Result<()> {
     println!("PASS clicking a settled page in the forest brings its tab back.");
 
     key("ctrl+k")?;
-    wait("palette input has focus", || {
+    let palette_focus = wait("palette input has focus", || {
         chrome_focused(&ui, "#palette-input")
-    })?;
+    });
+    if palette_focus.is_err() {
+        eprintln!("palette active={:?} visible={} page_focus={} chrome_focus={} page_sensitive={} page_uri={:?}",
+            chrome(&ui, "document.activeElement?.id"), visible(&ui, "#palette"), ui.pages.selected_page().native.is_focus(), ui.chrome.native().is_focus(), ui.pages.selected_page().native.is_sensitive(), ui.pages.selected_page().native.uri());
+    }
+    palette_focus?;
     type_text("Gamma")?;
     wait("palette finds settled Gamma", || {
         text(&ui, ".palette-item[data-kind=saved]").contains("Gamma")
