@@ -211,6 +211,7 @@ thread_local! {
     static BACKGROUND_WINDOWS: RefCell<Vec<Weak<Pages>>> = const { RefCell::new(Vec::new()) };
     static SCHEDULING_BACKGROUND: Cell<bool> = const { Cell::new(false) };
     static QUEUE_CLOCK: Cell<u64> = const { Cell::new(0) };
+    static LATEST_MEMORY_SAMPLE: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
 static MEMORY_DROP: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -246,7 +247,6 @@ pub struct Pages {
     #[cfg(feature = "gui-smoke")]
     release_observer: RefCell<Option<ReleaseObserver>>,
     budget: crate::budget::Budget,
-    latest_sample: Cell<Option<u64>>,
     sampling: Cell<bool>,
     sample_started: Cell<Option<std::time::Instant>>,
     sample_scheduled: Cell<bool>,
@@ -294,7 +294,6 @@ impl Pages {
             #[cfg(feature = "gui-smoke")]
             release_observer: RefCell::new(None),
             budget,
-            latest_sample: Cell::new(None),
             sampling: Cell::new(false),
             sample_started: Cell::new(None),
             sample_scheduled: Cell::new(false),
@@ -1035,9 +1034,8 @@ impl Pages {
                 .filter(|window| {
                     !window.busy()
                         && !window.cooling.get()
-                        && window
-                            .latest_sample
-                            .get()
+                        && LATEST_MEMORY_SAMPLE
+                            .with(|sample| sample.get())
                             .is_some_and(|used| used <= window.budget.bytes())
                 })
                 .filter_map(|window| {
@@ -1143,7 +1141,7 @@ impl Pages {
     }
 
     fn apply_sample(&self, used: u64) {
-        self.latest_sample.set(Some(used));
+        LATEST_MEMORY_SAMPLE.with(|sample| sample.set(Some(used)));
         if self.busy() || self.cooling.get() {
             return;
         }
@@ -1515,7 +1513,19 @@ impl Pages {
             .or_else(|| self.branches.live.borrow().clone())
             .and_then(|page| page.pending_ticket());
         if pending.is_none() && self.commands.borrow().is_empty() {
-            self.receive(PageEvent::OpenBranchPalette { visit });
+            // The chrome intent is followed by a page-focus message. Open the palette after
+            // that input batch, just as the commit continuation does for a cold queued page.
+            let weak = self.me.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(pages) = weak.upgrade() {
+                    if pages
+                        .read(|browser| browser.snapshot())
+                        .is_ok_and(|s| s.current == Some(visit))
+                    {
+                        pages.receive(PageEvent::OpenBranchPalette { visit });
+                    }
+                }
+            });
         } else {
             self.continue_with(Continuation::BranchPalette);
         }
