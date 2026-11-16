@@ -116,6 +116,7 @@ struct NativeState {
     lifecycle: Cell<Lifecycle>,
     pages: Weak<Pages>,
     navigation: RefCell<Navigation>,
+    download_origin: Option<VisitId>,
     issue: RefCell<Issue>,
     load_generation: Cell<u64>,
     foreground_generation: Cell<u64>,
@@ -431,7 +432,15 @@ impl LivePage {
         let state = Rc::new(NativeState {
             native: native.clone(),
             lifecycle: Cell::new(Lifecycle::Live),
-            pages,
+            pages: pages.clone(),
+            download_origin: pages.upgrade().and_then(|owner| {
+                owner
+                    .branches
+                    .live
+                    .borrow()
+                    .as_ref()
+                    .and_then(|page| page.current_visit())
+            }),
             navigation: RefCell::new(Navigation::default()),
             issue: RefCell::new(Issue::Idle),
             load_generation: Cell::new(0),
@@ -2126,7 +2135,7 @@ impl NativeState {
                 && (self.loading_ticket() == Some(*ticket)
                     || self.download_handover.get() == Some(*ticket))
         });
-        match noted {
+        let page = match noted {
             Some((_, _, page)) => page,
             None => {
                 let page = self
@@ -2136,7 +2145,15 @@ impl NativeState {
                     .download_page(&self.navigation.borrow(), source);
                 page.ok().flatten()
             }
-        }
+        };
+        page.or_else(|| {
+            self.navigation
+                .borrow()
+                .current
+                .is_none()
+                .then_some(self.download_origin)
+                .flatten()
+        })
     }
 
     fn update_title(&self) {

@@ -635,6 +635,7 @@ impl Pages {
             false
         };
         if retiring || same_retired_tree {
+            self.cancel_candidate();
             self.commands.borrow_mut().push_back(Command::Go(
                 Box::new(Go::Visit(visit)),
                 None,

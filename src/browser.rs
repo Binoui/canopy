@@ -1295,7 +1295,8 @@ ORDER BY r.created_at, r.rowid",
     /// The page a download starting now belongs to. A navigation that turns into a download
     /// leaves no page of its own, so its file goes to the page that navigation came from: the
     /// parent it was given, or the parent of the pending page it tried to open. Any other
-    /// download, and a navigation that came from no page, belongs to the page on screen.
+    /// download belongs to this navigation's committed document. A fresh candidate
+    /// keeps its opening page separately until it has a document of its own.
     pub fn download_page(
         &self,
         navigation: &Navigation,
