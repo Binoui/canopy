@@ -145,14 +145,13 @@ fn main() -> Result<()> {
     ui.pages.go(Go::Visit(post))?;
     question(&ui)?;
     // The chrome remains actionable above the scrim.
-    click_chrome(&ui, &format!(".node[data-id='{root}']"))?;
+    assert_eq!(ui.snapshot()?.current, Some(root));
+    click_chrome(&ui, &format!(".node[data-id='{next}']"))?;
     wait("chrome navigation closes question", || {
         !visible(&ui, "#form-return")
     })?;
-    assert_eq!(arrived(&ui, "/long")?, root);
+    assert_eq!(arrived(&ui, "/next")?, next);
     assert_eq!(server.hits("POST /post"), posts);
-    ui.pages.go(Go::Visit(next))?;
-    arrived(&ui, "/next")?;
     println!("PASS a link in the chrome cancels the held decision and navigates");
     ui.pages.go(Go::Visit(post))?;
     question(&ui)?;
