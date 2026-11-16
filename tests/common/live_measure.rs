@@ -61,86 +61,88 @@ fn processes(pid: u32) -> Result<()> {
     Ok(())
 }
 pub(super) fn run() -> Result<()> {
-    {
-        let f = Fixture::new()?;
-        let red = f.root("/red")?;
-        let blue = f.root("/blue")?;
-        common::pump(1200);
-        let mut live = Vec::new();
-        for _ in 0..20 {
-            first_frame(&f, blue, [0, 0, 255])?;
-            live.push(first_frame(&f, red, [255, 0, 0])?);
-        }
-        println!(
-            "MEASURE live_input_to_pixels_ms_median20={:.3}",
-            median(live)
-        );
-        if std::env::var_os("CANOPY_MEASURE_FRAMES_ONLY").is_some() {
-            return Ok(());
-        }
-        let mut dormant = Vec::new();
-        for _ in 0..20 {
-            first_frame(&f, blue, [0, 0, 255])?;
-            common::pump(1300);
-            f.ui.pages.inject_memory_sample(Some(u64::MAX));
-            common::wait("red dropped", || !f.ui.pages.live_visits().contains(&red))?;
-            common::pump(600);
-            dormant.push(first_frame(&f, red, [255, 0, 0])?);
-        }
-        println!(
-            "MEASURE dormant_input_to_pixels_ms_median20={:.3}",
-            median(dormant)
-        );
-    }
-    {
-        let f = Fixture::new()?;
-        let plain = f.root("/plain0")?;
-        common::pump(1300);
-        let initial = sample()?.0;
-        f.root("/plain1")?;
-        common::pump(1300);
-        let extra = sample()?.0;
-        println!(
-            "MEASURE plain_extra_live_bytes={} before={initial} after={extra}",
-            extra as i64 - initial as i64
-        );
-        f.root("/heavy")?;
-        common::pump(1300);
-        let heavy = f.ui.snapshot()?.current.unwrap();
-        let high = sample()?.0;
-        f.select(plain)?;
-        common::pump(1300);
-        // Drop the older plain page first, then the heavy page, each with a fresh sample.
-        f.ui.pages.inject_memory_sample(Some(u64::MAX));
-        common::pump(1800);
-        f.ui.pages.inject_memory_sample(Some(u64::MAX));
-        common::wait("heavy dropped", || {
-            !f.ui.pages.live_visits().contains(&heavy)
-        })?;
-        common::pump(1800);
-        let low = sample()?.0;
-        println!(
-            "MEASURE sandbox={} heavy_before={extra} heavy_open={high} after_drop={low}",
-            f.ui.pages.sandbox_enabled()
-        );
-        processes(std::process::id())?;
-    }
-    {
-        let f = Fixture::new()?;
-        for i in 0..10 {
-            f.root(&format!("/plain{i}"))?;
+    if std::env::var_os("CANOPY_MEASURE_CPU_ONLY").is_none() {
+        {
+            let f = Fixture::new()?;
+            let red = f.root("/red")?;
+            let blue = f.root("/blue")?;
             common::pump(1200);
-            if [1, 5, 10].contains(&(i + 1)) {
-                assert_eq!(f.ui.pages.live_visits().len(), i + 1);
-                let mut times = Vec::new();
-                for _ in 0..20 {
-                    times.push(sample()?.1);
+            let mut live = Vec::new();
+            for _ in 0..20 {
+                first_frame(&f, blue, [0, 0, 255])?;
+                live.push(first_frame(&f, red, [255, 0, 0])?);
+            }
+            println!(
+                "MEASURE live_input_to_pixels_ms_median20={:.3}",
+                median(live)
+            );
+            if std::env::var_os("CANOPY_MEASURE_FRAMES_ONLY").is_some() {
+                return Ok(());
+            }
+            let mut dormant = Vec::new();
+            for _ in 0..20 {
+                first_frame(&f, blue, [0, 0, 255])?;
+                common::pump(1300);
+                f.ui.pages.inject_memory_sample(Some(u64::MAX));
+                common::wait("red dropped", || !f.ui.pages.live_visits().contains(&red))?;
+                common::pump(600);
+                dormant.push(first_frame(&f, red, [255, 0, 0])?);
+            }
+            println!(
+                "MEASURE dormant_input_to_pixels_ms_median20={:.3}",
+                median(dormant)
+            );
+        }
+        {
+            let f = Fixture::new()?;
+            let plain = f.root("/plain0")?;
+            common::pump(1300);
+            let initial = sample()?.0;
+            f.root("/plain1")?;
+            common::pump(1300);
+            let extra = sample()?.0;
+            println!(
+                "MEASURE plain_extra_live_bytes={} before={initial} after={extra}",
+                extra as i64 - initial as i64
+            );
+            f.root("/heavy")?;
+            common::pump(1300);
+            let heavy = f.ui.snapshot()?.current.unwrap();
+            let high = sample()?.0;
+            f.select(plain)?;
+            common::pump(1300);
+            // Drop the older plain page first, then the heavy page, each with a fresh sample.
+            f.ui.pages.inject_memory_sample(Some(u64::MAX));
+            common::pump(1800);
+            f.ui.pages.inject_memory_sample(Some(u64::MAX));
+            common::wait("heavy dropped", || {
+                !f.ui.pages.live_visits().contains(&heavy)
+            })?;
+            common::pump(1800);
+            let low = sample()?.0;
+            println!(
+                "MEASURE sandbox={} heavy_before={extra} heavy_open={high} after_drop={low}",
+                f.ui.pages.sandbox_enabled()
+            );
+            processes(std::process::id())?;
+        }
+        {
+            let f = Fixture::new()?;
+            for i in 0..10 {
+                f.root(&format!("/plain{i}"))?;
+                common::pump(1200);
+                if [1, 5, 10].contains(&(i + 1)) {
+                    assert_eq!(f.ui.pages.live_visits().len(), i + 1);
+                    let mut times = Vec::new();
+                    for _ in 0..20 {
+                        times.push(sample()?.1);
+                    }
+                    println!(
+                        "MEASURE sample_ms_live_pages_{}_median20={:.3}",
+                        i + 1,
+                        median(times)
+                    );
                 }
-                println!(
-                    "MEASURE sample_ms_live_pages_{}_median20={:.3}",
-                    i + 1,
-                    median(times)
-                );
             }
         }
     }

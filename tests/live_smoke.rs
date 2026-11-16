@@ -138,7 +138,7 @@ fn hidden_navigation_stays_in_its_branch_and_alert_returns() -> Result<()> {
     let native = f.ui.pages.selected_page().native.clone();
     let b = f.root("/b")?;
     native.evaluate_javascript(
-        "alert('hidden');location.href='/after'",
+        "history.pushState({},'', '/hidden-route');alert('hidden');location.href='/after'",
         None,
         None,
         None::<&gio::Cancellable>,
@@ -152,6 +152,12 @@ fn hidden_navigation_stays_in_its_branch_and_alert_returns() -> Result<()> {
         })
     })?;
     assert_eq!(f.ui.snapshot()?.current, Some(b));
+    assert!(
+        !gtk::Window::list_toplevels().iter().any(|w| w.is_visible()
+            && w.downcast_ref::<gtk::Window>()
+                .is_some_and(|w| w.is_modal())),
+        "hidden alert must not present modal UI"
+    );
     assert_eq!(
         f.ui.pages.selected_page().native.uri().as_deref(),
         Some(f.url("/b").as_str())
@@ -221,6 +227,23 @@ fn selected_and_candidate_are_protected() -> Result<()> {
 fn settle_removes_live_pages_and_disables_old_input() -> Result<()> {
     let f = Fixture::new()?;
     let a = f.root("/a")?;
+    let (x, y) = common::element_point(&f.ui, "link")?;
+    common::xdo(&["mousemove", &x.to_string(), &y.to_string(), "click", "2"])?;
+    common::wait("queued branch", || {
+        f.ui.snapshot().is_ok_and(|s| {
+            s.visits
+                .iter()
+                .any(|v| v.parent == Some(a) && v.opened_at.is_none())
+        })
+    })?;
+    let child =
+        f.ui.snapshot()?
+            .visits
+            .into_iter()
+            .find(|v| v.parent == Some(a) && v.opened_at.is_none())
+            .unwrap()
+            .id;
+    f.select(child)?;
     let native = f.ui.pages.selected_page().native.clone();
     let tree = f
         .ui
@@ -229,7 +252,7 @@ fn settle_removes_live_pages_and_disables_old_input() -> Result<()> {
         .tree_of(a)
         .unwrap();
     let b = f.root("/b")?;
-    f.select(a)?;
+    f.select(child)?;
     f.ui.pages.settle_tree(tree)?;
     assert!(
         !native.is_sensitive(),
@@ -240,6 +263,47 @@ fn settle_removes_live_pages_and_disables_old_input() -> Result<()> {
     })?;
     common::pump(1300);
     assert!(!f.ui.pages.live_visits().contains(&a));
+    assert!(!f.ui.pages.live_visits().contains(&child));
+    Ok(())
+}
+fn settled_page_rejects_clicks_while_dormant_landing_loads() -> Result<()> {
+    let f = Fixture::new()?;
+    let landing = f.root("/slow")?;
+    let old = f.root("/old")?;
+    common::pump(1200);
+    let released = std::rc::Rc::new(std::cell::Cell::new(false));
+    let observed = released.clone();
+    f.ui.pages.observe_release(move |event| {
+        if event.phase == canopy::pages::ReleasePhase::Released {
+            observed.set(true);
+        }
+    });
+    f.ui.pages.inject_memory_sample(Some(u64::MAX));
+    common::wait("landing checkpointed", || released.get())?;
+    assert!(!f.ui.pages.live_visits().contains(&landing));
+    let native = f.ui.pages.selected_page().native.clone();
+    let tree = f
+        .ui
+        .pages
+        .read(|b| canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?
+        .tree_of(old)
+        .unwrap();
+    let (x, y) = common::element_point(&f.ui, "link")?;
+    f.ui.pages.settle_tree(tree)?;
+    assert!(!native.is_sensitive());
+    common::xdo(&["mousemove", &x.to_string(), &y.to_string(), "click", "1"])?;
+    common::pump(200);
+    assert_eq!(
+        f.hits("/clicked"),
+        0,
+        "settled page must reject the click while landing loads"
+    );
+    common::wait("dormant landing selected", || {
+        f.ui.snapshot().is_ok_and(|s| s.current == Some(landing))
+            && f.ui.pages.selected_page().native.uri().as_deref() == Some(f.url("/slow").as_str())
+            && !f.ui.pages.selected_page().native.is_loading()
+    })?;
+    assert_eq!(f.hits("/slow"), 2);
     Ok(())
 }
 fn audible_hidden_page_is_protected() -> Result<()> {
@@ -279,6 +343,10 @@ fn main() -> Result<()> {
         return small_budget_drops_hidden_page();
     }
     let cases: &[Case] = &[
+        (
+            "settled_page_rejects_clicks_while_dormant_landing_loads",
+            settled_page_rejects_clicks_while_dormant_landing_loads,
+        ),
         (
             "audible_hidden_page_is_protected",
             audible_hidden_page_is_protected,

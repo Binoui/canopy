@@ -152,6 +152,11 @@ fn main() -> Result<()> {
         web_url(&format!("http://{address}/waiting"))?,
         source,
     )?;
+    // The fixture wrote through another connection; live landings do not reload to notify Ui.
+    ui.dispatch(ChromeIntent::PinTree {
+        tree: tree(&ui, roots[0]),
+        pinned: true,
+    });
     start_page(&ui)?;
     let expected: Vec<_> = roots.iter().map(ToString::to_string).collect();
     assert_eq!(
@@ -166,7 +171,11 @@ fn main() -> Result<()> {
         )?,
         1
     );
-    assert!(text(&ui, ".pinned-card .count").contains('1'));
+    assert!(
+        text(&ui, ".pinned-card .count").contains('1'),
+        "waiting count text={}",
+        text(&ui, ".pinned-card .count")
+    );
     assert!(text(&ui, ".pinned-card .pc-meta").contains("pages"));
     assert_eq!(
         chrome(

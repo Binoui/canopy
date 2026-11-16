@@ -46,6 +46,7 @@ pub(super) struct CheckpointEntry {
 // The per-branch PR calls the checkpoint lifecycle.
 #[cfg_attr(not(feature = "gui-smoke"), allow(dead_code))]
 pub(super) struct Checkpoint {
+    pub(super) last_shown: u64,
     pub(super) bytes: glib::Bytes,
     pub(super) entries: Vec<CheckpointEntry>,
     pub(super) current: usize,
@@ -173,6 +174,7 @@ impl Pages {
 }
 
 pub(super) struct LivePage {
+    pub(super) last_shown: Cell<u64>,
     pub(super) native: webkit2gtk::WebView,
     state: Rc<NativeState>,
     signals: RefCell<Vec<(glib::Object, glib::SignalHandlerId)>>,
@@ -448,7 +450,7 @@ impl LivePage {
         });
         // WebKit defaults may present modal UI even for an unmapped view.
         {
-            let weak = pages_for_state(&state);
+            let weak = state.pages.clone();
             signals.push((
                 native.clone().upcast(),
                 native.connect_script_dialog(move |view, dialog| {
@@ -466,7 +468,7 @@ impl LivePage {
                     }
                 }),
             ));
-            let weak = pages_for_state(&state);
+            let weak = state.pages.clone();
             signals.push((
                 native.clone().upcast(),
                 native.connect_permission_request(move |view, request| {
@@ -479,7 +481,7 @@ impl LivePage {
                     }
                 }),
             ));
-            let weak = pages_for_state(&state);
+            let weak = state.pages.clone();
             signals.push((
                 native.clone().upcast(),
                 native.connect_run_file_chooser(move |view, request| {
@@ -492,12 +494,12 @@ impl LivePage {
                     }
                 }),
             ));
-            let weak = pages_for_state(&state);
+            let weak = state.pages.clone();
             signals.push((
                 native.clone().upcast(),
                 native.connect_enter_fullscreen(move |view| !is_selected(&weak, view)),
             ));
-            let weak = pages_for_state(&state);
+            let weak = state.pages.clone();
             signals.push((
                 native.clone().upcast(),
                 native.connect_print(move |view, _| !is_selected(&weak, view)),
@@ -520,7 +522,7 @@ impl LivePage {
                         if let Some(index) = index {
                             let hidden = owner.branches.hidden.borrow_mut().remove(index);
                             if let Ok(saved) = hidden.page.checkpoint() {
-                                owner.branches.dormant.borrow_mut().push(saved);
+                                owner.remember_checkpoint(saved);
                             }
                         }
                     }
@@ -922,6 +924,7 @@ impl LivePage {
         signals.push((native.clone().upcast(), favicon));
         state.owner().register_view(&native);
         Ok(Self {
+            last_shown: Cell::new(0),
             native,
             state,
             signals: RefCell::new(signals),
@@ -1096,6 +1099,7 @@ impl LivePage {
             .and_then(|s| s.serialize())
             .context("No session state.")?;
         Ok(Checkpoint {
+            last_shown: self.last_shown.get(),
             bytes,
             entries,
             current,
@@ -1998,12 +2002,14 @@ impl NativeState {
         self.navigation.borrow_mut().same_document(url);
         if let Some(document) = self.ticket() {
             self.bind_document();
-            let result = self
-                .owner()
-                .browser
-                .borrow_mut()
-                .select_document(&self.navigation.borrow(), &document);
-            self.report(result);
+            if is_selected(&self.pages, &self.native) {
+                let result = self
+                    .owner()
+                    .browser
+                    .borrow_mut()
+                    .select_document(&self.navigation.borrow(), &document);
+                self.report(result);
+            }
             self.emit(PageEvent::Changed);
         }
     }
@@ -2208,9 +2214,6 @@ impl NativeState {
     }
 }
 
-fn pages_for_state(state: &NativeState) -> Weak<Pages> {
-    state.pages.clone()
-}
 fn is_selected(weak: &Weak<Pages>, view: &webkit2gtk::WebView) -> bool {
     weak.upgrade().is_some_and(|pages| {
         pages
@@ -2401,6 +2404,7 @@ mod checkpoint_tests {
         let b = Url::parse("https://example.org/b").unwrap();
         let ids = browser.add_roots(&[a.clone(), b.clone()]).unwrap();
         let mut saved = Checkpoint {
+            last_shown: 0,
             bytes: glib::Bytes::from_static(&[]),
             entries: vec![
                 CheckpointEntry {

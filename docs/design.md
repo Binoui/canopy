@@ -124,7 +124,8 @@ focus follows the page only if the outgoing page owned it.
 Candidate switches keep the outgoing real page above the incoming page until the
 existing snapshot/frame handshake completes, with its one second cap. Returning
 to a retained document shows it directly and hides the outgoing view; the live
-view already owns rendered content. Xvfb pixel measurements compare both paths. Only real
+view already owns rendered content. Xvfb pixel measurements found medians of 17.4 ms for direct live returns and
+34.7 ms with the hold, without observed blank pixels in 20 direct returns. Only real
 page views cover pages. After the hold the outgoing page is hidden and retained;
 the blank startup view is discarded. Pages::place_view remains the sole owner of
 all page allocations, including hidden views, at creation, resize, show and map.
@@ -163,7 +164,9 @@ clears its login offer, including when a landing is still loading. The real page
 may remain as the visual cover. All the tree's hidden pages are checkpointed and
 destroyed, even if audible. The selected page follows after its landing is shown;
 a live landing selects immediately. Settled checkpoints remain available for an
-explicit later reopening. No checkpoint is persisted to SQLite.
+explicit later reopening. A reopening requested during the settled branch's scroll
+capture waits for that checkpoint; live landings still select immediately. No
+checkpoint is persisted to SQLite.
 
 A checkpoint owns session bytes, native-order entry bindings and current position,
 without native objects. Revival validates every position, URL and stored visit URL
