@@ -106,6 +106,23 @@ impl Drop for Fixture {
         common::pump(100);
     }
 }
+fn eval_native(view: &webkit2gtk::WebView, script: &str) -> Result<serde_json::Value> {
+    use javascriptcore::ValueExt;
+    let result = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let received = result.clone();
+    view.evaluate_javascript(
+        script,
+        None,
+        None,
+        None::<&gio::Cancellable>,
+        move |value| {
+            *received.borrow_mut() = Some(value.map(|value| value.to_str().to_string()));
+        },
+    );
+    common::wait("hidden script result", || result.borrow().is_some())?;
+    let text = result.borrow_mut().take().unwrap()?;
+    Ok(serde_json::from_str(&text)?)
+}
 fn live_switch_keeps_document_and_running_script() -> Result<()> {
     let f = Fixture::new()?;
     let a = f.root("/a")?;
@@ -113,7 +130,11 @@ fn live_switch_keeps_document_and_running_script() -> Result<()> {
         &f.ui,
         "field.value='kept';scrollTo(0,800);window.startCounter=counter;JSON.stringify(true)",
     )?;
+    let native = f.ui.pages.selected_page().native.clone();
     f.root("/b")?;
+    let hidden_before = eval_native(&native, "JSON.stringify(counter)")?
+        .as_u64()
+        .unwrap();
     let sample = thread::spawn(canopy::budget::measure).join().unwrap();
     println!(
         "MEASURE sandbox={} sample={sample:?}",
@@ -121,6 +142,13 @@ fn live_switch_keeps_document_and_running_script() -> Result<()> {
     );
     sample?;
     common::pump(1200);
+    let hidden_after = eval_native(&native, "JSON.stringify(counter)")?
+        .as_u64()
+        .unwrap();
+    assert!(
+        hidden_after > hidden_before,
+        "the script counter advances while the page stays hidden"
+    );
     f.select(a)?;
     assert_eq!(f.hits("/a"), 1, "live return must send no request");
     let state = common::eval(
