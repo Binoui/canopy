@@ -298,11 +298,7 @@ fn marks_share_surfaces_without_moving_nodes() -> Result<()> {
 fn shot(f: &Fixture, name: &str) -> Result<()> {
     if let Ok(folder) = std::env::var("CANOPY_MARK_SHOTS") {
         common::pump(300);
-        let id = common::window_id()?;
-        let status = std::process::Command::new("import")
-            .args(["-window", &id, &format!("{folder}/{name}.png")])
-            .status()?;
-        assert!(status.success(), "capture real Xvfb window");
+        common::save_window(&f.ui, &format!("{folder}/{name}.png"))?;
     }
     Ok(())
 }
