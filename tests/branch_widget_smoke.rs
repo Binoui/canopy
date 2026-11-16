@@ -1024,6 +1024,46 @@ fn page_views_have_no_paint_handlers() -> Result<()> {
     hold_covers_until_ready()
 }
 
+fn page_focus_survives_inactive_switch() -> Result<()> {
+    let u = U::new()?;
+    u.root("/colour/a")?;
+    pump(1200);
+    let old = u.ui.pages.selected_page().native;
+    focus_window()?;
+    old.grab_focus();
+    pump(50);
+    let sink = gtk::Window::new(gtk::WindowType::Toplevel);
+    sink.set_title("Focus sink");
+    sink.show_all();
+    pump(50);
+    let output = std::process::Command::new("xdotool")
+        .args(["search", "--onlyvisible", "--name", "^Focus sink$"])
+        .output()?;
+    let id = String::from_utf8(output.stdout)?.trim().to_owned();
+    xdo(&["windowfocus", &id])?;
+    pump(100);
+    assert!(old.is_focus());
+    assert!(!old.has_focus());
+    u.root("/colour/b")?;
+    pump(1200);
+    let selected = u.ui.pages.selected_page().native;
+    let focused = selected.is_focus();
+    assert!(
+        !selected.has_focus(),
+        "switch does not activate an inactive window"
+    );
+    sink.close();
+    assert!(
+        focused,
+        "logical page focus must move even while the window is inactive"
+    );
+    key("ctrl+t")?;
+    wait("new-tree focus after reactivating the window", || {
+        chrome_focused(&u.ui, "#start-search")
+    })?;
+    Ok(())
+}
+
 fn layout_stays_in_slot() -> Result<()> {
     let u = U::new()?;
     let a = u.root("/colour/a")?;
@@ -1128,6 +1168,7 @@ fn main() -> Result<()> {
     type Case = (&'static str, fn() -> Result<()>);
     let cases: &[Case] = &[
         ("first_address", first_address_survives_initial_home),
+        ("inactive_focus", page_focus_survives_inactive_switch),
         ("picture", hold_covers_until_ready),
         ("structure", page_views_have_no_paint_handlers),
         ("busy_picture", switch_while_picture_waits_for_script),

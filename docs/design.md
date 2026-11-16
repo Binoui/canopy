@@ -219,6 +219,8 @@ view in the same rectangle beneath the outgoing view and below chrome. Only the
 outgoing window is promoted to a native GDK window, so GtkFixed draw order cannot
 paint the incoming view over it. Incoming windows retain their normal backing. The outgoing
 window passes pointer input through; the event filter rejects nonselected input.
+The commit transfers logical GTK page focus even when the host window is inactive,
+without activating that window; global input focus alone cannot identify its focus owner.
 
 The hold ends after an isolated-world script sees a body and two animation frames,
 a visible-region snapshot completes (its image is discarded), and one further

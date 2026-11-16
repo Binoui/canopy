@@ -550,7 +550,7 @@ impl Pages {
         self.branches.candidate_saved.borrow_mut().take();
         self.end_hold();
         let old = self.branches.live.borrow_mut().replace(candidate.clone());
-        let focus = old.as_ref().is_some_and(|page| page.native.has_focus());
+        let focus = old.as_ref().is_some_and(|page| page.native.is_focus());
         if let Some(old) = old {
             self.hold_page(old, &candidate);
         } else {
