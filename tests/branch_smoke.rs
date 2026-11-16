@@ -487,9 +487,7 @@ fn owner_fork_queue_scroll() -> Result<()> {
     f.pages.go(Go::Parent)?;
     f.arrived(search)?;
     let q = queued(&f, "/d")?;
-    wait("queued page requested in background", || {
-        f.server.hits("/d") == 1
-    })?;
+    assert_eq!(f.server.hits("/d"), 0);
     f.eval("scrollTo(0,1600); return true;")?;
     settle();
     f.pages.go(Go::Visit(q))?;
@@ -922,6 +920,9 @@ fn overlapping_ancestors() -> Result<()> {
     assert!(f.pages.selected_history_visits().contains(&a));
     assert!(!f.pages.selected_history_visits().contains(&q1));
     assert!(!f.pages.selected_history_visits().contains(&q2));
+    wait("older queued page checkpointed under pressure", || {
+        !f.pages.live_visits().contains(&q1)
+    })?;
     f.pages.go(Go::Visit(q1))?;
     f.arrived(q1)?;
     assert_eq!(f.pages.selected_history_visits(), vec![q1]);
