@@ -31,6 +31,7 @@ pub enum Go {
 }
 
 pub enum PageEvent {
+    FormReturn(Option<u64>),
     Selected,
     Changed,
     Loading(bool),
@@ -767,6 +768,7 @@ impl Pages {
     }
 
     fn promote_live(&self, incoming: Rc<LivePage>) {
+        self.answer_form_return(false);
         self.end_hold();
         let last_shown = self.branches.clock.get();
         self.branches.clock.set(last_shown + 1);
@@ -802,6 +804,7 @@ impl Pages {
     }
 
     fn promote(&self, candidate: Rc<LivePage>) {
+        self.answer_form_return(false);
         if self.retired_selected() {
             self.promote_live(candidate);
             return;
@@ -1419,7 +1422,22 @@ impl Pages {
             .is_some_and(|p| !p.native.is_sensitive())
     }
 
+    pub fn answer_form_return_for(&self, question: u64, proceed: bool) {
+        let page = self.branches.live.borrow().clone();
+        if let Some(page) = page {
+            page.answer_form_return_for(question, proceed);
+        }
+    }
+
+    pub fn answer_form_return(&self, proceed: bool) {
+        let page = self.branches.live.borrow().clone();
+        if let Some(page) = page {
+            page.answer_form_return(proceed);
+        }
+    }
+
     pub fn go(&self, go: Go) -> Result<()> {
+        self.answer_form_return(false);
         if self.retired_selected()
             && matches!(
                 go,
@@ -1596,6 +1614,7 @@ impl Pages {
     }
 
     pub fn settle_tree(&self, tree: TreeId) -> Result<()> {
+        self.answer_form_return(false);
         anyhow::ensure!(self.branches.live.borrow().is_some(), "No selected page.");
         let forest =
             self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
@@ -1772,6 +1791,7 @@ impl Pages {
         }
     }
     pub fn reload(&self) -> Result<()> {
+        self.answer_form_return(false);
         if self.retired_selected() {
             return Ok(());
         }

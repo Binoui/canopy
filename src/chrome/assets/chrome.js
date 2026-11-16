@@ -51,6 +51,7 @@ const S = {
   systemDark: null,
   surface: 'reading',
   overlay: null,
+  formReturn: false,
   treeSide: 'tree',
   open: false,
   layer: 'none',
@@ -157,10 +158,10 @@ function setLayer(layer) {
 /// Tells Rust how far down the view must reach (null for the whole window), and whether
 /// Escape is ours. Below that, the page gets the pointer.
 function syncLayer() {
-  const modal = !!(S.reader || S.palette || S.popover || S.card || S.open || S.overlay
+  const modal = !!(S.formReturn || S.reader || S.palette || S.popover || S.card || S.open || S.overlay
     || (S.surface !== 'reading' && current()));
   let height = HEADER + REST;
-  if (S.palette || S.reader || S.overlay || S.surface !== 'reading') {
+  if (S.formReturn || S.palette || S.reader || S.overlay || S.surface !== 'reading') {
     height = null;
   } else {
     if (S.open || strip.anim) {
@@ -1483,8 +1484,15 @@ window.canopy = {
     }
   },
   /// Closes the topmost thing Escape owns.
+  formReturn(open) {
+    S.formReturn = open;
+    $('form-return').hidden = !open;
+    syncLayer();
+    if (open) $('form-return-cancel').focus();
+  },
   escape() {
-    if (S.reader) closeReader();
+    if (S.formReturn) answerFormReturn(false);
+    else if (S.reader) closeReader();
     else if (S.palette) closePalette();
     else if (S.popover) closePopover();
     else if (S.card) hideCard();
@@ -1702,3 +1710,24 @@ new ResizeObserver(() => fitTabs()).observe($('tabs'));
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
 
 post({ t: 'ready' });
+
+function answerFormReturn(proceed) {
+  if (!S.formReturn) return;
+  const question = S.formReturn;
+  canopy.formReturn(null);
+  post({ t: 'form-return', question, proceed });
+  post({ t: 'focus', target: 'page' });
+}
+$('form-return-cancel').addEventListener('click', () => answerFormReturn(false));
+$('form-return-continue').addEventListener('click', () => answerFormReturn(true));
+$('form-return').querySelector('.scrim').addEventListener('mousedown', () => answerFormReturn(false));
+document.addEventListener('mousedown', (event) => {
+  if (S.formReturn && !event.target.closest('.form-return-box')) answerFormReturn(false);
+}, true);
+document.addEventListener('keydown', (event) => {
+  if (!S.formReturn || event.key !== 'Tab') return;
+  event.preventDefault();
+  const cancel = $('form-return-cancel');
+  const proceed = $('form-return-continue');
+  (document.activeElement === cancel ? proceed : cancel).focus();
+});

@@ -121,6 +121,7 @@ struct NativeState {
     adopted: Cell<bool>,
     download_origin: Option<VisitId>,
     issue: RefCell<Issue>,
+    form_return: RefCell<Option<(u64, PolicyDecision)>>,
     load_generation: Cell<u64>,
     foreground_generation: Cell<u64>,
     same_document_request: RefCell<Option<Url>>,
@@ -252,7 +253,24 @@ impl LivePage {
             .iter()
             .any(|e| e.visit == visit && entries.contains(&e.item))
     }
+    pub(super) fn answer_form_return_for(&self, question: u64, proceed: bool) {
+        let matches = self
+            .state
+            .form_return
+            .borrow()
+            .as_ref()
+            .is_some_and(|(id, _)| *id == question);
+        if matches {
+            self.answer_form_return(proceed);
+        }
+    }
+
+    pub(super) fn answer_form_return(&self, proceed: bool) {
+        self.state.answer_form_return(proceed);
+    }
+
     pub(super) fn cancel_foreground(&self) {
+        self.answer_form_return(false);
         let state = &self.state;
         state.end_response();
         state
@@ -471,6 +489,7 @@ impl LivePage {
             }),
             navigation: RefCell::new(Navigation::default()),
             issue: RefCell::new(Issue::Idle),
+            form_return: RefCell::new(None),
             load_generation: Cell::new(0),
             foreground_generation: Cell::new(0),
             same_document_request: RefCell::new(None),
@@ -553,6 +572,7 @@ impl LivePage {
                 native.clone().upcast(),
                 native.connect_web_process_terminated(move |_, _| {
                     if let Some(state) = weak.upgrade() {
+                        state.answer_form_return(false);
                         let owner = state.owner();
                         let view = state.navigation.borrow().view_id();
                         if state.is_background() {
@@ -1026,6 +1046,11 @@ impl LivePage {
     }
 
     fn detach(&self) {
+        if self.state.pages.upgrade().is_some() {
+            self.answer_form_return(false);
+        } else if let Some(decision) = self.state.form_return.borrow_mut().take() {
+            decision.1.ignore();
+        }
         self.state.end_response();
         if self.state.lifecycle.replace(Lifecycle::Released) == Lifecycle::Released {
             return;
@@ -1753,7 +1778,80 @@ impl NativeState {
         });
     }
 
+    fn answer_form_return(self: &Rc<Self>, proceed: bool) {
+        let held = self.form_return.borrow_mut().take();
+        let Some((_, decision)) = held else { return };
+        self.emit(PageEvent::FormReturn(None));
+        if proceed {
+            if !self.decide_navigation(&decision, PolicyDecisionType::NavigationAction) {
+                decision.use_();
+            }
+        } else {
+            self.owner()
+                .discard_view_continuation(&self.navigation.borrow());
+            let ticket = self.navigation.borrow().pending_ticket();
+            if let Some(ticket) = ticket {
+                self.navigation.borrow_mut().failed(ticket);
+            }
+            *self.issue.borrow_mut() = Issue::Idle;
+            self.issued.borrow_mut().take();
+            self.traversal.borrow_mut().take();
+            self.pending_scroll.set(None);
+            self.end_response();
+            decision.ignore();
+        }
+    }
+
     fn decide(self: &Rc<Self>, decision: &PolicyDecision, kind: PolicyDecisionType) -> bool {
+        if kind == PolicyDecisionType::NavigationAction {
+            self.answer_form_return(false);
+            if let Some(mut action) = decision
+                .downcast_ref::<NavigationPolicyDecision>()
+                .and_then(|n| n.navigation_action())
+            {
+                let returning = action.navigation_type() == NavigationType::BackForward
+                    && action
+                        .request()
+                        .is_some_and(|r| r.http_method().as_deref() == Some("POST"));
+                if returning || action.navigation_type() == NavigationType::FormResubmitted {
+                    let main = action.frame_name().is_none()
+                        && (action.navigation_type() != NavigationType::BackForward
+                            || self.current_entry_document() != Some(self.history_document.get()));
+                    let restored = self.history.borrow().iter().any(|e| {
+                        e.needs_get && Some(&e.item) == self.history_cursor.borrow().as_ref()
+                    });
+                    if main && !restored {
+                        let selected = self
+                            .owner()
+                            .branches
+                            .live
+                            .borrow()
+                            .as_ref()
+                            .is_some_and(|p| p.native == self.native);
+                        if selected && !self.is_background() {
+                            self.foreground_requested();
+                            static QUESTIONS: std::sync::atomic::AtomicU64 =
+                                std::sync::atomic::AtomicU64::new(1);
+                            let question =
+                                QUESTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            self.form_return.replace(Some((question, decision.clone())));
+                            self.emit(PageEvent::FormReturn(Some(question)));
+                        } else {
+                            decision.ignore();
+                        }
+                        return true;
+                    }
+                }
+            }
+        }
+        self.decide_navigation(decision, kind)
+    }
+
+    fn decide_navigation(
+        self: &Rc<Self>,
+        decision: &PolicyDecision,
+        kind: PolicyDecisionType,
+    ) -> bool {
         if kind == PolicyDecisionType::Response {
             let Some(response) = decision.downcast_ref::<ResponsePolicyDecision>() else {
                 return false;
