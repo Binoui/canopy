@@ -447,6 +447,18 @@ fn audible_hidden_page_is_protected() -> Result<()> {
     f.ui.pages.inject_memory_sample(Some(u64::MAX));
     common::pump(700);
     assert!(f.ui.pages.live_visits().contains(&a));
+    let tree = f
+        .ui
+        .pages
+        .read(|b| canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?
+        .tree_of(a)
+        .unwrap();
+    f.select(a)?;
+    f.ui.pages.settle_tree(tree)?;
+    assert!(
+        native.is_muted(),
+        "settling stops selected audio immediately, including while it covers a landing"
+    );
     Ok(())
 }
 fn small_budget_drops_hidden_page() -> Result<()> {

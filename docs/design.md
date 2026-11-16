@@ -162,8 +162,8 @@ protected-only registries wait for the ordinary slow period. Checkpointing uses 
 existing scroll capture (500 ms cap), native session bytes and history bindings.
 Commands queue during holds or checkpoint capture and drain afterward.
 
-Settling immediately disables the selected page's input and native recording and
-clears its login offer, including when a landing is still loading. The real page
+Settling immediately disables the selected page's input and native recording,
+mutes its audio, and clears its login offer, including when a landing is still loading. The real page
 may remain as the visual cover. All the tree's hidden pages are checkpointed and
 destroyed, even if audible. The selected page follows after its landing is shown;
 a live landing selects immediately. Settled checkpoints remain available for an

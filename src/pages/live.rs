@@ -286,6 +286,7 @@ impl LivePage {
     }
     pub(super) fn retire(&self) {
         self.native.set_sensitive(false);
+        self.native.set_is_muted(true);
         self.cancel_foreground();
         self.state.lifecycle.set(Lifecycle::CapturingScroll);
     }
