@@ -1625,6 +1625,7 @@ impl Pages {
         &self,
         done: impl FnOnce(Result<live::Checkpoint>) + 'static,
     ) -> Result<()> {
+        self.end_hold();
         let page = self
             .branches
             .live
