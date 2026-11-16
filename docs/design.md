@@ -199,8 +199,18 @@ history entries; SQLite supplies the checkpoint's current entry. Forms and scrip
 are lost when a branch is released. Shared PageContext services survive source-view
 destruction. Continuation cancellation checks the owning view's ticket.
 
-Live presence has no marker in the strip or forest. Background loading of queued
-pages remains outside this page registry.
+Hidden seen pages expose their current Document visit as a live set in the existing
+chrome frame. Building it scans hidden handles once (O(hidden pages), no database
+queries). Only that current visit gets a filled grey bottom-left dot (green is kept
+for pages not read yet, whose top-right dot is larger);
+selected pages, native back entries and dormant checkpoints do not. The strip,
+forest, tree sheet tree/list and tabs share the mark; a tab uses its tree's last
+visit. Preview metadata, node tooltips and tree list details say “Open in memory”.
+Never-seen pages keep their separate top-right waiting dot. Absolute positioning
+preserves node geometry. Hold completion, pressure removal and hidden process death
+notify Changed; candidate history routing and cancellation also notify when a page
+leaves or rejoins the hidden registry. Selection, hidden navigation and settling use
+existing refreshes.
 
 ### Switch cancellation and page Back
 

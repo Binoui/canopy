@@ -9,7 +9,7 @@
 :root {
   --bg: #ffffff; --chrome: #fbfbfa; --border: #ebebea; --text: #37352f; --muted: #787774;
   --faint: #b3b2ad; --hover: rgba(55, 53, 47, .06); --tile: #ffffff; --tile-border: #e3e3e0;
-  --line: #d2d2ce; --green: #2f9e5f; --green-soft: rgba(47, 158, 95, .13); --green-ink: #1f7a47;
+  --line: #d2d2ce; --memory: #8a8985; --green: #2f9e5f; --green-soft: rgba(47, 158, 95, .13); --green-ink: #1f7a47;
   --scrim: rgba(15, 15, 15, .16); --shadow: rgba(15, 15, 15, .10); --danger: #d44c47;
   --header: 42px; --rest: 52px;
   color-scheme: light;
@@ -17,7 +17,7 @@
 :root.dark {
   --bg: #0f0f0f; --chrome: #141414; --border: #252525; --text: #ececec; --muted: #8f8f8f;
   --faint: #5c5c5c; --hover: rgba(255, 255, 255, .06); --tile: #1b1b1b; --tile-border: #2d2d2d;
-  --line: #3a3a3a; --green: #3fcf7d; --green-soft: rgba(63, 207, 125, .15); --green-ink: #7fe3a9;
+  --line: #3a3a3a; --memory: #a8a8a8; --green: #3fcf7d; --green-soft: rgba(63, 207, 125, .15); --green-ink: #7fe3a9;
   --scrim: rgba(0, 0, 0, .5); --shadow: rgba(0, 0, 0, .55); --danger: #e5706b;
   color-scheme: dark;
 }
@@ -120,7 +120,7 @@ kbd { font: 500 10.5px "Inter", sans-serif; color: var(--faint); border: 1px sol
 .pending-dot { position: absolute; border-radius: 50%; background: var(--bg); box-shadow: inset 0 0 0 1.5px var(--green), 0 0 0 2px var(--chrome); pointer-events: none; }
 .pending-dot.loaded { background: var(--green); box-shadow: 0 0 0 2px var(--chrome); }
 .mk, .forest-node .mk { position: relative; display: inline-grid; flex: none; overflow: visible; }
-.mk .pending-dot { right: -3px; top: -3px; width: 7px; height: 7px; }
+.mk .pending-dot { right: -4px; top: -4px; width: 9px; height: 9px; }
 .mk:has(.pending-dot:not(.loaded)) .fav { opacity: .5; }
 .badge {
   position: absolute; min-width: 15px; height: 14px; padding: 0 3px; border: 1px solid var(--tile-border); border-radius: 7px;
@@ -390,3 +390,13 @@ body[data-overlay="tree"] #pins .pin:not(.on) { visibility: hidden; }
 .forest-head.settled:hover, .forest-node.settled:hover { opacity: 1; }
 .forest-divider { position: absolute; left: 34px; white-space: nowrap; display: flex; gap: 12px; align-items: baseline; color: var(--muted); font-size: 12px; }
 .forest-divider b { font-weight: 500; }
+
+/* Grey means the page is still in memory. Green stays for pages not read yet. */
+.live-dot { position: absolute; left: -2px; bottom: -2px; width: 8px; height: 8px; border-radius: 50%; background: var(--memory); box-shadow: 0 0 0 1.5px var(--chrome); pointer-events: none; }
+.mk .live-dot { left: -3px; bottom: -3px; }
+/* Stacked small tiles overlap, so their dot stays inside the tile. */
+.node.sm > .live-dot { left: 1px; bottom: 1px; width: 6px; height: 6px; box-shadow: 0 0 0 1.5px var(--tile); }
+/* Download leaves own the bottom-left corner; the dot moves up the left edge. */
+.node > .live-dot.above-leaves { bottom: 9px; }
+
+.tree-tile > .live-dot, .forest-node > .live-dot { left: 2px; bottom: 2px; }

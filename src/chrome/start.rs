@@ -75,6 +75,7 @@ mod tests {
             )
             .unwrap(),
             loaded: Default::default(),
+            live: Default::default(),
             capture_enabled: true,
             theme: ThemeMode::Dark,
             declined: [frozen[0].key()].into(),
@@ -108,6 +109,7 @@ mod tests {
             )
             .unwrap(),
             loaded: Default::default(),
+            live: Default::default(),
             capture_enabled: true,
             theme: ThemeMode::Dark,
             declined: Default::default(),
