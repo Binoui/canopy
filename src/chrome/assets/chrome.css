@@ -393,3 +393,5 @@ body[data-overlay="tree"] #pins .pin:not(.on) { visibility: hidden; }
 
 .live-dot { position: absolute; left: 1px; bottom: 1px; width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 1.5px var(--tile); pointer-events: none; }
 .mk .live-dot { left: -2px; bottom: -2px; }
+
+.tree-tile > .live-dot, .forest-node > .live-dot { left: 2px; bottom: 2px; }

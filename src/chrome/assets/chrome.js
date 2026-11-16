@@ -94,8 +94,8 @@ function fav(url, opened, size) {
 const waitState = (v) => v.queued ? (v.loaded ? 'loaded' : 'unloaded') : null;
 const markClass = (v) => waitState(v) === 'loaded' ? ' pending loaded' : waitState(v) ? ' pending' : '';
 const visitFav = (v, size) => fav(v.url, waitState(v) !== 'unloaded', size);
-const markedFav = (v, size) => `<span class="mk">${visitFav(v, size)}`
-  + (v.live ? '<i class="live-dot"></i>' : '')
+const markedFav = (v, size, live = v.live) => `<span class="mk">${visitFav(v, size)}`
+  + (live ? '<i class="live-dot"></i>' : '')
   + (waitState(v) ? `<i class="pending-dot${waitState(v) === 'loaded' ? ' loaded' : ''}"></i>` : '') + '</span>';
 
 // ---------- timers and layers, as the GTK chrome's presentation state machine ----------
@@ -1009,7 +1009,7 @@ function renderSheet(reveal) {
   $('tree-edges').innerHTML = view.edges.map((e) => `<path class="${e.kind}" d="M${e.c[0]} C${e.c[1]} ${e.c[2]} ${e.c[3]}"/>`).join('');
   $('tree-nodes').innerHTML = view.tiles.map((t) => {
     const v = visit(t.id);
-    return `<button class="tree-tile${t.path ? ' path' : ''}${t.id === current() ? ' current' : ''}${markClass(v)}" data-id="${t.id}" title="${esc(v.label + (v.live ? ' · Open in memory' : ''))}" style="left:${t.x-t.w/2}px;top:${t.y-t.s/2}px;width:${t.w}px;height:${t.s}px">${markedFav(v, 16)}<span class="t">${esc(v.label)}</span></button>`;
+    return `<button class="tree-tile${t.path ? ' path' : ''}${t.id === current() ? ' current' : ''}${markClass(v)}" data-id="${t.id}" title="${esc(v.label + (v.live ? ' · Open in memory' : ''))}" style="left:${t.x-t.w/2}px;top:${t.y-t.s/2}px;width:${t.w}px;height:${t.s}px">${markedFav(v, 16, false)}${v.live ? '<i class="live-dot"></i>' : ''}<span class="t">${esc(v.label)}</span></button>`;
   }).join('');
   $('tree-list').innerHTML = view.rows.map((r) => {
     const v = visit(r.id);
@@ -1242,7 +1242,7 @@ function renderForest() {
     maxY = Math.max(maxY, n.y + n.s / 2);
     const cls = `forest-node${n.settled ? ' settled' : ''}${S.forestLabels ? '' : ' icon-only'}${path.has(n.id) ? ' path' : ''}${markClass(v)}`;
     return `<button class="${cls}" data-id="${n.id}" title="${esc(v.label + (v.live ? ' · Open in memory' : ''))}" style="left:${n.x - n.w / 2}px;top:${n.y - n.s / 2}px;width:${n.w}px;height:${n.s}px">`
-      + markedFav(v, 16) + (S.forestLabels ? `<span>${esc(v.label)}</span>` : '') + '</button>';
+      + markedFav(v, 16, false) + (v.live ? '<i class="live-dot"></i>' : '') + (S.forestLabels ? `<span>${esc(v.label)}</span>` : '') + '</button>';
   }).join('');
   const heads = layout.heads.map((h) => `<button class="forest-head${h.settled ? ' settled' : ''}" data-id="${h.id}" style="top:${h.y}px"><b>${esc(h.title)}</b><span>${esc(h.detail)}</span></button>`).join('');
   const edges = layout.nodes.map((b) => {
