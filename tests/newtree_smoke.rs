@@ -79,6 +79,8 @@ fn main() -> Result<()> {
     assert!(text(&ui, "#start-content")
         .contains("Pin a tree from its tab menu. It stays here and never settles on its own."));
     assert!(visible(&ui, "#strip-placeholder"));
+    assert!(visible(&ui, "#new-tree-tab[aria-selected=true]"));
+    assert!(!visible(&ui, "#new-tree-close"));
     for mode in [ThemeMode::Dark, ThemeMode::Light] {
         ui.dispatch(ChromeIntent::SetTheme(mode));
         pump(200);
@@ -120,6 +122,7 @@ fn main() -> Result<()> {
             pinned: true,
         });
     }
+    new_tree_tab(&ui, directory.path())?;
     ctrl_d(&ui)?;
     bookmarks(&ui, directory.path(), &format!("http://{address}"))?;
     let root = roots[1];
@@ -371,6 +374,72 @@ fn main() -> Result<()> {
     println!("PASS all-settled placeholder clears on card click.");
     chrome_fill(&ui, directory.path())?;
     ui.window.close();
+    Ok(())
+}
+
+fn new_tree_tab(ui: &Ui, data: &std::path::Path) -> Result<()> {
+    let before = ui.snapshot()?;
+    let connection = rusqlite::Connection::open(data.join("forest.sqlite3"))?;
+    type StoredSession = (Option<String>, Vec<(String, Option<i64>)>);
+    let stored = || -> rusqlite::Result<StoredSession> {
+        let current = connection.query_row("SELECT current_id FROM session", [], |r| r.get(0))?;
+        let mut statement =
+            connection.prepare("SELECT root_id, settled_at FROM tree_state ORDER BY root_id")?;
+        let trees = statement
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok((current, trees))
+    };
+    let original = stored()?;
+    let selected = chrome(
+        ui,
+        "document.querySelector('#tab-row [aria-selected=true]').dataset.id",
+    )?;
+    for close in ["shortcut", "cross", "tab", "escape"] {
+        key("ctrl+t")?;
+        wait("selected New tree tab", || {
+            visible(ui, "#new-tree-tab[aria-selected=true]")
+        })?;
+        assert_eq!(text(ui, "#new-tree-tab .tab-title"), "New tree");
+        assert_eq!(
+            chrome(
+                ui,
+                "document.querySelectorAll('#tab-row [aria-selected=true]').length"
+            )?,
+            0
+        );
+        assert!(visible(ui, "#strip-placeholder"));
+        assert!(!visible(ui, "#strip-clip"));
+        assert!(visible(ui, "#new-tree-close"));
+        assert_eq!(chrome(ui, "(() => { const tabs=[...document.querySelectorAll('#tab-row .tab')]; return tabs.filter(t=>!t.hidden && t.tabIndex===0).length===1; })()")?, true);
+        assert_eq!(stored()?, original);
+        key("ctrl+t")?;
+        assert!(chrome_focused(ui, "#start-search"));
+        match close {
+            "shortcut" => key("ctrl+w")?,
+            "cross" => click_chrome(ui, "#new-tree-close")?,
+            "tab" => click_chrome(
+                ui,
+                &format!("#tab-row [data-id='{}']", selected.as_str().unwrap()),
+            )?,
+            _ => key("Escape")?,
+        }
+        wait("previous tree restored", || {
+            !visible(ui, "#new-tree-tab") && visible(ui, "#strip-clip .node")
+        })?;
+        assert!(!visible(ui, "#strip-placeholder"));
+        assert_eq!(
+            chrome(
+                ui,
+                "document.querySelector('#tab-row [aria-selected=true]').dataset.id"
+            )?,
+            selected
+        );
+        assert_eq!(stored()?, original);
+        assert_eq!(ui.snapshot()?.current, before.current);
+        assert_eq!(ui.snapshot()?.visits.len(), before.visits.len());
+    }
+    println!("PASS New tree tab selection, empty strip, repeated Ctrl+T focus, Ctrl+W, cross, tab click and Escape restore the unchanged session without settling trees.");
     Ok(())
 }
 

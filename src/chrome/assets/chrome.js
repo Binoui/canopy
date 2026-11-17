@@ -226,28 +226,33 @@ function patchChildren(container, html) {
 }
 
 function renderTabs() {
+  const start = S.surface === 'start';
+  $('new-tree-tab').hidden = !start;
+  $('new-tree-tab').setAttribute('aria-selected', String(start));
+  $('new-tree-close').hidden = !current();
   const row = $('tab-row');
   const trees = S.frame?.tabs ?? [];
   const kept = new Map([...row.children].map((tab) => [tab.dataset.id, tab]));
   const nodes = trees.map((tree, index) => {
+    const active = tree.active && !start;
     const root = visit(tree.id);
     const pages = `${tree.pages} page${tree.pages === 1 ? '' : 's'}`;
     const pending = tree.pending ? `, ${tree.pending} waiting` : '';
     const pinned = tree.pinned ? ', pinned' : '';
     const key = index < 9 ? ` · Ctrl+${index + 1}` : '';
-    const html = `<button class="tab" role="tab" tabindex="${tree.active ? 0 : -1}" aria-selected="${tree.active}" data-id="${tree.id}" title="${esc(`${tree.title} · ${pages}${pending}${pinned}${key}`)}" aria-label="${esc(tree.name)}">`
+    const html = `<button class="tab" role="tab" tabindex="${active ? 0 : -1}" aria-selected="${active}" data-id="${tree.id}" title="${esc(`${tree.title} · ${pages}${pending}${pinned}${key}`)}" aria-label="${esc(tree.name)}">`
       + (root ? `<span class="mk">${visitFav(root, 14)}${tree.live ? '<i class="live-dot"></i>' : ''}</span>` : '')
       + `<span class="tab-title">${esc(tree.title)}</span>`
       + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Pinned">${icon('pinned')}</span>` : '')
       + (tree.pending ? `<span class="count">${tree.pending}</span>` : '')
-      + `<span class="tab-settle" data-settle="${tree.id}" title="Settle${tree.active ? ' · Ctrl+W' : ''}" aria-hidden="true">${icon('close')}</span>`
+      + `<span class="tab-settle" data-settle="${tree.id}" title="Settle${active ? ' · Ctrl+W' : ''}" aria-hidden="true">${icon('close')}</span>`
       + '</button>';
     const template = document.createElement('template');
     template.innerHTML = html;
     const fresh = template.content.firstChild;
     const tab = kept.get(tree.id) ?? fresh;
     if (tab !== fresh) {
-      tab.setAttribute('aria-selected', String(tree.active));
+      tab.setAttribute('aria-selected', String(active));
       setTooltip(tab, fresh.title);
       tab.setAttribute('aria-label', fresh.getAttribute('aria-label'));
       const settle = tab.querySelector('[data-settle]');
@@ -1461,6 +1466,7 @@ function setSurface(surface) {
   S.surface = surface;
   post({ t: 'surface', start: surface === 'start' });
   if (surface === 'start') { if (S.frame) S.frame.start = null; S.startPaint = null; $('start-content').replaceChildren(); focusStart(); }
+  renderTabs();
   renderPlaceholder();
   $('start').hidden = surface !== 'start';
   setLayer(restingLayer());
@@ -1542,7 +1548,9 @@ function focusStart() {
 }
 
 function renderPlaceholder() {
-  $('strip-placeholder').hidden = !(S.surface === 'start' && !current());
+  const start = S.surface === 'start';
+  $('strip-placeholder').hidden = !start;
+  $('strip-clip').hidden = start;
 }
 
 function bandHead(label, hint = '', mark = '') {
@@ -1767,15 +1775,11 @@ function fitForest(animate) {
   canvas.addEventListener('wheel', (event) => {
     event.preventDefault();
     const c = S.camera;
-    if (event.ctrlKey) {
-      const zoom = clamp(c.zoom * Math.exp(-event.deltaY * 0.0012 * (event.deltaMode ? 33 : 1)), 0.3, 1.6);
-      const box = canvas.getBoundingClientRect();
-      const px = event.clientX - box.left, py = event.clientY - box.top;
-      const ratio = zoom / c.zoom;
-      S.camera = { zoom, x: px - (px - c.x) * ratio, y: py - (py - c.y) * ratio };
-    } else {
-      S.camera = { ...c, x: c.x - event.deltaX, y: c.y - event.deltaY };
-    }
+    const zoom = clamp(c.zoom * Math.exp(-event.deltaY * 0.0012 * (event.deltaMode ? 33 : 1)), 0.3, 1.6);
+    const box = canvas.getBoundingClientRect();
+    const px = event.clientX - box.left, py = event.clientY - box.top;
+    const ratio = zoom / c.zoom;
+    S.camera = { zoom, x: px - (px - c.x) * ratio, y: py - (py - c.y) * ratio };
     applyCamera();
   }, { passive: false });
 })();
@@ -2205,6 +2209,8 @@ document.addEventListener('keydown', (event) => {
 $('new-tree').innerHTML = icon('plus');
 $('nav-back').innerHTML = icon('back');
 $('nav-forward').innerHTML = icon('forward');
+$('new-tree-tab').querySelector('.mk').innerHTML = icon('forest');
+$('new-tree-close').innerHTML = icon('close');
 $('forest-button').innerHTML = icon('forest') + '<span>Forest</span>';
 $('settings-button').innerHTML = icon('settings');
 $('tab-overflow').innerHTML = icon('chevron');
@@ -2286,6 +2292,17 @@ $('tab-overflow').addEventListener('click', (event) => {
 $('new-tree').addEventListener('click', () => window.canopy.newTree());
 $('nav-back').addEventListener('click', () => intent('back'));
 $('nav-forward').addEventListener('click', () => intent('forward'));
+$('new-tree-close').addEventListener('click', (event) => {
+  event.stopPropagation();
+  window.canopy.escape('start');
+});
+$('new-tree-tab').addEventListener('click', focusStart);
+$('new-tree-tab').addEventListener('keydown', (event) => {
+  if (event.target === $('new-tree-tab') && ['Enter', ' '].includes(event.key)) {
+    event.preventDefault();
+    focusStart();
+  }
+});
 $('forest-button').addEventListener('click', () => window.canopy.toggleForest());
 $('search-pill').addEventListener('click', () => openPalette({ scope: S.surface === 'start' ? null : current(), text: '' }));
 $('login-chip').addEventListener('click', (event) => {

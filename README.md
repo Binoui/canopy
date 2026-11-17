@@ -74,7 +74,7 @@ Good to know:
 
 ## What it is
 
-A tab bar is a flat list. It forgets which page led to which, and going back to try another link throws away where you had been. Canopy keeps that shape. Each visit records its parent, and the tabs at the top are whole trees. An address or search in the current page's palette grows a child. **Ctrl+T** or **Alt+Enter** in the palette starts a new tree.
+A tab bar is a flat list. It forgets which page led to which, and going back to try another link throws away where you had been. Canopy keeps that shape. Each visit records its parent, and the tabs at the top are whole trees. An address or search in the current page's palette grows a child. **Ctrl+T** opens a selected **New tree** tab with an empty strip. An address or search there, or **Alt+Enter** in the palette, starts a new tree.
 
 Under the tabs, a fixed-height strip shows the path to the current page. Same-site runs fold into counted capsules, the parent keeps its name, and counts mark other branches. Rest the pointer on an item, or focus it with the keyboard, to open its named list. Click a row to return to that page.
 
@@ -149,7 +149,7 @@ Each heading links to its part of the [guide](docs/guide.md).
 - **New branch here** starts from the page named in the list without loading it. Right-click a page, or press **Shift+F10** to open its page and branch actions.
 - **Ctrl+Shift+E** opens the current-tree workbench, with folding, a name filter and **Waiting only**.
 - **Ctrl+E** opens the forest, with every tree on one canvas.
-- **Ctrl+W** settles a tree. It leaves the tabs and keeps every page. **Undo** or **Ctrl+Shift+T** reopens it. Pinned trees stay on the new-tree page.
+- **Ctrl+W** settles the current tree. It leaves the tabs and keeps every page. On the **New tree** tab, **Ctrl+W** closes that tab and returns to your page. **Undo** or **Ctrl+Shift+T** reopens it. Pinned trees stay on the new-tree page.
 
 ### [Read now, read later](docs/guide.md#resume-reading)
 
@@ -160,7 +160,7 @@ Each heading links to its part of the [guide](docs/guide.md).
 
 ### [A new-tree page that knows your habits](docs/guide.md#find-your-way-around)
 
-- **Ctrl+T** shows pinned trees, bookmarks and up to three suggestions from your own history, each with the reason it is there.
+- **Ctrl+T** opens the **New tree** tab with pinned trees, bookmarks and up to three suggestions from your own history, each with the reason it is there.
 - Keep a suggestion as a bookmark or a pinned tree, or dismiss it for good.
 - Until Canopy has history of its own, your busiest Chrome sites fill in.
 
@@ -195,9 +195,9 @@ Each heading links to its part of the [guide](docs/guide.md).
 | --- | --- |
 | **Ctrl+K**, **Ctrl+L** | Open the palette: search your forest and saved text, or go to an address. **Ctrl+L** selects the current address. |
 | **Enter**, **Alt+Enter** | In the palette, open the result here, or in a new tree. |
-| **Ctrl+T** | New-tree page. Start typing to search in a new tree. |
+| **Ctrl+T** | Open the New tree tab. Start typing to search in a new tree. |
 | **Ctrl+1** to **Ctrl+9** | Switch to a tree. |
-| **Ctrl+W** | Settle the current tree. |
+| **Ctrl+W** | Close the New tree tab, or settle the current tree while reading. |
 | **Ctrl+E** | The forest: every tree. |
 | **Ctrl+Shift+E** | The current tree in a larger view. |
 | **Alt+Left**, **Alt+Right** | Back to the parent, or forward to the child shown most recently. Mouse Back and Forward, and the arrows at the left of the strip, do the same. |
