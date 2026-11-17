@@ -344,7 +344,7 @@ no form is resubmitted. This preserves the existing current-POST revival behavio
 Back selects the nearest previous page visit, skipping same-page frame and alias
 entries. If none exists, it routes to the forest parent. Only when neither exists
 may it traverse an earlier same-page state. Mouse Back runs this same command;
-mouse Forward stays native. Saved captures route by visit identity.
+mouse Forward runs the tree Forward that Alt+Right uses. Saved captures route by visit identity.
 A citation uses its parent's current view only when that parent is the current document;
 otherwise it opens a fresh branch with that parent. Failed candidates emit the error
 and Loading(false), allowing chrome to refresh.
