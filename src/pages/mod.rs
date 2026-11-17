@@ -1,3 +1,4 @@
+pub use native::Fetched;
 mod live;
 mod native;
 pub(crate) mod stack;
@@ -419,6 +420,16 @@ impl Pages {
 
     pub fn read<T>(&self, query: impl FnOnce(&Browser) -> T) -> T {
         query(&self.browser.borrow())
+    }
+
+    /// Fetches outside a page with its cookies, without redirects or disk storage.
+    pub fn fetch(
+        &self,
+        url: &Url,
+        cancel: Option<&gio::Cancellable>,
+        done: impl FnOnce(Result<Fetched>) + 'static,
+    ) {
+        self.context.fetch(url, cancel, done);
     }
 
     pub fn favicons(&self) -> Rc<Favicons> {

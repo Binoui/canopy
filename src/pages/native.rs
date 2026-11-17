@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{OnceCell, RefCell},
     path::{Path, PathBuf},
     rc::Rc,
 };
@@ -26,6 +26,7 @@ pub struct PageContext {
     record: RefCell<Option<Rc<RecordDownload>>>,
     observer: Observer,
     sources: RefCell<Vec<DownloadSource>>,
+    session: OnceCell<soup::Session>,
 }
 
 impl PageContext {
@@ -61,6 +62,7 @@ impl PageContext {
             record: RefCell::new(None),
             observer: RefCell::new(None),
             sources: RefCell::new(Vec::new()),
+            session: OnceCell::new(),
         });
         state.connect_downloads();
         Ok(state)
@@ -377,4 +379,140 @@ fn soup_cookie(
         SameSite::Strict => soup::SameSitePolicy::Strict,
     });
     Ok(native)
+}
+
+/// An HTTP answer kept outside WebKit's page cache. Redirects are returned unfollowed.
+pub struct Fetched {
+    pub status: u16,
+    pub location: Option<String>,
+    pub body: Vec<u8>,
+}
+
+type FetchDone = Box<dyn FnOnce(Result<Fetched>)>;
+
+struct Fetch {
+    done: RefCell<Option<FetchDone>>,
+    timer: RefCell<Option<glib::SourceId>>,
+    cancel: gio::Cancellable,
+}
+
+impl Fetch {
+    fn finish(&self, result: Result<Fetched>) {
+        if let Some(timer) = self.timer.borrow_mut().take() {
+            timer.remove();
+        }
+        let done = self.done.borrow_mut().take();
+        if let Some(done) = done {
+            done(result);
+        }
+    }
+}
+
+impl PageContext {
+    /// Reads live cookies for this URL, including HttpOnly cookies. The callback runs once,
+    /// after this call returns, within 30 seconds including the cookie lookup.
+    pub fn fetch(
+        &self,
+        url: &Url,
+        cancel: Option<&gio::Cancellable>,
+        done: impl FnOnce(Result<Fetched>) + 'static,
+    ) {
+        use gio::prelude::CancellableExt;
+        use glib::translate::IntoGlib;
+        use soup::prelude::SessionExt;
+        use webkit2gtk::{CookieManagerExt, SettingsExt, WebsiteDataManagerExt};
+
+        let session = self
+            .session
+            .get_or_init(|| {
+                let session = soup::Session::new();
+                let settings = self
+                    .sources
+                    .borrow()
+                    .iter()
+                    .filter_map(|s| s.view.upgrade())
+                    .find_map(|v| WebViewExt::settings(&v))
+                    .unwrap_or_default();
+                if let Some(agent) = settings.user_agent() {
+                    session.set_user_agent(&agent);
+                }
+                session
+            })
+            .clone();
+        let fetch = Rc::new(Fetch {
+            done: RefCell::new(Some(Box::new(done))),
+            timer: RefCell::new(None),
+            cancel: cancel.cloned().unwrap_or_default(),
+        });
+        let timeout = fetch.clone();
+        *fetch.timer.borrow_mut() = Some(glib::timeout_add_local_once(
+            std::time::Duration::from_secs(30),
+            move || {
+                timeout.timer.borrow_mut().take();
+                timeout.cancel.cancel();
+                timeout.finish(Err(anyhow::anyhow!("The fetch took too long to answer.")));
+            },
+        ));
+        let manager = self
+            .native
+            .website_data_manager()
+            .and_then(|d| d.cookie_manager());
+        let url = url.clone();
+        glib::idle_add_local_once(move || {
+            let Some(manager) = manager else {
+                fetch.finish(Err(anyhow::anyhow!("The cookie manager is unavailable.")));
+                return;
+            };
+            let cancel = fetch.cancel.clone();
+            manager.cookies(url.clone().as_str(), Some(&cancel), move |cookies| {
+                let result = (|| {
+                    let header = cookies?
+                        .iter_mut()
+                        .filter_map(|c| c.to_cookie_header())
+                        .map(|s| s.to_string())
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    let message = soup::Message::new("GET", url.as_str())?;
+                    message.set_flags(soup::MessageFlags::NO_REDIRECT);
+                    if !header.is_empty() {
+                        message
+                            .request_headers()
+                            .context("Request headers are unavailable.")?
+                            .append("Cookie", &header);
+                    }
+                    Ok(message)
+                })();
+                let message: soup::Message = match result {
+                    Ok(message) => message,
+                    Err(error) => {
+                        fetch.finish(Err(error));
+                        return;
+                    }
+                };
+                if fetch.done.borrow().is_none() {
+                    return;
+                }
+                let response = message.clone();
+                let cancel = fetch.cancel.clone();
+                session.send_and_read_async(
+                    &message,
+                    glib::Priority::DEFAULT,
+                    Some(&cancel),
+                    move |body| {
+                        fetch.finish(
+                            body.map(|body| Fetched {
+                                status: response.status().into_glib() as u16,
+                                location: response
+                                    .response_headers()
+                                    .and_then(|h| h.one("Location"))
+                                    .map(|s| s.to_string()),
+                                body: body.to_vec(),
+                            })
+                            .map_err(Into::into),
+                        );
+                    },
+                );
+            });
+        });
+    }
 }
