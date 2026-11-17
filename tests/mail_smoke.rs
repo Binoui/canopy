@@ -39,6 +39,7 @@ struct Seen {
     mode: Mode,
     slow: bool,
     requests: Vec<(String, String, String)>,
+    stray: String,
 }
 
 struct Fixture {
@@ -117,6 +118,24 @@ impl Fixture {
                         } else {
                             ("401 Unauthorized", "", String::new())
                         }
+                    } else if path == "/errand" {
+                        ("200 OK", "Cache-Control: no-store\r\n", "<title>Hidden errand</title><script>alert('hidden'); window.open('/popup'); fetch('/errand-ran?v=' + document.visibilityState);</script>".to_owned())
+                    } else if path == "/stray" {
+                        (
+                            "302 Found",
+                            &*format!(
+                                "Location: {}/stray-document\r\n",
+                                seen.lock().unwrap().stray
+                            )
+                            .leak(),
+                            String::new(),
+                        )
+                    } else if path == "/stray-document" {
+                        (
+                            "200 OK",
+                            "",
+                            "<script>fetch('/signin-ran')</script>".to_owned(),
+                        )
                     } else if path == "/redirect" {
                         ("302 Found", "Location: /target\r\n", String::new())
                     } else if path == "/signin" {
@@ -275,6 +294,7 @@ fn main() -> Result<()> {
         [true],
         "cancellation answers exactly once"
     );
+    errands(&ui, &fixture, directory.path())?;
     scenario(&ui, &fixture, directory.path())?;
     fixture.set(Mode::Garbage);
     let fresh = tempfile::tempdir()?;
@@ -296,6 +316,69 @@ fn main() -> Result<()> {
     fresh_ui.window.close();
     println!("PASS mail first failure: a profile with no successfully read account keeps the button hidden.");
     println!("PASS mail fetch: HttpOnly cookies and page User-Agent match, redirects remain unfollowed, cancellation answers once.");
+    Ok(())
+}
+
+fn visit_events(data: &std::path::Path) -> Result<i64> {
+    let db = rusqlite::Connection::open_with_flags(
+        data.join("forest.sqlite3"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    Ok(db.query_row("SELECT count(*) FROM visit_events", [], |r| r.get(0))?)
+}
+
+fn errands(ui: &Ui, fixture: &Fixture, data: &std::path::Path) -> Result<()> {
+    use canopy::pages::ErrandEnd;
+    let other = Fixture::serve()?;
+    fixture.seen.lock().unwrap().stray = other.origin.clone();
+    let before = ui.snapshot()?;
+    let events = visit_events(data)?;
+    let live = ui.pages.live_visits();
+    let results = Rc::new(RefCell::new(vec![]));
+    let output = results.clone();
+    let first = ui.pages.run_errand(
+        &fixture.url("/errand"),
+        Duration::from_millis(300),
+        move |end| output.borrow_mut().push(end),
+    );
+    let output = results.clone();
+    let second = ui.pages.run_errand(
+        &fixture.url("/stray"),
+        Duration::from_millis(300),
+        move |end| output.borrow_mut().push(end),
+    );
+    wait("errands complete serially", || {
+        assert!(ui.pages.errand_pages() <= 1);
+        results.borrow().len() == 2
+    })?;
+    assert_eq!(*results.borrow(), [ErrandEnd::Done, ErrandEnd::Strayed]);
+    assert!(fixture
+        .seen
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .any(|r| r.0 == "/errand-ran?v=hidden"));
+    assert!(!fixture
+        .seen
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .any(|r| r.0 == "/popup"));
+    assert!(!other
+        .seen
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .any(|r| r.0 == "/signin-ran"));
+    assert_eq!(ui.snapshot()?.visits.len(), before.visits.len());
+    assert_eq!(ui.snapshot()?.current, before.current);
+    assert_eq!(visit_events(data)?, events);
+    assert_eq!(ui.pages.live_visits(), live);
+    drop((first, second));
+    println!("PASS errands: hidden scripts run, dialogs and popups stay contained, foreign main documents never run, visits and events stay unchanged.");
     Ok(())
 }
 

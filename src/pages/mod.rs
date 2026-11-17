@@ -1,4 +1,6 @@
 pub use native::Fetched;
+mod errand;
+pub use errand::{ErrandEnd, ErrandTicket};
 mod live;
 mod native;
 pub(crate) mod stack;
@@ -278,6 +280,7 @@ pub struct Pages {
     me: Weak<Pages>,
     browser: RefCell<Browser>,
     context: Rc<native::PageContext>,
+    errands: Rc<errand::Errands>,
     branches: Branches,
     container: gtk::Fixed,
     viewport: Cell<(i32, i32)>,
@@ -317,6 +320,7 @@ impl Pages {
         let pages = Rc::new_cyclic(|me| Self {
             me: me.clone(),
             browser: RefCell::new(browser),
+            errands: errand::Errands::new(context.clone()),
             context,
             branches: Branches {
                 hidden: RefCell::new(Vec::new()),
@@ -431,6 +435,27 @@ impl Pages {
         done: impl FnOnce(Result<Fetched>) + 'static,
     ) {
         self.context.fetch(url, cancel, done);
+    }
+
+    /// Runs an unmapped page with shared website data and no Canopy visit or capture.
+    /// Dropping its ticket cancels it without calling back.
+    pub fn run_errand(
+        &self,
+        url: &Url,
+        linger: std::time::Duration,
+        done: impl FnOnce(ErrandEnd) + 'static,
+    ) -> ErrandTicket {
+        self.errands.run(url, linger, Box::new(done))
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn set_errand_load_limit(&self, limit: std::time::Duration) {
+        self.errands.set_load_limit(limit);
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn errand_pages(&self) -> usize {
+        self.errands.open_pages()
     }
 
     pub fn favicons(&self) -> Rc<Favicons> {
@@ -1224,6 +1249,7 @@ impl Pages {
         self.sampling.set(true);
         let starts = BACKGROUND_STARTS.with(Cell::get);
         let epoch = self.memory_epoch.get();
+        let errands = self.errands.generation();
         let global_epoch = MEMORY_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
         let (send, receive) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -1243,7 +1269,8 @@ impl Pages {
                 }
             };
             pages.sampling.set(false);
-            if pages.memory_epoch.get() == epoch
+            if pages.errands.generation() == errands
+                && pages.memory_epoch.get() == epoch
                 && MEMORY_EPOCH.load(std::sync::atomic::Ordering::Relaxed) == global_epoch
             {
                 if let Ok(used) = sample {
@@ -1262,7 +1289,7 @@ impl Pages {
     fn apply_sample_since(&self, used: u64, starts: u64) {
         LATEST_MEMORY_SAMPLE.with(|sample| sample.set(Some(used)));
         SAMPLE_STARTS.with(|n| n.set(starts));
-        if self.busy() || self.cooling.get() {
+        if self.busy() || self.cooling.get() || errand::budget_busy() {
             return;
         }
         let mut candidates: Vec<_> = self

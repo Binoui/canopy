@@ -120,6 +120,15 @@ impl PageContext {
         })
     }
 
+    pub(super) fn refuse_downloads(&self, view: &webkit2gtk::WebView) {
+        let mut sources = self.sources.borrow_mut();
+        sources.retain(|entry| entry.view.upgrade().is_some());
+        sources.push(DownloadSource {
+            view: view.downgrade(),
+            page: Box::new(|_| anyhow::bail!("An errand cannot download.")),
+        });
+    }
+
     pub fn observe(&self, callback: impl Fn(PageEvent) + 'static) {
         *self.observer.borrow_mut() = Some(Rc::new(callback));
     }
