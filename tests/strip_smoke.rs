@@ -322,6 +322,14 @@ fn main() -> Result<()> {
                 wait("focus outside item dismisses list", || {
                     !visible(&ui, "#strip-list")
                 })?;
+                key("F6")?;
+                wait("F6 opens list before focus clears", || {
+                    visible(&ui, "#strip-list")
+                })?;
+                chrome(&ui, "(document.activeElement.blur(),true)")?;
+                wait("cleared focus dismisses list", || {
+                    !visible(&ui, "#strip-list")
+                })?;
                 leave_strip(&ui)?;
             }
             if *shape == "trail" {

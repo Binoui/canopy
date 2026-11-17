@@ -1578,7 +1578,7 @@ window.addEventListener('blur', () => { releaseRefresh(); hideList(); });
 document.addEventListener('focusout', (event) => {
   if (!S.list) return;
   const next = event.relatedTarget;
-  if (next && !next.closest('#strip-list') && next.closest('.node')?.dataset.id !== S.list.key) hideList();
+  if (!next || (!next.closest('#strip-list') && next.closest('.node')?.dataset.id !== S.list.key)) hideList();
 });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) releaseRefresh();
