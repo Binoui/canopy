@@ -90,7 +90,8 @@ Back uses an entry still present in WebKit's history only when its visit belongs
 
 The tabs, the tree strip, the palette, the attached lists, the menus, the "New tree" page, the forest view and the reader are drawn in HTML. A second, transparent webview, served by the `canopy://` scheme, sits above the page. Rust keeps the state and every decision: the layouts, the palette results and the intents. The view receives JSON and sends clicks and keys back over IPC.
 
-Chrome frames carry the current tree, open-tab summaries and waiting pages. The
+Chrome frames carry the current tree, open-tab summaries, waiting pages and the
+open palette's scope page. The
 start page requests its pinned and suggested miniature data when shown. The
 forest requests both layouts on open; Rust rebuilds them when the forest changes
 while open. Closing the forest stops sending its history. Unchanged strip items

@@ -30,6 +30,7 @@ const ACCESSORY: f64 = 22.;
 pub(crate) struct Surfaces {
     pub start: bool,
     pub forest: bool,
+    pub palette: Option<VisitId>,
 }
 
 pub(crate) fn frame(
@@ -74,6 +75,7 @@ pub(crate) fn frame(
             }
         }
     }
+    visible.extend(surfaces.palette);
     visible.extend(forest.open().iter().map(|t| t.id.root()));
     if let Some(start) = &start {
         for mini in start["pinned"]
@@ -881,6 +883,18 @@ mod tests {
         assert!(closed["forest"].is_null());
         assert!(closed["start"].is_null());
         assert!(closed["visits"][roots[1].to_string()].is_null());
+        let scoped = super::frame(
+            &frame,
+            &[],
+            (1240., 800.),
+            &tree_view::Workbench::default(),
+            Surfaces {
+                palette: Some(roots[1]),
+                ..Surfaces::default()
+            },
+            None,
+        );
+        assert!(scoped["visits"][roots[1].to_string()].is_object());
         let start = super::frame(
             &frame,
             &[],
@@ -889,6 +903,7 @@ mod tests {
             Surfaces {
                 start: true,
                 forest: false,
+                palette: None,
             },
             None,
         );
@@ -902,6 +917,7 @@ mod tests {
             Surfaces {
                 start: false,
                 forest: true,
+                palette: None,
             },
             None,
         );
@@ -933,6 +949,7 @@ mod tests {
             Surfaces {
                 start: true,
                 forest: true,
+                palette: None,
             },
             None,
         );
@@ -952,6 +969,7 @@ mod tests {
             Surfaces {
                 start: true,
                 forest: true,
+                palette: None,
             },
             None,
         );
@@ -1020,6 +1038,7 @@ mod tests {
             Surfaces {
                 start: true,
                 forest: true,
+                palette: None,
             },
             None,
         );
@@ -1050,6 +1069,7 @@ mod tests {
             Surfaces {
                 start: true,
                 forest: true,
+                palette: None,
             },
             None,
         );
@@ -1085,6 +1105,7 @@ mod tests {
             Surfaces {
                 start: true,
                 forest: true,
+                palette: None,
             },
             None,
         );
@@ -1150,6 +1171,7 @@ mod tests {
             Surfaces {
                 start: true,
                 forest: true,
+                palette: None,
             },
             None,
         );
@@ -1246,6 +1268,7 @@ mod tests {
             Surfaces {
                 start: true,
                 forest: true,
+                palette: None,
             },
             None,
         );

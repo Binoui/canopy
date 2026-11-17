@@ -1031,6 +1031,7 @@ function openPalette({ scope, text, typed = false, fromChrome = true }) {
   if (S.surface === 'start') scope = null;
   closePopover(false);
   rememberFocus('palette', fromChrome ? document.activeElement : document.body);
+  post({ t: 'paletteScope', id: scope });
   S.palette = { scope, rows: [], selected: 0, seq: 0 };
   setLayer('palette');
   renderPaletteContext();
@@ -1065,6 +1066,7 @@ function closePalette(restoreFocus = true) {
   if (!S.palette) return;
   clearTimeout(paletteTimer);
   S.palette = null;
+  post({ t: 'paletteScope', id: null });
   $('palette').hidden = true;
   $('palette-results').innerHTML = '';
   $('palette-input').removeAttribute('aria-activedescendant');

@@ -209,6 +209,7 @@ struct Inner {
     suggested: RefCell<Vec<crate::suggest::Suggestion>>,
     start: Cell<bool>,
     forest_open: Cell<bool>,
+    palette_scope: Cell<Option<VisitId>>,
     forest_layout: RefCell<Value>,
     /// The last palette results, so Enter runs exactly the row the view showed.
     palette: RefCell<Option<ShownPalette>>,
@@ -254,6 +255,7 @@ impl HtmlChrome {
             suggested: RefCell::new(Vec::new()),
             start: Cell::new(false),
             forest_open: Cell::new(false),
+            palette_scope: Cell::new(None),
             forest_layout: RefCell::new(Value::Null),
             palette: RefCell::new(None),
             workbench: RefCell::default(),
@@ -293,6 +295,7 @@ impl HtmlChrome {
             view::Surfaces {
                 start: inner.start.get(),
                 forest: inner.forest_open.get(),
+                palette: inner.palette_scope.get(),
             },
             Some(&inner.forest_layout.borrow()),
         );
@@ -579,6 +582,10 @@ impl Inner {
                     self.view.evaluate_script(&script)?;
                 }
             }
+            "paletteScope" => {
+                self.palette_scope
+                    .set(message["id"].as_str().map(str::parse).transpose()?);
+            }
             "forest" => {
                 self.forest_open
                     .set(message["open"].as_bool().unwrap_or(false));
@@ -595,6 +602,7 @@ impl Inner {
                                 view::Surfaces {
                                     start: self.start.get(),
                                     forest: true,
+                                    palette: self.palette_scope.get(),
                                 },
                                 Some(&self.forest_layout.borrow()),
                             )],
@@ -802,6 +810,7 @@ impl Inner {
                 view::Surfaces {
                     start: true,
                     forest: self.forest_open.get(),
+                    palette: self.palette_scope.get(),
                 },
                 Some(&self.forest_layout.borrow()),
             )],
