@@ -67,6 +67,15 @@ struct Server {
     hits: Arc<Mutex<BTreeMap<String, usize>>>,
     gates: Arc<Mutex<HashSet<String>>>,
 }
+/// Routes like YouTube: a click waits for "data", then changes the address by script. The
+/// second link sets the new title before the address, the third only moves a `#part`.
+const YT_PAGE: &str = "<!doctype html><title>yt home</title><body style='margin:0;height:4000px'>\
+<a id=v1 href='/yt/watch?v=1' style='display:block;width:300px;height:60px'>one</a>\
+<a id=v2 href='/yt/watch?v=2' data-first=1 style='display:block;width:300px;height:60px'>two</a>\
+<a id=v3 href='#comments' style='display:block;width:300px;height:60px'>comments</a>\
+<script>document.addEventListener('click',e=>{const a=e.target.closest('a');if(!a||a.id==='v3')return;e.preventDefault();\
+const n=new URL(a.href).searchParams.get('v');setTimeout(()=>{if(a.dataset.first)document.title='Video '+n;\
+history.pushState({},'',a.href);document.title='Video '+n},600)})</script></body>";
 fn page_body(path: &str) -> String {
     format!("<!doctype html><title>{path}</title><body style='margin:0;height:10000px'><input id='field'><a id='fork' href='/d'>fork</a><div id='fragment' style='margin-top:5000px'>end</div></body>")
 }
@@ -133,6 +142,7 @@ impl Server {
             ["rs-same"] => respond(stream, "200 OK", "", "<!doctype html><title>rssame</title><body style='height:4000px'><script>setInterval(()=>{history.replaceState({n:Date.now()},'',location.href)},150)</script></body>"),
             ["heavy", ms] => respond(stream, "200 OK", "", &format!("<!doctype html><title>heavy</title><body style='height:4000px'><a id='fork' href='/d' style='display:block;width:300px;height:80px'>fork</a><script>addEventListener('beforeunload',()=>{{let t=Date.now();while(Date.now()-t<{ms}){{}}}})</script></body>")),
             ["hang-img"] => respond(stream, "200 OK", "", "<!doctype html><title>hangimg</title><body style='height:4000px'><a id='fork' href='/d'>fork</a><img src='/gate/img/x.png'></body>"),
+            ["yt", ..] => respond(stream, "200 OK", "", YT_PAGE),
             ["spa"] => respond(stream, "200 OK", "", "<!doctype html><title>spa</title><body style='height:4000px'><script>history.pushState({},'','/spa?tab=1')</script></body>"),
             ["spa-late"] => respond(stream, "200 OK", "", "<!doctype html><title>spalate</title><body style='height:4000px'><script>setTimeout(()=>history.pushState({},'','/spa-late?tab=1'),300)</script></body>"),
             ["cr"] => respond(stream, "200 OK", "", "<!doctype html><title>cr</title><script>location.replace('/cr2')</script>"),
@@ -1020,6 +1030,70 @@ fn unload_stuck(kind: &str) -> Result<()> {
 
 /// The old view has just issued an in-place load (still in WebKit's policy phase) when a switch
 /// that then fails is requested. Does the old view take the next in-place request?
+fn visit_of(f: &Fixture, id: VisitId) -> canopy::browser::Visit {
+    f.pages.read(|b| b.visit(id)).unwrap()
+}
+
+/// A click that a page answers with a script route makes a child page with the route's
+/// title; a route nobody clicked, or a `#part`, stays on the page.
+fn click_route() -> Result<()> {
+    let f = Fixture::new()?;
+    let home = f.navigate("/yt")?;
+    painted(&f)?;
+    click_el(&f, "v1", "1")?;
+    wait("first video page", || {
+        f.cursor() != Some(home) && visit_of(&f, f.cursor().unwrap()).title == "Video 1"
+    })?;
+    let one = f.cursor().unwrap();
+    let first = visit_of(&f, one);
+    println!(
+        "RESULT click_route one={} parent_ok={}",
+        first.url,
+        first.parent == Some(home)
+    );
+    assert_eq!(first.parent, Some(home));
+    assert_eq!(first.url.query(), Some("v=1"));
+    assert_eq!(visit_of(&f, home).title, "yt home");
+
+    painted(&f)?;
+    click_el(&f, "v2", "1")?;
+    wait("second video page", || {
+        f.cursor() != Some(one) && visit_of(&f, f.cursor().unwrap()).title == "Video 2"
+    })?;
+    let two = f.cursor().unwrap();
+    println!(
+        "RESULT click_route two={} one_title={:?}",
+        visit_of(&f, two).url,
+        visit_of(&f, one).title
+    );
+    assert_eq!(visit_of(&f, two).parent, Some(one));
+    assert_eq!(
+        visit_of(&f, one).title,
+        "Video 1",
+        "title set before the route stays off the parent"
+    );
+
+    let before = f.pages.read(|b| b.snapshot())?.visits.len();
+    painted(&f)?;
+    click_el(&f, "v3", "1")?;
+    wait_for(2000, || uri_path(&f).ends_with("#comments"));
+    pump_for(300);
+    f.eval("history.pushState({},'','/yt/watch?v=9'); return true;")?;
+    pump_for(800);
+    let after = f.pages.read(|b| b.snapshot())?.visits.len();
+    println!("RESULT click_route visits_before={before} after={after}");
+    assert_eq!(after, before, "a #part or an unclicked route makes no page");
+
+    f.pages.go(Go::Parent)?;
+    assert!(f.arrives(one, 4000), "Back reaches the first video");
+    assert!(
+        uri_path(&f).contains("v=1"),
+        "Back shows the first video: {}",
+        uri_path(&f)
+    );
+    Ok(())
+}
+
 fn no_content_ends_load() -> Result<()> {
     for path in ["/nocontent", "/nc205"] {
         let f = Fixture::new()?;
@@ -1113,6 +1187,7 @@ fn main() -> Result<()> {
         ("page_timer_after_click_loses_pending_new_tree", || {
             switch_regressions::owner_action_during_switch("page-timer-after-click")
         }),
+        ("click_route", click_route),
         ("no_content", no_content_ends_load),
         ("hash_pulse", || bg_nav("/hash-pulse", 900)),
         ("ps_pulse", || bg_nav("/ps-pulse", 900)),
