@@ -149,7 +149,7 @@ Each heading links to its part of the [guide](docs/guide.md).
 - **New branch here** starts from the page named in the list without loading it. Right-click a page, or press **Shift+F10** to open its page and branch actions.
 - **Ctrl+Shift+E** opens the current-tree workbench, with folding, a name filter and **Waiting only**.
 - **Ctrl+E** opens the forest, with every tree on one canvas.
-- **Ctrl+W** closes the **New tree** tab and returns to your page, or settles the current tree while reading. It leaves the tabs and keeps every page. **Undo** or **Ctrl+Shift+T** reopens it. Pinned trees stay on the new-tree page.
+- **Ctrl+W** settles the current tree. It leaves the tabs and keeps every page. On the **New tree** tab, **Ctrl+W** closes that tab and returns to your page. **Undo** or **Ctrl+Shift+T** reopens it. Pinned trees stay on the new-tree page.
 
 ### [Read now, read later](docs/guide.md#resume-reading)
 
