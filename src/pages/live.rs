@@ -1829,11 +1829,14 @@ impl NativeState {
                 .downcast_ref::<NavigationPolicyDecision>()
                 .and_then(|n| n.navigation_action())
             {
+                // Preserve the form-return guard independently of switch intent.
+                if action.request().and_then(|r| r.uri()) == self.native.uri() {
+                    self.answer_form_return(false);
+                }
                 // NavigationAction has no main-frame flag. A missing target name is
                 // the closest signal available (unnamed subframes are ambiguous).
                 let main_action = action.frame_name().is_none_or(|name| name == "_top");
                 if main_action {
-                    self.answer_form_return(false);
                     let modifiers = gdk::ModifierType::from_bits_truncate(action.modifiers());
                     let background = action.navigation_type() == NavigationType::LinkClicked
                         && (action.mouse_button() == 2
