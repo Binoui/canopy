@@ -360,6 +360,10 @@ fn main() -> Result<()> {
     assert!(text(&ui, "#popover").contains("Moved or deleted"));
     shot(&ui, "branch-list")?;
     key("Escape")?;
+    wait("side branch file trigger regains focus", || {
+        chrome_focused(&ui, &format!("#strip-list [data-files='{after}']"))
+    })?;
+    key("Escape")?;
     leave_strip(&ui)?;
     println!("PASS at rest the trunk carries leaves; the attached list keeps side branch files reachable.");
     Ok(())

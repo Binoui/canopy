@@ -156,12 +156,18 @@ fn main() -> Result<()> {
     key("Left")?;
     wait("parent node focus", || chrome_focused(&ui, &node(a)))?;
     key("Return")?;
+    wait("list row focus", || {
+        chrome_focused(&ui, "#strip-list button")
+    })?;
+    key("End")?;
+    key("Up")?;
+    key("Return")?;
     loaded(&ui, "/a", 3)?;
     link(&ui, "c")?;
     loaded(&ui, "/c", 4)?;
     let c = ui.snapshot()?.current.unwrap();
     println!(
-        "PASS F6 focuses the current node, Left walks the trunk and Enter restores the parent."
+        "PASS F6 focuses the current node, Left walks the trunk, Enter enters its list and Open restores the parent."
     );
 
     ui.pages.selected_page().native.grab_focus();

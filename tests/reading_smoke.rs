@@ -342,7 +342,7 @@ fn set_remember_pages(ui: &Ui, on: bool) -> Result<()> {
     open_memory_menu(ui)?;
     let shown = chrome(
         ui,
-        "document.querySelector('#automatic-capture .switch').classList.contains('on')",
+        "document.querySelector('#automatic-capture').getAttribute('aria-checked') === 'true'",
     )?;
     if shown != on {
         click_chrome(ui, "#automatic-capture")?;

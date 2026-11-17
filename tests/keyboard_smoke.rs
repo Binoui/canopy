@@ -120,6 +120,7 @@ fn main() -> Result<()> {
     })?;
     settle(&ui)?;
     for theme in ["dark", "light"] {
+        wait("previous toast closed", || !visible(&ui, "#toast"))?;
         chrome(&ui, &format!("intent('theme', {{mode:'{theme}'}})"))?;
         pump(150);
         key("F6")?;
@@ -131,11 +132,25 @@ fn main() -> Result<()> {
         )?;
         capture(&shots, "strip-focus", theme)?;
         key("Left")?;
+        key("Right")?;
+        check(
+            &ui,
+            "document.activeElement.getAttribute('aria-current') === 'page'",
+        )?;
+        key("Left")?;
         key("Down")?;
         check(&ui, "document.activeElement.matches('#strip-list button')")?;
         capture(&shots, "list-focus", theme)?;
         key("Escape")?;
         check(&ui, "document.activeElement.matches('#strip-nodes button') && document.getElementById('strip-list').hidden")?;
+        key("Menu")?;
+        check(
+            &ui,
+            "document.activeElement.hasAttribute('data-node-action')",
+        )?;
+        capture(&shots, "item-menu", theme)?;
+        key("Escape")?;
+        check(&ui, "document.activeElement.matches('#strip-nodes button')")?;
         key("Return")?;
         check(&ui, "document.activeElement.matches('#strip-list button')")?;
         key("shift+F10")?;
@@ -238,7 +253,7 @@ fn main() -> Result<()> {
         focus(&ui, "#waiting-pin")?;
         check(
             &ui,
-            "document.activeElement.getAttribute('aria-label').includes('waiting, next')",
+            "document.activeElement.getAttribute('aria-label').startsWith(S.frame.waiting.ids.length+' waiting, next '+S.frame.visits[S.frame.waiting.ids[0]].label)",
         )?;
         key("Down")?;
         check(&ui, "document.activeElement.matches('#popover [data-id]') && document.activeElement.getAttribute('aria-label').includes('waiting')")?;
@@ -325,13 +340,36 @@ fn main() -> Result<()> {
         key("Escape")?;
         check(&ui, "document.activeElement.dataset.start === 'bookmark'")?;
         chrome(&ui, "(setSurface('reading'),true)")?;
+        let after_page = trees[3].2;
+        ui.pages.go(Go::Visit(after_page))?;
+        wait("page with waiting children", || {
+            ui.snapshot().is_ok_and(|s| s.current == Some(after_page))
+                && !ui.pages.selected_page().native.is_loading()
+        })?;
+        settle(&ui)?;
+        ui.pages.selected_page().focus();
+        key("F6")?;
+        key("Right")?;
+        check(&ui, "document.activeElement.matches('.node.after') && document.activeElement.getAttribute('aria-label').includes('14 waiting pages, 4 read pages')")?;
+        capture(&shots, "after-count", theme)?;
+        key("Down")?;
+        check(&ui, "document.activeElement.matches('#strip-list [data-id]') && document.activeElement.getAttribute('aria-label').includes('waiting')")?;
+        key("Escape")?;
+        check(&ui, "document.activeElement.matches('.node.after')")?;
+        key("Left")?;
+        check(
+            &ui,
+            "document.activeElement.getAttribute('aria-current') === 'page'",
+        )?;
         let files_page = trees[0].2;
         ui.pages.go(Go::Visit(files_page))?;
         wait("page with files", || {
             ui.snapshot().is_ok_and(|s| s.current == Some(files_page))
                 && !ui.pages.selected_page().native.is_loading()
         })?;
+        ui.pages.selected_page().focus();
         key("F6")?;
+        settle(&ui)?;
         focus(&ui, "#strip-canvas .leaves")?;
         key("Return")?;
         check(&ui, "document.activeElement.matches('[data-file]')")?;

@@ -231,7 +231,7 @@ pub(crate) fn strip(forest: &ForestProjection, width: f64) -> Value {
             "id": if kind == "after" { format!("after-{current}") } else { id.to_string() },
             "page": id.to_string(), "ids": ids.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "named": kind == "root" && forest.visit(current).unwrap().parent == Some(id),
-            "kind": kind, "name": format!("{title}, {} branch pages, {} waiting", node.branches.pages, node.branches.waiting), "label": label, "title": title, "meta": meta, "heading": heading, "more": more, "rows": rows,
+            "kind": kind, "name": if kind == "after" { format!("After {title}, {waiting} waiting pages, {read} read pages") } else { format!("{title}, {} branch pages, {} waiting", node.branches.pages, node.branches.waiting) }, "label": label, "title": title, "meta": meta, "heading": heading, "more": more, "rows": rows,
             "branches": { "pages": node.branches.pages, "waiting": node.branches.waiting },
             "waiting": waiting, "read": read,
             "x": node.rect.x, "y": node.rect.y, "w": node.rect.w, "s": node.rect.s,
@@ -245,7 +245,7 @@ pub(crate) fn strip(forest: &ForestProjection, width: f64) -> Value {
     }).collect();
     json!({ "room": pins.room, "pins": placed, "height": graph::REST_HEIGHT, "width": pins.room, "pan": 0,
         "metrics": { "left": graph::ITEM_LEFT, "right": graph::ITEM_RIGHT, "border": graph::ITEM_BORDER, "icon": graph::ITEM_ICON, "parentGap": graph::PARENT_GAP, "runGap": graph::RUN_GAP },
-        "trunk": nodes.iter().filter(|n| n["kind"] != "after").map(|n| n["id"].clone()).collect::<Vec<_>>(), "nodes": nodes, "edges": edges })
+        "trunk": nodes.iter().map(|n| n["id"].clone()).collect::<Vec<_>>(), "nodes": nodes, "edges": edges })
 }
 
 fn nonzero_parts(parts: &[(usize, &str)]) -> String {

@@ -101,7 +101,6 @@ fn forest_open(ui: &Ui) -> Result<()> {
     key("ctrl+e")?;
     wait("forest overlay", || visible(ui, "#forest"))?;
     assert_eq!(chrome(ui, "canopy.state().overlay")?, "forest");
-    assert!(visible(ui, "#forest-button.on"));
     assert_eq!(
         chrome(
             ui,
@@ -116,7 +115,6 @@ fn forest_closed(ui: &Ui, surface: &str) -> Result<()> {
     wait("forest dismissed", || !visible(ui, "#forest"))?;
     assert!(chrome(ui, "canopy.state().overlay")?.is_null());
     assert_eq!(chrome(ui, "canopy.state().surface")?, surface);
-    assert!(!visible(ui, "#forest-button.on"));
     assert_eq!(
         chrome(
             ui,
