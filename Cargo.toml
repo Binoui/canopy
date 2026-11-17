@@ -244,3 +244,9 @@ name = "tabs_smoke"
 path = "tests/tabs_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
+
+[[test]]
+name = "mail_smoke"
+path = "tests/mail_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]
