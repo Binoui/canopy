@@ -139,24 +139,29 @@ impl Errands {
             return;
         };
         let url = queued.url.clone();
+        let running = self.open(queued);
+        let view = running.view.clone();
+        BUSY.with(|n| n.set(n.get() + 1));
+        *self.running.borrow_mut() = Some(running);
+        self.generation.set(self.generation.get() + 1);
+        view.load_uri(url.as_str());
+    }
+
+    fn open(&self, queued: Queued) -> Running {
         let id = queued.id;
-        let view = webkit2gtk::WebView::builder()
-            .web_context(&self.context.native)
-            .user_content_manager(&webkit2gtk::UserContentManager::new())
-            .is_controlled_by_automation(false)
-            .build();
-        let Some(settings) = WebViewExt::settings(&view) else {
-            unsafe { view.destroy() };
-            glib::idle_add_local_once(move || (queued.done)(ErrandEnd::Failed));
-            self.pump();
-            return;
-        };
+        let settings = webkit2gtk::Settings::new();
         settings.set_user_agent(None);
         settings.set_enable_webgl(false);
         settings.set_enable_webaudio(false);
         settings.set_enable_media(false);
         settings.set_enable_page_cache(false);
         settings.set_enable_developer_extras(false);
+        let view = webkit2gtk::WebView::builder()
+            .web_context(&self.context.native)
+            .user_content_manager(&webkit2gtk::UserContentManager::new())
+            .settings(&settings)
+            .is_controlled_by_automation(false)
+            .build();
         view.set_is_muted(true);
         self.context.refuse_downloads(&view);
         let mut signals = vec![
@@ -241,14 +246,14 @@ impl Errands {
         let weak = self.me.clone();
         signals.push(view.connect_load_failed(move |_, _, _, _| {
             if let Some(owner) = weak.upgrade() {
-                owner.end(id, ErrandEnd::Failed);
+                owner.load_failed(id);
             }
             true
         }));
         let weak = self.me.clone();
         signals.push(view.connect_load_failed_with_tls_errors(move |_, _, _, _| {
             if let Some(owner) = weak.upgrade() {
-                owner.end(id, ErrandEnd::Failed);
+                owner.load_failed(id);
             }
             true
         }));
@@ -275,19 +280,16 @@ impl Errands {
                 owner.end(id, ErrandEnd::Failed);
             }
         });
-        BUSY.with(|n| n.set(n.get() + 1));
-        *self.running.borrow_mut() = Some(Running {
+        Running {
             id,
             view: view.clone(),
-            origin: url.origin(),
+            origin: queued.url.origin(),
             linger: queued.linger,
             stage: Cell::new(Stage::Loading),
             timer: RefCell::new(Some(timer)),
             signals,
             done: Some(queued.done),
-        });
-        self.generation.set(self.generation.get() + 1);
-        view.load_uri(url.as_str());
+        }
     }
 
     fn stays(&self, id: u64, uri: &str) -> bool {
@@ -295,6 +297,17 @@ impl Errands {
             .borrow()
             .as_ref()
             .is_some_and(|r| r.id == id && stays(&r.origin, uri))
+    }
+
+    fn load_failed(&self, id: u64) {
+        let loading = self
+            .running
+            .borrow()
+            .as_ref()
+            .is_some_and(|r| r.id == id && r.stage.get() == Stage::Loading);
+        if loading {
+            self.end(id, ErrandEnd::Failed);
+        }
     }
 
     fn loaded(&self, id: u64) {
@@ -343,7 +356,7 @@ impl Errands {
 
     fn retire(&self, id: u64, end: Option<ErrandEnd>) {
         let mut running = self.running.borrow_mut();
-        if !running.as_ref().is_some_and(|r| r.id == id) {
+        if running.as_ref().is_none_or(|r| r.id != id) {
             return;
         }
         let mut r = running.take().unwrap();

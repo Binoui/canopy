@@ -1487,8 +1487,12 @@ fn mail_value(mail: &crate::mail::Mail) -> Value {
                 "more": (more > 0).then(|| format!("{more} more in the inbox")),
                 "rows": a.messages.iter().map(|m| {
                     let when = m.issued.map(ago).unwrap_or_default();
+                    let note = m.unmarked.map(unmarked_words);
+                    let name = format!("{}, {}, {when}", m.from, m.subject);
                     json!({"id": m.id.as_str(), "from": m.from, "subject": m.subject, "snippet": m.snippet,
-                        "when": when, "name": format!("{}, {}, {when}", m.from, m.subject)})
+                        "when": when, "name": note.map_or_else(|| name.clone(), |n| format!("{name}. {n}")),
+                        "markName": (m.link != a.inbox).then(|| format!("Mark read: {}, {}", m.from, m.subject)),
+                        "unmarked": note})
                 }).collect::<Vec<_>>(),
             })
         }).collect::<Vec<_>>(),
@@ -1524,10 +1528,52 @@ fn mail_value(mail: &crate::mail::Mail) -> Value {
     value
 }
 
+fn unmarked_words(why: crate::mail::Unmarked) -> &'static str {
+    match why {
+        crate::mail::Unmarked::StillUnread => "Not marked read: Gmail still shows it as unread.",
+        crate::mail::Unmarked::SignIn => "Not marked read: Gmail asked to sign in again.",
+        crate::mail::Unmarked::NoAnswer => "Not marked read: Gmail did not answer.",
+        crate::mail::Unmarked::Unconfirmed => "Not marked read: Canopy could not check with Gmail.",
+    }
+}
+
 #[cfg(test)]
 mod mail_tests {
     use super::*;
     use crate::mail::{Mail, Trouble};
+
+    #[test]
+    fn marks_name_real_targets_and_explain_each_failure() {
+        let mut mail = crate::mail::fixture();
+        assert!(mail_value(&mail)["accounts"][0]["rows"][0]["markName"].is_null());
+        mail.accounts[0].messages[0].link =
+            url::Url::parse("https://mail.google.com/mail/u/0?message_id=111").unwrap();
+        let row = |m: &crate::mail::Mail| mail_value(m)["accounts"][0]["rows"][0].clone();
+        assert_eq!(row(&mail)["markName"], "Mark read: A sender, A subject");
+        assert!(row(&mail)["unmarked"].is_null());
+        for (why, words) in [
+            (
+                crate::mail::Unmarked::NoAnswer,
+                "Not marked read: Gmail did not answer.",
+            ),
+            (
+                crate::mail::Unmarked::SignIn,
+                "Not marked read: Gmail asked to sign in again.",
+            ),
+            (
+                crate::mail::Unmarked::StillUnread,
+                "Not marked read: Gmail still shows it as unread.",
+            ),
+            (
+                crate::mail::Unmarked::Unconfirmed,
+                "Not marked read: Canopy could not check with Gmail.",
+            ),
+        ] {
+            mail.accounts[0].messages[0].unmarked = Some(why);
+            assert_eq!(row(&mail)["unmarked"], words);
+            assert!(row(&mail)["name"].as_str().unwrap().ends_with(words));
+        }
+    }
 
     #[test]
     fn account_tabs_have_stable_keys_unambiguous_labels_and_unread_names() {
