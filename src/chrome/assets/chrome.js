@@ -1956,6 +1956,7 @@ window.canopy = {
     S.frame.treeView = view;
     renderSheet(false);
     if (id && !document.activeElement?.closest('[data-id]')) focusTree(id);
+    syncLayer();
   },
   tabSelected() { closePopover(false); setOverlay(null); },
   toggleTree(fromChrome = true) { toggleOverlay('tree'); if (!fromChrome && S.overlay === 'tree') rememberFocus('overlay', document.body); },

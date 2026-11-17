@@ -438,11 +438,17 @@ fn main() -> Result<()> {
     })?;
     assert_eq!(chrome(&ui, "S.frame.treeView.rows.length")?, 2);
     key("Escape")?;
+    wait("Escape clears title filter and keeps sheet open", || {
+        visible(&ui, "#tree-sheet") && chrome(&ui, "S.frame.treeView.query").is_ok_and(|v| v == "")
+    })?;
     type_text("docs.localhost")?;
     wait("site filter projected", || {
         chrome(&ui, "S.frame.treeView.rows.length").is_ok_and(|v| v == ids.len())
     })?;
     key("Escape")?;
+    wait("Escape clears site filter and keeps sheet open", || {
+        visible(&ui, "#tree-sheet") && chrome(&ui, "S.frame.treeView.query").is_ok_and(|v| v == "")
+    })?;
     click_chrome(&ui, "#tree-side [data-side='tree']")?;
     assert_eq!(chrome(&ui, "[...$('tree-nodes').children].filter(e=>visit(e.dataset.id).live).every(e=>e.querySelectorAll('.live-dot').length===1)")?,true);
     assert_eq!(
