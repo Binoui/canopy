@@ -379,7 +379,7 @@ impl HtmlChrome {
             },
             Some(&inner.forest_layout.borrow()),
         );
-        value["tabFit"] = tabs::layout(&frame.forest, inner.tab_room.get());
+        value["tabFit"] = tabs::layout(&frame.forest, inner.tab_room.get(), inner.start.get());
         inner.call("present", &[value]);
         *inner.frame.borrow_mut() = Some(frame);
         inner.present_error();
@@ -846,8 +846,16 @@ impl Inner {
             }
             "surface" => {
                 let start = message["start"].as_bool().unwrap_or(false);
-                if self.start.replace(start) != start && start {
-                    self.freeze()?;
+                if self.start.replace(start) != start {
+                    if start {
+                        self.freeze()?;
+                    }
+                    if let Some(frame) = self.frame.borrow().as_ref() {
+                        self.call(
+                            "tabsFit",
+                            &[tabs::layout(&frame.forest, self.tab_room.get(), start)],
+                        );
+                    }
                 }
             }
             "tab-room" => {
@@ -857,7 +865,10 @@ impl Inner {
                 {
                     self.tab_room.set(room);
                     if let Some(frame) = self.frame.borrow().as_ref() {
-                        self.call("tabsFit", &[tabs::layout(&frame.forest, room)]);
+                        self.call(
+                            "tabsFit",
+                            &[tabs::layout(&frame.forest, room, self.start.get())],
+                        );
                     }
                 }
             }
