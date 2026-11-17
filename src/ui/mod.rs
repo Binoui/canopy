@@ -398,7 +398,10 @@ impl Ui {
                     self.dispatch(ChromeIntent::SelectTree(tree));
                 }
             }
-            Shortcut::Forward => self.report(self.pages.go(Go::Forward)),
+            Shortcut::Forward => {
+                self.chrome.uncover();
+                self.report(self.pages.go(Go::Forward));
+            }
             Shortcut::PreviousSibling => self.report(self.pages.go(Go::Sibling { next: false })),
             Shortcut::NextSibling => self.report(self.pages.go(Go::Sibling { next: true })),
             Shortcut::Back => {
@@ -788,6 +791,9 @@ mod shortcut_tests {
             (key::l, Modifiers::CONTROL_SHIFT, Shortcut::FillLogin),
             (key::q, Modifiers::CONTROL, Shortcut::Quit),
             (key::Left, Modifiers::ALT, Shortcut::Back),
+            (key::Right, Modifiers::ALT, Shortcut::Forward),
+            (key::Up, Modifiers::ALT, Shortcut::PreviousSibling),
+            (key::Down, Modifiers::ALT, Shortcut::NextSibling),
             (key::F6, Modifiers::NONE, Shortcut::ToggleFocus),
             (key::Escape, Modifiers::NONE, Shortcut::Escape),
         ];

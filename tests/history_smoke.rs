@@ -150,6 +150,41 @@ fn main() -> Result<()> {
     })?;
     assert_eq!(reopened.snapshot()?.visits.len(), 4);
     println!("PASS reloading keeps the latest scroll position.");
+    assert!(
+        !reopened.pages.selected_page().native.can_go_forward(),
+        "the cold parent has no WebKit forward entry"
+    );
+    eval(&reopened, "JSON.stringify((window.blockForward = event => { if (event.button === 4) event.preventDefault(); }, document.addEventListener('mouseup', window.blockForward), true))")?;
+    let (x, y) = screen_point(&reopened, &reopened.pages.selected_page().native, 90, 90)?;
+    focus_window()?;
+    move_to(x, y)?;
+    xdo(&["click", "9"])?;
+    pump(300);
+    assert_eq!(reopened.snapshot()?.current, Some(long));
+    eval(
+        &reopened,
+        "JSON.stringify((document.removeEventListener('mouseup', window.blockForward), true))",
+    )?;
+    println!("PASS mouse Forward respects preventDefault even when the tree has a forward child.");
+
+    xdo(&["click", "9"])?;
+    assert_eq!(arrived(&reopened, "/next")?, next);
+    assert_eq!(reopened.snapshot()?.visits.len(), 4);
+    println!("PASS mouse Forward returns to the last shown child after a cold tree restore with no WebKit forward entry.");
+
+    xdo(&["click", "8"])?;
+    assert_eq!(arrived(&reopened, "/long")?, long);
+    key("ctrl+e")?;
+    wait("forest overlay open", || {
+        chrome(&reopened, "S.overlay === 'forest'").is_ok_and(|value| value == true)
+    })?;
+    key("alt+Right")?;
+    assert_eq!(arrived(&reopened, "/next")?, next);
+    wait("Forward uncovers the page", || {
+        chrome(&reopened, "S.surface === 'reading' && S.overlay === null")
+            .is_ok_and(|value| value == true)
+    })?;
+    println!("PASS Alt+Right closes the forest overlay and shows the forward page like Back.");
     reopened.window.close();
     Ok(())
 }

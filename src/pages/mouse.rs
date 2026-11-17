@@ -82,12 +82,22 @@ pub(super) fn setup(
             9 => {
                 inhibit = true;
                 bf_state_c.remove(FORWARD);
+                let pages = pages.clone();
                 webview.evaluate_javascript(
                     &create_js_mouse_event(webview, event, false, &bf_state_c),
                     None,
                     None,
                     None::<&gtk::gio::Cancellable>,
-                    |_| {},
+                    move |result| {
+                        if result.is_ok_and(|value| value.to_str().as_str() == "true") {
+                            if let Some(pages) = pages.upgrade() {
+                                if let Err(error) = pages.go(super::super::Go::Forward) {
+                                    pages
+                                        .receive(super::super::PageEvent::Error(error.to_string()));
+                                }
+                            }
+                        }
+                    },
                 );
             }
             _ => {}
@@ -164,11 +174,6 @@ fn create_js_mouse_event(
           altKey: {alt_key},
         }});
         el.dispatchEvent(ev)
-        if (!ev.defaultPrevented && "{event_name}" === "mouseup") {{
-          if (ev.button === 4) {{
-            window.history.forward();
-          }}
-        }}
         return !ev.defaultPrevented;
       }})()"#,
         event_name = event_name,

@@ -200,7 +200,7 @@ Each heading links to its part of the [guide](docs/guide.md).
 | **Ctrl+W** | Settle the current tree. |
 | **Ctrl+E** | The forest: every tree. |
 | **Ctrl+Shift+E** | The current tree in a larger view. |
-| **Alt+Left**, **Alt+Right** | Back to the parent, or forward to the child shown most recently. |
+| **Alt+Left**, **Alt+Right** | Back to the parent, or forward to the child shown most recently. Mouse Back and Forward do the same. |
 | **Alt+Up**, **Alt+Down** | Previous or next sibling. |
 | **Ctrl+Shift+Tab** | Switch to the previously shown open tree. |
 | **Ctrl+Shift+T** | Reopen the most recently settled tree or branch. |
