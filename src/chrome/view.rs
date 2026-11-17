@@ -2,7 +2,7 @@
 //! HTML view only paints them and reports input back.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -98,21 +98,12 @@ pub(crate) fn frame(
             }
         }
     }
-    let titles: HashMap<_, _> = forest
-        .trees()
-        .iter()
-        .map(|t| (t.id, t.title.as_str()))
-        .collect();
     let mut visits = serde_json::Map::new();
     for id in visible {
         if let Some(visit) = forest.visit(id) {
-            let title = forest
-                .tree_of(id)
-                .and_then(|id| titles.get(&id).copied())
-                .unwrap_or("");
             visits.insert(
                 id.to_string(),
-                visit_value(forest, visit, title, &frame.loaded, &frame.live),
+                visit_value(forest, visit, &frame.loaded, &frame.live),
             );
         }
     }
@@ -439,7 +430,7 @@ fn forest_value(forest: &ForestProjection, labels: bool) -> Value {
                     "{} · {}{}",
                     plural(tree.page_count, "page"),
                     match tree.lifecycle {
-                        Lifecycle::Open => format!("{} pending", tree.pending_count),
+                        Lifecycle::Open => format!("{} waiting", tree.pending_count),
                         Lifecycle::Settled { since } => format!("settled {}", ago(since)),
                     },
                     if Some(tree.id) == current_tree { " · Current tree" } else { "" },
@@ -452,7 +443,6 @@ fn forest_value(forest: &ForestProjection, labels: bool) -> Value {
 fn visit_value(
     forest: &ForestProjection,
     visit: &Visit,
-    tree: &str,
     loaded: &HashSet<VisitId>,
     live: &HashSet<VisitId>,
 ) -> Value {
@@ -490,6 +480,16 @@ fn visit_value(
             "citation": source.citation_url.is_some(),
         })
     });
+    let detail = visit
+        .source
+        .as_ref()
+        .map(|source| source.link_text.as_str())
+        .filter(|text| !text.is_empty())
+        .unwrap_or(if wait == Some(WaitState::Loaded) {
+            "loaded"
+        } else {
+            ""
+        });
     json!({
         "id": visit.id.to_string(),
         "parent": visit.parent.map(|id| id.to_string()),
@@ -505,9 +505,8 @@ fn visit_value(
         "nodeMenu": node_menu(forest, visit),
         "loaded": wait == Some(WaitState::Loaded),
         "live": live.contains(&visit.id),
-        "when": match wait { Some(WaitState::NotLoaded) => "not loaded".into(), Some(WaitState::Loaded) => "loaded".into(), None => ago(visit.opened_at.unwrap_or(visit.created_at)) },
-        "after": forest.descendant_count(visit.id).unwrap_or(0),
-        "tree": tree,
+        "detail": detail,
+        "when": match wait { Some(WaitState::NotLoaded) => String::new(), Some(WaitState::Loaded) => "loaded".into(), None => ago(visit.opened_at.unwrap_or(visit.created_at)) },
         "source": source,
     })
 }
@@ -953,7 +952,7 @@ mod tests {
             },
             None,
         );
-        assert_eq!(value["visits"][ids[2].to_string()]["when"], "not loaded");
+        assert_eq!(value["visits"][ids[2].to_string()]["when"], "");
         assert_eq!(value["waiting"]["ids"], json!([ids[2].to_string()]));
         assert_eq!(
             value["visits"][ids[2].to_string()]["a11yState"],
@@ -993,6 +992,31 @@ mod tests {
         assert_eq!(value["visits"][ids[0].to_string()]["loaded"], false);
         assert_eq!(value["visits"][ids[0].to_string()]["queued"], false);
         assert_ne!(value["visits"][ids[0].to_string()]["when"], "loaded");
+    }
+
+    #[test]
+    fn waiting_detail_uses_link_text_then_loaded_or_nothing() {
+        let (forest, ids) = chain();
+        let mut visit = forest.visit(ids[2]).unwrap().clone();
+        let loaded = HashSet::from([visit.id]);
+        let empty = HashSet::new();
+        assert_eq!(visit_value(&forest, &visit, &empty, &empty)["detail"], "");
+        assert_eq!(
+            visit_value(&forest, &visit, &loaded, &empty)["detail"],
+            "loaded"
+        );
+        visit.source = Some(crate::browser::SourceContext {
+            page_url: visit.url.clone(),
+            citation_url: None,
+            link_text: "Why this link matters".into(),
+            excerpt: String::new(),
+        });
+        for state in [&empty, &loaded] {
+            assert_eq!(
+                visit_value(&forest, &visit, state, &empty)["detail"],
+                "Why this link matters"
+            );
+        }
     }
 
     #[test]

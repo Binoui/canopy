@@ -13,6 +13,7 @@ pub(crate) mod graph;
 mod palette;
 mod pins;
 mod start;
+mod tabs;
 mod tree_view;
 mod view;
 mod waiting;
@@ -206,6 +207,7 @@ struct Inner {
     /// Something is open that Escape closes.
     modal: Cell<bool>,
     frame: RefCell<Option<ChromeFrame>>,
+    tab_room: Cell<f64>,
     suggested: RefCell<Vec<crate::suggest::Suggestion>>,
     start: Cell<bool>,
     forest_open: Cell<bool>,
@@ -242,6 +244,13 @@ impl HtmlChrome {
             .with_url("canopy://localhost/index.html")
             .build_gtk(container)
             .context("Could not create the chrome view.")?;
+        {
+            use webkit2gtk::{HitTestResultExt, WebViewExt};
+            use wry::WebViewExtUnix;
+            view.webview().connect_context_menu(|_, _, _, hit| {
+                !(hit.context_is_editable() || hit.context_is_selection())
+            });
+        }
         let inner = Rc::new(Inner {
             view,
             host: RefCell::new(None),
@@ -253,6 +262,7 @@ impl HtmlChrome {
             toast_rect: Cell::new(None),
             modal: Cell::new(false),
             frame: RefCell::new(None),
+            tab_room: Cell::new(0.),
             suggested: RefCell::new(Vec::new()),
             start: Cell::new(false),
             forest_open: Cell::new(false),
@@ -262,6 +272,21 @@ impl HtmlChrome {
             palette: RefCell::new(None),
             workbench: RefCell::default(),
         });
+        {
+            use gtk::prelude::*;
+            use wry::WebViewExtUnix;
+            let weak = Rc::downgrade(&inner);
+            inner
+                .view
+                .webview()
+                .connect_query_tooltip(move |view, _, _, _, _| {
+                    if weak.upgrade().is_some_and(|inner| inner.modal.get()) {
+                        // WebKit caches title text on pointer motion, before a menu may open.
+                        view.stop_signal_emission_by_name("query-tooltip");
+                    }
+                    false
+                });
+        }
         *slot.borrow_mut() = Rc::downgrade(&inner);
         let weak = Rc::downgrade(&inner);
         favicons.connect_changed(move |url, revision| {
@@ -299,7 +324,7 @@ impl HtmlChrome {
         if inner.forest_open.get() && inner.forest_layout.borrow().is_null() {
             *inner.forest_layout.borrow_mut() = view::forest_frame(&frame.forest);
         }
-        let value = view::frame(
+        let mut value = view::frame(
             &frame,
             &inner.suggested.borrow(),
             inner.size.get(),
@@ -311,6 +336,7 @@ impl HtmlChrome {
             },
             Some(&inner.forest_layout.borrow()),
         );
+        value["tabFit"] = tabs::layout(&frame.forest, inner.tab_room.get());
         inner.call("present", &[value]);
         *inner.frame.borrow_mut() = Some(frame);
     }
@@ -381,6 +407,10 @@ impl HtmlChrome {
 
     pub fn settle_current(&self) {
         self.inner.call("settleCurrent", &[]);
+    }
+
+    pub fn uncover(&self) {
+        let _ = self.evaluate("uncover()");
     }
 
     pub fn new_tree(&self) {
@@ -651,6 +681,17 @@ impl Inner {
                 let start = message["start"].as_bool().unwrap_or(false);
                 if self.start.replace(start) != start && start {
                     self.freeze()?;
+                }
+            }
+            "tab-room" => {
+                if let Some(room) = message["room"]
+                    .as_f64()
+                    .filter(|v| v.is_finite() && *v >= 0.)
+                {
+                    self.tab_room.set(room);
+                    if let Some(frame) = self.frame.borrow().as_ref() {
+                        self.call("tabsFit", &[tabs::layout(&frame.forest, room)]);
+                    }
                 }
             }
             "layer" => {

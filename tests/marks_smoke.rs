@@ -300,17 +300,22 @@ fn marks_share_surfaces_without_moving_nodes() -> Result<()> {
             common::visible(&f.ui, &format!(".tree-tile[data-id='{root}'] .live-dot"))
         })?;
         shot(&f, &format!("{theme}-tree"))?;
-        common::chrome(&f.ui, "(setTreeSide('list'),true)")?;
-        assert!(common::visible(
+        common::chrome(
             &f.ui,
-            &format!(".tree-row[data-id='{root}'] .live-dot")
-        ));
+            "(document.querySelector('#tree-side [data-side=list]').click(),true)",
+        )?;
+        common::wait("list live mark", || {
+            common::visible(&f.ui, &format!(".tree-row[data-id='{root}'] .live-dot"))
+        })?;
         assert!(
             common::text(&f.ui, &format!(".tree-row[data-id='{root}'] .menu-detail"))
                 .contains("Open in memory")
         );
         shot(&f, &format!("{theme}-list"))?;
-        common::chrome(&f.ui, "(setTreeSide('tree'),canopy.toggleTree(),true)")?;
+        common::chrome(
+            &f.ui,
+            "(document.querySelector('#tree-side [data-side=tree]').click(),canopy.toggleTree(),true)",
+        )?;
     }
     Ok(())
 }
@@ -338,6 +343,7 @@ fn a_small_budget_removes_the_mark_when_the_page_is_dropped() -> Result<()> {
     Ok(())
 }
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
     common::start(directory.path())?;
     if std::env::args().nth(1).as_deref() == Some("pictures") {

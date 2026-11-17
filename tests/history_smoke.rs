@@ -26,6 +26,7 @@ mod common;
 use common::*;
 
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
     start(directory.path())?;
     let server = Server::start()?;

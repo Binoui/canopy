@@ -189,7 +189,7 @@ pub fn answer(host: &str, path: &str) -> Option<Answer> {
             picture("#2f7a55", "#dcebe2", 170)
         )),
         ("bonsaiwiki.example", "/wiki/Root_pruning") => page(site, "Root pruning", &format!(
-            "<h1>Root pruning</h1><p class='lede'>Root pruning shortens thick roots so that fine feeder roots grow close to the trunk.</p>{green}<p>Remove roots that grow straight down, cut back the thickest by a third, and leave the fine roots near the surface.</p>"
+            "<h1>Root pruning</h1><p class='lede'>Root pruning shortens thick roots so that fine feeder roots grow close to the trunk.</p>{green}<p>Remove roots that grow straight down, cut back the thickest by a third, and leave the fine roots near the surface.</p><p>Growers compare the timing in <a id='thread' href='http://rootbound.example/t/4821'>a thread about repotting junipers</a>.</p>"
         )),
         ("rootbound.example", "/t/4821") => page(site, "When do you repot junipers?", &thread()),
         ("mossandwire.example", "/2026/spring-repotting-log") => page(site, "My spring repotting log", &format!(

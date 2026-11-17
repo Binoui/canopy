@@ -55,6 +55,7 @@ fn release() -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     std::env::set_var(
         "no_proxy",
         "localhost,127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4,127.0.0.5",

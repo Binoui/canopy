@@ -226,6 +226,10 @@ fn main() -> Result<()> {
         key("shift+F10")?;
         key("Down")?;
         key("Return")?;
+        ui.window.resize(480, 800);
+        wait("tab overflow at narrow width", || {
+            visible(&ui, "#tab-overflow")
+        })?;
         focus(&ui, "#tab-overflow")?;
         key("Return")?;
         check(&ui, "document.activeElement.matches('#popover button')")?;
@@ -236,6 +240,8 @@ fn main() -> Result<()> {
         capture(&shots, "overflow", theme)?;
         key("Escape")?;
         check(&ui, "document.activeElement.id === 'tab-overflow'")?;
+        ui.window.resize(820, 800);
+        pump(250);
         ui.chrome.offer_logins(1, &["Keyboard one", "Keyboard two"]);
         pump(100);
         focus(&ui, "#login-chip")?;
