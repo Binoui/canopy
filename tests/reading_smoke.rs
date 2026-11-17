@@ -26,6 +26,7 @@ mod common;
 use common::*;
 
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
     start(directory.path())?;
     let fixture = Fixture::start()?;
@@ -342,7 +343,7 @@ fn set_remember_pages(ui: &Ui, on: bool) -> Result<()> {
     open_memory_menu(ui)?;
     let shown = chrome(
         ui,
-        "document.querySelector('#automatic-capture .switch').classList.contains('on')",
+        "document.querySelector('#automatic-capture').getAttribute('aria-checked') === 'true'",
     )?;
     if shown != on {
         click_chrome(ui, "#automatic-capture")?;

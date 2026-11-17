@@ -1096,6 +1096,7 @@ fn failed_revival_retry() -> Result<()> {
     Ok(())
 }
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     // These checkpoint and teardown cases run under forced memory pressure.
     std::env::set_var("CANOPY_MEMORY_BUDGET_MB", "0");
     let environment = tempfile::tempdir()?;

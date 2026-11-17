@@ -20,7 +20,7 @@ pub struct TreeSummary {
     pub lifecycle: Lifecycle,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 struct Node {
     visit: Visit,
     children: Vec<VisitId>,
@@ -31,7 +31,7 @@ struct Node {
     opened_below: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct ForestProjection {
     nodes: HashMap<VisitId, Node>,
     trees: Vec<TreeSummary>,

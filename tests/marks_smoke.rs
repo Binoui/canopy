@@ -209,6 +209,11 @@ fn hidden_navigation_moves_the_mark_to_the_current_document() -> Result<()> {
     f.root("/river")?;
     common::wait("old visit marked", || marked(&f, a))?;
     eval_native(&view, "location.href='/new-orchard';JSON.stringify(true)")?;
+    common::wait("hidden navigation committed", || {
+        f.ui.snapshot()
+            .is_ok_and(|s| s.visits.iter().any(|v| v.url.path() == "/new-orchard"))
+    })?;
+    common::chrome(&f.ui, "(canopy.toggleForest(),true)")?;
     common::wait("mark moves to hidden commit", || {
         f.ui.snapshot().is_ok_and(|s| {
             s.visits
@@ -266,17 +271,16 @@ fn marks_share_surfaces_without_moving_nodes() -> Result<()> {
     let before = common::rect(&f.ui, &selector)?;
     common::chrome(
         &f.ui,
-        &format!("(document.querySelector(\"{selector} .live-dot\").remove(),true)"),
+        &format!("(() => {{globalThis.__removedDot=document.querySelector(\"{selector} .live-dot\"); __removedDot.remove(); return true;}})()"),
     )?;
     assert_eq!(
         common::rect(&f.ui, &selector)?,
         before,
         "dot cannot move or resize a node"
     );
-    // The strip keeps a node whose markup is unchanged, so forget the edited markup first.
     common::chrome(
         &f.ui,
-        &format!("(delete document.querySelector(\"{selector}\").dataset.html,canopy.present(S.frame),true)"),
+        &format!("(document.querySelector(\"{selector}\").appendChild(__removedDot),true)"),
     )?;
     common::wait("root marked again", || strip_marked(&f, root))?;
     for theme in ["dark", "light"] {
@@ -296,17 +300,22 @@ fn marks_share_surfaces_without_moving_nodes() -> Result<()> {
             common::visible(&f.ui, &format!(".tree-tile[data-id='{root}'] .live-dot"))
         })?;
         shot(&f, &format!("{theme}-tree"))?;
-        common::chrome(&f.ui, "(setTreeSide('list'),true)")?;
-        assert!(common::visible(
+        common::chrome(
             &f.ui,
-            &format!(".tree-row[data-id='{root}'] .live-dot")
-        ));
+            "(document.querySelector('#tree-side [data-side=list]').click(),true)",
+        )?;
+        common::wait("list live mark", || {
+            common::visible(&f.ui, &format!(".tree-row[data-id='{root}'] .live-dot"))
+        })?;
         assert!(
             common::text(&f.ui, &format!(".tree-row[data-id='{root}'] .menu-detail"))
                 .contains("Open in memory")
         );
         shot(&f, &format!("{theme}-list"))?;
-        common::chrome(&f.ui, "(setTreeSide('tree'),canopy.toggleTree(),true)")?;
+        common::chrome(
+            &f.ui,
+            "(document.querySelector('#tree-side [data-side=tree]').click(),canopy.toggleTree(),true)",
+        )?;
     }
     Ok(())
 }
@@ -334,6 +343,7 @@ fn a_small_budget_removes_the_mark_when_the_page_is_dropped() -> Result<()> {
     Ok(())
 }
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
     common::start(directory.path())?;
     if std::env::args().nth(1).as_deref() == Some("pictures") {

@@ -30,6 +30,7 @@ mod common;
 use common::*;
 
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let args: Vec<_> = std::env::args().collect();
     if args.get(1).is_some_and(|arg| arg == "--write-profile") {
         return write_profile(Path::new(&args[2]), &args[3]);

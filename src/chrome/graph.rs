@@ -177,7 +177,7 @@ pub(crate) fn short_name(forest: &ForestProjection, id: VisitId) -> String {
     )
 }
 
-fn distinct_name(name: &str, related: &str) -> String {
+pub(crate) fn distinct_name(name: &str, related: &str) -> String {
     for sep in [" · ", " - ", " | ", " — ", " – ", " : "] {
         let pieces: Vec<_> = name.split(sep).collect();
         let parent_pieces: Vec<_> = related.split(sep).collect();

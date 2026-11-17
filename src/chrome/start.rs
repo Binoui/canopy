@@ -20,7 +20,7 @@ pub(super) fn value(frame: &ChromeFrame, frozen: &[crate::suggest::Suggestion]) 
                 "id": tree.id.root().to_string(), "title": tree.title,
                 "tip": format!("{}\n{}", tree.title, frame.forest.visit(tree.id.root()).unwrap().url),
                 "waiting": tree.pending_count, "meta": meta,
-                "mini": mini_value(&tree_view::miniature(&frame.forest, tree, Fit::CARD)),
+                "mini": mini_value(&frame.forest, &tree_view::miniature(&frame.forest, tree, Fit::CARD)),
             })
         })
         .collect();
@@ -44,9 +44,9 @@ fn suggested(frame: &ChromeFrame, frozen: &[crate::suggest::Suggestion]) -> Vec<
         .collect()
 }
 
-fn mini_value(mini: &tree_view::Miniature) -> Value {
+fn mini_value(forest: &crate::forest::ForestProjection, mini: &tree_view::Miniature) -> Value {
     json!({ "w": mini.width, "h": mini.height, "s": mini.icon, "cut": mini.cut,
-        "nodes": mini.nodes.iter().map(|n| json!({"id": n.id.to_string(), "x": n.x, "y": n.y, "last": n.last, "waiting": n.waiting})).collect::<Vec<_>>(),
+        "nodes": mini.nodes.iter().map(|n| json!({"id": n.id.to_string(), "url": forest.visit(n.id).map(|v| v.url.as_str()), "x": n.x, "y": n.y, "last": n.last, "waiting": n.waiting})).collect::<Vec<_>>(),
         "edges": mini.edges.iter().map(|e| json!({"c": e.curve, "wait": e.kind == super::graph::EdgeKind::Pending})).collect::<Vec<_>>() })
 }
 
@@ -251,7 +251,7 @@ pub(super) fn chip(
                 "tree",
                 t.title.clone(),
                 format!("{}\n{}", t.title, forest.visit(tree.root()).unwrap().url),
-                json!({"mini":mini_value(&tree_view::miniature(forest,t,Fit::CHIP))}),
+                json!({"mini":mini_value(forest, &tree_view::miniature(forest,t,Fit::CHIP))}),
             )
         }
         Suggestion::Path { first, second, .. } => (

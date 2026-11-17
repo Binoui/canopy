@@ -195,8 +195,7 @@ impl SettleTarget {
 
 struct SettleUndo {
     head: VisitId,
-    current: Option<VisitId>,
-    expires: std::time::Instant,
+    reopen: VisitId,
 }
 
 struct Hidden {
@@ -1750,12 +1749,10 @@ impl Pages {
 
     pub fn undo_settle(&self) -> Result<()> {
         let undo = self.settle_undo.borrow_mut().take();
-        if let Some(undo) = undo.filter(|u| u.expires > std::time::Instant::now()) {
+        if let Some(undo) = undo {
             self.browser.borrow_mut().undo_settle(undo.head)?;
             self.receive(PageEvent::Changed);
-            if let Some(visit) = undo.current {
-                self.go(Go::Visit(visit))?;
-            }
+            self.go(Go::Visit(undo.reopen))?;
         }
         Ok(())
     }
@@ -1940,8 +1937,17 @@ impl Pages {
         };
         *self.settle_undo.borrow_mut() = Some(SettleUndo {
             head,
-            current: forest.current(),
-            expires: std::time::Instant::now() + std::time::Duration::from_secs(6),
+            reopen: forest
+                .current()
+                .filter(|id| target.contains(&forest, *id))
+                .unwrap_or_else(|| match target {
+                    SettleTarget::Tree(tree) => forest
+                        .trees()
+                        .iter()
+                        .find(|t| t.id == tree)
+                        .map_or(head, |t| t.last_visit),
+                    SettleTarget::Branch(_) => head,
+                }),
         });
         self.receive(PageEvent::Settled(format!(
             "Settled ‘{name}’ · {waiting} waiting kept"
