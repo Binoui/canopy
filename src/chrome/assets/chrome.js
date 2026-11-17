@@ -28,9 +28,8 @@ const ICONS = {
 
 const $ = (id) => document.getElementById(id);
 const post = (message) => window.ipc.postMessage(JSON.stringify(message));
-/// Intents that load a page also give the keyboard back to it, as the GTK buttons that
-/// never took focus did.
-const NAVIGATES = new Set(['reload', 'restore', 'select-tree', 'settle-tree', 'settle-current', 'open-suggestion', 'open-bookmark', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
+/// The old GTK buttons did not take focus from the page.
+const NAVIGATES = new Set(['reload', 'stop', 'restore', 'select-tree', 'settle-tree', 'settle-current', 'open-suggestion', 'open-bookmark', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
 const intent = (kind, extra = {}) => {
   post({ t: 'intent', kind, ...extra });
   if (NAVIGATES.has(kind)) post({ t: 'focus', target: 'page' });
@@ -44,6 +43,7 @@ const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 const S = {
   frame: null,
   pageScale: null,
+  loading: null,
   logins: null,
   save: null,
   locked: null,
@@ -61,6 +61,7 @@ const S = {
   popover: null,
   palette: null,
   reader: null,
+  find: null,
   errors: [],
   forestLabels: true,
   camera: { x: 0, y: 0, zoom: 1 },
@@ -605,6 +606,25 @@ function positionList() {
   list.style.maxHeight = `${Math.max(0, (S.windowHeight ?? 800) - HEADER - REST - 2)}px`;
 }
 
+function currentLoading() {
+  return S.loading?.page === current() && S.loading.state === 'busy';
+}
+
+function paintLoading() {
+  const bar = $('load-progress');
+  const busy = currentLoading();
+  bar.hidden = !busy;
+  const progress = busy ? S.loading.progress : null;
+  bar.classList.toggle('waiting', busy && progress == null);
+  bar.firstElementChild.style.width = `${progress == null ? 20 : Math.max(2, progress)}%`;
+  if (progress == null) bar.removeAttribute('aria-valuenow');
+  else bar.setAttribute('aria-valuenow', progress);
+}
+
+function renderLoadingAction() {
+  if (S.list) renderList();
+}
+
 function renderList() {
   const item = listItem();
   if (!item) { hideList(); return; }
@@ -626,7 +646,10 @@ function renderList() {
       return [`row-${row.id}`, v ? `<div class="list-entry"><button class="menu-row${markClass(v)}" data-id="${row.id}" title="${esc(v.label)}" aria-current="${row.id === current() ? 'page' : 'false'}" aria-label="${esc(row.name)}">${markedFav(v, 16)}<span class="grow">${esc(row.label)}</span><span class="menu-detail">${esc(row.detail)}</span></button>${leaf}</div>` : ''];
     }),
     ['more', item.more ? `<button class="menu-row more" data-act="more">${icon('expand')}<span class="grow">${esc(item.more)}</span><kbd>Ctrl Shift E</kbd></button>` : ''],
-    ...item.actions.map((action) => [`action-${action.kind}`, `<button class="action bl-action" data-act="${action.kind}">${esc(action.label)}</button>`]),
+    ...item.actions.map((action) => {
+      const stop = action.kind === 'reload' && item.page === current() && currentLoading();
+      return [`action-${action.kind}`, `<button class="action bl-action" data-act="${stop ? 'stop' : action.kind}">${esc(stop ? 'Stop' : action.label)}</button>`];
+    }),
   ];
   const kept = new Set();
   let cursor = list.firstElementChild;
@@ -659,6 +682,7 @@ function renderList() {
         else leaves?.remove();
       } else el.innerHTML = fresh.innerHTML;
       el.className = fresh.className;
+      if (fresh.dataset.act) el.dataset.act = fresh.dataset.act;
       el.dataset.html = html;
     }
     if (key === 'head') {
@@ -690,6 +714,7 @@ $('strip-list').addEventListener('click', (event) => {
     canopy.toggleTree();
     requestAnimationFrame(() => setTreeSide(S.treeSide, true, item.moreTarget));
   }
+  else if (action === 'stop') { intent('stop'); }
   else if (action === 'reload') { uncover(); intent('reload'); }
   else if (action === 'open') { uncover(); intent('restore', { id: item.page }); }
   else if (action === 'branch') {
@@ -1681,6 +1706,25 @@ $('reader').querySelector('.scrim').addEventListener('mousedown', closeReader);
 
 const when = (at) => new Date(at).toLocaleString(undefined, { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
+// ---------- find bar ----------
+
+/// The count shows only for the query in the field; a newer edit dims the last one.
+function renderFind() {
+  const find = S.find;
+  $('find-bar').hidden = !find;
+  document.body.toggleAttribute('data-find', !!find);
+  if (!find) return;
+  const state = find.query === $('find-input').value ? find.matches.state : 'pending';
+  $('find-bar').dataset.state = state;
+  const count = $('find-count');
+  if (state === 'position') count.textContent = `${find.matches.index} of ${find.matches.total}`;
+  else if (state === 'none') count.textContent = 'No matches';
+  else if (state === 'empty') count.textContent = '';
+  for (const id of ['find-previous', 'find-next']) $(id).disabled = state === 'empty' || state === 'none';
+}
+
+const findIntent = (action, extra = {}) => { if (S.find) intent('find', { session: S.find.id, action, ...extra }); };
+
 // ---------- Rust's side ----------
 
 function renderPageScale() {
@@ -1711,11 +1755,20 @@ window.canopy = {
     $('forest').hidden = false;
     OVERLAYS.forest.show(true);
   },
+  loading(value) {
+    const previous = S.loading;
+    S.loading = value;
+    paintLoading();
+    if (previous?.page !== value.page || previous?.state !== value.state) {
+      rebuild('loadingAction', renderLoadingAction, []);
+    }
+  },
   present(frame) {
     const previous = current();
     const previousTree = S.frame?.tabs.find((tab) => tab.active)?.id;
     S.frame = { ...frame, start: frame.start ?? S.frame?.start };
     applyStrip(frame.strip);
+    paintLoading();
     renderWaitingPin();
     applyTheme();
     if (frame.current !== previous) {
@@ -1874,7 +1927,7 @@ window.canopy = {
     else if (S.surface !== 'reading' && current()) {
       setSurface(S.frame?.tabs.length ? 'reading' : 'start');
       post({ t: 'focus', target: 'page' });
-    }
+    } else if (S.find) findIntent('close');
   },
   paletteResults(seq, { rows, first }) {
     if (!S.palette || seq !== S.palette.seq) return;
@@ -1914,10 +1967,36 @@ window.canopy = {
     S.systemDark = dark;
     applyTheme();
   },
+  /// Shows a find session, or with null closes the bar: 'user' closed it and Rust gave
+  /// the page the keyboard, 'context' means the page changed under it.
+  find(value, kind) {
+    const input = $('find-input');
+    if (!value) {
+      const focused = $('find-bar').contains(document.activeElement);
+      S.find = null;
+      renderFind();
+      fitTabs();
+      if (kind === 'context' && focused) post({ t: 'focus', target: 'page' });
+      return;
+    }
+    if (kind === 'focus') {
+      uncover();
+      if (S.find?.id !== value.id) input.value = value.query;
+    }
+    const opening = !S.find;
+    S.find = value;
+    renderFind();
+    if (opening) fitTabs();
+    if (kind === 'focus') {
+      input.focus();
+      input.select();
+    }
+  },
   /// For tests: what the view shows, without reaching into the DOM. `deferred` names the
   /// calls held back while a button is down.
   state() {
     return {
+      loading: S.loading,
       buttons: refresh.buttons, start: S.frame?.start, deferred: [...refresh.pending.keys()],
       surface: S.surface, overlay: S.overlay, treeSide: S.treeSide, animating: !!strip.anim, list: S.list?.key ?? null, layer: S.layer, palette: !!S.palette,
       pageScale: S.pageScale,
@@ -1925,6 +2004,7 @@ window.canopy = {
       dark: document.documentElement.classList.contains('dark'),
       nodes: [...strip.elements.keys()], rows: S.palette?.rows ?? [],
       waiting: S.frame?.waiting.ids ?? [], pins: (S.strip?.pins ?? []).map((p) => p.kind), room: S.strip?.room ?? null,
+      find: S.find && { ...S.find, input: $('find-input').value, count: $('find-count').textContent, state: $('find-bar').dataset.state },
     };
   },
 };
@@ -2000,6 +2080,23 @@ $('forest-button').innerHTML = icon('forest') + '<span>Forest</span>';
 $('settings-button').innerHTML = icon('settings');
 $('tab-overflow').innerHTML = icon('chevron');
 $('search-pill').insertAdjacentHTML('afterbegin', icon('search'));
+$('find-previous').innerHTML = icon('chevron');
+$('find-next').innerHTML = icon('chevron');
+$('find-close').innerHTML = icon('close');
+$('find-input').addEventListener('input', () => {
+  findIntent('query', { text: $('find-input').value });
+  renderFind();
+});
+$('find-input').addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  findIntent(event.shiftKey ? 'previous' : 'next');
+});
+// Buttons leave the keyboard in the field.
+$('find-bar').addEventListener('mousedown', (event) => { if (event.target.closest('button')) event.preventDefault(); });
+$('find-previous').addEventListener('click', () => findIntent('previous'));
+$('find-next').addEventListener('click', () => findIntent('next'));
+$('find-close').addEventListener('click', () => findIntent('close'));
 
 let settlePress = null;
 window.addEventListener('mousedown', (event) => {

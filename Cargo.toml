@@ -249,3 +249,15 @@ name = "page_scale_smoke"
 path = "tests/page_scale_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
+
+[[test]]
+name = "find_smoke"
+path = "tests/find_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]
+
+[[test]]
+name = "loading_smoke"
+path = "tests/loading_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]

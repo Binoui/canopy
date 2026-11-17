@@ -84,6 +84,31 @@ svg.icon { width: 14px; height: 14px; flex: none; fill: none; stroke: currentCol
 #search-pill span { flex: 1; text-align: left; }
 kbd { font: 500 10.5px "Inter", sans-serif; color: var(--muted); border: 1px solid var(--border); border-radius: 5px; padding: 0 5px; line-height: 16px; }
 
+/* ---------- find bar ---------- */
+#find-bar {
+  align-self: center; flex: none; display: flex; align-items: center; gap: 2px; height: 28px; margin-left: 4px; padding: 0 3px 0 10px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--muted);
+}
+#find-bar:focus-within { border-color: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+#find-input {
+  width: 150px; min-width: 0; padding: 0; border: none; outline: none; background: transparent;
+  font: inherit; color: var(--text); caret-color: var(--text); user-select: text;
+}
+#find-input:focus-visible { outline: none; }
+#find-input::placeholder { color: var(--faint); }
+#find-input::selection { background: var(--green-soft); }
+#find-count { min-width: 52px; padding: 0 6px; text-align: right; font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+#find-bar[data-state="pending"] #find-count { opacity: .5; }
+#find-bar[data-state="none"] #find-count { color: var(--text); }
+.find-divider { flex: none; width: 1px; height: 16px; margin: 0 3px; background: var(--border); }
+.find-button { width: 22px; height: 22px; flex: none; display: grid; place-items: center; border-radius: 6px; color: var(--muted); }
+.find-button:hover:not(:disabled) { background: var(--hover); color: var(--text); }
+.find-button:disabled { color: var(--faint); }
+.find-button svg.icon { width: 13px; height: 13px; }
+#find-previous svg { transform: rotate(180deg); }
+body[data-find] #search-pill { min-width: 30px; width: 30px; padding: 0; justify-content: center; }
+body[data-find] #search-pill :is(span, kbd) { display: none; }
+
 /* ---------- strip ---------- */
 #strip { position: absolute; left: 0; right: 0; top: var(--header); height: var(--rest); }
 #strip-bg { position: absolute; left: 0; right: 0; top: 0; background: var(--bg); border-top: 1px solid var(--border); }
@@ -471,6 +496,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 @media (max-width: 650px) {
   #search-pill { min-width: 30px; width: 30px; padding: 0; justify-content: center; flex: none; }
   #search-pill span, #search-pill kbd { display: none; }
+  #find-input { width: 90px; }
 }
 
 .tab.short .count, .tab.short .tab-pinned-mark { display: none; }
@@ -482,3 +508,8 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 
 #page-scale { margin-right: 4px; color: var(--green-ink); background: var(--green-soft); border-color: transparent; font-variant-numeric: tabular-nums; }
 #page-scale:hover { border-color: var(--green); }
+#load-progress { position: absolute; bottom: 0; left: 0; right: 0; height: 2px; pointer-events: none; z-index: 2; overflow: hidden; }
+#load-progress i { display: block; height: 100%; background: var(--green); transition: width 120ms linear; }
+#load-progress.waiting i { animation: load-wait 1.2s ease-in-out infinite; }
+@keyframes load-wait { from { transform: translateX(-100%); } to { transform: translateX(500%); } }
+@media (prefers-reduced-motion: reduce) { #load-progress i { transition: none; } #load-progress.waiting i { animation: none; } }

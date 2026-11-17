@@ -209,11 +209,14 @@ Each heading links to its part of the [guide](docs/guide.md).
 | **Shift+F10**, **Menu** | Open the focused page, tab, pinned-card or bookmark menu. |
 | **Ctrl+D** | Bookmark the page, or remove its bookmark. |
 | **Ctrl+S** | Remember the selected passage. |
+| **Ctrl+F** | Find in the page. **Enter** and **Shift+Enter** go to the next or previous match. **Escape** closes the bar. |
+| **Ctrl+G**, **F3** | Next match. With **Shift**, the previous match. |
 | **Ctrl+Shift+L** | Fill the saved login. |
 | **Ctrl+R**, **F5** | Reload. |
 | **Ctrl+=**, **Ctrl+plus**, **Ctrl+-** | Make the page larger or smaller. Keypad Add and Subtract also work. |
 | **Ctrl+0** | Reset page size. Keypad 0 also works, and on AZERTY Ctrl+à or Ctrl+Shift+0. |
 | **Ctrl+wheel** over the page | Change page size for this site. |
+| **Escape** | Close the open chrome surface, or stop the current load. |
 | **Ctrl+Q** | Quit. |
 
 ## Install it

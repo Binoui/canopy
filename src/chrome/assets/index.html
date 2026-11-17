@@ -16,11 +16,20 @@
   <button id="page-scale" class="label-button" title="Reset page size · Ctrl+0" aria-label="Reset page size" hidden></button>
   <button id="login-chip" class="label-button" hidden></button>
   <button id="search-pill" title="Search your forest or go to an address · Ctrl+K"><span>Search or go…</span><kbd>Ctrl K</kbd></button>
+  <div id="find-bar" role="search" aria-label="Find in page" hidden>
+    <input id="find-input" aria-label="Find in page" placeholder="Find in page" spellcheck="false" autocomplete="off">
+    <span id="find-count" aria-live="polite"></span>
+    <i class="find-divider"></i>
+    <button id="find-previous" class="find-button" title="Previous match · Shift+Enter" aria-label="Previous match"></button>
+    <button id="find-next" class="find-button" title="Next match · Enter" aria-label="Next match"></button>
+    <button id="find-close" class="find-button" title="Close · Esc" aria-label="Close find"></button>
+  </div>
   <button id="settings-button" aria-haspopup="menu" aria-expanded="false" class="icon-button" title="Settings" aria-label="Settings"></button>
 </header>
 
 <section id="strip">
   <div id="strip-bg"></div>
+  <div id="load-progress" role="progressbar" aria-label="Loading page" aria-valuemin="0" aria-valuemax="100" hidden><i></i></div>
   <div id="strip-placeholder" hidden>+ <span>A new tree starts here</span></div>
   <div id="strip-clip">
     <div id="strip-canvas">
