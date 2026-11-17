@@ -36,6 +36,7 @@ enum Mode {
 #[derive(Default)]
 struct Seen {
     mode: Mode,
+    slow: bool,
     requests: Vec<(String, String, String)>,
 }
 
@@ -87,21 +88,19 @@ impl Fixture {
                         thread::sleep(std::time::Duration::from_secs(35));
                         return;
                     }
-                    let mode = seen.lock().unwrap().mode;
+                    let (mode, slow) = {
+                        let seen = seen.lock().unwrap();
+                        (seen.mode, seen.slow)
+                    };
                     let (status, headers, body) = if path.ends_with("/feed/atom") {
                         if mode == Mode::Drop {
                             return;
                         }
-                        if mode == Mode::Slow {
+                        if mode == Mode::Slow || slow {
                             thread::sleep(Duration::from_millis(1500));
                         }
                         let n: usize = path.split('/').nth(3).and_then(|s| s.parse().ok()).unwrap();
-                        let account = match n {
-                            0 => Some("ana@example.test"),
-                            1 if mode != Mode::Gap => Some("bo@example.test"),
-                            2 if matches!(mode, Mode::Three | Mode::Gap) => Some("cy@example.test"),
-                            _ => None,
-                        };
+                        let account = account_at(mode, n);
                         if let Some(account) = account.filter(|_| signed_in) {
                             if mode == Mode::Garbage {
                                 ("200 OK", "", "not an Atom feed".to_owned())
@@ -131,6 +130,18 @@ impl Fixture {
                             "Set-Cookie: SID=; Path=/; Max-Age=0; HttpOnly\r\n",
                             "<title>Signed out fixture</title>".to_owned(),
                         )
+                    } else if let Some(address) = path
+                        .strip_prefix("/mail/u/")
+                        .filter(|rest| rest.contains('@'))
+                    {
+                        let n = (0..10)
+                            .find(|&n| account_at(mode, n) == Some(address))
+                            .unwrap_or(0);
+                        (
+                            "302 Found",
+                            &*format!("Location: /mail/u/{n}/\r\n").leak(),
+                            String::new(),
+                        )
                     } else if path.starts_with("/mail/u/") {
                         (
                             "200 OK",
@@ -152,6 +163,10 @@ impl Fixture {
 
     fn set(&self, mode: Mode) {
         self.seen.lock().unwrap().mode = mode;
+    }
+
+    fn set_slow(&self, slow: bool) {
+        self.seen.lock().unwrap().slow = slow;
     }
 
     fn feed_hits(&self) -> usize {
@@ -285,6 +300,15 @@ fn main() -> Result<()> {
 
 const SENDER: &str = "Unique mail sender 928374";
 const SNIPPET: &str = "Unique mail snippet 837461";
+
+fn account_at(mode: Mode, n: usize) -> Option<&'static str> {
+    match n {
+        0 => Some("ana@example.test"),
+        1 if mode != Mode::Gap => Some("bo@example.test"),
+        2 if matches!(mode, Mode::Three | Mode::Gap) => Some("cy@example.test"),
+        _ => None,
+    }
+}
 
 fn atom(origin: &str, n: usize, address: &str, mode: Mode) -> String {
     let ids: &[&str] = if n != 0 || mode == Mode::Empty {
@@ -477,15 +501,19 @@ fn scenario(ui: &Ui, fixture: &Fixture, data: &std::path::Path) -> Result<()> {
     })?;
     println!("PASS mail discovery and focus: new accounts and gaps work, focus follows identities, inbox actions resolve addresses.");
 
+    fixture.set_slow(true);
+    let hits = fixture.feed_hits();
+    ui.mail.check_soon();
+    wait("a slow check is in flight", || fixture.feed_hits() > hits)?;
     ui.open(&[fixture.url("/signout")])?;
     wait(
-        "sign-out hides mail and names both remaining accounts",
+        "a sign-out during a check gets its own check, which hides mail",
         || {
             ui.mail.mail().accounts.is_empty()
-                && toast_text(ui).as_deref()
-                    == Some("Signed out of Gmail as ana@example.test, cy@example.test.")
+                && toast_text(ui).as_deref() == Some("Signed out of Gmail as ana@example.test.")
         },
     )?;
+    fixture.set_slow(false);
     assert!(!visible(ui, "#mail-pin"), "last sign-out hides the pin");
     assert!(
         !mentions(data, &[SENDER, SNIPPET])?,

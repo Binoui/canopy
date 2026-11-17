@@ -26,6 +26,8 @@ pub struct MailWatch {
     ended: Cell<Option<Instant>>,
     page: RefCell<Option<(Url, String)>>,
     gap: Cell<Duration>,
+    /// A trigger that arrived while a check ran. It applies once that check ends.
+    pending: Cell<Option<Duration>>,
     checked: Box<dyn Fn(Vec<String>)>,
 }
 
@@ -58,6 +60,7 @@ impl MailWatch {
             ended: Cell::new(None),
             page: RefCell::default(),
             gap: Cell::new(GAP),
+            pending: Cell::new(None),
             checked: Box::new(checked),
         });
         if watch.origin.is_some() {
@@ -113,7 +116,11 @@ impl MailWatch {
             self.gap.get(),
         );
         match &*self.phase.borrow() {
-            Phase::Checking { .. } => return,
+            Phase::Checking { .. } => {
+                let wanted = self.pending.get().map_or(wanted, |p| p.min(wanted));
+                self.pending.set(Some(wanted));
+                return;
+            }
             Phase::Waiting { due, .. } if *due <= Instant::now() + delay => return,
             _ => (),
         }
@@ -193,7 +200,10 @@ impl MailWatch {
         };
         self.failures.set(failures);
         self.ended.set(Some(Instant::now()));
-        let delay = delay_after(&check, failures);
+        let mut delay = delay_after(&check, failures);
+        if let Some(wanted) = self.pending.take() {
+            delay = delay.min(trigger_delay(wanted, Some(Duration::ZERO), self.gap.get()));
+        }
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()

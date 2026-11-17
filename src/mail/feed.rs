@@ -79,7 +79,7 @@ fn parse(xml: &str, origin: &Origin, number: AccountNumber) -> Option<Account> {
         .find(|s| s.contains('@'))?
         .to_owned();
     let unread = text(feed, "fullcount")?.parse().ok()?;
-    let inbox = origin.inbox(number);
+    let inbox = origin.inbox(&address);
     let messages = feed
         .children()
         .filter(|n| n.is_element() && n.tag_name().name() == "entry")

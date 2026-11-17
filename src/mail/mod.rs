@@ -80,10 +80,10 @@ impl Origin {
             .unwrap()
     }
 
-    fn inbox(&self, number: AccountNumber) -> Url {
-        self.0
-            .join(&format!("/mail/u/{}/#inbox", number.get()))
-            .unwrap()
+    /// Gmail resolves an address in place of the account number to that account's current
+    /// number, so the link survives renumbering (measured 2026-11-17).
+    fn inbox(&self, address: &str) -> Url {
+        self.0.join(&format!("/mail/u/{address}")).unwrap()
     }
 
     fn serves(&self, url: &Url) -> bool {
@@ -272,13 +272,13 @@ mod tests {
     use feed::Outcome;
 
     fn account(n: u8) -> Account {
-        let number = AccountNumber(n);
+        let address = format!("a{n}@example.test");
         Account {
-            number,
-            address: format!("a{n}@example.test"),
+            number: AccountNumber(n),
+            inbox: Origin::gmail().inbox(&address),
+            address,
             unread: 3,
             messages: vec![],
-            inbox: Origin::gmail().inbox(number),
         }
     }
 

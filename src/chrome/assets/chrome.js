@@ -803,6 +803,13 @@ function openPopover(kind, anchor, data, below = anchor) {
   syncLayer();
 }
 
+function keepPopoverInside() {
+  const popover = $('popover');
+  if (!S.popover || popover.hidden) return;
+  const left = S.popover.anchor.getBoundingClientRect().left;
+  popover.style.left = `${clamp(left, 8, window.innerWidth - popover.offsetWidth - 8)}px`;
+}
+
 function closePopover(restoreFocus = true) {
   if (!S.popover) return;
   const { anchor, title, parent, listKey } = S.popover;
@@ -892,13 +899,16 @@ function refreshPopover() {
     const active = document.activeElement;
     const address = active?.dataset.account;
     const id = active?.dataset.id;
-    const header = active?.classList.contains('mail-inbox');
+    const role = ['mail-row', 'mail-inbox', 'mail-more'].find((c) => active?.classList.contains(c));
     const hadFocus = popover.contains(active);
     renderPopover();
-    if (S.popover && hadFocus) {
-      const row = [...popover.querySelectorAll('button')].find((el) =>
-        el.dataset.account === address && (id ? el.dataset.id === id : header && el.classList.contains('mail-inbox')));
-      (row ?? popover).focus({ preventScroll: true });
+    if (!S.popover) return;
+    keepPopoverInside();
+    if (hadFocus) {
+      const row = role && [...popover.querySelectorAll(`.${role}`)].find((el) =>
+        el.dataset.account === address && (role !== 'mail-row' || el.dataset.id === id));
+      (row || popover).focus({ preventScroll: true });
+      row?.scrollIntoView({ block: 'nearest' });
     }
     return;
   }
@@ -1439,6 +1449,7 @@ function requestForest() {
   }
 }
 window.addEventListener('resize', requestForest);
+window.addEventListener('resize', keepPopoverInside);
 
 function canFocus(el) {
   if (!el?.isConnected || el.disabled || el.tabIndex < 0 || el.closest('[hidden], [inert]')) return false;
