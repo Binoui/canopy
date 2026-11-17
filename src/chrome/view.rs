@@ -1473,7 +1473,7 @@ fn mail_value(mail: &crate::mail::Mail) -> Value {
             "name": if mail.trouble.is_some() { format!("{name}. {updated}") } else { name },
         })
     });
-    json!({
+    let mut value = json!({
         "pin": pin,
         "notice": notice,
         "accounts": mail.accounts.iter().map(|a| {
@@ -1492,13 +1492,68 @@ fn mail_value(mail: &crate::mail::Mail) -> Value {
                 }).collect::<Vec<_>>(),
             })
         }).collect::<Vec<_>>(),
-    })
+    });
+    if mail.accounts.len() >= 2 {
+        let tab = |key: &str, label: &str, owner: &str, count: u32| {
+            json!({
+                "key": key,
+                "label": label,
+                "count": if count == 0 { String::new() } else { count.to_string() },
+                "name": if count == 0 { format!("{owner}, no unread mail") } else { format!("{owner}, {count} unread") },
+            })
+        };
+        let local = |address: &str| address.split('@').next().unwrap_or(address).to_owned();
+        let mut tabs = vec![tab("all", "All", "All accounts", unread)];
+        tabs.extend(mail.accounts.iter().map(|a| {
+            let short = local(&a.address);
+            let shared = mail
+                .accounts
+                .iter()
+                .filter(|other| local(&other.address) == short)
+                .count()
+                > 1;
+            tab(
+                &a.address,
+                if shared { &a.address } else { &short },
+                &a.address,
+                a.unread,
+            )
+        }));
+        value["tabs"] = json!(tabs);
+    }
+    value
 }
 
 #[cfg(test)]
 mod mail_tests {
     use super::*;
     use crate::mail::{Mail, Trouble};
+
+    #[test]
+    fn account_tabs_have_stable_keys_unambiguous_labels_and_unread_names() {
+        let mut mail = crate::mail::fixture();
+        assert!(mail_value(&Mail::default()).get("tabs").is_none());
+        assert!(mail_value(&mail).get("tabs").is_none());
+        let mut second = mail.accounts[0].clone();
+        second.address = "bo@example.test".into();
+        second.unread = 0;
+        mail.accounts.push(second);
+        assert_eq!(
+            mail_value(&mail)["tabs"],
+            json!([
+                {"key":"all", "label":"All", "count":"3", "name":"All accounts, 3 unread"},
+                {"key":"ana@example.test", "label":"ana", "count":"3", "name":"ana@example.test, 3 unread"},
+                {"key":"bo@example.test", "label":"bo", "count":"", "name":"bo@example.test, no unread mail"}
+            ])
+        );
+        mail.accounts[1].address = "ana@work.test".into();
+        mail.accounts[0].unread = 0;
+        let value = mail_value(&mail);
+        assert_eq!(value["tabs"][0]["count"], "");
+        assert_eq!(value["tabs"][0]["name"], "All accounts, no unread mail");
+        assert_eq!(value["tabs"][1]["label"], "ana@example.test");
+        assert_eq!(value["tabs"][2]["label"], "ana@work.test");
+    }
 
     #[test]
     fn the_frame_hides_mail_without_accounts_and_names_counts_rows_and_staleness() {
