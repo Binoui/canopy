@@ -19,7 +19,7 @@ use crate::{
     },
     forest::ForestProjection,
     logins::{Login, LoginProvider, SavedLogin},
-    pages::{DownloadEvent, Go, PageEvent, Pages},
+    pages::{DownloadEvent, FindAction, FindTarget, Go, PageEvent, Pages},
 };
 
 pub struct Ui {
@@ -157,6 +157,7 @@ impl Ui {
                 PageEvent::Selected => ui.refresh(),
                 PageEvent::Changed | PageEvent::Loading(false) => ui.schedule_refresh(),
                 PageEvent::Loading(true) => {}
+                PageEvent::LoadState(value) => ui.chrome.loading(value),
                 PageEvent::Settled(message) => ui.chrome.settled(&message),
                 PageEvent::Error(message) => ui.chrome.toast(Toast::Error(message)),
                 PageEvent::Remembered(_) => ui
@@ -169,6 +170,7 @@ impl Ui {
                     ui.chrome
                         .open_palette(PaletteScope::From(visit), PaletteSeed::Empty);
                 }
+                PageEvent::Find(update) => ui.chrome.find(update),
             }
         });
         let weak = Rc::downgrade(&ui);
@@ -440,7 +442,11 @@ impl Ui {
                 self.report(self.pages.go(Go::Parent));
             }
             Shortcut::ToggleFocus => self.chrome.toggle_focus(),
+            Shortcut::Find => self.pages.find(FindTarget::Selected, FindAction::Open),
+            Shortcut::FindNext => self.pages.find(FindTarget::Selected, FindAction::Next),
+            Shortcut::FindPrevious => self.pages.find(FindTarget::Selected, FindAction::Previous),
             Shortcut::Escape if self.chrome.escape() => {}
+            Shortcut::Escape if self.pages.stop() => {}
             Shortcut::Escape => return glib::Propagation::Proceed,
         }
         glib::Propagation::Stop
@@ -469,6 +475,9 @@ enum Shortcut {
     PreviousSibling,
     NextSibling,
     ToggleFocus,
+    Find,
+    FindNext,
+    FindPrevious,
     Escape,
 }
 
@@ -479,6 +488,7 @@ impl Modifiers {
     const NONE: Self = Self(gdk::ModifierType::empty());
     const CONTROL: Self = Self(gdk::ModifierType::CONTROL_MASK);
     const ALT: Self = Self(gdk::ModifierType::MOD1_MASK);
+    const SHIFT: Self = Self(gdk::ModifierType::SHIFT_MASK);
     const CONTROL_SHIFT: Self =
         Self(gdk::ModifierType::CONTROL_MASK.union(gdk::ModifierType::SHIFT_MASK));
 
@@ -542,6 +552,11 @@ impl Shortcut {
             (Modifiers::ALT, key::Up, Self::PreviousSibling),
             (Modifiers::ALT, key::Down, Self::NextSibling),
             (Modifiers::NONE, key::F6, Self::ToggleFocus),
+            (Modifiers::CONTROL, key::f, Self::Find),
+            (Modifiers::CONTROL, key::g, Self::FindNext),
+            (Modifiers::CONTROL_SHIFT, key::g, Self::FindPrevious),
+            (Modifiers::NONE, key::F3, Self::FindNext),
+            (Modifiers::SHIFT, key::F3, Self::FindPrevious),
             (Modifiers::NONE, key::Escape, Self::Escape),
         ];
         if let Some((_, _, action)) = bindings
@@ -663,6 +678,10 @@ impl ChromeHost for Ui {
             ChromeIntent::SelectTree(tree) => self.pages.go(Go::Tree(tree)),
             ChromeIntent::Restore(visit) => self.pages.go(Go::Visit(visit)),
             ChromeIntent::Reload => self.pages.reload(),
+            ChromeIntent::Stop => {
+                self.pages.stop();
+                Ok(())
+            }
             ChromeIntent::BranchFromQueued(visit) => self.pages.branch_from_queued(visit),
             ChromeIntent::OpenCitation(child) => self.pages.go(Go::Citation(child)),
             ChromeIntent::Navigate { url, target } => self.pages.go(Go::Address { url, target }),
@@ -681,6 +700,10 @@ impl ChromeHost for Ui {
             ChromeIntent::AnswerSave { offer, save } => ui.answer_save(offer, save),
             ChromeIntent::UnlockLogins => {
                 ui.unlock_logins();
+                Ok(())
+            }
+            ChromeIntent::Find { session, action } => {
+                self.pages.find(FindTarget::Session(session), action);
                 Ok(())
             }
         };
@@ -830,6 +853,11 @@ mod shortcut_tests {
             (key::Up, Modifiers::ALT, Shortcut::PreviousSibling),
             (key::Down, Modifiers::ALT, Shortcut::NextSibling),
             (key::F6, Modifiers::NONE, Shortcut::ToggleFocus),
+            (key::f, Modifiers::CONTROL, Shortcut::Find),
+            (key::g, Modifiers::CONTROL, Shortcut::FindNext),
+            (key::g, Modifiers::CONTROL_SHIFT, Shortcut::FindPrevious),
+            (key::F3, Modifiers::NONE, Shortcut::FindNext),
+            (key::F3, Modifiers::SHIFT, Shortcut::FindPrevious),
             (key::Escape, Modifiers::NONE, Shortcut::Escape),
         ];
         for (key, required, _) in bindings.iter().copied() {
@@ -921,7 +949,6 @@ mod shortcut_tests {
             key::ccedilla,
             key::F5,
             key::F11,
-            key::f,
         ] {
             assert_eq!(Shortcut::matching(Modifiers::CONTROL, key), None);
         }

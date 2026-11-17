@@ -8,8 +8,10 @@
 //! page keeps its clicks everywhere else.
 
 mod favicon;
+mod find;
 mod forest_layout;
 pub(crate) mod graph;
+mod loading;
 mod palette;
 mod pins;
 mod start;
@@ -104,6 +106,7 @@ pub enum ChromeIntent {
         question: u64,
         proceed: bool,
     },
+    Stop,
     SelectTree(TreeId),
     SettleTree(TreeId),
     Dismiss(VisitId),
@@ -160,6 +163,10 @@ pub enum ChromeIntent {
         tree: TreeId,
         pinned: bool,
     },
+    Find {
+        session: crate::pages::FindId,
+        action: crate::pages::FindAction,
+    },
 }
 
 /// A login waiting for the user to say whether to keep it.
@@ -208,6 +215,8 @@ struct Inner {
     toast_rect: Cell<Option<[i32; 4]>>,
     /// Something is open that Escape closes.
     modal: Cell<bool>,
+    /// The find session the bar shows. Escape closes it even before the view reports.
+    find: Cell<Option<crate::pages::FindId>>,
     frame: RefCell<Option<ChromeFrame>>,
     tab_room: Cell<f64>,
     suggested: RefCell<Vec<crate::suggest::Suggestion>>,
@@ -263,6 +272,7 @@ impl HtmlChrome {
             cover: Cell::new(Some(CHROME_HEIGHT)),
             toast_rect: Cell::new(None),
             modal: Cell::new(false),
+            find: Cell::new(None),
             frame: RefCell::new(None),
             tab_room: Cell::new(0.),
             suggested: RefCell::new(Vec::new()),
@@ -487,10 +497,20 @@ impl HtmlChrome {
     /// Closes the topmost chrome surface. Returns false when there was none, so the page
     /// can have the key.
     pub fn escape(&self) -> bool {
-        if !self.inner.modal.get() {
-            return false;
+        if self.inner.modal.get() {
+            self.inner.call("escape", &[]);
+            return true;
         }
-        self.inner.call("escape", &[]);
+        let Some(session) = self.inner.find.get() else {
+            return false;
+        };
+        // Closed now, not after a round trip through the view, so a quick Ctrl+F opens anew.
+        if let Some(host) = self.inner.host() {
+            host.dispatch(ChromeIntent::Find {
+                session,
+                action: crate::pages::FindAction::Close,
+            });
+        }
         true
     }
 
@@ -929,6 +949,7 @@ impl Inner {
                 url: frame.mail.inbox(message["account"].as_str()?)?.clone(),
                 target: NavigationTarget::Root,
             },
+            "stop" => ChromeIntent::Stop,
             "dismiss" => ChromeIntent::Dismiss(id("id")?),
             "settle-branch" => ChromeIntent::SettleBranch(id("id")?),
             "move-to-tree" => ChromeIntent::MoveToTree(id("id")?),
@@ -992,6 +1013,7 @@ impl Inner {
             "open-suggestion" => start::open(&self.chip(message)?),
             "keep-suggestion" => start::keep(&self.chip(message)?),
             "decline-suggestion" => ChromeIntent::Decline(self.chip(message)?.key()),
+            "find" => find::intent(message)?,
             _ => return None,
         })
     }
