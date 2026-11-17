@@ -33,12 +33,24 @@ Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not aff
 - **Ctrl+W**, a middle click on a tab, or the **×** on a tab settles a tree. A settled tree leaves the tabs and keeps every page. It waits under **Settled** in the forest view, and opening any of its pages brings its tab back. With the new-tree page, the forest view or the palette open, **Ctrl+W** closes that instead.
 - **Ctrl+1** to **Ctrl+9** switch to a tab. Shift is also accepted for layouts such as AZERTY.
 - **F6** moves the keyboard focus between the page and the current page in the strip. **Left** and **Right** walk the path, and **Enter** opens the focused page.
-- **Alt+Left** goes back to the parent page.
+- **Alt+Left** goes back to the parent page. **Alt+Right** opens the child you last opened from this page. **Alt+Up** and **Alt+Down** open the previous and next sibling, newest first, and stop at either end.
 - **Ctrl+Tab** opens the next waiting page of the current tree, newest first. The counter at the end of the strip shows how many are waiting.
 - **Ctrl+Shift+E**, or the button at the end of the strip, opens the current tree in a larger view, as a tree or as a list.
 - **Ctrl+R**, **F5**, and **Ctrl+Shift+R** reload the current page. Canopy has no hard reload, so all three perform a plain reload.
 - **Ctrl+Shift+L** fills the saved login for the page.
 - **Ctrl+Q** quits Canopy.
+
+## Act on a page or branch
+
+Right-click a page in the strip, an attached list, the zoomed tree, or the waiting list. The same menu offers **Open**, **Open in a new tree**, **New branch here**, and **Copy address**. The remaining rows appear when they apply.
+
+**Dismiss** marks a waiting page as skipped. **Dismiss N waiting** skips the waiting pages inside a branch. Skipped links stay hollow and faint in the tree. They leave the waiting counts and **Ctrl+Tab**, and their background views stop. Opening a skipped page clears its mark.
+
+**Settle branch** puts away a page and everything below it. The list and zoomed tree show an **N pages put away** stub. Those pages leave the strip counts and waiting queue, and their live views are checkpointed and released. If you are reading inside that branch, Canopy first returns to its nearest unsettled ancestor. Opening any page inside reopens every settled ancestor.
+
+**Move to its own tree** detaches a branch into a new tab. It appears for a non-root page when its branch contains an opened page. The new tree remembers the most recently opened page in that branch. If you are reading inside it, the new tab becomes active. Live pages follow the move, and Back stays inside the new tree.
+
+Settling a tree or branch shows **Settled ‘name’ · N waiting kept**. **Undo** stays available for six seconds and returns to the page you were reading. Waiting links are kept when you settle.
 
 ## Resume reading
 

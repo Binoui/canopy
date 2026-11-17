@@ -12,6 +12,10 @@ Two structures were compared before implementation. The first gave ownership of 
 
 The alternative brought two things to the chosen design. The navigation intent stays explicit until the load actually happens. The tests check the behaviour with WebKit and compare the forest before and after reopening the database.
 
+Schema 12 adds nullable `dismissed_at` and `branch_settled_at` marks to visits. The migration runs in a transaction and preserves version-11 rows. Selection clears dismissal on the selected visit and settlement on every ancestor in the same transaction as the arrival log and cursor. The forest projection excludes dismissed links and settled subtrees from waiting counts. Strip branch counts omit settled subtrees, while the zoomed tree and attached lists retain a branch stub.
+
+Moving a branch changes only its head's parent and the two tree targets, in one transaction. The new root can still be waiting, so its `tree_state` target is the most recently opened page inside the subtree, ordered by arrival log. The old target moves to the most recently opened page left in the original tree. Native history bindings keep their visit IDs. The existing history guard resolves tree membership against SQLite, so Back cannot cross the detached root.
+
 ## An intent comes before a visit
 
 Each view owns its Navigation, its pending load and its current Document. Browser owns no global load. A LoadTicket ties one incarnation of a view to an attempt number. Title, capture, context and scroll callbacks carry the Document they came from and check its epoch before writing. A failed transaction keeps the load and the Document until Finished. Finished abandons an attempt whose commit did not succeed. A same-document completion abandons a rejected commit immediately, because WebKit sends no Finished for it. The live page does not retry commits.
@@ -256,6 +260,8 @@ leaves or rejoins the hidden registry. Selection, hidden navigation and settling
 existing refreshes.
 
 ### Switch cancellation and page Back
+
+Tree and branch settling share one scoped command. Its membership predicate selects queued work, never-seen views, hidden live views, candidates and the selected cover. Branch settling routes the selected page to its nearest unsettled ancestor and uses the existing checkpoint, retirement and landing path. If startup finds the cursor inside a settled branch whose landing did not commit, it resumes at the nearest unsettled ancestor. A six-second undo record keeps the head and previous cursor. Undo clears that head's settle mark and returns through normal visit routing. It does not recreate released live documents.
 
 Starting a candidate fails all pending foreground work in the old view and invalidates
 its asynchronous link decisions. The old committed document remains usable. Main-frame
