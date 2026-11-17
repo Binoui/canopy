@@ -137,7 +137,10 @@ fn main() -> Result<()> {
         waiting(&ui)?,
         queued.iter().map(|v| v.id.to_string()).collect::<Vec<_>>()
     );
-    assert_eq!(text(&ui, "#tab-row .tab[aria-selected=true] .count"), "26");
+    assert!(visible(&ui, "#tab-row .tab[aria-selected=true] .unread-dot"));
+    assert!(
+        chrome(&ui, "document.querySelector('#tab-row .tab[aria-selected=true]').title.includes('26 waiting')")? == true
+    );
     wait("newest waiting page loaded", || {
         visible(&ui, "#waiting-pin .pending-dot.loaded")
     })?;

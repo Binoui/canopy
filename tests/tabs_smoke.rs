@@ -306,7 +306,7 @@ fn review_regressions(ui: &Ui) -> Result<()> {
     pump(300);
     ui.window.resize(1240, 800);
     pump(400);
-    assert_eq!(chrome(ui, "[...document.querySelectorAll('.tab.icon-only')].some(t => { const tree = S.frame.tabs.find(tree => tree.id === t.dataset.id); const count = t.querySelector('.count'); return tree.pending > 0 && count && count.offsetWidth > 0 && count.textContent === String(tree.pending) && getComputedStyle(count).position === 'absolute' && !t.querySelector('.tab-pinned-mark')?.offsetWidth; })")?, true);
+    assert_eq!(chrome(ui, "[...document.querySelectorAll('.tab.icon-only')].some(t => { const tree = S.frame.tabs.find(tree => tree.id === t.dataset.id); const dot = t.querySelector('.unread-dot'); return tree.pending > 0 && dot && dot.offsetWidth > 0 && getComputedStyle(dot).position === 'absolute' && !t.querySelector('.tab-pinned-mark')?.offsetWidth; })")?, true);
     println!("PASS 5 icon corner shows its waiting count and hides the pin.");
     if let Ok(folder) = std::env::var("CANOPY_TAB_SHOTS") {
         std::fs::create_dir_all(&folder)?;
