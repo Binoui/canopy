@@ -122,6 +122,10 @@ fn main() -> Result<()> {
         )?,
         "Downloaded here: report.txt"
     );
+    assert_eq!(chrome(&ui, &format!(
+        "(() => {{ const el = document.querySelector({:?}); const r = el.getBoundingClientRect(); return [-11, 11].every(dx => [1, 23].every(dy => {{ const hit = document.elementFromPoint(r.x+r.width/2+dx, r.y+dy); return hit === el || el.contains(hit); }})); }})()", leaf_button(origin)
+    ))?, true);
+    println!("PASS leaf hit area covers 24 by 24 pixels without enlarging its visible mark.");
     shot(&ui, "one-leaf")?;
     println!("PASS a saved file is recorded on the page it was clicked from, with its path, size and address, and shows as a leaf on that page's node.");
 

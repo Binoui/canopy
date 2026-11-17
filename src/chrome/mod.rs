@@ -13,6 +13,7 @@ pub(crate) mod graph;
 mod palette;
 mod pins;
 mod start;
+mod tabs;
 mod tree_view;
 mod view;
 mod waiting;
@@ -506,6 +507,16 @@ impl Inner {
                 let start = message["start"].as_bool().unwrap_or(false);
                 if self.start.replace(start) != start && start {
                     self.freeze()?;
+                }
+            }
+            "tab-room" => {
+                if let Some(room) = message["room"]
+                    .as_f64()
+                    .filter(|v| v.is_finite() && *v >= 0.)
+                {
+                    if let Some(frame) = self.frame.borrow().as_ref() {
+                        self.call("tabsFit", &[tabs::layout(&frame.forest, room)]);
+                    }
                 }
             }
             "layer" => {

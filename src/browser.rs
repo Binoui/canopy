@@ -1898,6 +1898,46 @@ mod tests {
     }
 
     #[test]
+    fn previous_tree_uses_the_source_when_resuming_an_older_cursor() {
+        let mut b = memory();
+        let a = follow(&mut b, "a", NavigationTarget::Root);
+        follow(&mut b, "b", NavigationTarget::Root);
+        let c = follow(&mut b, "c", NavigationTarget::Root);
+        b.connection
+            .execute("UPDATE session SET current_id=?1", [a.to_string()])
+            .unwrap();
+        let load = b.restore(c).unwrap();
+        b.started(load.clone()).unwrap();
+        b.committed(load).unwrap();
+        assert_eq!(b.previous_tree().unwrap(), Some(TreeId(a)));
+    }
+
+    #[test]
+    fn previous_tree_skips_current_and_settled_and_survives_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("forest.sqlite3");
+        let mut b = TestBrowser::open(&path).unwrap();
+        assert_eq!(b.previous_tree().unwrap(), None);
+        let a = follow(&mut b, "a", NavigationTarget::Root);
+        assert_eq!(b.previous_tree().unwrap(), None);
+        let c = follow(&mut b, "c", NavigationTarget::Root);
+        follow_child(&mut b, "c-child");
+        b.connection
+            .execute("UPDATE visit_events SET at=1", [])
+            .unwrap();
+        assert_eq!(b.previous_tree().unwrap(), Some(TreeId(a)));
+        let load = b.restore(a).unwrap();
+        b.started(load.clone()).unwrap();
+        b.committed(load).unwrap();
+        assert_eq!(b.previous_tree().unwrap(), Some(TreeId(c)));
+        drop(b);
+        let mut b = TestBrowser::open(&path).unwrap();
+        assert_eq!(b.previous_tree().unwrap(), Some(TreeId(c)));
+        b.settle_tree(TreeId(c)).unwrap();
+        assert_eq!(b.previous_tree().unwrap(), None);
+    }
+
+    #[test]
     fn the_tree_just_left_follows_the_order_of_the_log_not_the_clock() {
         let mut b = memory();
         let old = follow(&mut b, "old", NavigationTarget::Root);

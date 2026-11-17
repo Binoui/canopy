@@ -16,7 +16,7 @@ On a page's card, **New branch here** opens the palette from that page without l
 
 ## Find your way around
 
-The top row has one tab per open tree, in the order you started them. Trees that do not fit wait behind the arrow at the end of the row. A tree is named after what you searched for, or after its first page. Right-click a tab to give the tree a name of your own; an empty name goes back to the automatic one. Under the tabs, a strip shows the current tree: the path to the current page, with small buds for the other branches. Rest the pointer on the strip and it opens over the page with every branch. Rest it on a page in the strip to see a card with its title, site and a preview.
+The top row has one tab per open tree, in the order you started them. Tabs shrink to short titles, then to icons with a title for the active tree. Trees that still do not fit wait behind the arrow at the end of the row. Their rows show waiting counts, pins and a settle button. A tree is named after what you searched for, or after its first page. Right-click a tab to give the tree a name of your own; an empty name goes back to the automatic one. Under the tabs, a strip shows the current tree: the path to the current page, with small buds for the other branches. Rest the pointer on the strip and it opens over the page with every branch. Rest it on a page in the strip to see a card with its title, site and a preview.
 
 The Bookmarks band shows up to sixteen top-level tiles, with folder chips to the right of its heading. Overflow tiles and chips open lists. Right-click a tile or list row to remove its bookmark.
 
@@ -32,6 +32,7 @@ Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not aff
 - **Ctrl+1** to **Ctrl+9** switch to a tab. Shift is also accepted for layouts such as AZERTY.
 - **F6** moves the keyboard focus between the page and the current page in the strip. **Left** and **Right** walk the path, and **Enter** opens the focused page.
 - **Alt+Left** goes back to the parent page.
+- **Ctrl+Shift+Tab** switches to the previously shown open tree. Repeating it alternates between the two trees. Settled trees are skipped.
 - **Ctrl+Tab** opens the next waiting page of the current tree, newest first. The counter at the end of the strip shows how many are waiting.
 - **Ctrl+Shift+E**, or the button at the end of the strip, opens the current tree in a larger view, as a tree or as a list.
 - **Ctrl+R**, **F5**, and **Ctrl+Shift+R** reload the current page. Canopy has no hard reload, so all three perform a plain reload.

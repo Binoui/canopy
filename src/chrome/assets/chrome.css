@@ -60,7 +60,7 @@ svg.icon { width: 14px; height: 14px; flex: none; fill: none; stroke: currentCol
 #tab-row { display: flex; align-items: flex-end; gap: 2px; min-width: 0; height: 100%; }
 .tab {
   position: relative; display: flex; align-items: center; gap: 7px; height: 32px; max-width: 200px;
-  padding: 0 11px 0 10px; border-radius: 9px 9px 0 0; color: var(--muted); flex: none;
+  padding: 0 4px 0 8px; min-width: 0; overflow: hidden; border-radius: 9px 9px 0 0; color: var(--muted); flex: none;
 }
 .tab:hover { background: var(--hover); color: var(--text); }
 .tab.on { background: var(--bg); color: var(--text); box-shadow: inset 1px 0 var(--border), inset -1px 0 var(--border), inset 0 1px var(--border); }
@@ -412,3 +412,24 @@ body[data-overlay="tree"] #pins .pin:not(.on) { visibility: hidden; }
 .node > .live-dot.above-leaves { bottom: 9px; }
 
 .tree-tile > .live-dot, .forest-node > .live-dot { left: 2px; bottom: 2px; }
+
+.tab .mk, .tab .count, .tab-pinned-mark { flex: none; }
+.tab-title { flex: 1; min-width: 0; }
+.tab.icon-only { padding: 0; justify-content: center; }
+.tab.icon-only > :not(.mk) { display: none; }
+.overflow-tree { display: flex; align-items: center; }
+.overflow-tree .menu-row { flex: 1; min-width: 0; }
+.overflow-settle { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 4px; }
+.overflow-settle:hover { background: var(--hover); }
+.tab-settle { flex: none; justify-content: center; width: 24px; height: 24px; }
+#memory-dot::before, .leaves::before { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); min-width: 24px; min-height: 24px; width: 100%; height: 100%; }
+.leaves::before { top: 0; transform: translateX(-50%); }
+.sg-act { position: relative; }
+.sg-act::before { content: ""; position: absolute; inset: -1px; }
+#login-chip { max-width: min(220px, 18vw); }
+@media (max-width: 650px) {
+  #search-pill { min-width: 30px; width: 30px; padding: 0; justify-content: center; flex: none; }
+  #search-pill span, #search-pill kbd { display: none; }
+}
+
+.tab.short .count, .tab.short .tab-pinned-mark { display: none; }

@@ -196,48 +196,46 @@ function applyTheme() {
 function renderTabs() {
   const row = $('tab-row');
   const trees = S.frame?.tabs ?? [];
-  row.innerHTML = trees.map((tree, index) => {
+  const kept = new Map([...row.children].map((tab) => [tab.dataset.id, tab]));
+  const nodes = trees.map((tree, index) => {
     const root = visit(tree.id);
     const pages = `${tree.pages} page${tree.pages === 1 ? '' : 's'}`;
-    const pending = tree.pending ? `, ${tree.pending} pending` : '';
+    const pending = tree.pending ? `, ${tree.pending} waiting` : '';
+    const pinned = tree.pinned ? ', pinned' : '';
     const key = index < 9 ? ` · Ctrl+${index + 1}` : '';
-    return `<button class="tab${tree.active ? ' on' : ''}" data-id="${tree.id}" title="${esc(`${tree.title} · ${pages}${pending}${key}`)}" aria-label="${esc(`${tree.title}, ${pages}${pending}`)}">`
+    const html = `<button class="tab${tree.active ? ' on' : ''}" data-id="${tree.id}" title="${esc(`${tree.title} · ${pages}${pending}${pinned}${key}`)}" aria-label="${esc(`${tree.title}, ${pages}${pending}${pinned}`)}">`
       + (root ? `<span class="mk">${visitFav(root, 14)}${tree.live ? '<i class="live-dot"></i>' : ''}</span>` : '')
       + `<span class="tab-title">${esc(tree.title)}</span>`
       + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Pinned">${icon('pinned')}</span>` : '')
       + (tree.pending ? `<span class="count">${tree.pending}</span>` : '')
       + `<span class="tab-settle" data-settle="${tree.id}" title="Settle${tree.active ? ' · Ctrl+W' : ''}" aria-hidden="true">${icon('close')}</span>`
       + '</button>';
-  }).join('');
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    const fresh = template.content.firstChild;
+    const tab = kept.get(tree.id) ?? fresh;
+    if (tab !== fresh) {
+      tab.classList.toggle('on', tree.active);
+      tab.title = fresh.title;
+      tab.setAttribute('aria-label', fresh.getAttribute('aria-label'));
+      const settle = tab.querySelector('[data-settle]');
+      const freshSettle = fresh.querySelector('[data-settle]');
+      settle.title = freshSettle.title;
+      freshSettle.replaceWith(settle);
+      tab.replaceChildren(...fresh.childNodes);
+    }
+    return tab;
+  });
+  [...row.children].filter((tab) => !nodes.includes(tab)).forEach((tab) => tab.remove());
+  nodes.forEach((tab, index) => { if (row.children[index] !== tab) row.insertBefore(tab, row.children[index] ?? null); });
   fitTabs();
 }
 
-/// Hides the trees that do not fit behind the overflow arrow, keeping creation order and
-/// the active tree visible.
 function fitTabs() {
-  const row = $('tab-row');
-  const tabs = [...row.children];
-  tabs.forEach((tab) => { tab.hidden = false; });
-  const overflow = $('tab-overflow');
-  overflow.hidden = true;
   const header = $('tabs');
-  const fixed = [...header.children].filter((el) => el !== row && !el.classList.contains('spacer'))
-    .reduce((sum, el) => sum + (el.hidden ? 0 : el.offsetWidth + 4), 0);
-  const room = header.clientWidth - 14 - fixed - 36;
-  const widths = tabs.map((tab) => tab.offsetWidth + 2);
-  if (widths.reduce((a, b) => a + b, 0) <= room + 36) return;
-  const shown = [];
-  let used = 0;
-  tabs.forEach((tab, i) => {
-    if (used + widths[i] <= room) { shown.push(i); used += widths[i]; }
-  });
-  const active = tabs.findIndex((tab) => tab.classList.contains('on'));
-  if (active >= 0 && !shown.includes(active)) {
-    while (shown.length && used + widths[active] > room) used -= widths[shown.pop()];
-    shown.push(active);
-  }
-  tabs.forEach((tab, i) => { tab.hidden = !shown.includes(i); });
-  overflow.hidden = false;
+  const fixed = [...header.children].filter((el) => !['tab-row', 'tab-overflow'].includes(el.id) && !el.classList.contains('spacer'))
+    .reduce((sum, el) => sum + (el.hidden ? 0 : el.getBoundingClientRect().width + parseFloat(getComputedStyle(el).marginLeft || 0) + parseFloat(getComputedStyle(el).marginRight || 0) + 2), 0);
+  post({ t: 'tab-room', room: Math.max(0, header.clientWidth - 14 - fixed - 4) });
 }
 
 // ---------- strip ----------
@@ -809,16 +807,40 @@ function renderPopover() {
     }));
   } else if (kind === 'trees') {
     const hidden = [...$('tab-row').children].filter((tab) => tab.hidden).map((tab) => tab.dataset.id);
-    popover.innerHTML = (S.frame?.tabs ?? []).filter((tree) => hidden.includes(tree.id)).map((tree) => {
+    const rows = (S.frame?.tabs ?? []).filter((tree) => hidden.includes(tree.id));
+    const kept = new Map([...popover.children].map((row) => [row.dataset.tree, row]));
+    const nodes = rows.map((tree) => {
       const root = visit(tree.id);
-      return `<button class="menu-row" data-id="${tree.id}">${root ? visitFav(root, 16) : ''}<span class="grow">${esc(tree.title)}</span>`
-        + (tree.pending ? `<span class="count">${tree.pending}</span>` : '') + '</button>';
-    }).join('');
-    popover.querySelectorAll('[data-id]').forEach((row) => row.addEventListener('click', () => {
-      closePopover();
-      uncover();
-      intent('select-tree', { id: row.dataset.id });
-    }));
+      const row = kept.get(tree.id) ?? document.createElement('div');
+      row.className = 'overflow-tree';
+      row.dataset.tree = tree.id;
+      const html = `<button class="menu-row" data-id="${tree.id}">${root ? visitFav(root, 16) : ''}<span class="grow">${esc(tree.title)}</span>`
+        + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Pinned">${icon('pinned')}</span>` : '')
+        + (tree.pending ? `<span class="count" aria-label="${tree.pending} waiting">${tree.pending}</span>` : '') + '</button>'
+        + `<button class="overflow-settle" data-settle="${tree.id}" title="Settle tree" aria-label="Settle ${esc(tree.title)}">${icon('close')}</button>`;
+      if (row.dataset.html !== html) {
+        row.dataset.html = html;
+        const select = row.querySelector('[data-id]');
+        const settle = row.querySelector('[data-settle]');
+        row.innerHTML = html;
+        if (select) {
+          select.innerHTML = row.querySelector('[data-id]').innerHTML;
+          row.querySelector('[data-id]').replaceWith(select);
+        }
+        if (settle) row.querySelector('[data-settle]').replaceWith(settle);
+        row.querySelector('[data-id]').onclick = () => {
+          closePopover();
+          uncover();
+          intent('select-tree', { id: tree.id });
+        };
+        row.querySelector('[data-settle]').onclick = () => {
+          intent('settle-tree', { id: tree.id });
+        };
+      }
+      return row;
+    });
+    [...popover.children].filter((row) => !nodes.includes(row)).forEach((row) => row.remove());
+    nodes.forEach((row, index) => { if (popover.children[index] !== row) popover.insertBefore(row, popover.children[index] ?? null); });
   } else if (kind === 'rename') {
     // A frame that arrives while a name is being typed must not reset the field.
     if (S.popover.field) return;
@@ -1416,6 +1438,18 @@ window.canopy = {
     if (S.popover) refreshPopover();
     renderPaletteContext();
     syncLayer();
+  },
+  tabsFit(layout) {
+    for (const item of layout.items) {
+      const tab = [...$('tab-row').children].find((el) => el.dataset.id === item.id);
+      if (!tab) continue;
+      tab.hidden = item.mode === 'hidden';
+      tab.classList.toggle('icon-only', item.mode === 'icon');
+      tab.classList.toggle('short', item.short);
+      tab.style.width = `${item.width}px`;
+    }
+    $('tab-overflow').hidden = !layout.overflow;
+    if (S.popover?.kind === 'trees') refreshPopover();
   },
   strip(layouts) {
     applyStrip(layouts);
