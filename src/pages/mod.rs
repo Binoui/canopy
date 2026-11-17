@@ -15,6 +15,7 @@ use gtk::prelude::*;
 pub use live::find::{
     FindAction, FindClose, FindId, FindMatches, FindReadout, FindTarget, FindUpdate,
 };
+pub use live::loading::{LoadProgress, LoadStatus, LoadingReadout, Progress};
 use live::LivePage;
 pub use native::{CookieApplyError, DownloadEvent};
 use std::{
@@ -42,6 +43,7 @@ pub enum PageEvent {
     Settled(String),
     Changed,
     Loading(bool),
+    LoadState(LoadingReadout),
     Error(String),
     Remembered(i64),
     Download(DownloadEvent),
@@ -289,6 +291,7 @@ pub struct Pages {
     #[cfg(feature = "gui-smoke")]
     release_observer: RefCell<Option<ReleaseObserver>>,
     budget: crate::budget::Budget,
+    loading_publish_scheduled: Cell<bool>,
     sampling: Cell<bool>,
     sample_started: Cell<Option<std::time::Instant>>,
     sample_scheduled: Cell<bool>,
@@ -337,6 +340,7 @@ impl Pages {
             #[cfg(feature = "gui-smoke")]
             release_observer: RefCell::new(None),
             budget,
+            loading_publish_scheduled: Cell::new(false),
             sampling: Cell::new(false),
             sample_started: Cell::new(None),
             sample_scheduled: Cell::new(false),
@@ -463,6 +467,7 @@ impl Pages {
     }
 
     fn selected_changed(&self) {
+        self.publish_loading();
         let observer = self.observer.borrow().clone();
         if let Some(observer) = observer {
             observer(PageEvent::Selected);
@@ -570,6 +575,7 @@ impl Pages {
     }
 
     fn cancel_candidate(&self) {
+        self.publish_loading();
         let weak = self.me.clone();
         glib::idle_add_local_once(move || {
             let Some(pages) = weak.upgrade() else { return };
@@ -961,6 +967,7 @@ impl Pages {
     }
 
     fn drain_commands(&self) {
+        self.publish_loading();
         let count = self.commands.borrow().len();
         for _ in 0..count {
             if self.busy()
@@ -1544,6 +1551,7 @@ impl Pages {
             self.commands
                 .borrow_mut()
                 .push_back(Command::Go(Box::new(go), None, true));
+            self.publish_loading();
             return Ok(());
         }
         let in_place = self.commands.borrow().is_empty()
@@ -1563,6 +1571,7 @@ impl Pages {
             self.commands
                 .borrow_mut()
                 .push_back(Command::Go(Box::new(go), None, false));
+            self.publish_loading();
             self.end_hold();
             return Ok(());
         }
@@ -2051,6 +2060,7 @@ impl Pages {
         }
         if self.busy() && self.branches.live.borrow().is_some() {
             self.commands.borrow_mut().push_back(Command::Reload);
+            self.publish_loading();
             self.end_hold();
             return Ok(());
         }

@@ -11,6 +11,7 @@ mod favicon;
 mod find;
 mod forest_layout;
 pub(crate) mod graph;
+mod loading;
 mod palette;
 mod pins;
 mod start;
@@ -103,6 +104,7 @@ pub enum ChromeIntent {
         question: u64,
         proceed: bool,
     },
+    Stop,
     SelectTree(TreeId),
     SettleTree(TreeId),
     Dismiss(VisitId),
@@ -929,6 +931,7 @@ impl Inner {
         let frame = frame.as_ref()?;
         let index = || message["index"].as_u64().map(|i| i as usize);
         Some(match message["kind"].as_str()? {
+            "stop" => ChromeIntent::Stop,
             "dismiss" => ChromeIntent::Dismiss(id("id")?),
             "settle-branch" => ChromeIntent::SettleBranch(id("id")?),
             "move-to-tree" => ChromeIntent::MoveToTree(id("id")?),

@@ -213,6 +213,7 @@ Each heading links to its part of the [guide](docs/guide.md).
 | **Ctrl+G**, **F3** | Next match. With **Shift**, the previous match. |
 | **Ctrl+Shift+L** | Fill the saved login. |
 | **Ctrl+R**, **F5** | Reload. |
+| **Escape** | Close the open chrome surface, or stop the current load. |
 | **Ctrl+Q** | Quit. |
 
 ## Install it

@@ -8,6 +8,7 @@ Usage: server.py PORT (0 picks a free port). Prints the bound port on its first 
 import html
 import socket
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote
 
@@ -17,6 +18,8 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if self.path.startswith('/slow/'):
+            time.sleep(12)
         if self.path.startswith('/favicon'):
             self.send_response(404)
             self.end_headers()
