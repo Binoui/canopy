@@ -79,12 +79,30 @@ fn main() -> Result<()> {
     ui.window.show_all();
     ready(&ui)?;
     wait("sixteen tabs", || {
-        chrome(&ui, "document.querySelectorAll('.tab').length").is_ok_and(|v| v == 16)
+        chrome(&ui, "document.querySelectorAll('#tab-row .tab').length").is_ok_and(|v| v == 16)
     })?;
     settle(&ui)?;
     assert_eq!(chrome(&ui, "(() => { const el = document.getElementById('memory-dot'); const r = el.getBoundingClientRect(); return [-11, 11].every(dx => [-11, 11].every(dy => el.contains(document.elementFromPoint(r.x+r.width/2+dx, r.y+r.height/2+dy)))) })()")?, true);
     assert_eq!(chrome(&ui, "[...document.querySelectorAll('.tab:not([hidden]):not(.icon-only) .tab-settle')].every(el => el.offsetWidth >= 24 && el.offsetHeight >= 24)")?, true);
     println!("PASS saved-text dot and tab settle have 24 by 24 hit areas.");
+    for width in [1240, 480] {
+        ui.window.resize(width, 800);
+        pump(300);
+        key("ctrl+t")?;
+        wait("New tree stays outside overflow", || {
+            visible(&ui, "#new-tree-tab[aria-selected=true]")
+        })?;
+        pump(300);
+        assert_eq!(chrome(&ui, "(() => { const tab=document.getElementById('new-tree-tab'); const plus=document.getElementById('new-tree'); const r=tab.getBoundingClientRect(); const trees=[...document.querySelectorAll('#tab-row .tab')]; return r.width >= 110 && r.right <= plus.getBoundingClientRect().left && plus.getBoundingClientRect().right <= window.innerWidth && trees.every(t=>t.hidden || t.getBoundingClientRect().right <= r.left) && !trees.some(t=>t.getAttribute('aria-selected')==='true') && trees.filter(t=>!t.hidden && t.tabIndex===0).length===1; })()")?, true);
+        if width == 480 {
+            assert_eq!(chrome(&ui, "[...document.querySelectorAll('#tab-row .tab')].every(t=>t.hidden || t.classList.contains('icon-only'))")?, true);
+        }
+        key("ctrl+w")?;
+        wait("reading tab selected again", || {
+            visible(&ui, "#tab-row [aria-selected=true]") && !visible(&ui, "#new-tree-tab")
+        })?;
+    }
+    println!("PASS New tree remains visible at 1240 and 480 pixels while tree tabs collapse and retain a keyboard stop.");
     review_regressions(&ui)?;
     let original = ui.snapshot()?.current;
     key("ctrl+2")?;
@@ -175,7 +193,7 @@ fn main() -> Result<()> {
     click_chrome(&ui, "#tab-overflow")?;
     click_chrome(&ui, ".overflow-settle")?;
     wait("overflow settle removes one tree", || {
-        chrome(&ui, "document.querySelectorAll('.tab').length").is_ok_and(|v| v == 15)
+        chrome(&ui, "document.querySelectorAll('#tab-row .tab').length").is_ok_and(|v| v == 15)
     })?;
     println!("PASS settle in the overflow removes its tree.");
     ui.window.resize(820, 800);
@@ -184,7 +202,7 @@ fn main() -> Result<()> {
         chrome(&ui, "S.frame.tabs.length").is_ok_and(|v| v == 4)
     })?;
     pump(400);
-    assert_eq!(chrome(&ui, "[...document.querySelectorAll('.tab')].every(t => !t.hidden && !t.classList.contains('icon-only'))")?, true);
+    assert_eq!(chrome(&ui, "[...document.querySelectorAll('#tab-row .tab')].every(t => !t.hidden && !t.classList.contains('icon-only'))")?, true);
     assert_eq!(
         chrome(
             &ui,

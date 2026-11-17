@@ -191,11 +191,14 @@ fn forest_popin(ui: &Ui) -> Result<()> {
     pump(300);
     let expected = chrome(ui, "Math.max(0.3, Math.min(1, (document.querySelector('#forest-canvas').clientWidth - 20) / Math.max(S.frame.forest.labels.width, 1)))")?.as_f64().unwrap();
     assert!((scale() - expected).abs() < 0.00001);
-    let before = rect(ui, &node)?;
     move_to(x, y)?;
     xdo(&["click", "5"])?;
     pump(100);
-    assert!(rect(ui, &node)?.1 < before.1);
+    let out = scale();
+    assert!(out < expected, "Plain wheel down zooms out");
+    xdo(&["click", "4", "click", "4"])?;
+    pump(100);
+    assert!(scale() > out, "Plain wheel up zooms in");
     let before = rect(ui, &node)?;
     xdo(&[
         "mousedown",
@@ -222,7 +225,7 @@ fn forest_popin(ui: &Ui) -> Result<()> {
         ui.pages.selected_page().native.has_focus()
     })?;
     println!(
-        "PASS forest toolbar, zoom, wheel pan, drag, canvas-width Fit and current-node activation."
+        "PASS forest toolbar, Ctrl and plain wheel zoom, drag, canvas-width Fit and current-node activation."
     );
     key("ctrl+t")?;
     forest_open(ui)?;

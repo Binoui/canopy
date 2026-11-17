@@ -85,8 +85,11 @@ fn fit(count: usize, active: Option<usize>, natural: f64, room: f64) -> (Vec<(Mo
     (result, overflow)
 }
 
-pub(super) fn layout(forest: &ForestProjection, room: f64) -> Value {
-    let current = forest.current().and_then(|id| forest.tree_of(id));
+pub(super) fn layout(forest: &ForestProjection, room: f64, start: bool) -> Value {
+    let current = forest
+        .current()
+        .filter(|_| !start)
+        .and_then(|id| forest.tree_of(id));
     let active = forest.open().iter().position(|t| Some(t.id) == current);
     let (items, overflow) = fit(
         forest.open().len(),
