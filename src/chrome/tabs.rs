@@ -8,32 +8,55 @@ enum Mode {
     Hidden,
 }
 
-fn fit(count: usize, active: Option<usize>, room: f64) -> (Vec<(Mode, f64)>, bool) {
+fn fit(count: usize, active: Option<usize>, natural: f64, room: f64) -> (Vec<(Mode, f64)>, bool) {
     if count == 0 {
         return (Vec::new(), false);
     }
-    let width = ((room - (count - 1) as f64 * 2.) / count as f64).min(200.);
-    if width >= 110. {
-        return (vec![(Mode::Title, width); count], false);
-    }
     let icons = count - usize::from(active.is_some());
-    let active_width = if active.is_some() {
-        (room - icons as f64 * 36.).clamp(110., 160.)
-    } else {
-        0.
-    };
-    let need = active_width + icons as f64 * 34. + (count - 1) as f64 * 2.;
-    let overflow = need > room && icons > 0;
+    let natural = natural.clamp(110., 200.);
+    let overflow = icons > 0
+        && (if active.is_some() { natural } else { 0. })
+            + icons as f64 * 34.
+            + (count - 1) as f64 * 2.
+            > room;
     let room = (room - if overflow { 32. } else { 0. }).max(0.);
-    let title_width = active_width.min(room);
-    let mut remaining = (room - title_width - if active.is_some() { 2. } else { 0. }).max(0.);
-    let mut result = vec![(Mode::Hidden, 0.); count];
-    for (i, item) in result.iter_mut().enumerate() {
-        if Some(i) == active {
-            *item = (Mode::Title, title_width);
-        } else if remaining >= 34. {
-            *item = (Mode::Icon, 34.);
-            remaining -= 36.;
+    let active_width = natural.min(room);
+    let mut result = vec![(Mode::Title, 70.); count];
+    if let Some(i) = active {
+        result[i].1 = active_width;
+    }
+    let used = |items: &[(Mode, f64)]| {
+        let shown = items
+            .iter()
+            .filter(|(m, _)| !matches!(m, Mode::Hidden))
+            .count();
+        items.iter().map(|(_, w)| w).sum::<f64>() + shown.saturating_sub(1) as f64 * 2.
+    };
+    let mut farthest: Vec<_> = (0..count).filter(|i| Some(*i) != active).collect();
+    farthest.sort_by_key(|i| std::cmp::Reverse((i.abs_diff(active.unwrap_or(0)), *i)));
+    for &i in &farthest {
+        if used(&result) <= room {
+            break;
+        }
+        result[i] = (Mode::Icon, 34.);
+    }
+    for &i in &farthest {
+        if used(&result) <= room {
+            break;
+        }
+        result[i] = (Mode::Hidden, 0.);
+    }
+    let titles = result
+        .iter()
+        .enumerate()
+        .filter(|(i, (m, _))| Some(*i) != active && matches!(m, Mode::Title))
+        .count();
+    if titles > 0 {
+        let extra = ((room - used(&result)) / titles as f64).clamp(0., 130.);
+        for (i, (mode, width)) in result.iter_mut().enumerate() {
+            if Some(i) != active && matches!(mode, Mode::Title) {
+                *width += extra;
+            }
         }
     }
     (result, overflow)
@@ -42,7 +65,14 @@ fn fit(count: usize, active: Option<usize>, room: f64) -> (Vec<(Mode, f64)>, boo
 pub(super) fn layout(forest: &ForestProjection, room: f64) -> Value {
     let current = forest.current().and_then(|id| forest.tree_of(id));
     let active = forest.open().iter().position(|t| Some(t.id) == current);
-    let (items, overflow) = fit(forest.open().len(), active, room);
+    let (items, overflow) = fit(
+        forest.open().len(),
+        active,
+        active
+            .map(|i| super::view::text_width(&forest.open()[i].title, 12.5, 0.56) + 64.)
+            .unwrap_or(110.),
+        room,
+    );
     json!({
         "overflow": overflow,
         "items": forest.open().iter().zip(items).map(|(tree, (mode, width))| {
@@ -56,33 +86,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shrink_titles_then_icons_then_overflow_and_cap_the_active() {
-        let (single, overflow) = fit(1, Some(0), 40.);
-        assert!(!overflow);
-        assert_eq!(single[0].1, 40.);
-        for room in [2400., 1800.] {
-            let (tabs, overflow) = fit(16, Some(15), room);
-            assert!(!overflow);
-            assert!(tabs
-                .iter()
-                .all(|(m, w)| matches!(m, Mode::Title) && *w >= 110.));
-        }
-        let (tabs, overflow) = fit(16, Some(15), 750.);
-        assert!(!overflow);
-        assert!(matches!(tabs[0].0, Mode::Icon));
-        assert!(matches!(tabs[15].0, Mode::Title));
-        for room in [600., 300., 120., 40.] {
-            let (tabs, overflow) = fit(16, Some(15), room);
-            assert!(overflow);
-            assert!(matches!(tabs[15].0, Mode::Title));
+    fn active_title_gets_room_before_other_trees() {
+        for room in [900., 600., 300., 240., 120., 40.] {
+            let (tabs, overflow) = fit(16, Some(8), 185., room);
+            assert_eq!(
+                tabs[8].1,
+                185_f64.min((room - if overflow { 32. } else { 0. }).max(0.))
+            );
             let shown: Vec<_> = tabs
                 .iter()
                 .filter(|(m, _)| !matches!(m, Mode::Hidden))
                 .collect();
             assert!(
-                shown.iter().map(|(_, w)| w).sum::<f64>() + (shown.len() - 1) as f64 * 2. + 32.
-                    <= room
+                shown.iter().map(|(_, w)| w).sum::<f64>()
+                    + (shown.len() - 1) as f64 * 2.
+                    + if overflow { 32. } else { 0. }
+                    <= room + 0.01
             );
         }
+    }
+
+    #[test]
+    fn titles_use_spare_room_and_collapse_from_the_far_end() {
+        let (tabs, overflow) = fit(4, Some(0), 200., 560.);
+        assert!(!overflow);
+        assert!(tabs.iter().all(|(m, _)| matches!(m, Mode::Title)));
+        assert_eq!(tabs[0].1, 200.);
+        let (tabs, overflow) = fit(4, Some(0), 200., 400.);
+        assert!(!overflow);
+        assert!(matches!(tabs[1].0, Mode::Title));
+        assert!(matches!(tabs[2].0, Mode::Title));
+        assert!(matches!(tabs[3].0, Mode::Icon));
     }
 }

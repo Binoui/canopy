@@ -228,6 +228,7 @@ function renderTabs() {
   });
   [...row.children].filter((tab) => !nodes.includes(tab)).forEach((tab) => tab.remove());
   nodes.forEach((tab, index) => { if (row.children[index] !== tab) row.insertBefore(tab, row.children[index] ?? null); });
+  if (S.frame?.tabFit) window.canopy.tabsFit(S.frame.tabFit);
   fitTabs();
 }
 
@@ -1440,6 +1441,7 @@ window.canopy = {
     syncLayer();
   },
   tabsFit(layout) {
+    if (S.frame) S.frame.tabFit = layout;
     for (const item of layout.items) {
       const tab = [...$('tab-row').children].find((el) => el.dataset.id === item.id);
       if (!tab) continue;
@@ -1666,9 +1668,25 @@ $('settings-button').innerHTML = icon('settings');
 $('tab-overflow').innerHTML = icon('chevron');
 $('search-pill').insertAdjacentHTML('afterbegin', icon('search'));
 
+let settlePress = null;
+window.addEventListener('mousedown', (event) => {
+  settlePress = null;
+  const cross = event.target.closest('#tab-row [data-settle]');
+  if (event.button !== 0 || !cross || event.detail > 1) return;
+  const r = cross.getBoundingClientRect();
+  if (getComputedStyle(cross).visibility === 'visible' && Number(getComputedStyle(cross).opacity) > 0
+      && event.clientX >= r.left && event.clientX < r.right && event.clientY >= r.top && event.clientY < r.bottom) {
+    settlePress = cross;
+  }
+}, true);
 $('tab-row').addEventListener('click', (event) => {
+  const pressed = settlePress;
+  settlePress = null;
   const close = event.target.closest('[data-settle]');
-  if (close) { intent('settle-tree', { id: close.dataset.settle }); return; }
+  if (close) {
+    if (close === pressed && event.detail <= 1) intent('settle-tree', { id: close.dataset.settle });
+    return;
+  }
   const tab = event.target.closest('[data-id]');
   if (!tab) return;
   uncover();

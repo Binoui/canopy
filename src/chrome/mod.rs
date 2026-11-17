@@ -201,6 +201,7 @@ struct Inner {
     /// Something is open that Escape closes.
     modal: Cell<bool>,
     frame: RefCell<Option<ChromeFrame>>,
+    tab_room: Cell<f64>,
     suggested: RefCell<Vec<crate::suggest::Suggestion>>,
     start: Cell<bool>,
     /// The last palette results, so Enter runs exactly the row the view showed.
@@ -242,6 +243,7 @@ impl HtmlChrome {
             cover: Cell::new(Some(CHROME_HEIGHT)),
             modal: Cell::new(false),
             frame: RefCell::new(None),
+            tab_room: Cell::new(0.),
             suggested: RefCell::new(Vec::new()),
             start: Cell::new(false),
             palette: RefCell::new(None),
@@ -264,10 +266,9 @@ impl HtmlChrome {
     pub fn present(&self, frame: ChromeFrame) {
         let inner = &self.inner;
         let (width, _) = inner.size.get();
-        inner.call(
-            "present",
-            &[view::frame(&frame, &inner.suggested.borrow(), width)],
-        );
+        let mut value = view::frame(&frame, &inner.suggested.borrow(), width);
+        value["tabFit"] = tabs::layout(&frame.forest, inner.tab_room.get());
+        inner.call("present", &[value]);
         *inner.frame.borrow_mut() = Some(frame);
     }
 
@@ -514,6 +515,7 @@ impl Inner {
                     .as_f64()
                     .filter(|v| v.is_finite() && *v >= 0.)
                 {
+                    self.tab_room.set(room);
                     if let Some(frame) = self.frame.borrow().as_ref() {
                         self.call("tabsFit", &[tabs::layout(&frame.forest, room)]);
                     }

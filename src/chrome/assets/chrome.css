@@ -65,7 +65,7 @@ svg.icon { width: 14px; height: 14px; flex: none; fill: none; stroke: currentCol
 .tab:hover { background: var(--hover); color: var(--text); }
 .tab.on { background: var(--bg); color: var(--text); box-shadow: inset 1px 0 var(--border), inset -1px 0 var(--border), inset 0 1px var(--border); }
 .tab.on::before { content: ""; position: absolute; left: 8px; right: 8px; top: 0; height: 2px; border-radius: 2px; background: var(--green); }
-.tab-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tab-title { text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tab.on .tab-title { font-weight: 600; }
 .count { font-size: 10.5px; font-weight: 600; color: var(--green-ink); background: var(--green-soft); border-radius: 5px; padding: 0 5px; line-height: 16px; }
 .icon-button {
@@ -385,7 +385,9 @@ body[data-overlay="tree"] #pins .pin:not(.on) { visibility: hidden; }
 
 .tab-settle { display: flex; align-items: center; opacity: 0; border-radius: 4px; }
 .tab:hover .tab-settle, .tab.on .tab-settle { opacity: 1; }
-.tab-settle:hover { background: var(--hover); }
+.tab-settle::before { content: ""; position: absolute; left: 4px; top: 4px; width: 16px; height: 16px; border-radius: 4px; }
+.tab-settle:hover::before { background: var(--hover); }
+.tab-settle svg { position: relative; }
 .forest-head.settled, .forest-node.settled { opacity: .55; }
 .forest-head.settled:hover, .forest-node.settled:hover { opacity: 1; }
 .forest-divider { position: absolute; left: 34px; white-space: nowrap; display: flex; gap: 12px; align-items: baseline; color: var(--muted); font-size: 12px; }
@@ -416,12 +418,12 @@ body[data-overlay="tree"] #pins .pin:not(.on) { visibility: hidden; }
 .tab .mk, .tab .count, .tab-pinned-mark { flex: none; }
 .tab-title { flex: 1; min-width: 0; }
 .tab.icon-only { padding: 0; justify-content: center; }
-.tab.icon-only > :not(.mk) { display: none; }
+.tab.icon-only > :not(.mk):not(.count) { display: none; }
 .overflow-tree { display: flex; align-items: center; }
 .overflow-tree .menu-row { flex: 1; min-width: 0; }
 .overflow-settle { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 4px; }
 .overflow-settle:hover { background: var(--hover); }
-.tab-settle { flex: none; justify-content: center; width: 24px; height: 24px; }
+.tab-settle { position: relative; flex: none; justify-content: center; width: 24px; height: 24px; }
 #memory-dot::before, .leaves::before { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); min-width: 24px; min-height: 24px; width: 100%; height: 100%; }
 .leaves::before { top: 0; transform: translateX(-50%); }
 .sg-act { position: relative; }
@@ -433,3 +435,9 @@ body[data-overlay="tree"] #pins .pin:not(.on) { visibility: hidden; }
 }
 
 .tab.short .count, .tab.short .tab-pinned-mark { display: none; }
+
+.tab.icon-only > .count, .tab.on > .count { display: block; position: absolute; right: 0; top: 2px; font-size: 8px; line-height: 11px; padding: 0 2px; border-radius: 3px; pointer-events: none; }
+.tab.on > .count { right: auto; left: 16px; }
+.tab.on .tab-pinned-mark { display: none; }
+.tab.short:not(.on) .tab-settle { position: absolute; right: 4px; }
+.tab.short:not(.on):hover .tab-title { padding-right: 24px; }
