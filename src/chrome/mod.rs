@@ -209,6 +209,7 @@ struct Inner {
     suggested: RefCell<Vec<crate::suggest::Suggestion>>,
     start: Cell<bool>,
     forest_open: Cell<bool>,
+    forest_revision: Cell<u64>,
     palette_scope: Cell<Option<VisitId>>,
     forest_layout: RefCell<Value>,
     /// The last palette results, so Enter runs exactly the row the view showed.
@@ -255,6 +256,7 @@ impl HtmlChrome {
             suggested: RefCell::new(Vec::new()),
             start: Cell::new(false),
             forest_open: Cell::new(false),
+            forest_revision: Cell::new(0),
             palette_scope: Cell::new(None),
             forest_layout: RefCell::new(Value::Null),
             palette: RefCell::new(None),
@@ -277,15 +279,25 @@ impl HtmlChrome {
 
     pub fn present(&self, frame: ChromeFrame) {
         let inner = &self.inner;
-        if inner.forest_open.get() {
-            let changed = inner
+        let changed = !inner.forest_layout.borrow().is_null()
+            && inner
                 .frame
                 .borrow()
                 .as_ref()
                 .is_none_or(|old| old.forest != frame.forest);
-            if changed || inner.forest_layout.borrow().is_null() {
-                *inner.forest_layout.borrow_mut() = view::forest_frame(&frame.forest);
-            }
+        if inner
+            .frame
+            .borrow()
+            .as_ref()
+            .is_none_or(|old| changed || old.loaded != frame.loaded || old.live != frame.live)
+        {
+            inner.forest_revision.set(inner.forest_revision.get() + 1);
+        }
+        if changed {
+            *inner.forest_layout.borrow_mut() = Value::Null;
+        }
+        if inner.forest_open.get() && inner.forest_layout.borrow().is_null() {
+            *inner.forest_layout.borrow_mut() = view::forest_frame(&frame.forest);
         }
         let value = view::frame(
             &frame,
@@ -591,21 +603,46 @@ impl Inner {
                     .set(message["open"].as_bool().unwrap_or(false));
                 if self.forest_open.get() {
                     if let Some(frame) = self.frame.borrow().as_ref() {
-                        *self.forest_layout.borrow_mut() = view::forest_frame(&frame.forest);
+                        if self.forest_layout.borrow().is_null() {
+                            *self.forest_layout.borrow_mut() = view::forest_frame(&frame.forest);
+                        }
                         self.call(
                             "forest",
-                            &[view::frame(
-                                frame,
-                                &self.suggested.borrow(),
-                                self.size.get(),
-                                &self.workbench.borrow(),
-                                view::Surfaces {
-                                    start: self.start.get(),
-                                    forest: true,
-                                    palette: self.palette_scope.get(),
+                            &[
+                                if message["revision"].as_u64() == Some(self.forest_revision.get())
+                                {
+                                    Value::Null
+                                } else {
+                                    view::frame(
+                                        frame,
+                                        &self.suggested.borrow(),
+                                        self.size.get(),
+                                        &self.workbench.borrow(),
+                                        view::Surfaces {
+                                            start: self.start.get(),
+                                            forest: true,
+                                            palette: self.palette_scope.get(),
+                                        },
+                                        Some(&self.forest_layout.borrow()),
+                                    )
                                 },
-                                Some(&self.forest_layout.borrow()),
-                            )],
+                                json!(self.forest_revision.get()),
+                            ],
+                        );
+                    }
+                }
+            }
+            "suggestions" => {
+                if self.start.get() {
+                    let frame = self.frame.borrow();
+                    if let Some(frame) = frame.as_ref() {
+                        *self.suggested.borrow_mut() = self
+                            .host()
+                            .context("The browser closed.")?
+                            .suggestions(&frame.forest)?;
+                        self.call(
+                            "start",
+                            &[json!({"start": start::value(frame, &self.suggested.borrow())})],
                         );
                     }
                 }
@@ -796,24 +833,24 @@ impl Inner {
         let Some(frame) = frame.as_ref() else {
             return Ok(());
         };
-        *self.suggested.borrow_mut() = self
-            .host()
-            .context("The browser closed.")?
-            .suggestions(&frame.forest)?;
+        self.suggested.borrow_mut().clear();
         self.call(
             "start",
-            &[view::frame(
-                frame,
-                &self.suggested.borrow(),
-                self.size.get(),
-                &self.workbench.borrow(),
-                view::Surfaces {
-                    start: true,
-                    forest: self.forest_open.get(),
-                    palette: self.palette_scope.get(),
-                },
-                Some(&self.forest_layout.borrow()),
-            )],
+            &[
+                view::frame(
+                    frame,
+                    &self.suggested.borrow(),
+                    self.size.get(),
+                    &self.workbench.borrow(),
+                    view::Surfaces {
+                        start: true,
+                        forest: self.forest_open.get(),
+                        palette: self.palette_scope.get(),
+                    },
+                    Some(&self.forest_layout.borrow()),
+                ),
+                json!(true),
+            ],
         );
         Ok(())
     }

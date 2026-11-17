@@ -1,7 +1,7 @@
 use anyhow::Result;
 use canopy::{
     address::web_url,
-    browser::{NavigationTarget, TreeId, VisitId},
+    browser::{NavigationTarget, SourceContext, TreeId, VisitId},
     chrome::{ChromeHost, ChromeIntent},
     ui::Ui,
 };
@@ -9,7 +9,12 @@ use gtk::prelude::*;
 use std::{
     io::{Read, Write},
     net::TcpListener,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     thread,
+    time::{Duration, Instant},
 };
 use webkit2gtk::WebViewExt;
 mod common;
@@ -50,21 +55,50 @@ fn release() -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    std::env::set_var(
+        "no_proxy",
+        "localhost,127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4,127.0.0.5",
+    );
     let directory = tempfile::tempdir()?;
     start(directory.path())?;
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let address = listener.local_addr()?;
+    let listener = TcpListener::bind("0.0.0.0:0")?;
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], listener.local_addr()?.port()));
+    let release_icon = Arc::new(AtomicBool::new(false));
+    let released = release_icon.clone();
+    let icon =
+        gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, true, 8, 16, 16).unwrap();
+    icon.fill(0x2050ffff);
+    let png = icon.save_to_bufferv("png", &[])?;
     thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { break };
-            let mut request = [0; 4096];
-            let Ok(n) = stream.read(&mut request) else {
-                continue;
-            };
-            let request = String::from_utf8_lossy(&request[..n]);
-            let path = request.split_whitespace().nth(1).unwrap_or("/");
-            let body = format!("<!doctype html><title>Reading {path}</title><body>fixture");
-            let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            let released = released.clone();
+            let png = png.clone();
+            thread::spawn(move || {
+                let mut request = [0; 4096];
+                let Ok(n) = stream.read(&mut request) else {
+                    return;
+                };
+                let request = String::from_utf8_lossy(&request[..n]);
+                let path = request.split_whitespace().nth(1).unwrap_or("/");
+                if path == "/delayed.png" {
+                    while !released.load(Ordering::SeqCst) {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", png.len());
+                    let _ = stream.write_all(&png);
+                    return;
+                }
+                let link = if path == "/with-icon" {
+                    "<link rel='icon' href='/delayed.png'>"
+                } else {
+                    ""
+                };
+                let body = format!(
+                    "<!doctype html><head>{link}<title>Reading {path}</title></head><body>fixture"
+                );
+                let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            });
         }
     });
     let ui = Ui::new(directory.path())?;
@@ -130,6 +164,11 @@ fn main() -> Result<()> {
     wait("pinned card", || {
         visible(&ui, &format!("[data-start=tree][data-id='{beta}']"))
     })?;
+    assert_eq!(chrome(&ui, "(() => { const saved=S.frame.start; const visits=S.frame.visits; S.frame.visits={}; const cards=BANDS.map(b=>b(saved)).join(''); S.frame.visits=visits; uncover(); canopy.start({start:saved}); canopy.newTree(); return cards.includes('pinned-card') && !document.querySelector('#start-content').children.length && S.frame.start===null; })()")?, true);
+    wait("fresh pinned card after reopen", || {
+        visible(&ui, &format!("[data-start=tree][data-id='{beta}']"))
+    })?;
+    println!("PASS start cards carry their own icon URLs, hidden replies are ignored, and reopen clears stale cards.");
     press(&ui, &format!("[data-start=tree][data-id='{beta}']"))?;
     rename(&ui, beta, "Card refresh");
     chrome(
@@ -141,7 +180,7 @@ fn main() -> Result<()> {
     assert_eq!(
         chrome(
             &ui,
-            "__iconURLs.length === 2 && __iconURLs.every(u=>S.revisions.get(u)===1000)"
+            "__iconURLs.length === 2 && __iconURLs.every(u=>S.revisions.get(iconSite(u))===1000)"
         )?,
         true
     );
@@ -185,12 +224,12 @@ fn main() -> Result<()> {
     assert_eq!(chrome(&ui, "(() => { __observer.disconnect(); return __mutations === 0 && !strip.anim && !strip.raf; })()")?, true);
     println!("PASS rendering clock stops without mutating an unchanged strip.");
     chrome(&ui, "(() => { globalThis.__images=[...document.querySelectorAll('.fav img')]; globalThis.__sources=__images.map(i=>i.src); globalThis.__address=new URL(__images[0].src).searchParams.get('u'); canopy.icons(__address,12345); return true; })()")?;
-    assert_eq!(chrome(&ui, "__images.every((img,i)=>(img.src!==__sources[i]) === (new URL(__sources[i]).searchParams.get('u')===__address))")?, true);
+    assert_eq!(chrome(&ui, "__images.every((img,i)=>(img.src!==__sources[i]) === (iconSite(new URL(__sources[i]).searchParams.get('u'))===iconSite(__address)))")?, true);
     chrome(&ui, "(() => { globalThis.__moved=JSON.parse(JSON.stringify(S.frame)); __moved.strip.nodes.forEach(n=>n.x+=10); canopy.present(__moved); globalThis.__shape=[__node.style.left,__node.style.top,__node.style.width,__node.style.height]; globalThis.__transform=__node.style.transform; return true; })()")?;
     pump(400);
     assert_eq!(chrome(&ui, "JSON.stringify(__shape) === JSON.stringify([__node.style.left,__node.style.top,__node.style.width,__node.style.height]) && __node.style.transform !== __transform")?, true);
     println!("PASS strip motion changes transforms while layout properties stay fixed.");
-    println!("PASS favicon revision changes only matching addresses.");
+    println!("PASS favicon revision changes only matching sites.");
     chrome(&ui, "(() => { canopy.toggleTree(); return true; })()")?;
     wait("zoomed tree", || visible(&ui, "#tree-sheet"))?;
     chrome(&ui, "(() => { globalThis.__sheetImage=document.querySelector('#tree-sheet .fav img'); globalThis.__sheetURL=new URL(__sheetImage.src).searchParams.get('u'); canopy.icons(__sheetURL,12346); return true; })()")?;
@@ -206,6 +245,21 @@ fn main() -> Result<()> {
     wait("on-demand forest", || {
         chrome(&ui, "S.frame.forest?.labels.nodes.length > 0").is_ok_and(|v| v == true)
     })?;
+    assert_eq!(chrome(&ui, "window.innerHeight === S.windowHeight && document.querySelector('#forest').getBoundingClientRect().height > 94")?, true);
+    chrome(&ui, "(() => { globalThis.__forestNode=document.querySelector('#forest-nodes [data-id]'); canopy.toggleForest(); return true; })()")?;
+    pump(100);
+    chrome(&ui, "(() => { canopy.toggleForest(); return true; })()")?;
+    wait("unchanged forest reopened", || {
+        visible(&ui, "#forest-nodes [data-id]")
+    })?;
+    assert_eq!(
+        chrome(
+            &ui,
+            "__forestNode === document.querySelector('#forest-nodes [data-id]')"
+        )?,
+        true
+    );
+    println!("PASS forest first appears at window height and unchanged reopen keeps its nodes.");
     rename(&ui, gamma, "Forest changed while open");
     wait("forest change", || {
         text(&ui, "#forest-nodes").contains("Forest changed while open")
@@ -216,5 +270,89 @@ fn main() -> Result<()> {
         chrome(&ui, "S.frame.forest === null").is_ok_and(|v| v == true)
     })?;
     println!("PASS forest is requested on open, follows changes, and leaves closed frames.");
+
+    for (index, surface) in ["strip", "list", "tree", "forest"].into_iter().enumerate() {
+        chrome(&ui, "(() => { uncover(); return true; })()")?;
+        release_icon.store(false, Ordering::SeqCst);
+        let origin = format!("http://127.0.0.{}:{}", index + 2, address.port());
+        for page in 0..5 {
+            let target = if page == 0 {
+                NavigationTarget::Root
+            } else {
+                NavigationTarget::ChildOf(ui.snapshot()?.current.unwrap())
+            };
+            let path = if page == 4 {
+                "with-icon".to_owned()
+            } else {
+                format!("page-{page}")
+            };
+            ui.pages
+                .selected_page()
+                .navigate(web_url(&format!("{origin}/{path}"))?, target)?;
+            wait("icon fixture page", || {
+                ui.snapshot()
+                    .unwrap()
+                    .current_visit()
+                    .is_some_and(|v| v.url.as_str() == format!("{origin}/{path}"))
+            })?;
+        }
+        let parent = ui.snapshot()?.current.unwrap();
+        canopy::browser::Browser::open(&directory.path().join("forest.sqlite3"))?.queue_link(
+            parent,
+            web_url(&format!("{origin}/waiting"))?,
+            SourceContext {
+                page_url: web_url(&format!("{origin}/with-icon"))?,
+                citation_url: None,
+                link_text: "Waiting".into(),
+                excerpt: String::new(),
+            },
+        )?;
+        rename(&ui, gamma, "Icon fixture refresh");
+        match surface {
+            "list" => {
+                chrome(&ui, "(() => { showList(strip.target.nodes.find(n=>n.kind==='run').id); return true; })()")?;
+            }
+            "tree" => {
+                chrome(&ui, "(() => { canopy.toggleTree(); return true; })()")?;
+            }
+            "forest" => {
+                chrome(&ui, "(() => { canopy.toggleForest(); return true; })()")?;
+            }
+            _ => {}
+        }
+        pump(250);
+        let start = Instant::now();
+        release_icon.store(true, Ordering::SeqCst);
+        let selector = match surface {
+            "strip" => "#strip-nodes",
+            "list" => "#strip-list",
+            "tree" => "#tree-sheet",
+            _ => "#forest-nodes",
+        };
+        let check = format!("(() => {{ const shown=[...document.querySelectorAll('{selector} .fav img')]; const images=[...document.querySelectorAll('.fav img')].filter(i=>new URL(i.src).searchParams.get('u').startsWith('{origin}/')); return shown.length >= 3 && images.length >= 3 && images.every(i=>i.complete && i.naturalWidth>0 && i.style.visibility!=='hidden'); }})()");
+        wait("all site fallback images loaded", || {
+            chrome(&ui, &check).is_ok_and(|v| v == true)
+        })?;
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "{surface} icon update exceeded one second"
+        );
+        println!(
+            "PASS delayed site favicon refreshes {surface}, including borrowed icons, in {:?}.",
+            start.elapsed()
+        );
+        if let Some(dir) = std::env::var_os("CANOPY_REFRESH_SHOTS").map(std::path::PathBuf::from) {
+            std::fs::create_dir_all(&dir)?;
+            for theme in ["dark", "light"] {
+                chrome(&ui, &format!("intent('theme', {{mode:'{theme}'}})"))?;
+                pump(200);
+                assert!(std::process::Command::new("import")
+                    .args(["-window", "root"])
+                    .arg(dir.join(format!("{surface}-{theme}.png")))
+                    .status()?
+                    .success());
+            }
+        }
+    }
     Ok(())
 }

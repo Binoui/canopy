@@ -430,3 +430,13 @@ existing shared drop permit, fresh sample between drops, two-second sampling
 limit and teardown grace apply. Settling removes that tree's pending stack entries
 and destroys its never-seen views, including an adopted candidate; queueing in a
 settled tree enrolls no work. Seen-page checkpoints, holds and revival are unchanged.
+
+Favicon revisions follow the cache's exact hostname, including pages borrowing a
+site icon. An arriving icon refreshes retained images on every chrome surface.
+Start cards carry miniature icon URLs independently of the current-tree visit
+map. Reopening clears the old cards. Rust sends pinned trees and bookmarks first;
+the view acknowledges two animation frames before asking Rust to rank suggestions.
+Forest layouts survive closing and reopening until the projection changes. The
+view requests a forest frame after its full-window allocation, and retains that
+payload by revision. A projection, live-page or loaded-page change invalidates the
+payload; an unchanged reopen reuses it without resending all visits.

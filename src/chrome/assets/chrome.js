@@ -103,6 +103,10 @@ const filesOf = (id) => S.frame?.files?.[id] ?? [];
 
 // ---------- favicons ----------
 
+function iconSite(url) {
+  try { return new URL(url).hostname; } catch { return url; }
+}
+
 function hostOf(url) {
   try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return '?'; }
 }
@@ -115,7 +119,7 @@ function fav(url, opened, size) {
   for (let i = 0; i < host.length; i++) hash = Math.imul(hash ^ (host.charCodeAt(i) & 255), 16777619) >>> 0;
   const color = MONOGRAM[hash % MONOGRAM.length];
   const letter = esc((host[0] || '?').toUpperCase());
-  const src = `icon?u=${encodeURIComponent(url)}&o=${opened ? 1 : 0}&r=${S.revisions.get(url) ?? 0}`;
+  const src = `icon?u=${encodeURIComponent(url)}&o=${opened ? 1 : 0}&r=${S.revisions.get(iconSite(url)) ?? 0}`;
   return `<span class="fav" style="width:${size}px;height:${size}px;background:${color};border-radius:${Math.min(3, size / 4)}px">`
     + `<b aria-hidden="true" style="font-size:${Math.round(size * 0.62)}px">${letter}</b>`
     + `<img src="${src}" alt="" onload="this.style.visibility='';this.parentNode.style.background='none';this.previousSibling.style.visibility='hidden'" onerror="this.style.visibility='hidden'"></span>`;
@@ -205,8 +209,10 @@ function patchChildren(container, html) {
   for (const fresh of [...template.content.children]) {
     const el = kept.get(fresh.dataset.key || fresh.dataset.id) || fresh;
     kept.delete(fresh.dataset.key || fresh.dataset.id);
-    for (const attr of fresh.attributes) el.setAttribute(attr.name, attr.value);
-    if (el.innerHTML !== fresh.innerHTML) el.innerHTML = fresh.innerHTML;
+    if (el !== fresh) {
+      for (const attr of fresh.attributes) if (el.getAttribute(attr.name) !== attr.value) el.setAttribute(attr.name, attr.value);
+      if (el.innerHTML !== fresh.innerHTML) el.innerHTML = fresh.innerHTML;
+    }
     if (el !== cursor) container.insertBefore(el, cursor);
     cursor = el.nextElementSibling;
   }
@@ -1309,7 +1315,7 @@ function setSurface(surface) {
   if (S.surface === surface) return;
   S.surface = surface;
   post({ t: 'surface', start: surface === 'start' });
-  if (surface === 'start') focusStart();
+  if (surface === 'start') { if (S.frame) S.frame.start = null; S.startPaint = null; $('start-content').replaceChildren(); focusStart(); }
   renderPlaceholder();
   $('start').hidden = surface !== 'start';
   setLayer(restingLayer());
@@ -1327,20 +1333,31 @@ function setOverlay(kind) {
   if (kind && !S.overlay) rememberFocus('overlay');
   const forestChanged = (S.overlay === 'forest') !== (kind === 'forest');
   S.overlay = kind;
-  if (forestChanged) post({ t: 'forest', open: kind === 'forest' });
+
   document.body.dataset.overlay = kind ?? '';
   const overlay = OVERLAYS[kind];
   if (overlay) {
     if (overlay.leavesStart) setSurface('reading');
     hideList();
     closePopover(false);
-    $(overlay.el).hidden = false;
+    $(overlay.el).hidden = kind === 'forest';
     $(overlay.button).setAttribute('aria-pressed', 'true');
-    overlay.show(true);
+    if (kind !== 'forest') overlay.show(true);
   }
   setLayer(restingLayer());
   syncLayer();
+  if (forestChanged) {
+    if (kind === 'forest') requestForest();
+    else post({ t: 'forest', open: false });
+  }
 }
+
+function requestForest() {
+  if (S.overlay === 'forest' && $('forest').hidden && window.innerHeight >= S.windowHeight - 1) {
+    post({ t: 'forest', open: true, revision: S.forestRevision });
+  }
+}
+window.addEventListener('resize', requestForest);
 
 function canFocus(el) {
   if (!el?.isConnected || el.disabled || el.tabIndex < 0 || el.closest('[hidden], [inert]')) return false;
@@ -1390,7 +1407,7 @@ function miniHtml(mini) {
   const edges = mini.edges.map((e) => `<path class="${e.wait ? 'wait' : ''}" d="M ${e.c[0]} C ${e.c[1]} ${e.c[2]} ${e.c[3]}"/>`).join('');
   const stub = mini.cut ? `<path class="wait" d="M -6 ${mini.s / 2} H 0"/>` : '';
   return `<span class="mt" style="width:${mini.w}px;height:${mini.h}px"><svg width="${mini.w}" height="${mini.h}">${edges}${stub}</svg>`
-    + mini.nodes.map((n) => `<span class="mt-node${n.last ? ' last' : ''}${n.waiting ? ' waiting' : ''}" style="left:${n.x}px;top:${n.y}px">${fav(visit(n.id).url, !n.waiting, mini.s)}</span>`).join('') + '</span>';
+    + mini.nodes.map((n) => `<span class="mt-node${n.last ? ' last' : ''}${n.waiting ? ' waiting' : ''}" style="left:${n.x}px;top:${n.y}px">${fav(n.url ?? visit(n.id)?.url ?? '', !n.waiting, mini.s)}</span>`).join('') + '</span>';
 }
 
 function pinnedBand(start) {
@@ -1633,12 +1650,20 @@ const when = (at) => new Date(at).toLocaleString(undefined, { day: '2-digit', mo
 
 window.canopy = {
   viewport(height) { S.windowHeight = height; document.documentElement.style.setProperty('--window-height', `${height}px`); positionList(); syncLayer(); },
-  start(value) { if (!S.frame) return; Object.assign(S.frame.visits, value.visits); S.frame.start = value.start; renderStart(); },
-  forest(value) {
-    if (!S.frame || S.overlay !== 'forest') return;
+  start(value, initial = false) {
+    if (!S.frame || S.surface !== 'start') return;
+    S.frame.start = value.start;
+    renderStart();
+    if (initial) requestAnimationFrame(() => requestAnimationFrame(() => { if (S.surface === 'start') post({ t: 'suggestions' }); }));
+  },
+  forest(value, revision) {
+    if (value) { S.forestFrame = value; S.forestRevision = revision; }
+    value = S.forestFrame;
+    if (!value || !S.frame || S.overlay !== 'forest') return;
     Object.assign(S.frame.visits, value.visits);
     S.frame.forest = value.forest;
-    renderForest(); fitForest(false);
+    $('forest').hidden = false;
+    OVERLAYS.forest.show(true);
   },
   present(frame) {
     const previous = current();
@@ -1671,10 +1696,10 @@ window.canopy = {
     fitTabs();
   },
   icons(url, revision) {
-    S.revisions.set(url, revision);
+    S.revisions.set(iconSite(url), revision);
     for (const img of document.querySelectorAll('.fav img')) {
       const src = new URL(img.src);
-      if (src.searchParams.get('u') !== url) continue;
+      if (iconSite(src.searchParams.get('u')) !== iconSite(url)) continue;
       src.searchParams.set('r', revision);
       img.src = src.href;
     }
