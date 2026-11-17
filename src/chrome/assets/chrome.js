@@ -62,6 +62,7 @@ const S = {
   hovered: null,
   list: null,
   popover: null,
+  mailTab: 'all',
   palette: null,
   reader: null,
   find: null,
@@ -942,6 +943,11 @@ function visitRow(v) {
   return `<button class="menu-row" data-id="${v.id}">${visitFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(detail)}</span></button>`;
 }
 
+function visibleMailAccounts(mail) {
+  if (!mail.tabs?.some((tab) => tab.key === S.mailTab)) S.mailTab = 'all';
+  return mail.accounts.filter((account) => S.mailTab === 'all' || account.address === S.mailTab);
+}
+
 // A refresh rebuilds an open popover's rows. The row that had the keyboard keeps it.
 function refreshPopover() {
   if (!S.popover) return;
@@ -950,15 +956,16 @@ function refreshPopover() {
     const active = document.activeElement;
     const address = active?.dataset.account;
     const id = active?.dataset.id;
-    const role = ['mail-row', 'mail-inbox', 'mail-more'].find((c) => active?.classList.contains(c));
+    const key = active?.dataset.key;
+    const role = ['mail-tab', 'mail-row', 'mail-inbox', 'mail-more'].find((c) => active?.classList.contains(c));
     const hadFocus = popover.contains(active);
     renderPopover();
     if (!S.popover) return;
     keepPopoverInside();
     if (hadFocus) {
       const row = role && [...popover.querySelectorAll(`.${role}`)].find((el) =>
-        el.dataset.account === address && (role !== 'mail-row' || el.dataset.id === id));
-      (row || popover).focus({ preventScroll: true });
+        role === 'mail-tab' ? el.dataset.key === key : el.dataset.account === address && (role !== 'mail-row' || el.dataset.id === id));
+      (row || (role === 'mail-tab' && popover.querySelector('.mail-tab[aria-selected="true"]')) || popover).focus({ preventScroll: true });
       row?.scrollIntoView({ block: 'nearest' });
     }
     return;
@@ -1028,14 +1035,34 @@ function renderPopover() {
     const mail = S.frame.mail;
     if (!mail.accounts.length) { closePopover(false); return; }
     popover.setAttribute('aria-label', 'Unread mail');
-    popover.innerHTML = (mail.notice ? `<div class="mail-notice" role="status">${esc(mail.notice)}</div>` : '')
-      + mail.accounts.map((a) => '<section class="mail-account">'
+    const accounts = visibleMailAccounts(mail);
+    popover.innerHTML = (mail.tabs ? '<div class="segmented mail-tabs" role="tablist" aria-label="Mail accounts">'
+      + mail.tabs.map((tab) => `<button class="mail-tab" role="tab" data-key="${esc(tab.key)}" aria-selected="${tab.key === S.mailTab}" tabindex="${tab.key === S.mailTab ? 0 : -1}" title="${esc(tab.name)}" aria-label="${esc(tab.name)}"><span class="mail-tab-label">${esc(tab.label)}</span>${tab.count ? `<span class="count">${esc(tab.count)}</span>` : ''}</button>`).join('') + '</div>' : '')
+      + (mail.notice ? `<div class="mail-notice" role="status">${esc(mail.notice)}</div>` : '')
+      + accounts.map((a) => '<section class="mail-account">'
         + `<button class="menu-row mail-inbox" data-account="${esc(a.account)}" aria-label="${esc(a.name)}"><span class="grow">${esc(a.address)}</span><span class="menu-detail">${esc(a.count)}</span></button>`
         + a.rows.map((r) => `<button class="menu-row mail-row" data-account="${esc(a.account)}" data-id="${esc(r.id)}" aria-label="${esc(r.name)}">`
           + `<span class="mail-line"><span class="mail-from">${esc(r.from)}</span><span class="menu-detail">${esc(r.when)}</span></span>`
           + `<span class="mail-subject">${esc(r.subject)}</span><span class="mail-snippet">${esc(r.snippet)}</span></button>`).join('')
         + (a.more ? `<button class="menu-row mail-more" data-account="${esc(a.account)}">${esc(a.more)}</button>` : '')
         + '</section>').join('');
+    popover.querySelectorAll('.mail-tab').forEach((tab) => {
+      const select = (key) => {
+        S.mailTab = key;
+        refreshPopover();
+        [...popover.querySelectorAll('.mail-tab')].find((el) => el.dataset.key === key)?.focus({ preventScroll: true });
+      };
+      tab.addEventListener('click', () => select(tab.dataset.key));
+      tab.addEventListener('keydown', (event) => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        const tabs = mail.tabs;
+        const index = tabs.findIndex((item) => item.key === tab.dataset.key);
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length;
+        event.preventDefault();
+        event.stopPropagation();
+        select(tabs[next].key);
+      });
+    });
     popover.querySelectorAll('.mail-row').forEach((row) => row.addEventListener('click', () => {
       closePopover(false);
       intent('open-mail', { account: row.dataset.account, id: row.dataset.id });
@@ -1884,6 +1911,7 @@ window.canopy = {
     const previous = current();
     const previousTree = S.frame?.tabs.find((tab) => tab.active)?.id;
     S.frame = { ...frame, start: frame.start ?? S.frame?.start };
+    visibleMailAccounts(S.frame.mail);
     applyStrip(frame.strip);
     paintLoading();
     renderWaitingPin();
