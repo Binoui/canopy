@@ -670,7 +670,9 @@ function openPopover(kind, anchor, data, below = anchor) {
 
 function closePopover(returnFocus = true) {
   if (!S.popover) return;
+  const anchor = S.popover.anchor;
   S.popover = null;
+  if (S.overlay === 'tree' && anchor?.isConnected) anchor.focus();
   $('popover').hidden = true;
   if (S.layer === 'menu') setLayer(restingLayer());
   if (returnFocus && pageShows() && !S.palette && !S.reader) post({ t: 'focus', target: 'page' });
@@ -1018,6 +1020,8 @@ $('palette').querySelector('.scrim').addEventListener('mousedown', () => closePa
 
 function renderSheet(reveal) {
   if (S.overlay !== 'tree') return;
+  const focused = document.activeElement?.closest('#tree-sheet [data-id]');
+  const focusedIndex = focused ? [...focused.parentElement.children].indexOf(focused) : -1;
   const view = S.frame?.treeView;
   if (!view) { closeOverlay(); return; }
   $('tree-title').textContent = view.title;
@@ -1027,15 +1031,36 @@ function renderSheet(reveal) {
   $('tree-edges').setAttribute('width', view.width);
   $('tree-edges').setAttribute('height', view.height);
   $('tree-edges').innerHTML = view.edges.map((e) => `<path class="${e.kind}" d="M${e.c[0]} C${e.c[1]} ${e.c[2]} ${e.c[3]}"/>`).join('');
-  $('tree-nodes').innerHTML = view.tiles.map((t) => {
-    const v = visit(t.id);
-    return `<button class="tree-tile${t.path ? ' path' : ''}${t.id === current() ? ' current' : ''}${markClass(v)}" data-id="${t.id}" title="${esc(v.label + (v.live ? ' · Open in memory' : ''))}" style="left:${t.x-t.w/2}px;top:${t.y-t.s/2}px;width:${t.w}px;height:${t.s}px">${markedFav(v, 16, false)}${v.live ? '<i class="live-dot"></i>' : ''}<span class="t">${esc(v.stub || v.label)}</span></button>`;
-  }).join('');
-  $('tree-list').innerHTML = view.rows.map((r) => {
-    const v = visit(r.id);
-    return `<button class="tree-row${r.path ? ' path' : ''}${r.id === current() ? ' current' : ''}${markClass(v)}" data-id="${r.id}" style="padding-left:${8+r.depth*22}px">${markedFav(v, 16)}<span class="grow">${esc(v.stub || v.label)}</span><span class="menu-detail">${esc(v.when)}${v.live ? ' · Open in memory' : ''}</span></button>`;
-  }).join('');
+  const rows = new Map(view.rows.map((r) => [r.id, r]));
+  for (const [container, items, tile] of [[$('tree-nodes'), view.tiles, true], [$('tree-list'), view.rows, false]]) {
+    const kept = new Map([...container.children].map((el) => [el.dataset.id, el]));
+    let cursor = container.firstElementChild;
+    for (const item of items) {
+      const r = rows.get(item.id), v = visit(item.id);
+      const el = kept.get(item.id) || document.createElement('button');
+      kept.delete(item.id);
+      el.dataset.id = item.id;
+      el.className = `${tile ? 'tree-tile' : 'tree-row'}${r.path ? ' path' : ''}${item.id === current() ? ' current' : ''}${markClass(v)}`;
+      el.title = v.label;
+      el.setAttribute('aria-current', item.id === current() ? 'page' : 'false');
+      el.setAttribute('aria-level', r.depth + 1);
+      if (r.branch) el.setAttribute('aria-expanded', String(!r.folded));
+      else el.removeAttribute('aria-expanded');
+      el.style.cssText = tile
+        ? `left:${item.x-item.w/2}px;top:${item.y-item.s/2}px;width:${item.w}px;height:${item.s}px`
+        : `padding-left:${8+r.depth*22}px`;
+      const html = `<span data-fold="${r.branch ? item.id : ''}" class="tree-fold">${r.branch ? (r.folded ? '▸' : '▾') : ''}</span>${markedFav(v, 16)}<span class="${tile ? 't' : 'grow'}">${esc(v.stub || (tile ? r.title : v.label))}${r.summary ? `<small>${esc(r.summary)}</small>` : ''}</span>${!tile ? `<span class="menu-detail">${esc(v.when)}${v.live ? ' · Open in memory' : ''}</span>` : v.live ? '<i class="live-dot"></i>' : ''}`;
+      if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
+      if (el !== cursor) container.insertBefore(el, cursor);
+      cursor = el.nextElementSibling;
+    }
+    for (const el of kept.values()) el.remove();
+  }
+  $('tree-waiting').setAttribute('aria-pressed', String(view.waitingOnly));
+  $('tree-empty').hidden = view.rows.length !== 0;
+  if (document.activeElement !== $('tree-filter')) $('tree-filter').value = view.query;
   setTreeSide(S.treeSide, reveal);
+  if (focused && !focused.isConnected) focusTree(view.rows[Math.min(focusedIndex, view.rows.length - 1)]?.id);
 }
 
 function setTreeSide(side, reveal = true, target = current()) {
@@ -1060,11 +1085,55 @@ function setTreeSide(side, reveal = true, target = current()) {
 
 $('tree-side').addEventListener('click', (event) => {
   const button = event.target.closest('[data-side]');
-  if (button) setTreeSide(button.dataset.side);
+  if (button) { setTreeSide(button.dataset.side); focusTree(current()); }
 });
 $('tree-sheet').addEventListener('click', (event) => {
   const page = event.target.closest('[data-id]');
-  if (page) activate(page.dataset.id);
+  if (event.target.closest('[data-fold]')?.dataset.fold) post({ t: 'workbench', id: page.dataset.id });
+  else if (page) activate(page.dataset.id);
+});
+$('tree-filter').addEventListener('input', () => post({ t: 'workbench', query: $('tree-filter').value }));
+$('tree-waiting').addEventListener('click', () => post({ t: 'workbench', waiting: !S.frame.treeView.waitingOnly }));
+$('tree-board').addEventListener('wheel', (event) => {
+  if (event.ctrlKey || event.deltaX || !event.deltaY) return;
+  const board = $('tree-board');
+  if (board.scrollWidth <= board.clientWidth) return;
+  event.preventDefault();
+  board.scrollLeft += event.deltaY;
+}, { passive: false });
+function focusTree(id) {
+  const body = $(S.treeSide === 'tree' ? 'tree-nodes' : 'tree-list');
+  const el = body.querySelector(`[data-id="${id}"]`) || body.querySelector('[data-id]');
+  (el || $('tree-filter')).focus({ preventScroll: true });
+  el?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+$('tree-sheet').addEventListener('keydown', (event) => {
+  if (S.popover || event.ctrlKey || event.altKey || event.metaKey || event.isComposing) return;
+  const field = event.target === $('tree-filter');
+  const rows = S.frame.treeView.rows;
+  const id = event.target.closest('[data-id]')?.dataset.id;
+  const index = rows.findIndex((r) => r.id === id);
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    const next = field ? 0 : clamp(index + (event.key === 'ArrowDown' ? 1 : -1), 0, rows.length - 1);
+    focusTree(rows[next]?.id);
+  } else if (!field && ['ArrowLeft', 'ArrowRight'].includes(event.key)) {
+    if (rows[index]?.branch) post({ t: 'workbench', id, folded: event.key === 'ArrowLeft' });
+  } else if (!field && event.key === 'Enter' && id) activate(id);
+  else if (!field && event.key === 'Delete' && id) {
+    if (visit(id).nodeMenu.some((r) => r.kind === 'dismiss')) intent('dismiss', { id });
+  } else if (!field && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) && id) {
+    openPopover('node', event.target.closest('[data-id]'), id);
+    $('popover').querySelector('button')?.focus();
+  } else if (!field && event.key.length === 1) {
+    $('tree-filter').focus();
+    $('tree-filter').value += event.key;
+    post({ t: 'workbench', query: $('tree-filter').value });
+  } else if (event.key === 'Tab') {
+    const controls = [...$('tree-sheet').querySelectorAll('button, input')].filter((el) => el.getClientRects().length);
+    const index = controls.indexOf(document.activeElement);
+    controls[(index + (event.shiftKey ? controls.length - 1 : 1)) % controls.length]?.focus();
+  } else return;
+  event.preventDefault();
 });
 $('tree-sheet').querySelector('.scrim').addEventListener('mousedown', closeOverlay);
 $('zoom-pin').innerHTML = icon('expand') + icon('collapse');
@@ -1076,7 +1145,16 @@ const OVERLAYS = {
   tree: {
     el: 'tree-sheet', button: 'zoom-pin', leavesStart: true,
     available: () => !!S.frame?.treeView,
-    show(reveal) { renderSheet(reveal); },
+    show(reveal) {
+      renderSheet(false);
+      if (reveal) requestAnimationFrame(() => {
+        if (S.overlay !== 'tree') return;
+        const view = S.frame.treeView;
+        setTreeSide(view.overflows ? 'list' : S.treeSide, true);
+        post({ t: 'focus', target: 'chrome' });
+        focusTree(current());
+      });
+    },
   },
   forest: {
     el: 'forest', button: 'forest-button',
@@ -1106,6 +1184,7 @@ function setOverlay(kind) {
     $(previous.button).classList.remove('on');
     $(previous.button).setAttribute('aria-pressed', 'false');
   }
+  if (kind === 'tree') S.treeReturn = document.activeElement;
   S.overlay = kind;
   document.body.dataset.overlay = kind ?? '';
   const overlay = OVERLAYS[kind];
@@ -1123,7 +1202,12 @@ function setOverlay(kind) {
 }
 
 function closeOverlay() {
+  const trigger = S.overlay === 'tree' ? S.treeReturn : null;
   setOverlay(null);
+  if (trigger?.isConnected && trigger !== document.body) {
+    trigger.focus();
+    return;
+  }
   if (pageShows()) post({ t: 'focus', target: 'page' });
   else if (S.surface === 'start') focusStart();
 }
@@ -1411,7 +1495,7 @@ window.canopy = {
     applyTheme();
     if (frame.current !== previous) {
       hideList();
-      setOverlay(null);
+      if (S.overlay !== 'tree') setOverlay(null);
       if (S.surface !== 'reading') setSurface('reading');
     }
     if (!frame.tabs.length && S.surface === 'reading') setSurface('start');
@@ -1467,7 +1551,14 @@ window.canopy = {
     focusStart();
   },
   toggleForest() { toggleOverlay('forest'); },
-  toggleTree() { toggleOverlay('tree'); },
+  workbench(view) {
+    if (!S.frame) return;
+    const id = document.activeElement?.closest('[data-id]')?.dataset.id;
+    S.frame.treeView = view;
+    renderSheet(false);
+    if (id && !document.activeElement?.closest('[data-id]')) focusTree(id);
+  },
+  toggleTree(fromChrome = true) { toggleOverlay('tree'); if (!fromChrome && S.overlay === 'tree') S.treeReturn = null; },
   toast(kind, text) {
     if (kind === 'error') {
       S.errors.unshift(text);

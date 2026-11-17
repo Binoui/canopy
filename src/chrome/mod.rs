@@ -210,6 +210,7 @@ struct Inner {
     start: Cell<bool>,
     /// The last palette results, so Enter runs exactly the row the view showed.
     palette: RefCell<Option<ShownPalette>>,
+    workbench: RefCell<tree_view::Workbench>,
 }
 
 impl HtmlChrome {
@@ -251,6 +252,7 @@ impl HtmlChrome {
             suggested: RefCell::new(Vec::new()),
             start: Cell::new(false),
             palette: RefCell::new(None),
+            workbench: RefCell::default(),
         });
         *slot.borrow_mut() = Rc::downgrade(&inner);
         let weak = Rc::downgrade(&inner);
@@ -269,11 +271,13 @@ impl HtmlChrome {
 
     pub fn present(&self, frame: ChromeFrame) {
         let inner = &self.inner;
-        let (width, _) = inner.size.get();
-        inner.call(
-            "present",
-            &[view::frame(&frame, &inner.suggested.borrow(), width)],
+        let value = view::frame(
+            &frame,
+            &inner.suggested.borrow(),
+            inner.size.get(),
+            &inner.workbench.borrow(),
         );
+        inner.call("present", &[value]);
         *inner.frame.borrow_mut() = Some(frame);
     }
 
@@ -348,7 +352,11 @@ impl HtmlChrome {
     }
 
     pub fn toggle_tree(&self) {
-        self.inner.call("toggleTree", &[]);
+        use gtk::prelude::WidgetExt;
+        use wry::WebViewExtUnix;
+        let from_chrome = self.inner.view.webview().has_focus();
+        self.inner.call("toggleTree", &[json!(from_chrome)]);
+        let _ = self.inner.view.focus();
     }
 
     pub fn toggle_forest(&self) {
@@ -556,6 +564,33 @@ impl Inner {
                 let changed = self.toast_rect.replace(toast_rect) != toast_rect;
                 if self.cover.replace(cover) != cover || changed {
                     self.apply_bounds();
+                }
+            }
+            "workbench" => {
+                if let Some(frame) = self.frame.borrow().as_ref() {
+                    let mut state = self.workbench.borrow_mut();
+                    if let Some(query) = message["query"].as_str() {
+                        state.query = query.to_owned();
+                    }
+                    if let Some(waiting) = message["waiting"].as_bool() {
+                        state.waiting_only = waiting;
+                    }
+                    if let Some(id) = message["id"].as_str().and_then(|id| id.parse().ok()) {
+                        if frame.forest.visit(id).is_some() {
+                            let folded = message["folded"]
+                                .as_bool()
+                                .unwrap_or(!state.folded(&frame.forest, id));
+                            state.folds.insert(id, folded);
+                        }
+                    }
+                    self.call(
+                        "workbench",
+                        &[view::tree_view_value(
+                            &frame.forest,
+                            &state,
+                            self.size.get(),
+                        )],
+                    );
                 }
             }
             "copy" => {

@@ -211,3 +211,9 @@ name = "node_verbs_smoke"
 path = "tests/node_verbs_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
+
+[[test]]
+name = "workbench_smoke"
+path = "tests/workbench_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]

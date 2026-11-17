@@ -29,8 +29,10 @@ const ACCESSORY: f64 = 22.;
 pub(crate) fn frame(
     frame: &ChromeFrame,
     suggested: &[crate::suggest::Suggestion],
-    width: f64,
+    viewport: (f64, f64),
+    workbench: &tree_view::Workbench,
 ) -> Value {
+    let width = viewport.0;
     let forest = &frame.forest;
     let current = forest.current();
     let active = current.and_then(|id| forest.tree_of(id));
@@ -69,7 +71,7 @@ pub(crate) fn frame(
         "tabs": tabs,
         "visits": visits,
         "strip": strip(forest, width),
-        "treeView": tree_view_value(forest),
+        "treeView": tree_view_value(forest, workbench, viewport),
         "waiting": { "order": WaitingOrder::CHOSEN.label(), "ids": waiting::pages(forest).iter().map(|v| v.id.to_string()).collect::<Vec<_>>() },
         "files": files_value(&frame.files),
         "forest": {
@@ -91,8 +93,12 @@ pub(crate) fn frame(
     })
 }
 
-fn tree_view_value(forest: &ForestProjection) -> Value {
-    let Some(view) = tree_view::tree_view(forest) else {
+pub(crate) fn tree_view_value(
+    forest: &ForestProjection,
+    state: &tree_view::Workbench,
+    viewport: (f64, f64),
+) -> Value {
+    let Some(view) = tree_view::workbench(forest, state) else {
         return Value::Null;
     };
     let current_tree = forest.current().and_then(|id| forest.tree_of(id));
@@ -101,11 +107,28 @@ fn tree_view_value(forest: &ForestProjection) -> Value {
     };
     json!({
         "title": tree.title,
-        "detail": format!("{} · {} waiting", plural(view.tiles.len(), "page"), waiting::pages(forest).len()),
+        "query": state.query, "waitingOnly": state.waiting_only,
+        "overflows": view.width > viewport.0 || view.height > viewport.1 - 94. - 52. - 42. - 48.,
+        "detail": format!("{} · {} waiting", plural(tree.page_count, "page"), tree.pending_count),
         "width": view.width, "height": view.height,
         "tiles": view.tiles.iter().map(|t| json!({"id": t.id.to_string(), "x": t.rect.x, "y": t.rect.y, "w": t.rect.w, "s": t.rect.s, "path": t.on_path})).collect::<Vec<_>>(),
         "edges": view.edges.iter().map(|e| json!({"from": e.from.to_string(), "to": e.to.to_string(), "kind": match e.kind { EdgeKind::Path => "path", EdgeKind::Pending => "pending", EdgeKind::Plain => "plain" }, "c": e.curve})).collect::<Vec<_>>(),
-        "rows": view.rows.iter().map(|r| json!({"id": r.id.to_string(), "depth": r.depth, "path": r.on_path})).collect::<Vec<_>>(),
+        "rows": view.rows.iter().map(|r| {
+            let counts = graph::branch_counts(forest, forest.children(r.id));
+            let folded = state.query.is_empty() && !state.waiting_only && state.folded(forest, r.id);
+            let siblings = forest.siblings(r.id);
+            let title = graph::short_name(forest, r.id);
+            let related = siblings.iter().find(|&&id| id != r.id).map(|&id| graph::short_name(forest, id));
+            let title = related.map_or_else(|| title.clone(), |other| {
+                let distinct = graph::distinct_name(&title, &other);
+                if distinct != title { return distinct; }
+                let common: usize = title.chars().zip(other.chars()).take_while(|(a, b)| a == b).map(|(c, _)| c.len_utf8()).sum();
+                title[..common].rfind(char::is_whitespace).map(|at| title[at..].trim().to_owned()).filter(|suffix| !suffix.is_empty()).unwrap_or(title.clone())
+            });
+            json!({"id": r.id.to_string(), "depth": r.depth, "path": r.on_path,
+                "title": title, "branch": !forest.children(r.id).is_empty(), "folded": folded,
+                "summary": if folded && !forest.children(r.id).is_empty() { format!("{} pages · {} waiting", forest.descendant_count(r.id).unwrap_or(0) + 1, counts.waiting + usize::from(forest.is_waiting(r.id))) } else { String::new() }})
+        }).collect::<Vec<_>>(),
     })
 }
 
@@ -598,7 +621,7 @@ mod tests {
     #[test]
     fn the_frame_carries_the_current_tree_view() {
         let (forest, _) = chain();
-        let view = tree_view_value(&forest);
+        let view = tree_view_value(&forest, &tree_view::Workbench::default(), (820., 800.));
         assert_eq!(view["detail"], "3 pages · 1 waiting");
         assert_eq!(view["tiles"].as_array().unwrap().len(), 3);
         let empty = ForestProjection::from_snapshot(
@@ -609,7 +632,7 @@ mod tests {
             vec![],
         )
         .unwrap();
-        assert!(tree_view_value(&empty).is_null());
+        assert!(tree_view_value(&empty, &tree_view::Workbench::default(), (820., 800.)).is_null());
     }
 
     #[test]
@@ -656,11 +679,11 @@ mod tests {
             bookmarks: vec![],
             files: vec![],
         };
-        let value = super::frame(&frame, &[], 800.);
+        let value = super::frame(&frame, &[], (800., 800.), &tree_view::Workbench::default());
         assert_eq!(value["visits"][ids[2].to_string()]["when"], "not loaded");
         assert_eq!(value["waiting"]["ids"], json!([ids[2].to_string()]));
         frame.loaded.extend(ids.iter().copied());
-        let value = super::frame(&frame, &[], 800.);
+        let value = super::frame(&frame, &[], (800., 800.), &tree_view::Workbench::default());
         assert_eq!(value["visits"][ids[2].to_string()]["loaded"], true);
         assert_eq!(value["visits"][ids[2].to_string()]["queued"], true);
         assert_eq!(value["visits"][ids[2].to_string()]["when"], "loaded");
@@ -704,7 +727,7 @@ mod tests {
             bookmarks: vec![],
             files: Vec::new(),
         };
-        let value = super::frame(&frame, &[], 1240.);
+        let value = super::frame(&frame, &[], (1240., 800.), &tree_view::Workbench::default());
         let tabs = value["tabs"].as_array().unwrap();
         assert_eq!(tabs.len(), 1);
         assert_eq!(tabs[0]["active"], false);
@@ -724,7 +747,7 @@ mod tests {
             bookmarks: vec![],
             files: Vec::new(),
         };
-        let value = super::frame(&frame, &[], 1240.);
+        let value = super::frame(&frame, &[], (1240., 800.), &tree_view::Workbench::default());
         assert_eq!(value["tabs"], json!([]));
         assert_eq!(value["current"], ids[1].to_string());
         assert_eq!(value["visits"].as_object().unwrap().len(), 3);
@@ -749,7 +772,7 @@ mod tests {
             bookmarks: vec![],
             files: Vec::new(),
         };
-        let value = super::frame(&frame, &[], 1240.);
+        let value = super::frame(&frame, &[], (1240., 800.), &tree_view::Workbench::default());
         assert_eq!(value["current"], ids[1].to_string());
         assert_eq!(value["visits"].as_object().unwrap().len(), 3);
         assert_eq!(value["visits"][ids[2].to_string()]["queued"], true);
@@ -804,7 +827,7 @@ mod tests {
                 file(3, ids[1], "/home/me/Saved files/report (1).pdf", 812, false),
             ],
         };
-        let value = super::frame(&frame, &[], 1240.);
+        let value = super::frame(&frame, &[], (1240., 800.), &tree_view::Workbench::default());
         let files = value["files"].as_object().unwrap();
         assert_eq!(files.len(), 2);
         assert_eq!(
@@ -890,7 +913,7 @@ mod tests {
             bookmarks: vec![],
             files: vec![],
         };
-        let value = super::frame(&frame, &[], 800.);
+        let value = super::frame(&frame, &[], (800., 800.), &tree_view::Workbench::default());
         assert_eq!(value["waiting"]["ids"], json!([]));
         assert_eq!(value["visits"][ids[2].to_string()]["queued"], false);
         assert_eq!(value["visits"][ids[2].to_string()]["loaded"], false);

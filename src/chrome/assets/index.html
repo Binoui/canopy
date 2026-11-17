@@ -31,12 +31,13 @@
     </div>
   </div>
 </section>
-<div id="tree-sheet" class="overlay" hidden>
+<div id="tree-sheet" class="overlay" role="dialog" aria-modal="true" aria-labelledby="tree-title" hidden>
   <div class="scrim"></div>
   <div class="sheet-box">
     <div class="sheet-head"><b id="tree-title"></b><span id="tree-detail"></span>
       <div class="segmented" id="tree-side" aria-label="Tree view"><button data-side="tree">Tree</button><button data-side="list">List</button></div>
     </div>
+    <div class="tree-tools"><input id="tree-filter" type="search" placeholder="Filter by title" aria-label="Filter by title"><button id="tree-waiting" aria-pressed="false">Waiting only</button><span id="tree-empty" hidden>No matching pages</span></div>
     <div id="tree-board" class="sheet-body"><div id="tree-layer"><svg id="tree-edges"></svg><div id="tree-nodes"></div></div></div>
     <div id="tree-list" class="sheet-body" hidden></div>
   </div>
