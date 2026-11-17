@@ -180,6 +180,10 @@ fn main() -> Result<()> {
     chrome(&ui, "(() => { globalThis.__node=document.querySelector('#strip-nodes .node'); globalThis.__edge=document.querySelector('#strip-edges path'); canopy.present(S.frame); return true; })()")?;
     assert_eq!(chrome(&ui, "!strip.anim && __node === document.querySelector('#strip-nodes .node') && __edge === document.querySelector('#strip-edges path')")?, true);
     println!("PASS unchanged frame preserves strip nodes and edges without animation.");
+    chrome(&ui, "(() => { globalThis.__mutations=0; globalThis.__observer=new MutationObserver(records=>__mutations+=records.length); __observer.observe(document.querySelector('#strip-canvas'), {attributes:true,childList:true,subtree:true}); return true; })()")?;
+    pump(400);
+    assert_eq!(chrome(&ui, "(() => { __observer.disconnect(); return __mutations === 0 && !strip.anim && !strip.raf; })()")?, true);
+    println!("PASS rendering clock stops without mutating an unchanged strip.");
     chrome(&ui, "(() => { globalThis.__images=[...document.querySelectorAll('.fav img')]; globalThis.__sources=__images.map(i=>i.src); globalThis.__address=new URL(__images[0].src).searchParams.get('u'); canopy.icons(__address,12345); return true; })()")?;
     assert_eq!(chrome(&ui, "__images.every((img,i)=>(img.src!==__sources[i]) === (new URL(__sources[i]).searchParams.get('u')===__address))")?, true);
     chrome(&ui, "(() => { globalThis.__moved=JSON.parse(JSON.stringify(S.frame)); __moved.strip.nodes.forEach(n=>n.x+=10); canopy.present(__moved); globalThis.__shape=[__node.style.left,__node.style.top,__node.style.width,__node.style.height]; globalThis.__transform=__node.style.transform; return true; })()")?;

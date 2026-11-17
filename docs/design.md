@@ -95,8 +95,11 @@ open palette's scope page. The
 start page requests its pinned and suggested miniature data when shown. The
 forest requests both layouts on open; Rust rebuilds them when the forest changes
 while open. Closing the forest stops sending its history. Unchanged strip items
-and list rows keep their DOM nodes. Strip motion uses transforms, and favicon
-revisions apply to each page address, including images in the zoomed tree.
+and list rows keep their DOM nodes. After a refresh, the strip keeps WebKit's
+animation clock active for up to 300 ms, as it does during movement, but skips
+all geometry writes when nothing moves. This prevents idle clock startup from
+delaying the next visible update. The clock then stops. Strip motion uses transforms,
+and favicon revisions apply to each page address, including images in the zoomed tree.
 
 At rest, the view covers only the top 94 px. The tree strip stays 52 px high. `graph.rs` builds `StripItem` values for the root, path pages, named parent, same-host runs, Earlier pages, current page, and read or waiting children. Runs exclude the root and parent. At most three middle items nearest the parent stay visible. Older items merge into Earlier, then more fold only as required by the room reserved by `pins.rs`. Rust supplies the padding, borders, favicon size, and gaps used by both the width estimate and CSS. Parent names can use up to 240 px and shrink before another item folds. Rust sends positions, branch subtree counts, list headings, and at most six named rows per item. Parent names reuse `naming.rs` to remove the site and omit title segments shared with their parent, then remove the prefix shared with the current page when a distinct suffix remains. The current pill keeps its full title.
 

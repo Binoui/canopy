@@ -274,6 +274,7 @@ const strip = {
   from: null,
   target: null,
   anim: null,
+  awakeUntil: 0,
   elements: new Map(),
   badges: new Map(),
   leaves: new Map(),
@@ -286,11 +287,20 @@ function animateStrip(duration) {
   if (!layout) return;
   const changed = buildStrip(layout);
   const geometry = JSON.stringify([layout.nodes.map(({id, x, y, w, s}) => [id, x, y, w, s]), layout.edges, layout.pan]);
-  if (strip.geometry === geometry) { strip.target = layout; if (changed && !strip.anim) drawStrip(); return; }
+  // Keep WebKit's rendering clock warm without repainting unchanged geometry.
+  // Letting it sleep delays the next visible update.
+  strip.awakeUntil = performance.now() + duration;
+  if (strip.geometry === geometry) {
+    strip.target = layout;
+    if (changed && !strip.anim) drawStrip();
+    if (duration && !strip.raf) strip.raf = requestAnimationFrame(tick);
+    return;
+  }
   strip.from = strip.shown;
   strip.target = layout;
   strip.geometry = geometry;
   cancelAnimationFrame(strip.raf);
+  strip.raf = null;
   if (!duration) {
     strip.anim = null;
     step(performance.now(), 1);
@@ -304,16 +314,17 @@ function animateStrip(duration) {
 }
 
 function tick(now) {
-  if (!strip.anim) return;
-  const t = (now - strip.anim.start) / strip.anim.duration;
-  step(now, t);
-  if (t < 1) {
-    strip.raf = requestAnimationFrame(tick);
-  } else {
-    strip.anim = null;
-    pruneStrip();
-    syncLayer();
+  strip.raf = null;
+  if (strip.anim) {
+    const t = (now - strip.anim.start) / strip.anim.duration;
+    step(now, t);
+    if (t >= 1) {
+      strip.anim = null;
+      pruneStrip();
+      syncLayer();
+    }
   }
+  if (strip.anim || now < strip.awakeUntil) strip.raf = requestAnimationFrame(tick);
 }
 
 function pruneStrip() {
