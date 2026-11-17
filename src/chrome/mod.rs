@@ -207,8 +207,23 @@ pub struct HtmlChrome {
     inner: Rc<Inner>,
 }
 
+const ESCAPE_SURFACES: [&str; 8] = [
+    "formReturn",
+    "reader",
+    "palette",
+    "popover",
+    "list",
+    "treeFilters",
+    "overlay",
+    "start",
+];
+
 struct Inner {
     view: WebView,
+    container: gtk::Fixed,
+    me: Weak<Inner>,
+    error_view: RefCell<Option<feedback::ErrorView>>,
+    system_dark: Cell<bool>,
     host: RefCell<Option<Weak<dyn ChromeHost>>>,
     _favicons: Rc<Favicons>,
     ready: Cell<bool>,
@@ -221,7 +236,7 @@ struct Inner {
     errors: RefCell<feedback::Errors>,
     waiting: RefCell<Option<(VisitId, std::time::Instant, usize)>>,
     /// Something is open that Escape closes.
-    modal: Cell<bool>,
+    escape_surface: Cell<Option<&'static str>>,
     /// The find session the bar shows. Escape closes it even before the view reports.
     find: Cell<Option<crate::pages::FindId>>,
     frame: RefCell<Option<ChromeFrame>>,
@@ -269,8 +284,12 @@ impl HtmlChrome {
                 !(hit.context_is_editable() || hit.context_is_selection())
             });
         }
-        let inner = Rc::new(Inner {
+        let inner = Rc::new_cyclic(|me| Inner {
             view,
+            container: container.clone(),
+            me: me.clone(),
+            error_view: RefCell::new(None),
+            system_dark: Cell::new(true),
             host: RefCell::new(None),
             _favicons: favicons.clone(),
             ready: Cell::new(false),
@@ -280,7 +299,7 @@ impl HtmlChrome {
             toast_rects: RefCell::new(Vec::new()),
             errors: RefCell::new(feedback::Errors::default()),
             waiting: RefCell::new(None),
-            modal: Cell::new(false),
+            escape_surface: Cell::new(None),
             find: Cell::new(None),
             frame: RefCell::new(None),
             tab_room: Cell::new(0.),
@@ -301,7 +320,10 @@ impl HtmlChrome {
                 .view
                 .webview()
                 .connect_query_tooltip(move |view, _, _, _, _| {
-                    if weak.upgrade().is_some_and(|inner| inner.modal.get()) {
+                    if weak
+                        .upgrade()
+                        .is_some_and(|inner| inner.escape_surface.get().is_some())
+                    {
                         // WebKit caches title text on pointer motion, before a menu may open.
                         view.stop_signal_emission_by_name("query-tooltip");
                     }
@@ -360,6 +382,7 @@ impl HtmlChrome {
         value["tabFit"] = tabs::layout(&frame.forest, inner.tab_room.get());
         inner.call("present", &[value]);
         *inner.frame.borrow_mut() = Some(frame);
+        inner.present_error();
     }
 
     /// Follows the window: the page sits below `CHROME_HEIGHT`, the view on top.
@@ -368,6 +391,7 @@ impl HtmlChrome {
         let previous = inner.size.replace((width, height));
         inner.apply_bounds();
         inner.call("viewport", &[json!(height)]);
+        inner.present_error();
         if previous.0 != width {
             if let Some(frame) = inner.frame.borrow().as_ref() {
                 inner.call("strip", &[view::strip_for_frame(frame, width)]);
@@ -427,7 +451,15 @@ impl HtmlChrome {
     }
 
     pub fn settle_current(&self) {
-        self.inner.call("settleCurrent", &[]);
+        match self.inner.escape_surface.get() {
+            Some("list") | None => {
+                if let Some(host) = self.inner.host() {
+                    host.dispatch(ChromeIntent::SettleCurrent);
+                    host.focus_page();
+                }
+            }
+            Some(surface) => self.inner.call("escape", &[json!(surface)]),
+        }
     }
 
     pub fn uncover(&self) {
@@ -543,23 +575,33 @@ impl HtmlChrome {
     pub fn escape(&self) -> bool {
         use gtk::prelude::WidgetExt;
         use wry::WebViewExtUnix;
-        let error_focused =
-            self.inner.view.webview().has_focus() && self.inner.errors.borrow().showing();
-        if self.inner.modal.get() || error_focused {
-            self.inner.call("escape", &[]);
+        if let Some(surface) = self.inner.escape_surface.get() {
+            self.inner.call("escape", &[json!(surface)]);
             return true;
         }
-        let Some(session) = self.inner.find.get() else {
-            return false;
-        };
-        // Closed now, not after a round trip through the view, so a quick Ctrl+F opens anew.
-        if let Some(host) = self.inner.host() {
-            host.dispatch(ChromeIntent::Find {
-                session,
-                action: crate::pages::FindAction::Close,
-            });
+        if let Some(session) = self.inner.find.get() {
+            // Closed now, not after a round trip through the view, so a quick Ctrl+F opens anew.
+            if let Some(host) = self.inner.host() {
+                host.dispatch(ChromeIntent::Find {
+                    session,
+                    action: crate::pages::FindAction::Close,
+                });
+            }
+            return true;
         }
-        true
+        let focused = self.inner.view.webview().has_focus()
+            || self
+                .inner
+                .error_view
+                .borrow()
+                .as_ref()
+                .is_some_and(|v| v.view.webview().has_focus());
+        if focused && self.inner.errors.borrow().showing() {
+            self.inner.errors.borrow_mut().act("dismiss");
+            self.inner.errors_changed();
+            return true;
+        }
+        false
     }
 
     /// Shows one saved text in the reader.
@@ -576,7 +618,9 @@ impl HtmlChrome {
 
     /// Whether `system` resolves to dark, from the desktop's preference.
     pub fn set_system_dark(&self, dark: bool) {
+        self.inner.system_dark.set(dark);
         self.inner.call("systemDark", &[json!(dark)]);
+        self.inner.present_error();
     }
 
     /// Puts the chrome back above the page, after the page moved or took focus.
@@ -594,6 +638,16 @@ impl HtmlChrome {
     pub fn native(&self) -> webkit2gtk::WebView {
         use wry::WebViewExtUnix;
         self.inner.view.webview()
+    }
+
+    /// The error toast lives in its own small native view. For tests.
+    pub fn error_native(&self) -> Option<webkit2gtk::WebView> {
+        use wry::WebViewExtUnix;
+        self.inner
+            .error_view
+            .borrow()
+            .as_ref()
+            .map(|v| v.view.webview())
     }
 
     pub fn is_ready(&self) -> bool {
@@ -667,6 +721,9 @@ impl Inner {
         if let Some(window) = gtk::prelude::WidgetExt::window(&self.view.webview()) {
             window.raise();
         }
+        if let Some(error) = self.error_view.borrow().as_ref() {
+            error.bounds(self.size.get(), self.errors.borrow().showing());
+        }
     }
 
     fn host(&self) -> Option<Rc<dyn ChromeHost>> {
@@ -678,7 +735,39 @@ impl Inner {
             return;
         }
         self.errors.borrow_mut().push(text);
+        self.errors_changed();
+    }
+
+    fn present_error(&self) {
+        if let Some(error) = self.error_view.borrow().as_ref().filter(|v| v.ready.get()) {
+            let mode = self
+                .frame
+                .borrow()
+                .as_ref()
+                .map_or(ThemeMode::Dark, |f| f.theme);
+            let dark =
+                mode == ThemeMode::Dark || (mode == ThemeMode::System && self.system_dark.get());
+            let _ = error.view.evaluate_script(&format!(
+                "canopy.present({}, {}, {})",
+                self.errors.borrow().value()["toast"],
+                self.size.get().0,
+                dark
+            ));
+        }
+    }
+
+    fn errors_changed(&self) {
+        if self.errors.borrow().showing() && self.error_view.borrow().is_none() {
+            match feedback::ErrorView::new(&self.container, self.me.clone()) {
+                Ok(view) => *self.error_view.borrow_mut() = Some(view),
+                Err(error) => eprintln!("Could not create the error view: {error}"),
+            }
+        }
         self.call("errors", &[self.errors.borrow().value()]);
+        self.present_error();
+        if let Some(error) = self.error_view.borrow().as_ref() {
+            error.bounds(self.size.get(), self.errors.borrow().showing());
+        }
     }
 
     fn report(&self, error: anyhow::Error) {
@@ -696,6 +785,7 @@ impl Inner {
         match message["t"].as_str().unwrap_or_default() {
             "ready" => {
                 self.ready.set(true);
+                self.call("help", &[start::help()]);
                 let queued = std::mem::take(&mut *self.queue.borrow_mut());
                 for script in queued {
                     self.view.evaluate_script(&script)?;
@@ -771,14 +861,40 @@ impl Inner {
                     }
                 }
             }
+            "error-ready" => {
+                if let Some(error) = self.error_view.borrow().as_ref() {
+                    error.ready.set(true);
+                }
+                self.present_error();
+            }
+            "error-size" => {
+                if let Some(error) = self.error_view.borrow().as_ref() {
+                    error.size.set((
+                        message["width"].as_i64().unwrap_or(0) as i32,
+                        message["height"].as_i64().unwrap_or(0) as i32,
+                    ));
+                    *error.buttons.borrow_mut() =
+                        serde_json::from_value(message["buttons"].clone())?;
+                    error.bounds(self.size.get(), self.errors.borrow().showing());
+                }
+            }
             "errors" => {
+                let action = message["action"].as_str().unwrap_or_default();
                 self.errors
                     .borrow_mut()
-                    .act(message["action"].as_str().unwrap_or_default());
-                self.call("errors", &[self.errors.borrow().value()]);
+                    .act(if action == "open" { "read" } else { action });
+                self.errors_changed();
+                if action == "open" {
+                    self.call("openErrors", &[]);
+                    let _ = self.view.focus();
+                }
             }
             "layer" => {
-                self.modal.set(message["modal"].as_bool().unwrap_or(false));
+                self.escape_surface.set(
+                    ESCAPE_SURFACES
+                        .into_iter()
+                        .find(|surface| message["surfaces"][surface].as_bool() == Some(true)),
+                );
                 let cover = message["height"].as_f64().map(|h| h.max(CHROME_HEIGHT));
                 let toast_rects =
                     serde_json::from_value::<Vec<[i32; 4]>>(message["toastRects"].clone())?;
@@ -1094,6 +1210,10 @@ fn serve(request: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
     };
     match request.uri().path() {
         "/" | "/index.html" => respond("text/html", Cow::Borrowed(INDEX.as_bytes())),
+        "/error.html" => respond(
+            "text/html",
+            Cow::Borrowed(include_bytes!("assets/error.html")),
+        ),
         "/chrome.css" => respond("text/css", Cow::Borrowed(CSS.as_bytes())),
         "/chrome.js" => respond("text/javascript", Cow::Borrowed(SCRIPT.as_bytes())),
         "/inter.ttf" => respond("font/ttf", Cow::Borrowed(INTER)),

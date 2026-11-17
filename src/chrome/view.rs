@@ -132,7 +132,6 @@ pub(crate) fn frame(
         "captureEnabled": frame.capture_enabled,
         "mail": mail_value(&frame.mail),
         "treesHelp": frame.trees_help,
-        "help": super::start::help(),
         "theme": match frame.theme {
             ThemeMode::System => "system",
             ThemeMode::Light => "light",

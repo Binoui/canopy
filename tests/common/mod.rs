@@ -129,10 +129,36 @@ pub fn page_point(ui: &Ui, x: i32, y: i32) -> Result<(i32, i32)> {
 
 /// Evaluates `expression` in the chrome view and returns its value as JSON.
 pub fn chrome(ui: &Ui, expression: &str) -> Result<Value> {
+    in_chrome_view(&ui.chrome.native(), expression)
+}
+
+pub fn error_chrome(ui: &Ui, expression: &str) -> Result<Value> {
+    in_chrome_view(&ui.chrome.error_native().context("error view")?, expression)
+}
+
+fn element_view(ui: &Ui, selector: &str) -> webkit2gtk::WebView {
+    if [
+        "#error-toast",
+        "#toast-close",
+        "#toast-more",
+        "#toast-alert",
+    ]
+    .iter()
+    .any(|id| selector.contains(id))
+    {
+        ui.chrome
+            .error_native()
+            .unwrap_or_else(|| ui.chrome.native())
+    } else {
+        ui.chrome.native()
+    }
+}
+
+fn in_chrome_view(view: &webkit2gtk::WebView, expression: &str) -> Result<Value> {
     let output = Rc::new(RefCell::new(None));
     let result = output.clone();
     let script = format!("JSON.stringify((() => ({expression}))() ?? null)");
-    ui.chrome.native().evaluate_javascript(
+    view.evaluate_javascript(
         &script,
         None,
         None,
@@ -152,8 +178,8 @@ fn quoted(selector: &str) -> String {
 
 /// Whether an element of the chrome is rendered.
 pub fn visible(ui: &Ui, selector: &str) -> bool {
-    chrome(
-        ui,
+    in_chrome_view(
+        &element_view(ui, selector),
         &format!(
             "(() => {{ const e = document.querySelector({}); return !!e && e.getClientRects().length > 0 && getComputedStyle(e).visibility !== 'hidden'; }})()",
             quoted(selector)
@@ -163,8 +189,8 @@ pub fn visible(ui: &Ui, selector: &str) -> bool {
 }
 
 pub fn text(ui: &Ui, selector: &str) -> String {
-    chrome(
-        ui,
+    in_chrome_view(
+        &element_view(ui, selector),
         &format!(
             "document.querySelector({})?.innerText ?? ''",
             quoted(selector)
@@ -177,8 +203,8 @@ pub fn text(ui: &Ui, selector: &str) -> String {
 
 /// The chrome element's box, in window coordinates.
 pub fn rect(ui: &Ui, selector: &str) -> Result<(f64, f64, f64, f64)> {
-    let r = chrome(
-        ui,
+    let r = in_chrome_view(
+        &element_view(ui, selector),
         &format!(
             "(() => {{ const r = document.querySelector({}).getBoundingClientRect(); return [r.x, r.y, r.width, r.height]; }})()",
             quoted(selector)
@@ -201,7 +227,7 @@ pub fn chrome_point(ui: &Ui, selector: &str) -> Result<(i32, i32)> {
     let (x, y, w, h) = rect(ui, selector)?;
     screen_point(
         ui,
-        &ui.chrome.native(),
+        &element_view(ui, selector),
         (x + w / 2.) as i32,
         (y + h / 2.) as i32,
     )

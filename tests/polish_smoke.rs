@@ -190,12 +190,13 @@ fn main() -> Result<()> {
             "(openPopover('settings', $('settings-button'), null), true)",
         )?;
         shot(&ui, &format!("{theme}-settings"))?;
-        chrome(
-            &ui,
-            "(closePopover(false), canopy.toast('error', 'Could not load this page'), true)",
-        )?;
+        chrome(&ui, "(closePopover(false), true)")?;
+        ui.chrome.toast(canopy::chrome::Toast::Error(
+            "Could not load this page".into(),
+        ));
+        wait("error painted", || visible(&ui, "#error-toast"))?;
         shot(&ui, &format!("{theme}-error"))?;
-        chrome(&ui, "($('error-toast').hidden=true, true)")?;
+        click_chrome(&ui, "#toast-close")?;
     }
     assert!(chrome(&ui, "(() => {canopy.logins({offer:1,names:['First','Second']}); const a=$('login-chip');openPopover('logins',a,null); canopy.logins({offer:1,names:['Updated','Second']});return !a.hasAttribute('title');})()")? == true);
     chrome(&ui, "(closePopover(false), true)")?;

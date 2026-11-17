@@ -160,6 +160,7 @@ impl Ui {
                 PageEvent::Loading(true) => {}
                 PageEvent::LoadState(value) => ui.chrome.loading(value),
                 PageEvent::Waiting { parent, label } => {
+                    // The pulse must land on the new count, including the first After item.
                     ui.refresh();
                     ui.chrome.waiting(parent, &label);
                 }

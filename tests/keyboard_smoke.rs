@@ -384,14 +384,17 @@ fn main() -> Result<()> {
         chrome(&ui, "canopy.toast('info', 'Keyboard status')")?;
         check(
             &ui,
-            "document.getElementById('toast-status').textContent === 'Keyboard status' && document.getElementById('toast-status').getAttribute('role') === 'status' && getComputedStyle(document.getElementById('toast-status')).display !== 'none' && document.getElementById('toast-alert').textContent === ''",
+            "document.getElementById('toast-status').textContent === 'Keyboard status' && document.getElementById('toast-status').getAttribute('role') === 'status' && getComputedStyle(document.getElementById('toast-status')).display !== 'none'",
         )?;
         capture(&shots, "status", theme)?;
         ui.chrome
             .toast(canopy::chrome::Toast::Error("Keyboard error".into()));
+        wait("error alert announced", || {
+            error_chrome(&ui, "$('toast-alert').textContent === 'Keyboard error' && $('toast-alert').getAttribute('role') === 'alert' && getComputedStyle($('toast-alert')).display !== 'none'").is_ok_and(|v| v == true)
+        })?;
         check(
             &ui,
-            "document.getElementById('toast-alert').textContent === 'Keyboard error' && document.getElementById('toast-alert').getAttribute('role') === 'alert' && getComputedStyle(document.getElementById('toast-alert')).display !== 'none' && document.getElementById('toast-status').textContent === 'Keyboard status'",
+            "document.getElementById('toast-status').textContent === 'Keyboard status'",
         )?;
         capture(&shots, "alert", theme)?;
         key("Escape")?;

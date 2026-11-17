@@ -9,6 +9,7 @@ mod imp {
     pub struct Stack {
         pub collecting: Cell<bool>,
         pub chrome: RefCell<Option<glib::WeakRef<gtk::Widget>>>,
+        pub feedback: RefCell<Option<glib::WeakRef<gtk::Widget>>>,
         pub held: RefCell<Option<glib::WeakRef<gtk::Widget>>>,
     }
     #[glib::object_subclass]
@@ -45,9 +46,12 @@ mod imp {
             let mut children = self.obj().children();
             self.collecting.set(false);
             let chrome = self.chrome.borrow().as_ref().and_then(|w| w.upgrade());
+            let feedback = self.feedback.borrow().as_ref().and_then(|w| w.upgrade());
             let held = self.held.borrow().as_ref().and_then(|w| w.upgrade());
             children.sort_by_key(|w| {
-                if Some(w) == chrome.as_ref() {
+                if Some(w) == feedback.as_ref() {
+                    3
+                } else if Some(w) == chrome.as_ref() {
                     2
                 } else if Some(w) == held.as_ref() {
                     1
@@ -69,6 +73,12 @@ impl Stack {
     pub(crate) fn fixed() -> gtk::Fixed {
         glib::Object::new::<Self>().upcast()
     }
+    pub(crate) fn feedback(container: &gtk::Fixed, widget: &gtk::Widget) {
+        if let Some(stack) = container.downcast_ref::<Self>() {
+            *stack.imp().feedback.borrow_mut() = Some(widget.downgrade());
+        }
+    }
+
     pub(crate) fn order(
         container: &gtk::Fixed,
         chrome: Option<&gtk::Widget>,

@@ -406,7 +406,10 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
   padding: 8px 14px; border-radius: 10px; background: var(--text); color: var(--bg); font-size: 12.5px;
   box-shadow: 0 6px 20px var(--shadow); pointer-events: none; transition: opacity .2s; z-index: 10;
 }
-#error-toast { background: var(--danger); color: #fff; }
+#error-toast { background: var(--danger); color: #fff; overflow-wrap: anywhere; }
+.error-view #error-toast { display: flow-root; position: static; transform: none; margin: 16px; }
+.error-actions { display: inline-flex; align-items: center; white-space: nowrap; float: right; margin-left: 12px; }
+.error-view #error-toast button { margin-left: 0; }
 #toast.leaving { opacity: 0; }
 
 .tab-settle { display: flex; align-items: center; opacity: 0; border-radius: 4px; }
@@ -527,7 +530,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 @media (prefers-reduced-motion: reduce) { #load-progress i { transition: none; } #load-progress.waiting i { animation: none; } }
 
 /* ---------- how trees work ---------- */
-#trees-help { width: 760px; max-width: calc(100vw - 40px); align-self: center; padding: 14px 16px; border: 1px solid var(--tile-border); border-radius: 12px; background: var(--tile); }
+#trees-help { width: 100%; padding: 14px 16px; border: 1px solid var(--tile-border); border-radius: 12px; background: var(--tile); }
 .help-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .help-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
 .help-head button { min-height: 28px; flex: none; }
@@ -536,8 +539,8 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .help-drawing { flex: 0 0 62px; display: flex; align-items: center; justify-content: center; color: var(--muted); }
 .help-drawing > .icon { width: 18px; height: 18px; }
 .help-legend { display: flex; flex-wrap: wrap; gap: 14px 18px; border-top: 1px solid var(--border); padding-top: 12px; font-size: 11px; color: var(--muted); line-height: 20px; }
-.help-legend > span { display: inline-flex; align-items: center; gap: 9px; }
-.help-legend > span > i { display: inline-flex; align-items: center; justify-content: center; width: 22px; font-style: normal; }
+.help-legend-group, .help-legend-mark { display: inline-flex; align-items: center; gap: 9px; }
+.help-legend-mark > i { display: inline-flex; align-items: center; justify-content: center; width: 22px; font-style: normal; }
 .help-count { position: static; pointer-events: none; }
 @keyframes waiting-pulse { 50% { box-shadow: 0 0 0 4px var(--green-soft); } }
 .waiting-pulse { animation: waiting-pulse 320ms ease-out; }

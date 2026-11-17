@@ -170,8 +170,9 @@ function setLayer(layer) {
 /// Tells Rust how far down the view must reach (null for the whole window), and whether
 /// Escape is ours. Below that, the page gets the pointer.
 function syncLayer() {
-  const modal = !!(S.formReturn || S.reader || S.palette || S.popover || S.list || S.overlay
-    || (S.surface !== 'reading' && current()));
+  const surfaces = { formReturn: !!S.formReturn, reader: !!S.reader, palette: !!S.palette, popover: !!S.popover, list: !!S.list,
+    treeFilters: S.overlay === 'tree' && !!(S.frame.treeView.query || S.frame.treeView.waitingOnly),
+    overlay: !!S.overlay, start: S.surface !== 'reading' && !!current() };
   let height = HEADER + REST;
   if (S.formReturn || S.palette || S.reader || S.overlay || S.surface !== 'reading') {
     height = null;
@@ -183,15 +184,14 @@ function syncLayer() {
     }
     height = Math.ceil(height);
   }
-  $('toast').style.top = !$('error-toast').hidden && !$('toast').classList.contains('settled') ? `${HEADER + 17 + $('error-toast').offsetHeight}px` : '';
-  const toastRects = $('toast').hidden && $('error-toast').hidden ? [] : [...document.querySelectorAll('#toast:not([hidden]) button, #error-toast:not([hidden]) button')].map((button) => {
+  const toastRects = $('toast').hidden ? [] : [...document.querySelectorAll('#toast:not([hidden]) button')].map((button) => {
     const r = button.getBoundingClientRect();
     return [Math.floor(r.x), Math.floor(r.y), Math.ceil(r.width), Math.ceil(r.height)];
   });
-  const report = `${height}/${modal}/${JSON.stringify(toastRects)}`;
+  const report = `${height}/${JSON.stringify(surfaces)}/${JSON.stringify(toastRects)}`;
   if (report !== S.reported) {
     S.reported = report;
-    post({ t: 'layer', height, modal, toastRects });
+    post({ t: 'layer', height, surfaces, toastRects });
   }
 }
 
@@ -1597,7 +1597,7 @@ function helpDrawing(kind) {
   if (kind === 'unread') return markedFav({ ...page, queued: true, loaded: true }, 16);
   if (kind === 'live') return markedFav({ ...page, live: true }, 16);
   if (kind === 'leaf') return '<span class="leaf"></span>';
-  if (kind === 'branches') return '<span class="branch-count waiting help-count">3</span>';
+  if (kind === 'branches' || kind === 'waiting-branches') return `<span class="branch-count${kind === 'waiting-branches' ? ' waiting' : ''} help-count">3</span>`;
   if (kind === 'settle') return icon('close');
   return miniHtml({ w: 62, h: 22, s: 14, cut: false,
     nodes: [{ x: 0, y: 4, url: page.url }, { x: 40, y: 4, url: page.url, last: true }],
@@ -1607,12 +1607,12 @@ function helpDrawing(kind) {
 function renderHelp() {
   const box = $('trees-help');
   box.hidden = !S.frame?.treesHelp;
-  const help = S.frame?.help;
+  const help = S.help;
   if (!help || box.__paint === help.title) return;
   box.__paint = help.title;
   box.innerHTML = `<div class="help-head"><h2 id="trees-help-title">${esc(help.title)}</h2><button id="trees-help-dismiss" class="action">Got it</button></div>`
     + '<ol>' + help.lines.map((line) => `<li><span class="help-drawing" aria-hidden="true">${helpDrawing(line.mark)}</span><span>${esc(line.text)}</span></li>`).join('') + '</ol>'
-    + '<div class="help-legend" aria-label="Page marks">' + help.legend.map((item) => `<span><i aria-hidden="true">${helpDrawing(item.mark)}</i>${esc(item.text)}</span>`).join('') + '</div>';
+    + '<div class="help-legend" aria-label="Page marks">' + help.legend.map((group) => `<span class="help-legend-group">${group.map((item) => `<span class="help-legend-mark"><i aria-hidden="true">${helpDrawing(item.mark)}</i>${esc(item.text)}</span>`).join('')}</span>`).join('') + '</div>';
   $('trees-help-dismiss').onclick = () => { intent('trees-help', { show: false }); focusStart(); };
 }
 
@@ -1936,6 +1936,8 @@ window.canopy = {
   fillLogin() { fillLogin(); },
   nextWaiting() { openNextWaiting(); },
   openPalette(options) { openPalette(options); },
+  help(value) { S.help = value; renderHelp(); },
+  openErrors() { openPopover('errors', $('settings-button')); },
   showTreesHelp() { closeReader(false); closePopover(false); hideList(); this.newTree(); renderHelp(); },
   newTree() {
     cancel('toast');
@@ -1961,8 +1963,6 @@ window.canopy = {
     S.errors = value;
     $('settings-button').classList.toggle('has-errors', value.unread);
     $('settings-button').setAttribute('aria-label', value.unread ? 'Settings · unread errors' : 'Settings');
-    if (value.toast) this.toast('error', value.toast.text);
-    else if (!$('error-toast').hidden) { $('error-toast').hidden = true; $('toast-alert').textContent = ''; syncLayer(); }
     if (['errors', 'settings'].includes(S.popover?.kind)) refreshPopover();
     if (S.popover?.kind === 'errors' && value.unread) post({ t: 'errors', action: 'read' });
   },
@@ -1977,11 +1977,9 @@ window.canopy = {
     }
   },
   toast(kind, text) {
-    const toast = $(kind === 'error' ? 'error-toast' : 'toast');
-    if (kind === 'error') $('toast-alert').textContent = text;
-    else $('toast-status').textContent = text + (kind === 'settled' ? ' · Undo (Ctrl+Shift+T)' : '');
-    if (kind !== 'error') toast.textContent = text;
-    else patchChildren(toast, `<span data-key="error-message">${esc(text)}</span>` + (S.errors.toast?.more ? `<button data-key="more" id="toast-more">· ${S.errors.toast.more} more</button>` : '') + '<button data-key="close" id="toast-close" aria-label="Dismiss error">×</button>');
+    const toast = $('toast');
+    $('toast-status').textContent = text + (kind === 'settled' ? ' · Undo (Ctrl+Shift+T)' : '');
+    toast.textContent = text;
     if (kind === 'settled') {
       const button = document.createElement('button');
       button.textContent = 'Undo';
@@ -1990,15 +1988,9 @@ window.canopy = {
       toast.appendChild(button);
       toast.appendChild(document.createTextNode(' (Ctrl+Shift+T)'));
     }
-    if (kind === 'error') {
-      const more = $('toast-more');
-      if (more) more.onclick = () => { openPopover('errors', $('settings-button')); post({ t: 'errors', action: 'read' }); };
-      $('toast-close').onclick = () => post({ t: 'errors', action: 'dismiss' });
-    }
     toast.className = kind;
     toast.hidden = false;
     syncLayer();
-    if (kind === 'error') return;
     clearTimeout(timers.toast);
     timers.toast = setTimeout(() => {
       toast.classList.add('leaving');
@@ -2019,13 +2011,6 @@ window.canopy = {
     post({ t: 'focus', target: 'chrome' });
     el.focus();
   },
-  settleCurrent() {
-    if (S.reader || S.palette || S.popover || S.overlay || (S.surface !== 'reading' && current())) {
-      this.escape();
-    } else if (current()) {
-      intent('settle-current');
-    }
-  },
   /// Closes the topmost thing Escape owns.
   formReturn(open) {
     if (open && !S.formReturn) rememberFocus('formReturn');
@@ -2034,21 +2019,23 @@ window.canopy = {
     syncLayer();
     if (open) $('form-return-cancel').focus();
   },
-  escape() {
-    if (!$('error-toast').hidden) post({ t: 'errors', action: 'dismiss' });
-    if (S.formReturn) answerFormReturn(false);
-    else if (S.reader) closeReader();
-    else if (S.palette) closePalette();
-    else if (S.popover) closePopover();
-    else if (S.list) { const key = S.list.key; strip.elements.get(key)?.focus(); hideList(); }
-    else if (S.overlay === 'tree' && (S.frame.treeView.query || S.frame.treeView.waitingOnly)) {
-      $('tree-filter').value = '';
-      post({ t: 'workbench', query: '', waiting: false });
-    } else if (S.overlay) closeOverlay();
-    else if (S.surface !== 'reading' && current()) {
-      setSurface(S.frame?.tabs.length ? 'reading' : 'start');
-      post({ t: 'focus', target: 'page' });
-    } else if (S.find) findIntent('close');
+  escape(surface) {
+    switch (surface) {
+      case 'formReturn': answerFormReturn(false); break;
+      case 'reader': closeReader(); break;
+      case 'palette': closePalette(); break;
+      case 'popover': closePopover(); break;
+      case 'list': { const key = S.list.key; strip.elements.get(key)?.focus(); hideList(); break; }
+      case 'treeFilters':
+        $('tree-filter').value = '';
+        post({ t: 'workbench', query: '', waiting: false });
+        break;
+      case 'overlay': closeOverlay(); break;
+      case 'start':
+        setSurface('reading');
+        post({ t: 'focus', target: 'page' });
+        break;
+    }
   },
   paletteResults(seq, { rows, first }) {
     if (!S.palette || seq !== S.palette.seq) return;
