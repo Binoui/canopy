@@ -300,7 +300,10 @@ fn marks_share_surfaces_without_moving_nodes() -> Result<()> {
             common::visible(&f.ui, &format!(".tree-tile[data-id='{root}'] .live-dot"))
         })?;
         shot(&f, &format!("{theme}-tree"))?;
-        common::chrome(&f.ui, "(setTreeSide('list'),true)")?;
+        common::chrome(
+            &f.ui,
+            "(document.querySelector('#tree-side [data-side=list]').click(),true)",
+        )?;
         common::wait("list live mark", || {
             common::visible(&f.ui, &format!(".tree-row[data-id='{root}'] .live-dot"))
         })?;
@@ -309,7 +312,10 @@ fn marks_share_surfaces_without_moving_nodes() -> Result<()> {
                 .contains("Open in memory")
         );
         shot(&f, &format!("{theme}-list"))?;
-        common::chrome(&f.ui, "(setTreeSide('tree'),canopy.toggleTree(),true)")?;
+        common::chrome(
+            &f.ui,
+            "(document.querySelector('#tree-side [data-side=tree]').click(),canopy.toggleTree(),true)",
+        )?;
     }
     Ok(())
 }
