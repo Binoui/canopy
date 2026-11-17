@@ -52,6 +52,7 @@ pub(crate) fn frame(
             json!({
                 "id": tree.id.root().to_string(),
                 "title": tree.title,
+                "subtitle": super::tabs::subtitle(forest, tree),
                 "name": format!("{}, {}{}{}{}", tree.title, plural(tree.page_count, "page"), if tree.pending_count > 0 { format!(", {} waiting", tree.pending_count) } else { String::new() }, if tree.pin.is_some() { ", pinned" } else { "" }, if frame.live.contains(&tree.last_visit) { ", still open" } else { "" }),
                 "pages": tree.page_count,
                 "live": frame.live.contains(&tree.last_visit),

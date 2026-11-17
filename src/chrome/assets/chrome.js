@@ -233,14 +233,15 @@ function renderTabs() {
   const kept = new Map([...row.children].map((tab) => [tab.dataset.id, tab]));
   const nodes = trees.map((tree, index) => {
     const active = tree.active && !start;
+    const sub = active ? tree.subtitle : null;
     const root = visit(tree.id);
     const pages = `${tree.pages} page${tree.pages === 1 ? '' : 's'}`;
     const pending = tree.pending ? `, ${tree.pending} waiting` : '';
     const pinned = tree.pinned ? ', pinned' : '';
     const key = index < 9 ? ` · Ctrl+${index + 1}` : '';
-    const html = `<button class="tab" role="tab" tabindex="${active ? 0 : -1}" aria-selected="${active}" data-id="${tree.id}" title="${esc(`${tree.title} · ${pages}${pending}${pinned}${key}`)}" aria-label="${esc(tree.name)}">`
+    const html = `<button class="tab" role="tab" tabindex="${active ? 0 : -1}" aria-selected="${active}" data-id="${tree.id}" title="${esc(`${tree.title}${sub ? ` · ${sub}` : ''} · ${pages}${pending}${pinned}${key}`)}" aria-label="${esc(sub ? `${tree.name}, on ${sub}` : tree.name)}">`
       + (root ? `<span class="mk">${visitFav(root, 14)}${tree.live ? '<i class="live-dot"></i>' : ''}</span>` : '')
-      + `<span class="tab-title">${esc(tree.title)}</span>`
+      + `<span class="tab-title${sub ? ' two-line' : ''}"><span class="tab-name">${esc(tree.title)}</span>${sub ? `<span class="tab-sub">${esc(sub)}</span>` : ''}</span>`
       + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Pinned">${icon('pinned')}</span>` : '')
       + (tree.pending ? `<span class="count">${tree.pending}</span>` : '')
       + `<span class="tab-settle" data-settle="${tree.id}" title="Settle${active ? ' · Ctrl+W' : ''}" aria-hidden="true">${icon('close')}</span>`

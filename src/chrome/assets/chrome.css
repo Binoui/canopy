@@ -59,7 +59,7 @@ svg.icon { width: 14px; height: 14px; flex: none; fill: none; stroke: currentCol
 .tabs-divider { align-self: center; flex: none; width: 1px; height: 18px; margin: 0 5px 0 6px; background: var(--border); }
 #tab-row { display: flex; align-items: flex-end; gap: 2px; min-width: 0; height: 100%; }
 .tab {
-  position: relative; display: flex; align-items: center; gap: 7px; height: 32px; max-width: 200px;
+  position: relative; display: flex; align-items: center; gap: 7px; height: 32px; max-width: 280px;
   padding: 0 4px 0 8px; min-width: 0; overflow: hidden; border-radius: 9px 9px 0 0; color: var(--muted); flex: none;
 }
 .tab:hover { background: var(--hover); color: var(--text); }
@@ -67,6 +67,9 @@ svg.icon { width: 14px; height: 14px; flex: none; fill: none; stroke: currentCol
 .tab[aria-selected="true"]::before { content: ""; position: absolute; left: 8px; right: 8px; top: 0; height: 2px; border-radius: 2px; background: var(--green); }
 .tab-title { text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tab[aria-selected="true"] .tab-title { font-weight: 600; }
+.tab-title.two-line { display: flex; flex-direction: column; line-height: 14px; }
+.tab-title.two-line > span { overflow: hidden; text-overflow: ellipsis; }
+.tab-sub { font-size: 11px; line-height: 13px; font-weight: 400; color: var(--muted); }
 .count { font-size: 10.5px; font-weight: 600; color: var(--green-ink); background: var(--green-soft); border-radius: 5px; padding: 0 5px; line-height: 16px; }
 .icon-button {
   width: 30px; height: 30px; flex: none; display: grid; place-items: center; border-radius: 8px; color: var(--muted);

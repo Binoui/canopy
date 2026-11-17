@@ -1,5 +1,20 @@
-use crate::forest::ForestProjection;
+use crate::forest::{ForestProjection, TreeSummary};
 use serde_json::{json, Value};
+
+/// The page the active tree is on, named the way the strip names it, when that differs
+/// from the tree's own name. A YouTube tree shows the video being watched under "YouTube".
+pub(super) fn subtitle(forest: &ForestProjection, tree: &TreeSummary) -> Option<String> {
+    let current = forest.current()?;
+    if forest.tree_of(current) != Some(tree.id) {
+        return None;
+    }
+    let visit = forest.visit(current)?;
+    let name = crate::naming::page_name(&visit.title, &visit.url);
+    // "Tokio tutorial · Async in depth" under "Tokio tutorial · Getting started" reads
+    // "Async in depth".
+    let name = super::graph::distinct_name(&name, &tree.title);
+    (!name.is_empty() && name != tree.title).then_some(name)
+}
 
 #[derive(Clone, Copy)]
 enum Mode {
@@ -13,14 +28,17 @@ fn fit(count: usize, active: Option<usize>, natural: f64, room: f64) -> (Vec<(Mo
         return (Vec::new(), false);
     }
     let icons = count - usize::from(active.is_some());
-    let natural = natural.clamp(110., 200.);
+    // The tree being read is never narrower than the trees around it. It takes 200 px
+    // first and grows toward its full name only into room no other title needs.
+    let natural = natural.clamp(200., 280.);
+    let base = 200_f64;
     let overflow = icons > 0
-        && (if active.is_some() { natural } else { 0. })
+        && (if active.is_some() { base } else { 0. })
             + icons as f64 * 34.
             + (count - 1) as f64 * 2.
             > room;
     let room = (room - if overflow { 32. } else { 0. }).max(0.);
-    let active_width = natural.min(room);
+    let mut active_width = base.min(room);
     let mut result = vec![(Mode::Title, 70.); count];
     if let Some(i) = active {
         result[i].1 = active_width;
@@ -46,13 +64,18 @@ fn fit(count: usize, active: Option<usize>, natural: f64, room: f64) -> (Vec<(Mo
         }
         result[i] = (Mode::Hidden, 0.);
     }
+    if let Some(i) = active {
+        active_width += (natural - active_width).min(room - used(&result)).max(0.);
+        result[i].1 = active_width;
+    }
     let titles = result
         .iter()
         .enumerate()
         .filter(|(i, (m, _))| Some(*i) != active && matches!(m, Mode::Title))
         .count();
     if titles > 0 {
-        let extra = ((room - used(&result)) / titles as f64).clamp(0., 130.);
+        let extra =
+            ((room - used(&result)) / titles as f64).clamp(0., active_width.max(base) - 70.);
         for (i, (mode, width)) in result.iter_mut().enumerate() {
             if Some(i) != active && matches!(mode, Mode::Title) {
                 *width += extra;
@@ -74,7 +97,9 @@ pub(super) fn layout(forest: &ForestProjection, room: f64, start: bool) -> Value
         active
             .map(|i| {
                 let tree = &forest.open()[i];
-                let title = super::view::text_width(&tree.title, 12.5, 0.56) + 64.;
+                let sub =
+                    subtitle(forest, tree).map_or(0., |s| super::view::text_width(&s, 11., 0.53));
+                let title = super::view::text_width(&tree.title, 12.5, 0.56).max(sub) + 64.;
                 title
                     + if tree.pin.is_some() && title >= 160. {
                         17.
@@ -101,9 +126,10 @@ mod tests {
     fn active_title_gets_room_before_other_trees() {
         for room in [900., 600., 300., 240., 120., 40.] {
             let (tabs, overflow) = fit(16, Some(8), 185., room);
+            // 185 px of name still gets the 200 px floor.
             assert_eq!(
                 tabs[8].1,
-                185_f64.min((room - if overflow { 32. } else { 0. }).max(0.))
+                200_f64.min((room - if overflow { 32. } else { 0. }).max(0.))
             );
             let shown: Vec<_> = tabs
                 .iter()
@@ -115,6 +141,15 @@ mod tests {
                     + if overflow { 32. } else { 0. }
                     <= room + 0.01
             );
+        }
+    }
+
+    #[test]
+    fn active_tab_is_never_narrower_than_the_others() {
+        for natural in [80., 150., 240., 400.] {
+            let (tabs, _) = fit(3, Some(1), natural, 1400.);
+            assert!(tabs[1].1 >= 200. && tabs[1].1 <= 280.);
+            assert!(tabs.iter().all(|(_, w)| *w <= tabs[1].1));
         }
     }
 
