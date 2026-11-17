@@ -140,6 +140,7 @@ impl Ui {
                 PageEvent::Selected => ui.refresh(),
                 PageEvent::Changed | PageEvent::Loading(false) => ui.schedule_refresh(),
                 PageEvent::Loading(true) => {}
+                PageEvent::LoadState(value) => ui.chrome.loading(value),
                 PageEvent::Settled(message) => ui.chrome.settled(&message),
                 PageEvent::Error(message) => ui.chrome.toast(Toast::Error(message)),
                 PageEvent::Remembered(_) => ui
@@ -414,6 +415,7 @@ impl Ui {
             Shortcut::FindNext => self.pages.find(FindTarget::Selected, FindAction::Next),
             Shortcut::FindPrevious => self.pages.find(FindTarget::Selected, FindAction::Previous),
             Shortcut::Escape if self.chrome.escape() => {}
+            Shortcut::Escape if self.pages.stop() => {}
             Shortcut::Escape => return glib::Propagation::Proceed,
         }
         glib::Propagation::Stop
@@ -641,6 +643,10 @@ impl ChromeHost for Ui {
             ChromeIntent::SelectTree(tree) => self.pages.go(Go::Tree(tree)),
             ChromeIntent::Restore(visit) => self.pages.go(Go::Visit(visit)),
             ChromeIntent::Reload => self.pages.reload(),
+            ChromeIntent::Stop => {
+                self.pages.stop();
+                Ok(())
+            }
             ChromeIntent::BranchFromQueued(visit) => self.pages.branch_from_queued(visit),
             ChromeIntent::OpenCitation(child) => self.pages.go(Go::Citation(child)),
             ChromeIntent::Navigate { url, target } => self.pages.go(Go::Address { url, target }),

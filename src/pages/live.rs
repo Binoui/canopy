@@ -1,3 +1,6 @@
+#[path = "loading.rs"]
+pub(super) mod loading;
+
 use std::{
     cell::{Cell, RefCell},
     rc::{Rc, Weak},
@@ -122,6 +125,7 @@ struct NativeState {
     never_seen: Cell<Option<VisitId>>,
     adopted: Cell<bool>,
     download_origin: Option<VisitId>,
+    loading: RefCell<loading::Activity>,
     issue: RefCell<Issue>,
     form_return: RefCell<Option<(u64, PolicyDecision)>>,
     form_return_cancelled: Cell<bool>,
@@ -296,6 +300,7 @@ impl LivePage {
     pub(super) fn cancel_foreground(&self) {
         self.answer_form_return(false);
         let state = &self.state;
+        state.cancel_loading();
         state.end_response();
         state
             .owner()
@@ -314,6 +319,8 @@ impl LivePage {
         // drain those too so they cannot cancel the candidate or commit later.
         let draining = match *state.issue.borrow() {
             Issue::Loading(ticket)
+            | Issue::Retiring { ticket, .. }
+            | Issue::Cancelling(ticket)
             | Issue::Issued {
                 ticket,
                 decided: true,
@@ -512,6 +519,7 @@ impl LivePage {
                     .and_then(|page| page.current_visit())
             }),
             navigation: RefCell::new(Navigation::default()),
+            loading: RefCell::new(loading::Activity::default()),
             issue: RefCell::new(Issue::Idle),
             form_return: RefCell::new(None),
             form_return_cancelled: Cell::new(false),
@@ -598,6 +606,7 @@ impl LivePage {
                 native.clone().upcast(),
                 native.connect_web_process_terminated(move |_, _| {
                     if let Some(state) = weak.upgrade() {
+                        state.cancel_loading();
                         state.answer_form_return(false);
                         let owner = state.owner();
                         let view = state.navigation.borrow().view_id();
@@ -652,6 +661,7 @@ impl LivePage {
                 }),
             ));
         }
+        signals.push((native.clone().upcast(), loading::setup(&state)));
         signals.extend(
             login_fields::setup(&manager, &state)
                 .into_iter()
@@ -753,6 +763,9 @@ impl LivePage {
                             state.reconcile_find();
                         }
                         LoadEvent::Finished => {
+                            if let Some(ticket) = state.loading_ticket() {
+                                state.finish_loading(ticket);
+                            }
                             let next = state
                                 .issue
                                 .borrow_mut()
@@ -817,6 +830,9 @@ impl LivePage {
                         return true;
                     };
                     let ticket = state.loading_ticket();
+                    if let Some(ticket) = ticket {
+                        state.finish_loading(ticket);
+                    }
                     if ticket.is_none() || ticket != state.navigation.borrow().pending_ticket() {
                         return true;
                     }
@@ -852,6 +868,9 @@ impl LivePage {
                 native.connect_load_failed_with_tls_errors(move |_, _uri, _, _| {
                     if let Some(state) = Pages::enter_native(&weak) {
                         let ticket = state.active_ticket();
+                        if let Some(ticket) = ticket {
+                            state.finish_loading(ticket);
+                        }
                         if ticket.is_none() || ticket != state.navigation.borrow().pending_ticket()
                         {
                             return true;
@@ -1072,6 +1091,7 @@ impl LivePage {
     }
 
     fn detach(&self) {
+        self.state.cancel_loading();
         if self.state.pages.upgrade().is_some() {
             self.answer_form_return(false);
         } else if let Some(decision) = self.state.form_return.borrow_mut().take() {
@@ -1109,6 +1129,7 @@ impl LivePage {
 
     pub(super) fn capture_checkpoint_scroll(&self, done: impl FnOnce() + 'static) {
         let state = &self.state;
+        state.cancel_loading();
         if let Some(owner) = state.pages.upgrade() {
             owner.discard_view_continuation(&state.navigation.borrow());
         }
@@ -1328,6 +1349,7 @@ impl LivePage {
     /// window with no current page.
     pub fn blank(&self) {
         let state = &self.state;
+        state.cancel_loading();
         state
             .load_generation
             .set(state.load_generation.get().wrapping_add(1));
@@ -1496,6 +1518,9 @@ impl NativeState {
             *self.issue.borrow_mut() = Issue::Loading(ticket);
         }
         navigation.started(ticket);
+        drop(navigation);
+        self.loading.borrow_mut().started(ticket);
+        self.owner().publish_loading();
     }
 
     fn accept_issue(&self) {
@@ -1639,6 +1664,7 @@ impl NativeState {
         let Some(requested) = self.navigation.borrow().pending_ticket() else {
             return;
         };
+        self.begin_loading(requested);
         {
             let mut issue = self.issue.borrow_mut();
             if let Issue::Retiring { next, .. } = &mut *issue {
@@ -1736,7 +1762,11 @@ impl NativeState {
         self.traversal.borrow_mut().take();
         self.accept_issue();
         self.start_attempt(target.clone());
+        let ticket = self.loading_ticket();
         let committed = self.commit_attempt(target.clone());
+        if let Some(ticket) = ticket {
+            self.finish_loading(ticket);
+        }
         self.awaiting_response.set(false);
         match committed {
             Ok(true) => {
@@ -1820,6 +1850,7 @@ impl NativeState {
             if let Some(ticket) = ticket {
                 self.navigation.borrow_mut().failed(ticket);
             }
+            self.cancel_loading();
             *self.issue.borrow_mut() = Issue::Idle;
             self.issued.borrow_mut().take();
             self.traversal.borrow_mut().take();
@@ -1982,6 +2013,9 @@ impl NativeState {
                 return true;
             }
             if main {
+                if let Some(ticket) = self.loading_ticket() {
+                    self.finish_loading(ticket);
+                }
                 self.download_handover.set(self.loading_ticket());
                 decision.download();
             } else {
@@ -2162,6 +2196,7 @@ impl NativeState {
                         ticket,
                         decided: true,
                     };
+                    self.begin_loading(ticket);
                 }
                 self.report(result.map(|_| ()));
             } else {
