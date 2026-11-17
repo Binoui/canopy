@@ -384,6 +384,7 @@ fn main() -> Result<()> {
         wait("settle shortcut toast", || {
             text(&ui, "#toast").contains("Undo (Ctrl+Shift+T)")
         })?;
+        check(&ui, "document.querySelector('#toast button').textContent === 'Undo' && document.getElementById('toast-status').textContent.includes('Undo (Ctrl+Shift+T)')")?;
         capture(&shots, "settle-shortcut", theme)?;
         wait("settle toast gone", || !visible(&ui, "#toast"))?;
         key("ctrl+shift+t")?;
@@ -482,7 +483,9 @@ fn main() -> Result<()> {
         wait("pointer list closes after click and leave", || {
             !visible(&ui, "#strip-list")
         })?;
+        ui.pages.selected_page().focus();
         key("F6")?;
+        check(&ui, "document.hasFocus() && document.activeElement.matches('#strip-nodes [aria-current=page]')")?;
         hover_chrome(&ui, "#strip-nodes [aria-current=page]")?;
         move_to(700, 600)?;
         pump(350);

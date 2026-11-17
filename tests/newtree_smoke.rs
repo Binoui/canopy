@@ -719,6 +719,10 @@ fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
             .as_str()
             .unwrap()
             .parse()?;
+    assert!(
+        !visible(ui, "#toast"),
+        "opening a new tree dismisses the previous page toast"
+    );
     hover_chrome(ui, ".sg-main")?;
     click_chrome(ui, "[data-start=decline]")?;
     wait("cross persists", || {

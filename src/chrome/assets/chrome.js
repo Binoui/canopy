@@ -1659,11 +1659,14 @@ window.canopy = {
   nextWaiting() { openNextWaiting(); },
   openPalette(options) { openPalette(options); },
   newTree() {
+    cancel('toast');
+    $('toast').hidden = true;
     intent('cancel');
     closePalette(false);
     setOverlay(null);
     setSurface('start');
     focusStart();
+    syncLayer();
   },
   toggleForest(fromChrome = true) { toggleOverlay('forest'); if (!fromChrome && S.overlay === 'forest') rememberFocus('overlay', document.body); },
   workbench(view) {
@@ -1686,10 +1689,11 @@ window.canopy = {
     toast.textContent = text;
     if (kind === 'settled') {
       const button = document.createElement('button');
-      button.textContent = 'Undo (Ctrl+Shift+T)';
+      button.textContent = 'Undo';
       toast.appendChild(document.createTextNode(' · '));
       button.onclick = () => { toast.hidden = true; syncLayer(); intent('undo-settle'); };
       toast.appendChild(button);
+      toast.appendChild(document.createTextNode(' (Ctrl+Shift+T)'));
     }
     toast.className = kind;
     toast.hidden = false;

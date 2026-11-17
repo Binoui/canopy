@@ -306,6 +306,7 @@ fn main() -> Result<()> {
                     assert!(!visible(&ui, "#strip-list .more"));
                 }
                 leave_strip(&ui)?;
+                ui.pages.selected_page().focus();
                 key("F6")?;
                 wait("F6 opens list", || visible(&ui, "#strip-list"))?;
                 let (x, y) = page_point(&ui, 500, 600)?;
@@ -321,6 +322,10 @@ fn main() -> Result<()> {
                 )?;
                 wait("focus outside item dismisses list", || {
                     !visible(&ui, "#strip-list")
+                })?;
+                key("F6")?;
+                wait("F6 from the header returns to the page", || {
+                    ui.pages.selected_page().native.has_focus()
                 })?;
                 key("F6")?;
                 wait("F6 opens list before focus clears", || {
