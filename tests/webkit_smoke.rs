@@ -431,14 +431,23 @@ fn main() -> Result<()> {
     .map(|v| v.as_str().unwrap().to_owned())
     .collect();
     assert_eq!(listed, hidden);
-    click_chrome(&ui, "#popover [data-id]")?;
     let hidden_root = roots
         .iter()
         .find(|root| root.label() == hidden[0])
         .unwrap()
         .id;
+    let hidden_target = ui.pages.read(|browser| {
+        browser.tree_states().map(|trees| {
+            trees
+                .into_iter()
+                .find(|tree| tree.root.root() == hidden_root)
+                .unwrap()
+                .last_visit
+        })
+    })?;
+    click_chrome(&ui, "#popover [data-id]")?;
     wait("hidden tree selected", || {
-        ui.snapshot().unwrap().current == Some(hidden_root)
+        ui.snapshot().unwrap().current == Some(hidden_target)
             && !ui.pages.selected_page().native.is_loading()
     })?;
     println!(
