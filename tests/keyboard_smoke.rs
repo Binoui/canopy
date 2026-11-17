@@ -72,7 +72,7 @@ fn main() -> Result<()> {
             let waiting = i >= depth && (shape != "thread" || i < depth + 14);
             serial += 1000;
             db.execute("INSERT INTO visits(id,parent_id,url,title,created_at,opened_at) VALUES(?1,?2,?3,?4,?5,?6)", rusqlite::params![id.to_string(), parent.map(|id: VisitId| id.to_string()), url, title, serial, (!waiting).then_some(serial)])?;
-            db.execute("INSERT INTO captures(visit_id,document_url,title,body,captured_at,kind) VALUES(?1,?2,?3,?4,?5,'selection')", rusqlite::params![id.to_string(),url,title,"Saved notes about this page. The complete text remains searchable in Memory. This preview wraps across two lines while the named branches remain visible below it.",serial])?;
+            db.execute("INSERT INTO captures(visit_id,document_url,title,body,captured_at,kind) VALUES(?1,?2,?3,?4,?5,'selection')", rusqlite::params![id.to_string(),url,title,"Saved notes about this page. The complete text remains searchable in Saved text. This preview wraps across two lines while the named branches remain visible below it.",serial])?;
             if (shape == "chain" && [2, 3].contains(&i)) || (shape == "trail" && i == 2) {
                 db.execute(
                     "INSERT INTO downloads(visit_id,path,size,saved_at) VALUES(?1,?2,5,?3)",
@@ -276,6 +276,10 @@ fn main() -> Result<()> {
         )?;
         capture(&shots, "settings", theme)?;
         key("End")?;
+        check(&ui, "document.activeElement.id === 'recent-errors'")?;
+        key("Up")?;
+        check(&ui, "document.activeElement.id === 'show-trees-help'")?;
+        key("Up")?;
         check(
             &ui,
             "document.activeElement.getAttribute('role') === 'switch'",
@@ -348,7 +352,7 @@ fn main() -> Result<()> {
         check(&ui, "document.activeElement.id === 'forest-titles'")?;
         key("shift+Tab")?;
         check(&ui, "document.activeElement.closest('#forest') !== null")?;
-        check(&ui, "[...document.querySelectorAll('.forest-node')].every(el=>!S.frame.visits[el.dataset.id].live || el.getAttribute('aria-label').includes('open in memory'))")?;
+        check(&ui, "[...document.querySelectorAll('.forest-node')].every(el=>!S.frame.visits[el.dataset.id].live || el.getAttribute('aria-label').includes('still open'))")?;
         capture(&shots, "forest", theme)?;
         key("Escape")?;
         check(&ui, "document.activeElement.id === 'forest-button'")?;
@@ -363,6 +367,10 @@ fn main() -> Result<()> {
         wait("reader takes focus", || {
             chrome(&ui, "document.activeElement.matches('#reader button')").is_ok_and(|v| v == true)
         })?;
+        check(
+            &ui,
+            "$('popover').getAttribute('aria-label') === 'Saved text'",
+        )?;
         capture(&shots, "reader", theme)?;
         key("shift+Tab")?;
         check(&ui, "document.activeElement.hasAttribute('data-capture')")?;
@@ -376,15 +384,21 @@ fn main() -> Result<()> {
         chrome(&ui, "canopy.toast('info', 'Keyboard status')")?;
         check(
             &ui,
-            "document.getElementById('toast-status').textContent === 'Keyboard status' && document.getElementById('toast-status').getAttribute('role') === 'status' && getComputedStyle(document.getElementById('toast-status')).display !== 'none' && document.getElementById('toast-alert').textContent === ''",
+            "document.getElementById('toast-status').textContent === 'Keyboard status' && document.getElementById('toast-status').getAttribute('role') === 'status' && getComputedStyle(document.getElementById('toast-status')).display !== 'none'",
         )?;
         capture(&shots, "status", theme)?;
-        chrome(&ui, "canopy.toast('error', 'Keyboard error')")?;
+        ui.chrome
+            .toast(canopy::chrome::Toast::Error("Keyboard error".into()));
+        wait("error alert announced", || {
+            error_chrome(&ui, "$('toast-alert').textContent === 'Keyboard error' && $('toast-alert').getAttribute('role') === 'alert' && getComputedStyle($('toast-alert')).display !== 'none'").is_ok_and(|v| v == true)
+        })?;
         check(
             &ui,
-            "document.getElementById('toast-alert').textContent === 'Keyboard error' && document.getElementById('toast-alert').getAttribute('role') === 'alert' && getComputedStyle(document.getElementById('toast-alert')).display !== 'none' && document.getElementById('toast-status').textContent === ''",
+            "document.getElementById('toast-status').textContent === 'Keyboard status'",
         )?;
         capture(&shots, "alert", theme)?;
+        key("Escape")?;
+        wait("error toast dismissed", || !visible(&ui, "#error-toast"))?;
         ui.pages.selected_page().focus();
         key("ctrl+w")?;
         wait("settle shortcut toast", || {

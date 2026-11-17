@@ -190,12 +190,13 @@ fn main() -> Result<()> {
             "(openPopover('settings', $('settings-button'), null), true)",
         )?;
         shot(&ui, &format!("{theme}-settings"))?;
-        chrome(
-            &ui,
-            "(closePopover(false), canopy.toast('error', 'Could not load this page'), true)",
-        )?;
+        chrome(&ui, "(closePopover(false), true)")?;
+        ui.chrome.toast(canopy::chrome::Toast::Error(
+            "Could not load this page".into(),
+        ));
+        wait("error painted", || visible(&ui, "#error-toast"))?;
         shot(&ui, &format!("{theme}-error"))?;
-        chrome(&ui, "($('toast').hidden=true, true)")?;
+        click_chrome(&ui, "#toast-close")?;
     }
     assert!(chrome(&ui, "(() => {canopy.logins({offer:1,names:['First','Second']}); const a=$('login-chip');openPopover('logins',a,null); canopy.logins({offer:1,names:['Updated','Second']});return !a.hasAttribute('title');})()")? == true);
     chrome(&ui, "(closePopover(false), true)")?;
@@ -223,6 +224,11 @@ fn main() -> Result<()> {
         chrome(&ui, "reducedMotion.matches").is_ok_and(|v| v == true)
     })?;
     assert!(chrome(&ui, "(animateStrip(300), !strip.anim)")? == true);
+    chrome(&ui, "canopy.waiting('Waiting quietly')")?;
+    assert_eq!(
+        chrome(&ui, "document.querySelectorAll('.waiting-pulse').length")?,
+        0
+    );
     chrome(
         &ui,
         "(canopy.toggleForest(), S.camera.zoom=.5, fitForest(true), true)",
@@ -230,7 +236,7 @@ fn main() -> Result<()> {
     let camera = chrome(&ui, "({...S.camera})")?;
     pump(80);
     assert_eq!(chrome(&ui, "({...S.camera})")?, camera);
-    chrome(&ui, "(canopy.toast('error', 'Reduced motion'), true)")?;
+    chrome(&ui, "(canopy.toast('info', 'Reduced motion'), true)")?;
     wait("reduced-motion CSS", || {
         chrome(&ui, "getComputedStyle($('toast')).transitionDuration").is_ok_and(|v| v == "0s")
     })?;

@@ -268,3 +268,9 @@ name = "loading_smoke"
 path = "tests/loading_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
+
+[[test]]
+name = "explains_smoke"
+path = "tests/explains_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]

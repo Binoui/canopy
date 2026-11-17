@@ -260,7 +260,7 @@ Canopy is one Rust program. WebKitGTK shows the pages, one live web view per bra
 The design notes explain the choices and what was rejected:
 
 - [A forest of visits](docs/design.md): the data model, and why SQLite owns the forest and the cursor.
-- [The memory of an exploration](docs/reading-memory.md): waiting links, saved text and the search over them.
+- [Keeping an exploration](docs/reading-memory.md): waiting links, saved text and the search over them.
 - [Themes an agent can write](docs/theming.md): a design for chrome themes as one JSON file. Not built yet.
 
 ## License and credits

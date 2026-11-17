@@ -121,6 +121,7 @@ fn main() -> Result<()> {
             live: Default::default(),
             files: vec![],
             capture_enabled: false,
+            trees_help: true,
             theme: ThemeMode::Light,
         };
         if title {

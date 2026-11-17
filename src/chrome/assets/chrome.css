@@ -401,12 +401,15 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .reader-list { overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
 
 /* ---------- toast ---------- */
-#toast {
+#toast, #error-toast {
   position: absolute; left: 50%; top: calc(var(--header) + 9px); transform: translateX(-50%); width: max-content; max-width: min(560px, calc(100% - 40px));
   padding: 8px 14px; border-radius: 10px; background: var(--text); color: var(--bg); font-size: 12.5px;
   box-shadow: 0 6px 20px var(--shadow); pointer-events: none; transition: opacity .2s; z-index: 10;
 }
-#toast.error { background: var(--danger); color: #fff; }
+#error-toast { background: var(--danger); color: #fff; overflow-wrap: anywhere; }
+.error-view #error-toast { display: flow-root; position: static; transform: none; margin: 16px; }
+.error-actions { display: inline-flex; align-items: center; white-space: nowrap; float: right; margin-left: 12px; }
+.error-view #error-toast button { margin-left: 0; }
 #toast.leaving { opacity: 0; }
 
 .tab-settle { display: flex; align-items: center; opacity: 0; border-radius: 4px; }
@@ -431,7 +434,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .form-return-box > div { display: flex; justify-content: flex-end; gap: 12px; }
 .form-return-box button { padding: 8px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--tile); }
 
-/* Grey means the page is still in memory. Green stays for pages not read yet. */
+/* Grey means the page is still open. Green stays for pages not read yet. */
 .live-dot { position: absolute; left: -2px; bottom: -2px; width: 8px; height: 8px; border-radius: 50%; background: var(--memory); box-shadow: 0 0 0 1.5px var(--chrome); pointer-events: none; }
 .mk .live-dot { left: -3px; bottom: -3px; }
 /* Stacked small tiles overlap, so their dot stays inside the tile. */
@@ -446,7 +449,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 
 .dismissed .fav { opacity: .3; filter: grayscale(1); outline: 1px solid var(--faint); background: transparent !important; }
 .dismissed .fav img, .dismissed .fav b { opacity: .35; }
-#toast button { pointer-events: auto; margin-left: 12px; color: inherit; text-decoration: underline; padding: 4px 8px; }
+#toast button, #error-toast button { pointer-events: auto; margin-left: 12px; color: inherit; text-decoration: underline; padding: 4px 8px; }
 
 .dismissed { color: var(--muted); }
 .tree-tile.dismissed { background: transparent; border-color: var(--line); }
@@ -525,3 +528,29 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 #load-progress.waiting i { animation: load-wait 1.2s ease-in-out infinite; }
 @keyframes load-wait { from { transform: translateX(-100%); } to { transform: translateX(500%); } }
 @media (prefers-reduced-motion: reduce) { #load-progress i { transition: none; } #load-progress.waiting i { animation: none; } }
+
+/* ---------- how trees work ---------- */
+#trees-help { width: 100%; padding: 14px 16px; border: 1px solid var(--tile-border); border-radius: 12px; background: var(--tile); }
+.help-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.help-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.help-head button { min-height: 28px; flex: none; }
+#trees-help ol { list-style: none; padding: 0; margin: 12px 0; display: grid; gap: 12px; }
+#trees-help li { display: flex; align-items: center; gap: 12px; font-size: 12.5px; line-height: 1.5; }
+.help-drawing { flex: 0 0 62px; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.help-drawing > .icon { width: 18px; height: 18px; }
+.help-legend { display: flex; flex-wrap: wrap; gap: 14px 18px; border-top: 1px solid var(--border); padding-top: 12px; font-size: 11px; color: var(--muted); line-height: 20px; }
+.help-legend-group, .help-legend-mark { display: inline-flex; align-items: center; gap: 9px; }
+.help-legend-mark > i { display: inline-flex; align-items: center; justify-content: center; width: 22px; font-style: normal; }
+.help-count { position: static; pointer-events: none; }
+@keyframes waiting-pulse { 50% { box-shadow: 0 0 0 4px var(--green-soft); } }
+.waiting-pulse { animation: waiting-pulse 320ms ease-out; }
+@media (prefers-reduced-motion: reduce) { .waiting-pulse { animation: none; } }
+
+#toast-close { min-width: 24px; min-height: 24px; text-decoration: none !important; font-size: 18px; line-height: 24px; padding: 0 !important; }
+#toast-more { min-height: 24px; }
+#settings-button { position: relative; }
+.error-dot, #settings-button.has-errors::after { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--danger); flex: none; }
+#settings-button.has-errors::after { content: ""; position: absolute; top: 3px; right: 3px; box-shadow: 0 0 0 2px var(--chrome); }
+.errors-head { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; gap: 20px; font-size: 12px; }
+.menu-error { max-width: 320px; overflow-wrap: anywhere; }
+.menu-error small { display: block; color: var(--muted); margin-top: 4px; }

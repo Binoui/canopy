@@ -341,7 +341,7 @@ fn main() -> Result<()> {
         "window.ipc.postMessage(JSON.stringify({{t:'intent',kind:'fill-login',offer:{stale},index:0}}))"
     ))?;
     wait("the stale choice is refused", || {
-        toast_text(&ui).is_some_and(|t| t.contains("no longer offered"))
+        error_toast_text(&ui).is_some_and(|t| t.contains("no longer offered"))
     })?;
     assert_eq!(fields(&ui)?["pass"], "");
     println!("PASS a choice from a replaced offer fills nothing.");
@@ -570,7 +570,7 @@ fn helper(ui: &Ui, base: &Url, directory: &std::path::Path) -> Result<()> {
 
     open(ui, base, "/retry")?;
     wait("the helper's error is shown", || {
-        toast_text(ui).is_some_and(|toast| toast.starts_with("Test: asked about "))
+        error_toast_text(ui).is_some_and(|toast| toast.starts_with("Test: asked about "))
     })?;
     assert_eq!(offered(ui), json!([]));
     println!("PASS a helper's error is shown and offers nothing.");

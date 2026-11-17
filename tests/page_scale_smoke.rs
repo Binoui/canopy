@@ -278,7 +278,9 @@ fn main() -> Result<()> {
     database.execute_batch("CREATE TRIGGER refuse_scale BEFORE INSERT ON site_page_scale BEGIN SELECT RAISE(ABORT,'Scale write refused'); END;")?;
     key("ctrl+equal")?;
     scaled(&ui, 100)?;
-    assert!(toast_text(&ui).is_some_and(|text| text.contains("Scale write refused")));
+    wait("refused scale write error", || {
+        error_toast_text(&ui).is_some_and(|text| text.contains("Scale write refused"))
+    })?;
     database.execute_batch("DROP TRIGGER refuse_scale;")?;
     println!("PASS a failed scale write leaves the page and badge unchanged.");
     key("ctrl+equal")?;
@@ -303,7 +305,9 @@ fn main() -> Result<()> {
         !ui.pages.selected_page().native.is_loading()
     })?;
     scaled(&ui, 100)?;
-    assert!(toast_text(&ui).is_some_and(|text| text.contains("Invalid stored page scale")));
+    wait("invalid stored scale error", || {
+        error_toast_text(&ui).is_some_and(|text| text.contains("Invalid stored page scale"))
+    })?;
     println!("PASS commit-time policy errors reset native scale to 100% and report the error.");
     ui.window.close();
     Ok(())

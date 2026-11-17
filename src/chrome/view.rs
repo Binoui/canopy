@@ -23,7 +23,7 @@ use crate::{
     forest::ForestProjection,
 };
 
-/// Room at the end of the current-page pill for the Memory dot.
+/// Room at the end of the current-page pill for the Saved text dot.
 const ACCESSORY: f64 = 22.;
 
 #[derive(Clone, Copy, Default)]
@@ -52,7 +52,7 @@ pub(crate) fn frame(
             json!({
                 "id": tree.id.root().to_string(),
                 "title": tree.title,
-                "name": format!("{}, {}{}{}{}", tree.title, plural(tree.page_count, "page"), if tree.pending_count > 0 { format!(", {} waiting", tree.pending_count) } else { String::new() }, if tree.pin.is_some() { ", pinned" } else { "" }, if frame.live.contains(&tree.last_visit) { ", open in memory" } else { "" }),
+                "name": format!("{}, {}{}{}{}", tree.title, plural(tree.page_count, "page"), if tree.pending_count > 0 { format!(", {} waiting", tree.pending_count) } else { String::new() }, if tree.pin.is_some() { ", pinned" } else { "" }, if frame.live.contains(&tree.last_visit) { ", still open" } else { "" }),
                 "pages": tree.page_count,
                 "live": frame.live.contains(&tree.last_visit),
                 "pending": tree.pending_count,
@@ -131,6 +131,7 @@ pub(crate) fn frame(
         "forest": surfaces.forest.then(|| forest_layout.cloned().unwrap_or_else(|| forest_frame(forest))),
         "captureEnabled": frame.capture_enabled,
         "mail": mail_value(&frame.mail),
+        "treesHelp": frame.trees_help,
         "theme": match frame.theme {
             ThemeMode::System => "system",
             ThemeMode::Light => "light",
@@ -221,7 +222,7 @@ pub(crate) fn strip_for_frame(frame: &ChromeFrame, width: f64) -> Value {
                 ""
             },
             if frame.live.contains(&id) {
-                ", open in memory"
+                ", still open"
             } else {
                 ""
             }
@@ -465,7 +466,7 @@ fn visit_value(
             ""
         },
         if live.contains(&visit.id) {
-            ", open in memory"
+            ", still open"
         } else {
             ""
         }
@@ -868,6 +869,7 @@ mod tests {
             loaded: Default::default(),
             live: Default::default(),
             capture_enabled: true,
+            trees_help: true,
             theme: ThemeMode::Light,
             declined: Default::default(),
             bookmarks: vec![],
@@ -938,6 +940,7 @@ mod tests {
             loaded: HashSet::new(),
             live: HashSet::new(),
             capture_enabled: true,
+            trees_help: true,
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
@@ -981,14 +984,15 @@ mod tests {
         );
         assert_eq!(
             value["visits"][ids[0].to_string()]["a11yState"],
-            ", open in memory"
+            ", still open"
         );
+        assert!(!value.to_string().to_lowercase().contains("memory"));
         assert_eq!(value["strip"], super::strip_for_frame(&frame, 800.));
         assert!(value["strip"]["nodes"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|n| n["name"].as_str().unwrap().contains("open in memory")));
+            .any(|n| n["name"].as_str().unwrap().contains("still open")));
         assert_eq!(value["visits"][ids[2].to_string()]["loaded"], true);
         assert_eq!(value["visits"][ids[2].to_string()]["queued"], true);
         assert_eq!(value["visits"][ids[2].to_string()]["when"], "loaded");
@@ -1053,6 +1057,7 @@ mod tests {
             live: HashSet::new(),
             forest,
             capture_enabled: true,
+            trees_help: true,
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
@@ -1085,6 +1090,7 @@ mod tests {
             live: HashSet::new(),
             forest,
             capture_enabled: true,
+            trees_help: true,
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
@@ -1122,6 +1128,7 @@ mod tests {
             live: HashSet::new(),
             forest,
             capture_enabled: true,
+            trees_help: true,
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
@@ -1180,6 +1187,7 @@ mod tests {
             live: HashSet::new(),
             forest,
             capture_enabled: true,
+            trees_help: true,
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
@@ -1288,6 +1296,7 @@ mod tests {
             loaded: ids.iter().copied().collect(),
             live: HashSet::new(),
             capture_enabled: true,
+            trees_help: true,
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],

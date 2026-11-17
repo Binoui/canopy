@@ -18,7 +18,9 @@ impl HtmlChrome {
             FindUpdate::Closed(FindClose::User) => {
                 inner.find.set(None);
                 inner.call("find", &[Value::Null, json!("user")]);
-                if let Some(host) = inner.host() {
+                if inner.errors.borrow().showing() {
+                    let _ = inner.view.focus();
+                } else if let Some(host) = inner.host() {
                     host.focus_page();
                 }
             }

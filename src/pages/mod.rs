@@ -44,6 +44,7 @@ pub enum PageEvent {
     FormReturn(Option<u64>),
     Selected,
     Settled(String),
+    Waiting { parent: VisitId, label: String },
     Changed,
     Loading(bool),
     LoadState(LoadingReadout),
@@ -2129,6 +2130,10 @@ impl Pages {
             .ok_or_else(|| anyhow::anyhow!("No selected page."))?;
         page.set_capture_enabled(enabled)
     }
+    pub fn set_trees_help(&self, show: bool) -> Result<()> {
+        self.browser.borrow_mut().set_trees_help(show)
+    }
+
     pub fn set_theme(&self, mode: ThemeMode) -> Result<()> {
         self.browser.borrow_mut().set_theme_mode(mode)
     }

@@ -77,7 +77,7 @@ fn main() -> Result<()> {
             let waiting = i >= depth && (shape != "thread" || i < depth + 14);
             serial += 1000;
             db.execute("INSERT INTO visits(id,parent_id,url,title,created_at,opened_at) VALUES(?1,?2,?3,?4,?5,?6)", rusqlite::params![id.to_string(), parent.map(|id: VisitId| id.to_string()), url, title, serial, (!waiting).then_some(serial)])?;
-            db.execute("INSERT INTO captures(visit_id,document_url,title,body,captured_at,kind) VALUES(?1,?2,?3,?4,?5,'selection')", rusqlite::params![id.to_string(),url,title,"Saved notes about this page. The complete text remains searchable in Memory. This preview wraps across two lines while the named branches remain visible below it.",serial])?;
+            db.execute("INSERT INTO captures(visit_id,document_url,title,body,captured_at,kind) VALUES(?1,?2,?3,?4,?5,'selection')", rusqlite::params![id.to_string(),url,title,"Saved notes about this page. The complete text remains searchable in Saved text. This preview wraps across two lines while the named branches remain visible below it.",serial])?;
             if (shape == "chain" && [2, 3].contains(&i)) || (shape == "trail" && i == 2) {
                 db.execute(
                     "INSERT INTO downloads(visit_id,path,size,saved_at) VALUES(?1,?2,5,?3)",
@@ -438,11 +438,17 @@ fn main() -> Result<()> {
     })?;
     assert_eq!(chrome(&ui, "S.frame.treeView.rows.length")?, 2);
     key("Escape")?;
+    wait("Escape clears title filter and keeps sheet open", || {
+        visible(&ui, "#tree-sheet") && chrome(&ui, "S.frame.treeView.query").is_ok_and(|v| v == "")
+    })?;
     type_text("docs.localhost")?;
     wait("site filter projected", || {
         chrome(&ui, "S.frame.treeView.rows.length").is_ok_and(|v| v == ids.len())
     })?;
     key("Escape")?;
+    wait("Escape clears site filter and keeps sheet open", || {
+        visible(&ui, "#tree-sheet") && chrome(&ui, "S.frame.treeView.query").is_ok_and(|v| v == "")
+    })?;
     click_chrome(&ui, "#tree-side [data-side='tree']")?;
     assert_eq!(chrome(&ui, "[...$('tree-nodes').children].filter(e=>visit(e.dataset.id).live).every(e=>e.querySelectorAll('.live-dot').length===1)")?,true);
     assert_eq!(
@@ -452,7 +458,9 @@ fn main() -> Result<()> {
         )?,
         true
     );
-    println!("PASS 9 and 11. Live tiles have one memory dot; filter matches short names and site.");
+    println!(
+        "PASS 9 and 11. Live tiles have one still-open dot; filter matches short names and site."
+    );
     key("Escape")?;
     ui.pages.settle_branch(ids[5])?;
     ui.pages.settle_branch(ids[1])?;

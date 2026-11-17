@@ -309,7 +309,7 @@ fn marks_share_surfaces_without_moving_nodes() -> Result<()> {
         })?;
         assert!(
             common::text(&f.ui, &format!(".tree-row[data-id='{root}'] .menu-detail"))
-                .contains("Open in memory")
+                .contains("Still open")
         );
         shot(&f, &format!("{theme}-list"))?;
         common::chrome(

@@ -287,16 +287,154 @@ fn main() -> Result<()> {
         NavigationTarget::ChildOf(ui.snapshot()?.current.unwrap()),
     )?;
     wait("connection failure", || {
-        toast_text(&ui).is_some_and(|text| text.contains("Could not load"))
+        error_toast_text(&ui).is_some_and(|text| text.contains("Could not load"))
             && !ui.pages.selected_page().native.is_loading()
     })?;
     pump(150);
     assert_eq!(ui.snapshot()?, before_failure);
-    open_memory_menu(&ui)?;
+    pump(6200);
+    assert!(visible(&ui, "#error-toast"));
+    assert_eq!(
+        chrome(&ui, "$('settings-button').classList.contains('has-errors')")?,
+        true
+    );
+    assert_eq!(
+        error_chrome(&ui, "getComputedStyle($('error-toast')).pointerEvents")?,
+        "none"
+    );
+    ui.chrome
+        .toast(canopy::chrome::Toast::Error("Second error".into()));
+    ui.chrome
+        .toast(canopy::chrome::Toast::Error("Newest error".into()));
+    wait("multiple errors", || {
+        text(&ui, "#error-toast").contains("· 2 more")
+    })?;
+    ui.chrome
+        .toast(canopy::chrome::Toast::Info("Still available".into()));
+    wait("status beside persistent error", || {
+        text(&ui, "#toast") == "Still available"
+    })?;
+    assert!(visible(&ui, "#error-toast"));
+    click_chrome(&ui, "#toast-more")?;
+    wait("recent errors list", || visible(&ui, "#clear-errors"))?;
     assert!(text(&ui, "#popover").contains("Could not load"));
+    assert!(text(&ui, "#popover").contains("just now"));
+    assert_eq!(
+        chrome(&ui, "$('settings-button').classList.contains('has-errors')")?,
+        false
+    );
     key("Escape")?;
-    wait("Memory menu closed", || !visible(&ui, "#popover"))?;
-    println!("PASS a network failure shows a toast, stays listed in the Memory menu, and changes nothing.");
+    wait("errors list closed first", || !visible(&ui, "#popover"))?;
+    assert!(visible(&ui, "#error-toast"));
+    key("Escape")?;
+    wait("second Escape dismisses error", || {
+        !visible(&ui, "#error-toast")
+    })?;
+    ui.chrome
+        .toast(canopy::chrome::Toast::Error("Error while finding".into()));
+    key("ctrl+f")?;
+    wait("find bar open over error", || {
+        visible(&ui, "#find-bar") && visible(&ui, "#error-toast")
+    })?;
+    key("Escape")?;
+    wait("find closes first", || !visible(&ui, "#find-bar"))?;
+    assert!(visible(&ui, "#error-toast"));
+    key("Escape")?;
+    wait("second Escape after find dismisses error", || {
+        !visible(&ui, "#error-toast")
+    })?;
+    ui.chrome
+        .toast(canopy::chrome::Toast::Error("Error while settling".into()));
+    key("ctrl+k")?;
+    wait("palette allocated before Ctrl+W", || {
+        visible(&ui, "#palette")
+            && ui.chrome.native().allocated_height() == ui.window.allocated_height()
+    })?;
+    key("ctrl+w")?;
+    wait("Ctrl+W closes palette", || {
+        !visible(&ui, "#palette") && ui.chrome.native().allocated_height() == 94
+    })?;
+    assert!(visible(&ui, "#error-toast"));
+    key("ctrl+w")?;
+    wait("Ctrl+W settles tree", || {
+        ui.snapshot().unwrap().current != before_failure.current
+    })?;
+    assert!(visible(&ui, "#error-toast"));
+    key("ctrl+shift+t")?;
+    wait("tree restored", || {
+        ui.snapshot().unwrap().current == before_failure.current
+    })?;
+    println!("PASS Escape closes the errors list or find bar before dismissing the error on a second press; Ctrl+W closes a surface and settles without dismissing errors.");
+    ui.chrome.toast(canopy::chrome::Toast::Error(
+        "Dismiss with the button".into(),
+    ));
+    wait("new error", || visible(&ui, "#toast-close"))?;
+    click_chrome(&ui, "#toast-close")?;
+    wait("button dismisses error", || !visible(&ui, "#error-toast"))?;
+    click_chrome(&ui, "#settings-button")?;
+    let (x, y) = chrome_point(&ui, "#recent-errors")?;
+    move_to(x, y)?;
+    xdo(&["mousedown", "1"])?;
+    ui.chrome
+        .toast(canopy::chrome::Toast::Error("Arrives during press".into()));
+    wait("error during Settings press", || {
+        error_toast_text(&ui).as_deref() == Some("Arrives during press")
+    })?;
+    xdo(&["mouseup", "1"])?;
+    wait("Settings press survives error refresh", || {
+        visible(&ui, "#clear-errors")
+    })?;
+    assert!(text(&ui, "#popover").contains("Dismiss with the button"));
+    click_chrome(&ui, "#clear-errors")?;
+    wait("errors cleared", || {
+        text(&ui, "#popover").contains("No recent errors")
+    })?;
+    key("Escape")?;
+    wait(
+        "settle feedback expires before checking error allocation",
+        || !visible(&ui, "#toast"),
+    )?;
+    eval(&ui, "document.addEventListener('click', e => { globalThis.toastClickThrough = true; e.preventDefault(); }, {capture:true, once:true}); JSON.stringify(true)")?;
+    ui.chrome.toast(canopy::chrome::Toast::Error(
+        "A long error message stays readable while the page beneath it still takes clicks. "
+            .repeat(10),
+    ));
+    wait("long error painted", || visible(&ui, "#toast-close"))?;
+    wait("long error allocated", || {
+        ui.chrome
+            .error_native()
+            .is_some_and(|v| v.allocated_height() > 100)
+    })?;
+    ui.chrome.toast(canopy::chrome::Toast::Error(
+        "A long error message stays readable while the page beneath it still takes clicks. "
+            .repeat(10),
+    ));
+    wait("long error has grouped actions", || {
+        text(&ui, "#toast-more") == "· 1 more"
+    })?;
+    assert_eq!(error_chrome(&ui, "(() => { const more=$('toast-more').getBoundingClientRect(), close=$('toast-close').getBoundingClientRect(), box=$('error-toast').getBoundingClientRect(); return Math.abs(more.top - close.top) < 1 && Math.abs(close.right - (box.right - 14)) < 1 && close.bottom <= box.bottom - 7; })()")?, true, "{:?}", error_chrome(&ui, "['error-toast','toast-more','toast-close'].map(id => {const r=$(id).getBoundingClientRect(); return [id,r.x,r.y,r.width,r.height]})"));
+    let (left, top, _, height) = rect(&ui, "#error-toast")?;
+    assert!(height > 40.);
+    assert_eq!(
+        ui.chrome.native().allocated_height(),
+        94,
+        "persistent errors leave the chrome at rest"
+    );
+    let error_view = ui.chrome.error_native().unwrap();
+    assert_eq!(error_view.allocated_height(), height.ceil() as i32 + 32);
+    let (_, y) = error_view.translate_coordinates(&ui.window, 0, 0).unwrap();
+    assert!(
+        y > ui.window.allocated_height() / 2,
+        "error sits at the bottom"
+    );
+    let (x, y) = screen_point(&ui, &error_view, (left + 5.) as i32, (top + 5.) as i32)?;
+    click_at(x, y)?;
+    wait("error body passes click to page", || {
+        eval(&ui, "JSON.stringify(globalThis.toastClickThrough === true)").is_ok_and(|v| v == true)
+    })?;
+    click_chrome(&ui, "#toast-close")?;
+    wait("long error dismissed", || !visible(&ui, "#error-toast"))?;
+    println!("PASS a real network error stays after six seconds; newest error has · 2 more; buttons and Escape dismiss; Settings list clears its dot and Clear empties history; status toasts still work; a long error body passes clicks through to the page.");
 
     ui.pages.selected_page().restore(a)?;
     loaded(&ui, "/a", 5)?;

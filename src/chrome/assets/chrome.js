@@ -63,7 +63,7 @@ const S = {
   palette: null,
   reader: null,
   find: null,
-  errors: [],
+  errors: { recent: [], toast: null, unread: false },
   forestLabels: true,
   camera: { x: 0, y: 0, zoom: 1 },
   reported: '',
@@ -170,8 +170,9 @@ function setLayer(layer) {
 /// Tells Rust how far down the view must reach (null for the whole window), and whether
 /// Escape is ours. Below that, the page gets the pointer.
 function syncLayer() {
-  const modal = !!(S.formReturn || S.reader || S.palette || S.popover || S.list || S.overlay
-    || (S.surface !== 'reading' && current()));
+  const surfaces = { formReturn: !!S.formReturn, reader: !!S.reader, palette: !!S.palette, popover: !!S.popover, list: !!S.list,
+    treeFilters: S.overlay === 'tree' && !!(S.frame.treeView.query || S.frame.treeView.waitingOnly),
+    overlay: !!S.overlay, start: S.surface !== 'reading' && !!current() };
   let height = HEADER + REST;
   if (S.formReturn || S.palette || S.reader || S.overlay || S.surface !== 'reading') {
     height = null;
@@ -183,13 +184,14 @@ function syncLayer() {
     }
     height = Math.ceil(height);
   }
-  const settledToast = !$('toast').hidden && $('toast').classList.contains('settled');
-  const undo = settledToast ? $('toast').querySelector('button').getBoundingClientRect() : null;
-  const toastRect = undo ? [Math.floor(undo.x), Math.floor(undo.y), Math.ceil(undo.width), Math.ceil(undo.height)] : null;
-  const report = `${height}/${modal}/${JSON.stringify(toastRect)}`;
+  const toastRects = $('toast').hidden ? [] : [...document.querySelectorAll('#toast:not([hidden]) button')].map((button) => {
+    const r = button.getBoundingClientRect();
+    return [Math.floor(r.x), Math.floor(r.y), Math.ceil(r.width), Math.ceil(r.height)];
+  });
+  const report = `${height}/${JSON.stringify(surfaces)}/${JSON.stringify(toastRects)}`;
   if (report !== S.reported) {
     S.reported = report;
-    post({ t: 'layer', height, modal, toastRect });
+    post({ t: 'layer', height, surfaces, toastRects });
   }
 }
 
@@ -390,7 +392,7 @@ function buildStrip(layout) {
     el.style.transformOrigin = '0 0';
     if (!['run', 'earlier', 'after'].includes(n.kind)) el.dataset.page = n.page;
     else delete el.dataset.page;
-    el.className = `node ${n.kind}` + (n.named ? ' named' : '') + markClass(v);
+    el.className = `node ${n.kind}` + (n.named ? ' named' : '') + markClass(v) + (el.classList.contains('waiting-pulse') ? ' waiting-pulse' : '');
     el.setAttribute('aria-label', n.name);
     el.setAttribute('aria-current', n.kind === 'pill' ? 'page' : 'false');
     el.setAttribute('aria-controls', 'strip-list');
@@ -457,7 +459,7 @@ function buildStrip(layout) {
   const pill = strip.elements.get(layout.nodes.find((node) => node.kind === 'pill')?.id);
   if (pill && pill.nextElementSibling !== dot) pill.after(dot);
   dot.classList.toggle('on', !!S.frame?.captureEnabled);
-  setTooltip(dot, S.frame?.captureEnabled ? 'Memory · Remembering pages' : 'Memory · Not remembering pages');
+  setTooltip(dot, S.frame?.captureEnabled ? 'Saved text · saving pages as you read' : 'Saved text · not saving');
   return changed;
 }
 
@@ -636,7 +638,7 @@ function renderList() {
   const source = page && item.page === current() && v.source;
   const preview = S.list.preview;
   const parts = [
-    ['head', `<div class="bl-head"${page ? ` role="group" aria-label="${esc(item.name)}" tabindex="0" data-page="${item.page}"` : ''}>${item.kind === 'earlier' ? '<span class="bl-glyph">···</span>' : markedFav(v, 16)}<div><b>${esc(item.title)}</b><span>${esc(item.meta)}${v.live ? ' · Open in memory' : ''}</span></div></div>`],
+    ['head', `<div class="bl-head"${page ? ` role="group" aria-label="${esc(item.name)}" tabindex="0" data-page="${item.page}"` : ''}>${item.kind === 'earlier' ? '<span class="bl-glyph">···</span>' : markedFav(v, 16)}<div><b>${esc(item.title)}</b><span>${esc(item.meta)}${v.live ? ' · Still open' : ''}</span></div></div>`],
     ['snippet', page && preview?.snippet ? `<div class="bl-snippet">${esc(preview.snippet)}</div>` : ''],
     ['source', source ? `<div class="card-source"><div class="card-meta">${esc(source.text)}</div></div>` : ''],
     ['heading', item.heading ? `<div class="menu-heading">${esc(item.heading)}</div>` : ''],
@@ -792,7 +794,7 @@ $('waiting-pin').addEventListener('mouseleave', leaveWaitingPin);
 $('popover').addEventListener('mouseenter', () => cancel('waitingClose'));
 $('popover').addEventListener('mouseleave', leaveWaitingPin);
 
-// ---------- popovers: Memory menu, trees that do not fit, a tree's name ----------
+// ---------- popovers: Saved text menu, trees that do not fit, a tree's name ----------
 
 function setTooltip(anchor, title) {
   if (S.popover?.anchor === anchor) {
@@ -946,8 +948,10 @@ function refreshPopover() {
 function renderPopover() {
   const popover = $('popover');
   const { kind, data } = S.popover;
+  if (['errors', 'settings'].includes(kind) && popover.dataset.kind !== kind) popover.replaceChildren();
+  popover.dataset.kind = kind;
   popover.setAttribute('role', ['node', 'tab', 'unpin', 'bookmark'].includes(kind) ? 'menu' : 'dialog');
-  popover.setAttribute('aria-label', kind === 'node' ? 'Page actions' : kind === 'tab' ? 'Tree actions' : kind.replaceAll('-', ' '));
+  popover.setAttribute('aria-label', kind === 'node' ? 'Page actions' : kind === 'tab' ? 'Tree actions' : kind === 'memory' ? 'Saved text' : kind === 'errors' ? 'Recent errors' : kind.replaceAll('-', ' '));
   popover.classList.toggle('waiting', kind === 'waiting');
   popover.classList.toggle('mail', kind === 'mail');
   if (kind !== 'node') delete popover.dataset.nodeHtml;
@@ -1115,45 +1119,52 @@ function renderPopover() {
       intent('open-file-folder', { file: Number(button.dataset.folder) });
     }));
   } else if (kind === 'memory') {
-    popover.innerHTML = '<div class="menu-heading">Memory</div>'
+    popover.innerHTML = '<div class="menu-heading">Saved text</div>'
       + captureRow()
       + '<button class="menu-row" id="remember-selection"><span class="grow">Remember selection</span><kbd>Ctrl+S</kbd></button>'
-      + `<button class="menu-row" id="read-captures"${current() ? '' : ' disabled'}><span class="grow">Read saved text</span></button>`
-      + (S.errors.length ? '<div class="menu-separator"></div><div class="menu-heading">Recent errors</div>'
-        + S.errors.map((e) => `<div class="menu-error">${esc(e)}</div>`).join('') : '');
+      + `<button class="menu-row" id="read-captures"${current() ? '' : ' disabled'}><span class="grow">Read saved text</span></button>`;
     wireCaptureRow();
     $('remember-selection').addEventListener('click', () => { closePopover(); intent('remember'); });
     $('read-captures').addEventListener('click', () => { closePopover(); intent('read-captures', { id: current() }); });
+  } else if (kind === 'errors') {
+    patchChildren(popover, '<div class="errors-head" data-key="head"><b>Recent errors</b><button id="clear-errors" class="action">Clear</button></div>'
+      + (S.errors.recent.length ? S.errors.recent.map((e, i) => `<div class="menu-error" data-key="error-${i}">${esc(e.text)}<small>${esc(e.when)}</small></div>`).join('') : '<div class="menu-hint" data-key="empty">No recent errors</div>'));
+    $('clear-errors').disabled = !S.errors.recent.length;
+    $('clear-errors').onclick = () => post({ t: 'errors', action: 'clear' });
   } else if (kind === 'settings') {
     const theme = S.frame?.theme ?? 'dark';
-    popover.innerHTML = '<div class="menu-heading">Settings</div>'
-      + '<div class="menu-heading">Theme</div><div class="segmented" id="theme-mode">'
+    patchChildren(popover, '<div class="menu-heading" data-key="title">Settings</div>'
+      + '<div class="menu-heading" data-key="theme-title">Theme</div><div class="segmented" id="theme-mode" data-key="theme">'
       + ['dark', 'light', 'system'].map((mode) => `<button data-mode="${mode}" aria-pressed="${mode === theme}">${mode[0].toUpperCase()}${mode.slice(1)}</button>`).join('')
-      + '</div><div class="menu-separator"></div>'
-      + captureRow();
+      + '</div><div class="menu-separator" data-key="capture-separator"></div>'
+      + captureRow()
+      + '<div class="menu-separator" data-key="help-separator"></div><button class="menu-row" id="show-trees-help" data-key="help"><span class="grow">How trees work</span><kbd>F1</kbd></button>'
+      + '<button class="menu-row" id="recent-errors" data-key="errors"><span class="grow">Recent errors</span>' + (S.errors.unread ? '<i class="error-dot"></i>' : '') + '</button>');
+    $('recent-errors').onclick = () => { closePopover(false); openPopover('errors', $('settings-button')); post({ t: 'errors', action: 'read' }); };
+    $('show-trees-help').onclick = () => { closePopover(false); intent('trees-help', { show: true }); };
     wireCaptureRow();
-    popover.querySelectorAll('[data-mode]').forEach((button) => button.addEventListener('click', () => {
+    popover.querySelectorAll('[data-mode]').forEach((button) => button.onclick = () => {
       S.frame.theme = button.dataset.mode;
       applyTheme();
       intent('theme', { mode: button.dataset.mode });
       refreshPopover();
-    }));
+    });
   }
 }
 
 function captureRow() {
   const on = !!S.frame?.captureEnabled;
-  return `<button class="menu-row" role="switch" aria-checked="${on}" id="automatic-capture" title="Keep the text of opened pages on this computer. Form fields are never kept."><span class="grow">Remember pages</span><span class="switch" aria-hidden="true"></span></button>`;
+  return `<button class="menu-row" role="switch" aria-checked="${on}" id="automatic-capture" data-key="capture" title="Keep the text of opened pages on this computer. Form fields are never kept."><span class="grow">Remember pages</span><span class="switch" aria-hidden="true"></span></button>`;
 }
 
 function wireCaptureRow() {
-  $('automatic-capture').addEventListener('click', () => {
+  $('automatic-capture').onclick = () => {
     const on = !!S.frame?.captureEnabled;
     S.frame.captureEnabled = !on;
     intent('capture', { on: !on });
     refreshPopover();
     buildStrip(strip.target ?? targetLayout());
-  });
+  };
 }
 
 // ---------- palette ----------
@@ -1305,7 +1316,7 @@ function renderSheet(reveal) {
       el.style.cssText = tile
         ? `left:${item.x-item.w/2}px;top:${item.y-item.s/2}px;width:${item.w}px;height:${item.s}px`
         : `padding-left:${8+r.depth*22}px`;
-      const html = `<span data-fold="${r.branch ? item.id : ''}" class="tree-fold">${r.branch ? (r.folded ? '▸' : '▾') : ''}</span>${markedFav(v, 16)}<span class="${tile ? 't' : 'grow'}">${esc(tile ? r.tileTitle : r.title)}${r.summary ? `<small>${esc(r.summary)}</small>` : ''}</span>${!tile ? `<span class="menu-detail">${esc(v.queued ? v.detail : v.when)}${v.live ? ' · Open in memory' : ''}</span>` : ''}`;
+      const html = `<span data-fold="${r.branch ? item.id : ''}" class="tree-fold">${r.branch ? (r.folded ? '▸' : '▾') : ''}</span>${markedFav(v, 16)}<span class="${tile ? 't' : 'grow'}">${esc(tile ? r.tileTitle : r.title)}${r.summary ? `<small>${esc(r.summary)}</small>` : ''}</span>${!tile ? `<span class="menu-detail">${esc(v.queued ? v.detail : v.when)}${v.live ? ' · Still open' : ''}</span>` : ''}`;
       if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
       if (el !== cursor) container.insertBefore(el, cursor);
       cursor = el.nextElementSibling;
@@ -1580,7 +1591,33 @@ const START = {
   decline: { open: (key) => intent('decline-suggestion', { key }) },
 };
 
+function helpDrawing(kind) {
+  const page = { url: 'canopy://page', live: false, queued: false };
+  if (kind === 'waiting') return markedFav({ ...page, queued: true }, 16);
+  if (kind === 'unread') return markedFav({ ...page, queued: true, loaded: true }, 16);
+  if (kind === 'live') return markedFav({ ...page, live: true }, 16);
+  if (kind === 'leaf') return '<span class="leaf"></span>';
+  if (kind === 'branches' || kind === 'waiting-branches') return `<span class="branch-count${kind === 'waiting-branches' ? ' waiting' : ''} help-count">3</span>`;
+  if (kind === 'settle') return icon('close');
+  return miniHtml({ w: 62, h: 22, s: 14, cut: false,
+    nodes: [{ x: 0, y: 4, url: page.url }, { x: 40, y: 4, url: page.url, last: true }],
+    edges: [{ c: ['14 11', '25 11', '25 11', '40 11'] }] });
+}
+
+function renderHelp() {
+  const box = $('trees-help');
+  box.hidden = !S.frame?.treesHelp;
+  const help = S.help;
+  if (!help || box.__paint === help.title) return;
+  box.__paint = help.title;
+  box.innerHTML = `<div class="help-head"><h2 id="trees-help-title">${esc(help.title)}</h2><button id="trees-help-dismiss" class="action">Got it</button></div>`
+    + '<ol>' + help.lines.map((line) => `<li><span class="help-drawing" aria-hidden="true">${helpDrawing(line.mark)}</span><span>${esc(line.text)}</span></li>`).join('') + '</ol>'
+    + '<div class="help-legend" aria-label="Page marks">' + help.legend.map((group) => `<span class="help-legend-group">${group.map((item) => `<span class="help-legend-mark"><i aria-hidden="true">${helpDrawing(item.mark)}</i>${esc(item.text)}</span>`).join('')}</span>`).join('') + '</div>';
+  $('trees-help-dismiss').onclick = () => { intent('trees-help', { show: false }); focusStart(); };
+}
+
 function renderStart() {
+  renderHelp();
   if (!S.frame?.start || S.surface !== 'start') return;
   const paint = JSON.stringify(S.frame.start);
   if (S.startPaint === paint) return;
@@ -1624,7 +1661,7 @@ function renderForest() {
     maxX = Math.max(maxX, n.x + n.w / 2);
     maxY = Math.max(maxY, n.y + n.s / 2);
     const cls = `forest-node${n.settled ? ' settled' : ''}${S.forestLabels ? '' : ' icon-only'}${path.has(n.id) ? ' path' : ''}${markClass(v)}`;
-    return `<button class="${cls}" data-key="node-${n.id}" data-id="${n.id}" aria-current="${n.id === current() ? 'page' : 'false'}" aria-label="${esc(v.name)}" title="${esc(v.label + (v.live ? ' · Open in memory' : ''))}" style="left:${n.x - n.w / 2}px;top:${n.y - n.s / 2}px;width:${n.w}px;height:${n.s}px">`
+    return `<button class="${cls}" data-key="node-${n.id}" data-id="${n.id}" aria-current="${n.id === current() ? 'page' : 'false'}" aria-label="${esc(v.name)}" title="${esc(v.label + (v.live ? ' · Still open' : ''))}" style="left:${n.x - n.w / 2}px;top:${n.y - n.s / 2}px;width:${n.w}px;height:${n.s}px">`
       + markedFav(v, 16, false) + (v.live ? '<i class="live-dot"></i>' : '') + (S.forestLabels ? `<span>${esc(v.label)}</span>` : '') + '</button>';
   }).join('');
   const heads = layout.heads.map((h) => `<button class="forest-head${h.settled ? ' settled' : ''}" data-key="head-${h.id}" data-id="${h.id}" style="top:${h.y}px"><b>${esc(h.title)}</b><span>${esc(h.detail)}</span></button>`).join('');
@@ -1899,6 +1936,9 @@ window.canopy = {
   fillLogin() { fillLogin(); },
   nextWaiting() { openNextWaiting(); },
   openPalette(options) { openPalette(options); },
+  help(value) { S.help = value; renderHelp(); },
+  openErrors() { openPopover('errors', $('settings-button')); },
+  showTreesHelp() { closeReader(false); closePopover(false); hideList(); this.newTree(); renderHelp(); },
   newTree() {
     cancel('toast');
     $('toast').hidden = true;
@@ -1916,17 +1956,30 @@ window.canopy = {
     S.frame.treeView = view;
     renderSheet(false);
     if (id && !document.activeElement?.closest('[data-id]')) focusTree(id);
+    syncLayer();
   },
   tabSelected() { closePopover(false); setOverlay(null); },
   toggleTree(fromChrome = true) { toggleOverlay('tree'); if (!fromChrome && S.overlay === 'tree') rememberFocus('overlay', document.body); },
-  toast(kind, text) {
-    if (kind === 'error') {
-      S.errors.unshift(text);
-      S.errors.length = Math.min(S.errors.length, 5);
+  errors(value) {
+    S.errors = value;
+    $('settings-button').classList.toggle('has-errors', value.unread);
+    $('settings-button').setAttribute('aria-label', value.unread ? 'Settings · unread errors' : 'Settings');
+    if (['errors', 'settings'].includes(S.popover?.kind)) refreshPopover();
+    if (S.popover?.kind === 'errors' && value.unread) post({ t: 'errors', action: 'read' });
+  },
+  waiting(text) {
+    this.toast('info', text);
+    if (reducedMotion.matches) return;
+    for (const el of [$('waiting-pin'), ...document.querySelectorAll('.node.after')]) {
+      el.classList.remove('waiting-pulse');
+      void el.offsetWidth;
+      el.classList.add('waiting-pulse');
+      el.onanimationend = () => el.classList.remove('waiting-pulse');
     }
+  },
+  toast(kind, text) {
     const toast = $('toast');
-    $('toast-status').textContent = kind === 'error' ? '' : text + (kind === 'settled' ? ' · Undo (Ctrl+Shift+T)' : '');
-    $('toast-alert').textContent = kind === 'error' ? text : '';
+    $('toast-status').textContent = text + (kind === 'settled' ? ' · Undo (Ctrl+Shift+T)' : '');
     toast.textContent = text;
     if (kind === 'settled') {
       const button = document.createElement('button');
@@ -1943,7 +1996,7 @@ window.canopy = {
     timers.toast = setTimeout(() => {
       toast.classList.add('leaving');
       timers.toast = setTimeout(() => { toast.hidden = true; syncLayer(); }, 200);
-    }, kind === 'settled' ? 6000 : kind === 'error' ? 5000 : 2600);
+    }, kind === 'settled' ? 6000 : 2600);
   },
   toggleFocus() {
     inputOrigin = 'keyboard';
@@ -1959,13 +2012,6 @@ window.canopy = {
     post({ t: 'focus', target: 'chrome' });
     el.focus();
   },
-  settleCurrent() {
-    if (S.reader || S.palette || S.popover || S.overlay || (S.surface !== 'reading' && current())) {
-      this.escape();
-    } else if (current()) {
-      intent('settle-current');
-    }
-  },
   /// Closes the topmost thing Escape owns.
   formReturn(open) {
     if (open && !S.formReturn) rememberFocus('formReturn');
@@ -1974,20 +2020,23 @@ window.canopy = {
     syncLayer();
     if (open) $('form-return-cancel').focus();
   },
-  escape() {
-    if (S.formReturn) answerFormReturn(false);
-    else if (S.reader) closeReader();
-    else if (S.palette) closePalette();
-    else if (S.popover) closePopover();
-    else if (S.list) { const key = S.list.key; strip.elements.get(key)?.focus(); hideList(); }
-    else if (S.overlay === 'tree' && (S.frame.treeView.query || S.frame.treeView.waitingOnly)) {
-      $('tree-filter').value = '';
-      post({ t: 'workbench', query: '', waiting: false });
-    } else if (S.overlay) closeOverlay();
-    else if (S.surface !== 'reading' && current()) {
-      setSurface(S.frame?.tabs.length ? 'reading' : 'start');
-      post({ t: 'focus', target: 'page' });
-    } else if (S.find) findIntent('close');
+  escape(surface) {
+    switch (surface) {
+      case 'formReturn': answerFormReturn(false); break;
+      case 'reader': closeReader(); break;
+      case 'palette': closePalette(); break;
+      case 'popover': closePopover(); break;
+      case 'list': { const key = S.list.key; strip.elements.get(key)?.focus(); hideList(); break; }
+      case 'treeFilters':
+        $('tree-filter').value = '';
+        post({ t: 'workbench', query: '', waiting: false });
+        break;
+      case 'overlay': closeOverlay(); break;
+      case 'start':
+        setSurface('reading');
+        post({ t: 'focus', target: 'page' });
+        break;
+    }
   },
   paletteResults(seq, { rows, first }) {
     if (!S.palette || seq !== S.palette.seq) return;

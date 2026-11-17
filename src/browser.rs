@@ -318,7 +318,7 @@ impl Browser {
              INSERT OR IGNORE INTO session(singleton, current_id) VALUES(1, NULL);",
         )?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version > 13 {
+        if version > 14 {
             bail!("This database comes from a newer version of Canopy.");
         }
         if version == 0 {
@@ -517,6 +517,11 @@ impl Browser {
         if version < 13 {
             let tx = connection.transaction()?;
             page_scale::migrate(&tx)?;
+            tx.commit()?;
+        }
+        if version < 14 {
+            let tx = connection.transaction()?;
+            tx.execute_batch("ALTER TABLE session ADD COLUMN trees_help INTEGER NOT NULL DEFAULT 1; PRAGMA user_version=14;")?;
             tx.commit()?;
         }
         Ok(Self { connection })
@@ -1555,6 +1560,20 @@ ORDER BY r.created_at, r.rowid",
         })
     }
 
+    pub fn trees_help(&self) -> Result<bool> {
+        Ok(self.connection.query_row(
+            "SELECT trees_help FROM session WHERE singleton=1",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
+    pub fn set_trees_help(&mut self, show: bool) -> Result<()> {
+        self.connection
+            .execute("UPDATE session SET trees_help=?1 WHERE singleton=1", [show])?;
+        Ok(())
+    }
+
     pub fn capture_enabled(&self) -> Result<bool> {
         Ok(self.connection.query_row(
             "SELECT capture_enabled FROM session WHERE singleton=1",
@@ -2272,7 +2291,7 @@ mod tests {
             b.connection
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            13
+            14
         );
     }
 
@@ -3273,6 +3292,8 @@ mod tests {
             browser
                 .queue_link(parent, url("second"), source("one"))
                 .unwrap();
+            assert!(browser.trees_help().unwrap());
+            browser.set_trees_help(false).unwrap();
             browser.set_capture_enabled(false).unwrap();
             let id = browser
                 .save_capture(
@@ -3294,6 +3315,7 @@ mod tests {
         };
         let browser = TestBrowser::open(&path).unwrap();
         assert_eq!(browser.snapshot().unwrap(), snapshot);
+        assert!(!browser.trees_help().unwrap());
         assert!(!browser.capture_enabled().unwrap());
         assert_eq!(browser.capture(saved.id).unwrap(), saved);
         let hits = browser.search("crimson kestrel").unwrap();
@@ -3845,7 +3867,7 @@ mod tests {
             b.connection
                 .execute_batch(
                     "ALTER TABLE visits DROP COLUMN dismissed_at;
-                ALTER TABLE visits DROP COLUMN branch_settled_at; DROP TABLE site_page_scale; PRAGMA user_version=11;",
+                ALTER TABLE visits DROP COLUMN branch_settled_at; DROP TABLE site_page_scale; ALTER TABLE session DROP COLUMN trees_help; PRAGMA user_version=11;",
                 )
                 .unwrap();
             (snapshot, b.tree_states().unwrap(), events(&b))

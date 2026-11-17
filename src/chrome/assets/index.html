@@ -36,7 +36,7 @@
       <div id="glow"></div>
       <svg id="strip-edges" width="1" height="1"></svg>
       <div id="strip-nodes"></div>
-      <button id="memory-dot" aria-haspopup="menu" aria-expanded="false" aria-label="Memory" hidden><i></i></button>
+      <button id="memory-dot" aria-haspopup="menu" aria-expanded="false" aria-label="Saved text" hidden><i></i></button>
     </div>
   </div>
 </section>
@@ -56,6 +56,7 @@
 <div id="start" class="surface dapple" hidden>
   <div id="start-column">
     <button id="start-search"> <i class="caret"></i><span>An address, a search, or anything on this page</span><kbd>Ctrl K</kbd></button>
+    <section id="trees-help" aria-labelledby="trees-help-title" hidden></section>
     <div id="start-content"></div>
   </div>
 </div>
@@ -105,7 +106,6 @@
 
 <div id="toast" hidden></div>
 <div id="toast-status" class="live-region" role="status" aria-atomic="true"></div>
-<div id="toast-alert" class="live-region" role="alert" aria-atomic="true"></div>
 
 <script src="chrome.js"></script>
 </body>

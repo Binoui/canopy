@@ -2,6 +2,8 @@
 
 This guide covers everything Canopy does today, feature by feature. For installing and a first run, see the [README](../README.md).
 
+A fresh profile shows **How trees work** above pinned trees on the new-tree page. **Got it** hides the card across restarts. **Settings → How trees work** or **F1** opens the new-tree page and shows it again. Its legend explains waiting rings, unread green dots, still-open grey dots, download leaves and other-branch counts.
+
 ## Try a fork
 
 1. Press **Ctrl+K**, type an address and press **Enter**.
@@ -10,7 +12,7 @@ This guide covers everything Canopy does today, feature by feature. For installi
 4. Follow another link. Both visits appear under the first page.
 5. Close the browser, then start it again with the same data folder. The tree and the current page are kept.
 
-Returning to a page still open in memory preserves its forms, scripts and scroll position. Released pages reload when reopened. A restart restores the recorded scroll position, but not forms or scripts.
+Returning to a page still open preserves its forms, scripts and scroll position. Released pages reload when reopened. A restart restores the recorded scroll position, but not forms or scripts.
 
 On a page's attached list, **New branch here** opens the palette from that page without loading it, so the next address you type becomes its child. A tree's tab reopens the page you were last reading in that tree.
 
@@ -22,7 +24,7 @@ Rest the pointer on an item for a quarter of a second, or focus it, to open one 
 
 The Bookmarks band shows up to sixteen top-level tiles, with folder chips to the right of its heading. Overflow tiles and chips open lists. Right-click a tile or list row to remove its bookmark.
 
-The tab row has one Tab stop. **Left** and **Right** move between visible tabs, and **Home** and **End** move to the ends. **Tab** from the current-page strip item reaches **Memory** next. **F6** from a header control, strip item or strip-list row returns to the page.
+The tab row has one Tab stop. **Left** and **Right** move between visible tabs, and **Home** and **End** move to the ends. **Tab** from the current-page strip item reaches **Saved text** next. **F6** from a header control, strip item or strip-list row returns to the page.
 
 Chrome menus take focus when opened. Arrow keys walk menu actions, Home and End move to the first and last action, and Tab stays inside the menu. Escape returns to the trigger. Forest, saved text and search also keep Tab inside their overlay and return focus when closed. Focus has a text-coloured outline distinct from selection. On the waiting counter, Down opens the waiting list.
 
@@ -40,10 +42,10 @@ Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not aff
 - **F6** moves the keyboard focus between the page and the current page in the strip. **Left** and **Right** walk the strip items, and **Down** or **Enter** enters the item's list. **Up** and **Down** move between its rows. **Escape** returns to the strip item.
 - **Alt+Left** or mouse Back goes back to the parent page. **Alt+Right** or mouse Forward opens the child shown most recently, however you reached it. **Alt+Up** and **Alt+Down** open the previous and next sibling, newest first, skip dismissed pages and settled branches, and stop at either end.
 - **Ctrl+Shift+Tab** switches to the previously shown open tree. Repeating it alternates between the two trees. Settled trees are skipped.
-- **Ctrl+Tab** opens the next waiting page of the current tree, newest first. The counter at the end of the strip shows how many are waiting.
+- **Ctrl+Tab** opens the next waiting page of the current tree, newest first. The counter at the end of the strip shows how many are waiting. Queuing a link pulses that counter and the After item once, unless reduced motion is enabled, and announces **Waiting · link text** for 2.6 seconds. Several links queued together show **N waiting from this page**.
 - **Ctrl+Shift+E**, or the button at the end of the strip, opens the current tree workbench. It opens as a List if the Tree would scroll, otherwise on the side you used last. Both sides keep branches in the same order when you change pages. Older side branches appear directly below their parent, oldest first and indented one level. The newest child follows at its parent's indent. The current path stays highlighted. **Up** and **Down** move focus, **Left** folds a branch, **Right** unfolds it, and **Enter** opens the focused page. Folded branches show page and waiting counts. Settled branches start folded. Type to filter the names shown and their sites, or turn on **Waiting only**. Filters include ancestors so matches keep their context and temporarily reveal folded matches. **Delete** dismisses waiting pages. **Menu** or **Shift+F10** opens the same page menu as right-click. Copying, dismissing, settling, and folding keep the workbench open. **Escape** clears the name filter and **Waiting only** first. Press it again to close the sheet and return focus to a visible keyboard trigger, or to the page. Fold choices last for this session. Closing clears both filters. **Space** on a row does nothing. The Tree keeps chains horizontal and drops older side branches below. The wheel scrolls vertically; **Shift+wheel** and horizontal wheel input scroll horizontally. A List forced by size does not replace your chosen side on smaller trees. **Ctrl+1** to **Ctrl+9** close the sheet and select a tab.
 - **Ctrl+R**, **F5**, and **Ctrl+Shift+R** reload the current page. Canopy has no hard reload, so all three perform a plain reload.
-- **Escape** closes the open chrome surface first. With no chrome surface open, it stops the current load. A thin line along the bottom of the strip shows loading progress, including a page loading off-screen before it replaces the one you are reading. The current page's attached list shows **Stop** while loading and **Reload** afterwards. Stopping keeps the last committed page usable.
+- **Escape** closes the open chrome surface first. Next it closes the find bar, then dismisses an error while the chrome has focus, then stops the current load. Each press does one thing. A thin line along the bottom of the strip shows loading progress, including a page loading off-screen before it replaces the one you are reading. The current page's attached list shows **Stop** while loading and **Reload** afterwards. Stopping keeps the last committed page usable.
 - **Ctrl+Shift+L** fills the saved login for the page.
 - **Ctrl+F** opens a find bar at the right of the tab row. Matches are highlighted as you type, and the bar shows which one is selected, such as **3 of 12**, or **No matches**. Matching ignores case. **Enter** and **Shift+Enter** in the bar, or **Ctrl+G**, **Ctrl+Shift+G**, **F3** and **Shift+F3** anywhere, go to the next or previous match and wrap at either end. A click in the page does not move the count: the next match follows the one counted. If the page changes and the number of matches with it, the count starts again at the first match. **F6** gives the keyboard back to the page and leaves the bar open. **Ctrl+F** again selects the text in the bar. **Escape** closes the bar and clears the highlights. Find belongs to the page it was opened on: switching pages or loading another document closes it. An address change inside the same document, such as a fragment, keeps it open.
 - **Ctrl+Q** quits Canopy.
@@ -70,15 +72,15 @@ Settling a tree or branch shows **Settled ‘name’ · N waiting kept**. The to
 
 ## Resume reading
 
-1. From a comment or an article, open several links with **Ctrl+click**, a **middle click** or a link meant for a new window. The destinations wait in the tree. The source page stays open. Waiting pages may load silently in the background when memory allows. They stay waiting until you open them. A hollow green ring means not loaded; a filled green dot means loaded and waiting. A small grey dot marks a read page still open in memory.
+1. From a comment or an article, open several links with **Ctrl+click**, a **middle click** or a link meant for a new window. The destinations wait in the tree. The source page stays open. Waiting pages may load silently in the background when memory allows. They stay waiting until you open them. A hollow green ring means not loaded; a filled green dot means loaded and waiting. A small grey dot marks a read page still open.
 2. Click a waiting page to read it. The visit keeps its parent and the link's context when it is available.
-3. Let **Remember pages** save the text of the open page, or select a passage and press **Ctrl+S**. These live in the **Memory** menu, behind the dot at the end of the current page in the strip. **Remember selection** in that menu does the same as Ctrl+S.
+3. Let **Remember pages** save the text of the open page, or select a passage and press **Ctrl+S**. These live in the **Saved text** menu, behind the dot at the end of the current page in the strip. **Remember selection** in that menu does the same as Ctrl+S.
 4. Close the browser, then start it again with the same data folder.
 5. Search a few words of the saved text with **Ctrl+K**. Open a **Saved text** result to read the passage offline, or go back to the source to find the links that are still waiting.
 
 Results cover titles, URLs, saved text and source context. Saved text carries its date. Select reader text and right-click for **Copy**. Reading saved text and loading the live page are two separate actions. On the current page's attached list, **Back to source** and **Open comment** lead back to where the page was found.
 
-Turn off **Remember pages** in the Memory menu to stop automatic capture. Remembering a selection stays available. **Read saved text** shows the text saved for the current page. The Memory menu also lists recent errors, which otherwise appear briefly under the tab row.
+Turn off **Remember pages** in the Saved text menu to stop automatic capture. Remembering a selection stays available. **Read saved text** shows the text saved for the current page. Errors stay at the bottom centre of the window until you close them with **×** or press **Escape** while the chrome has focus. Escape closes an open surface or find bar first; a second press dismisses the error. **Ctrl+W** leaves errors visible. A newer error replaces the message; **· N more** opens the list. **Settings → Recent errors** keeps the last ten errors, newest first, with their age and a **Clear** button. A red dot on Settings means there are errors you have not seen in that list. Opening the list clears the dot. Error history lasts until you quit.
 
 Form fields and editable areas are left out of saved text. Visible password forms block automatic capture.
 

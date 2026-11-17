@@ -1,0 +1,48 @@
+<!doctype html>
+<html class="dark"><head><meta charset="utf-8"><link rel="stylesheet" href="chrome.css"></head>
+<body class="error-view">
+<div id="error-toast" hidden><span data-key="error-message"></span><span class="error-actions"><button id="toast-more" hidden></button><button id="toast-close" aria-label="Dismiss error">×</button></span></div>
+<div id="toast-alert" class="live-region" role="alert" aria-atomic="true"></div>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const post = (message) => window.ipc.postMessage(JSON.stringify(message));
+const toast = $('error-toast');
+let pressed = false, pending, painted;
+window.canopy = {
+  present(value, width, dark) {
+    // Preserve a button's position and identity between press and release.
+    if (pressed) { pending = [value, width, dark]; return; }
+    const paint = JSON.stringify([value, width, dark]);
+    if (paint === painted) return;
+    painted = paint;
+    document.documentElement.classList.toggle('dark', dark);
+    toast.style.maxWidth = `${Math.max(1, Math.min(560, width - 40))}px`;
+    toast.hidden = !value;
+    if (value) {
+      toast.querySelector('[data-key=error-message]').textContent = value.text;
+      if ($('toast-alert').textContent !== value.text) $('toast-alert').textContent = value.text;
+      $('toast-more').textContent = value.more ? `· ${value.more} more` : '';
+      $('toast-more').hidden = !value.more;
+    } else $('toast-alert').textContent = '';
+    reportSize();
+  }
+};
+function reportSize() {
+  const r = toast.getBoundingClientRect();
+  post({ t: 'error-size', width: Math.ceil(r.width), height: Math.ceil(r.height), buttons: [...toast.querySelectorAll('button:not([hidden])')].map((b) => {
+    const r = b.getBoundingClientRect();
+    return [Math.floor(r.x), Math.floor(r.y), Math.ceil(r.width), Math.ceil(r.height)];
+  }) });
+}
+new ResizeObserver(reportSize).observe(toast);
+$('toast-more').onclick = () => post({ t: 'errors', action: 'open' });
+$('toast-close').onclick = () => post({ t: 'errors', action: 'dismiss' });
+document.addEventListener('mousedown', () => { pressed = true; }, true);
+document.addEventListener('mouseup', () => {
+  pressed = false;
+  setTimeout(() => { if (pending) { const args = pending; pending = null; canopy.present(...args); } }, 0);
+}, true);
+document.addEventListener('contextmenu', (e) => e.preventDefault());
+post({ t: 'error-ready' });
+</script></body></html>

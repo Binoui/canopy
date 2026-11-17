@@ -78,6 +78,7 @@ mod tests {
             loaded: Default::default(),
             live: Default::default(),
             capture_enabled: true,
+            trees_help: true,
             theme: ThemeMode::Dark,
             declined: [frozen[0].key()].into(),
             bookmarks: vec![],
@@ -113,6 +114,7 @@ mod tests {
             loaded: Default::default(),
             live: Default::default(),
             capture_enabled: true,
+            trees_help: true,
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
@@ -296,4 +298,24 @@ pub(super) fn keep(s: &crate::suggest::Suggestion) -> super::ChromeIntent {
             title: site(first).into(),
         },
     }
+}
+
+pub(super) fn help() -> Value {
+    json!({
+        "title": "How trees work",
+        "lines": [
+            {"mark": "tree", "text": "Every link you follow grows the tree in the strip above. Back goes to the parent page."},
+            {"mark": "waiting", "text": "Middle-click a link to keep it waiting (green ring). Ctrl+Tab opens the next waiting page."},
+            {"mark": "branches", "text": "Rest on a strip page to see its branches. Right-click a page for more: settle a branch, move it to its own tree, dismiss a waiting page."},
+            {"mark": "settle", "text": "Done with a tree? Settle it with the cross on its tab. Nothing is deleted; Ctrl+Shift+T brings it back."}
+        ],
+        "legend": [
+            [{"mark": "waiting", "text": "waiting"}],
+            [{"mark": "unread", "text": "not read yet"}],
+            [{"mark": "live", "text": "still open"}],
+            [{"mark": "leaf", "text": "downloaded file"}],
+            [{"mark": "branches", "text": "other branches"},
+             {"mark": "waiting-branches", "text": "some waiting"}]
+        ]
+    })
 }

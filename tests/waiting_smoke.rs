@@ -77,7 +77,32 @@ fn main() -> Result<()> {
     assert!(!visible(&ui, "#waiting-pin"));
     for i in 0..3 {
         queue(&ui, &format!("link{i}"))?;
+        if i == 0 {
+            assert_eq!(
+                chrome(&ui, "getComputedStyle($('waiting-pin')).animationDuration")?,
+                "0.32s"
+            );
+            assert_eq!(
+                chrome(
+                    &ui,
+                    "getComputedStyle(document.querySelector('.node.after')).animationDuration"
+                )?,
+                "0.32s"
+            );
+        }
+        let expected = if i == 0 {
+            "Waiting · Waiting article 0".to_owned()
+        } else {
+            format!("{} waiting from this page", i + 1)
+        };
+        wait("queued link feedback", || {
+            toast_text(&ui).as_deref() == Some(&expected)
+        })?;
+        assert_eq!(chrome(&ui, "$('toast-status').textContent")?, expected);
+        assert!(text(&ui, ".node.after").contains(&(i + 1).to_string()));
     }
+    composed_waiting_toast(&ui)?;
+    println!("PASS middle-click announces link text, batches three waiting links and updates the After count.");
     let branch = ui
         .snapshot()?
         .visits
@@ -559,5 +584,29 @@ fn small_tree_shots(ui: &Ui, base: &str) -> Result<()> {
     println!(
         "PASS screenshots use a short path, side branches at two path pages and waiting pages."
     );
+    Ok(())
+}
+
+fn composed_waiting_toast(ui: &Ui) -> Result<()> {
+    key("ctrl+k")?;
+    wait("palette over queued page", || visible(ui, "#palette"))?;
+    let (x, y, _, _) = rect(ui, "#toast")?;
+    let (x, y) = screen_point(ui, &ui.chrome.native(), x as i32 + 12, y as i32 + 8)?;
+    let expected = chrome(
+        ui,
+        "getComputedStyle($('toast')).backgroundColor.match(/\\d+/g).slice(0,3).map(Number)",
+    )?;
+    wait("waiting toast paints over the palette", || {
+        let Some(image) = gtk::gdk::Screen::default()
+            .and_then(|s| s.root_window())
+            .and_then(|w| w.pixbuf(x, y, 1, 1))
+        else {
+            return false;
+        };
+        let pixels = image.read_pixel_bytes();
+        (0..3).all(|i| (pixels[i] as i64 - expected[i].as_i64().unwrap()).abs() < 12)
+    })?;
+    key("Escape")?;
+    println!("PASS waiting feedback paints in the composed window with the palette open.");
     Ok(())
 }

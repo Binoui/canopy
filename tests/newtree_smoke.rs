@@ -93,6 +93,8 @@ fn main() -> Result<()> {
     }
     assert!(text(&ui, "#start-content").contains("Ctrl+D bookmarks the page you are on."));
     assert!(!visible(&ui, ".sg-row"));
+    click_chrome(&ui, "#trees-help-dismiss")?;
+    wait("first-run help dismissed", || !visible(&ui, "#trees-help"))?;
     key("ctrl+d")?;
     wait("no current page toast", || {
         toast_text(&ui).is_some_and(|t| t == "No page to bookmark")
