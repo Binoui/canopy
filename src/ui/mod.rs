@@ -140,6 +140,7 @@ impl Ui {
                 PageEvent::Selected => ui.refresh(),
                 PageEvent::Changed | PageEvent::Loading(false) => ui.schedule_refresh(),
                 PageEvent::Loading(true) => {}
+                PageEvent::Settled(message) => ui.chrome.settled(&message),
                 PageEvent::Error(message) => ui.chrome.toast(Toast::Error(message)),
                 PageEvent::Remembered(_) => ui
                     .chrome
@@ -388,6 +389,9 @@ impl Ui {
                     self.dispatch(ChromeIntent::SelectTree(tree));
                 }
             }
+            Shortcut::Forward => self.report(self.pages.go(Go::Forward)),
+            Shortcut::PreviousSibling => self.report(self.pages.go(Go::Sibling { next: false })),
+            Shortcut::NextSibling => self.report(self.pages.go(Go::Sibling { next: true })),
             Shortcut::Back => self.report(self.pages.go(Go::Parent)),
             Shortcut::ToggleFocus => self.chrome.toggle_focus(),
             Shortcut::Escape if self.chrome.escape() => {}
@@ -413,6 +417,9 @@ enum Shortcut {
     Quit,
     Tree(usize),
     Back,
+    Forward,
+    PreviousSibling,
+    NextSibling,
     ToggleFocus,
     Escape,
 }
@@ -476,6 +483,9 @@ impl Shortcut {
             (Modifiers::CONTROL_SHIFT, key::l, Self::FillLogin),
             (Modifiers::CONTROL, key::q, Self::Quit),
             (Modifiers::ALT, key::Left, Self::Back),
+            (Modifiers::ALT, key::Right, Self::Forward),
+            (Modifiers::ALT, key::Up, Self::PreviousSibling),
+            (Modifiers::ALT, key::Down, Self::NextSibling),
             (Modifiers::NONE, key::F6, Self::ToggleFocus),
             (Modifiers::NONE, key::Escape, Self::Escape),
         ];
@@ -577,6 +587,10 @@ impl ChromeHost for Ui {
                 }
                 Ok(())
             }
+            ChromeIntent::Dismiss(head) => self.pages.dismiss(head),
+            ChromeIntent::SettleBranch(head) => self.pages.settle_branch(head),
+            ChromeIntent::MoveToTree(head) => self.pages.move_to_tree(head),
+            ChromeIntent::UndoSettle => self.pages.undo_settle(),
             ChromeIntent::SettleTree(tree) => self.pages.settle_tree(tree),
             ChromeIntent::SelectTree(tree) => self.pages.go(Go::Tree(tree)),
             ChromeIntent::Restore(visit) => self.pages.go(Go::Visit(visit)),

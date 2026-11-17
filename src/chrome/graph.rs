@@ -1,7 +1,4 @@
-use crate::{
-    browser::{VisitId, VisitState},
-    forest::ForestProjection,
-};
+use crate::{browser::VisitId, forest::ForestProjection};
 
 pub(crate) const REST_HEIGHT: f64 = 52.;
 pub(crate) const TRUNK_Y: f64 = REST_HEIGHT / 2.;
@@ -115,12 +112,11 @@ pub(crate) fn branch_counts(forest: &ForestProjection, heads: &[VisitId]) -> Bra
     let mut counts = BranchCounts::default();
     let mut stack = heads.to_vec();
     while let Some(id) = stack.pop() {
+        if forest.is_settled(id) {
+            continue;
+        }
         counts.pages += 1;
-        counts.waiting += usize::from(
-            forest
-                .visit(id)
-                .is_some_and(|v| v.state == VisitState::Queued),
-        );
+        counts.waiting += usize::from(forest.is_waiting(id));
         stack.extend(forest.children(id));
     }
     counts
@@ -162,7 +158,8 @@ pub(crate) fn strip_items(forest: &ForestProjection, current: VisitId) -> Vec<St
         .children(current)
         .iter()
         .copied()
-        .partition(|id| forest.visit(*id).unwrap().state == VisitState::Queued);
+        .filter(|id| !forest.is_settled(*id) && forest.visit(*id).unwrap().dismissed_at.is_none())
+        .partition(|id| forest.is_waiting(*id));
     waiting.sort_by_key(|id| (forest.visit(*id).unwrap().created_at, id.to_string()));
     read.sort_by_key(|id| {
         std::cmp::Reverse((forest.visit(*id).unwrap().created_at, id.to_string()))
@@ -339,7 +336,7 @@ pub(crate) fn strip_layout(
                 StripItem::After { waiting, .. } => waiting.clone(),
                 StripItem::Current(_) => heads
                     .into_iter()
-                    .filter(|id| forest.visit(*id).unwrap().state != VisitState::Queued)
+                    .filter(|id| forest.visit(*id).unwrap().opened_at.is_some())
                     .collect(),
                 _ => heads,
             };
@@ -368,9 +365,10 @@ pub(crate) fn strip_layout(
 }
 
 pub(crate) fn edge_kind(forest: &ForestProjection, id: VisitId) -> EdgeKind {
-    match forest.visit(id).map(|visit| &visit.state) {
-        Some(VisitState::Queued) => EdgeKind::Pending,
-        _ => EdgeKind::Plain,
+    if forest.is_waiting(id) {
+        EdgeKind::Pending
+    } else {
+        EdgeKind::Plain
     }
 }
 
@@ -388,7 +386,7 @@ pub(crate) fn edge_curve(edge: &Edge, a: Rect, b: Rect) -> [(f64, f64); 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browser::{Lifecycle, Snapshot, TreeId, TreeState, Visit};
+    use crate::browser::{Lifecycle, Snapshot, TreeId, TreeState, Visit, VisitState};
 
     fn fixture(
         parents: &[Option<usize>],
@@ -404,6 +402,8 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, p)| Visit {
+                dismissed_at: None,
+                branch_settled_at: None,
                 id: ids[i],
                 parent: p.map(|p| ids[p]),
                 url: format!("https://{}/{i}", hosts[i % hosts.len()])

@@ -34,6 +34,8 @@ Ctrl+T    New tree
 Ctrl+1…9  Switch to a tree
 F6        Move between the page and the tree strip
 Alt+←     Back to the parent page
+Alt+→     Forward to the last opened child
+Alt+↑/↓   Previous or next sibling
 Ctrl+R    Reload the page
 Ctrl+S    Remember the selection
 Ctrl+Shift+L  Fill the saved login for the page

@@ -103,6 +103,10 @@ pub enum ChromeIntent {
     },
     SelectTree(TreeId),
     SettleTree(TreeId),
+    Dismiss(VisitId),
+    SettleBranch(VisitId),
+    MoveToTree(VisitId),
+    UndoSettle,
     SettleCurrent,
     /// Name a tree; an empty name goes back to the automatic one.
     RenameTree(TreeId, String),
@@ -377,6 +381,10 @@ impl HtmlChrome {
         self.inner.call("fillLogin", &[]);
     }
 
+    pub fn settled(&self, text: &str) {
+        self.inner.call("toast", &[json!("settled"), json!(text)]);
+    }
+
     pub fn toast(&self, toast: Toast) {
         let (kind, text) = match toast {
             Toast::Info(text) => ("info", text),
@@ -514,6 +522,11 @@ impl Inner {
                 let cover = message["height"].as_f64().map(|h| h.max(CHROME_HEIGHT));
                 if self.cover.replace(cover) != cover {
                     self.apply_bounds();
+                }
+            }
+            "copy" => {
+                if let Some(text) = message["text"].as_str() {
+                    gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).set_text(text);
                 }
             }
             "focus" => {
@@ -675,6 +688,10 @@ impl Inner {
         let frame = frame.as_ref()?;
         let index = || message["index"].as_u64().map(|i| i as usize);
         Some(match message["kind"].as_str()? {
+            "dismiss" => ChromeIntent::Dismiss(id("id")?),
+            "settle-branch" => ChromeIntent::SettleBranch(id("id")?),
+            "move-to-tree" => ChromeIntent::MoveToTree(id("id")?),
+            "undo-settle" => ChromeIntent::UndoSettle,
             "settle-tree" => ChromeIntent::SettleTree(TreeId(id("id")?)),
             "settle-current" => ChromeIntent::SettleCurrent,
             "select-tree" => ChromeIntent::SelectTree(TreeId(id("id")?)),
@@ -682,6 +699,10 @@ impl Inner {
                 ChromeIntent::RenameTree(TreeId(id("id")?), message["name"].as_str()?.to_owned())
             }
             "restore" => ChromeIntent::Restore(id("id")?),
+            "open-page-in-tree" => ChromeIntent::Navigate {
+                url: frame.forest.visit(id("id")?)?.url.clone(),
+                target: NavigationTarget::Root,
+            },
             "reload" => ChromeIntent::Reload,
             "branch-queued" => ChromeIntent::BranchFromQueued(id("id")?),
             "open-citation" => ChromeIntent::OpenCitation(id("id")?),

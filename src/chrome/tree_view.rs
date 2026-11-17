@@ -157,7 +157,7 @@ pub(crate) fn miniature(
             x,
             y,
             last: id == tree.last_visit,
-            waiting: forest.visit(id).unwrap().state == crate::browser::VisitState::Queued,
+            waiting: forest.is_waiting(id),
         })
         .collect();
     nodes.sort_by(|a, b| a.y.total_cmp(&b.y).then_with(|| a.x.total_cmp(&b.x)));
@@ -248,6 +248,9 @@ fn place(forest: &ForestProjection, path: &[VisitId]) -> Grid {
                 }
                 cells.push((id, col, row));
                 last_col = last_col.max(col);
+                if forest.is_settled(id) {
+                    continue;
+                }
                 for (n, &next) in forest.children(id).iter().enumerate().rev() {
                     edges.push(Edge {
                         from: id,
@@ -294,6 +297,9 @@ fn list(forest: &ForestProjection, path: &[VisitId]) -> Vec<ListRow> {
                 depth,
                 on_path: false,
             });
+            if forest.is_settled(id) {
+                continue;
+            }
             stack.extend(
                 forest
                     .children(id)
@@ -385,6 +391,8 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, p)| Visit {
+                dismissed_at: None,
+                branch_settled_at: None,
                 id: ids[i],
                 parent: p.map(|p| ids[p]),
                 url: url::Url::parse("https://example.org/").unwrap(),

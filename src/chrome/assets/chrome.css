@@ -416,3 +416,10 @@ body[data-overlay="tree"] #pins .pin:not(.on) { visibility: hidden; }
 
 .node.parent .fav, .node.run .fav, .node.root.named .fav { width: var(--item-icon) !important; height: var(--item-icon) !important; }
 .node.parent, .node.root.named { font-size: 12.5px; }
+
+.dismissed .fav { opacity: .3; filter: grayscale(1); outline: 1px solid var(--faint); background: transparent !important; }
+.dismissed .fav img, .dismissed .fav b { opacity: .35; }
+#toast button { pointer-events: auto; margin-left: 12px; color: inherit; text-decoration: underline; padding: 4px 8px; }
+
+.dismissed { color: var(--muted); }
+.tree-tile.dismissed { background: transparent; border-color: var(--line); }

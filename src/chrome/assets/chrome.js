@@ -91,7 +91,7 @@ function fav(url, opened, size) {
     + `<img src="${src}" alt="" onload="this.parentNode.style.background='none';this.previousSibling.style.visibility='hidden'" onerror="this.remove()"></span>`;
 }
 const waitState = (v) => v.queued ? (v.loaded ? 'loaded' : 'unloaded') : null;
-const markClass = (v) => waitState(v) === 'loaded' ? ' pending loaded' : waitState(v) ? ' pending' : '';
+const markClass = (v) => v.dismissed ? ' dismissed' : waitState(v) === 'loaded' ? ' pending loaded' : waitState(v) ? ' pending' : '';
 const visitFav = (v, size) => fav(v.url, waitState(v) !== 'unloaded', size);
 const markedFav = (v, size, live = v.live) => `<span class="mk">${visitFav(v, size)}`
   + (live ? '<i class="live-dot"></i>' : '')
@@ -293,6 +293,8 @@ function buildStrip(layout) {
       nodes.appendChild(el);
       strip.elements.set(n.id, el);
     }
+    if (!['run', 'earlier', 'after'].includes(n.kind)) el.dataset.page = n.page;
+    else delete el.dataset.page;
     el.className = `node ${n.kind}` + (n.named ? ' named' : '') + markClass(v);
     el.setAttribute('aria-label', `${n.title}, ${n.branches.pages} branch pages, ${n.branches.waiting} waiting`);
     el.removeAttribute('title');
@@ -504,7 +506,7 @@ function renderList() {
   const source = page && item.page === current() && v.source;
   const preview = S.list.preview;
   const parts = [
-    ['head', `<div class="bl-head">${item.kind === 'earlier' ? '<span class="bl-glyph">···</span>' : markedFav(v, 16)}<div><b>${esc(item.title)}</b><span>${esc(item.meta)}${v.live ? ' · Open in memory' : ''}</span></div></div>`],
+    ['head', `<div class="bl-head"${page ? ` data-page="${item.page}"` : ''}>${item.kind === 'earlier' ? '<span class="bl-glyph">···</span>' : markedFav(v, 16)}<div><b>${esc(item.title)}</b><span>${esc(item.meta)}${v.live ? ' · Open in memory' : ''}</span></div></div>`],
     ['snippet', page && preview?.snippet ? `<div class="bl-snippet">${esc(preview.snippet)}</div>` : ''],
     ['source', source ? `<div class="card-source"><div class="card-meta">${esc(source.text)}</div></div>` : ''],
     ['heading', item.heading ? `<div class="menu-heading">${esc(item.heading)}</div>` : ''],
@@ -737,7 +739,26 @@ function renderPopover() {
   const popover = $('popover');
   const { kind, data } = S.popover;
   popover.classList.toggle('waiting', kind === 'waiting');
-  if (kind === 'tab' || kind === 'unpin') {
+  if (kind !== 'node') delete popover.dataset.nodeHtml;
+  if (kind === 'node') {
+    const v = visit(data);
+    if (!v) { closePopover(false); return; }
+    const html = v.nodeMenu.map((r) => `<button class="menu-row" data-node-action="${r.kind}">${esc(r.label)}</button>`).join('');
+    if (popover.dataset.nodeHtml !== html || popover.dataset.nodeId !== data) {
+      popover.innerHTML = html;
+      popover.dataset.nodeHtml = html;
+      popover.dataset.nodeId = data;
+      for (const button of popover.querySelectorAll('[data-node-action]')) button.onclick = () => {
+        const action = button.dataset.nodeAction;
+        closePopover(false);
+        if (action === 'open') activate(data);
+        else if (action === 'new-tree') { uncover(); intent('open-page-in-tree', { id: data }); }
+        else if (action === 'branch') openPalette({ scope: data, text: '' });
+        else if (action === 'copy') post({ t: 'copy', text: visit(data).url });
+        else intent(action, { id: data });
+      };
+    }
+  } else if (kind === 'tab' || kind === 'unpin') {
     const tab = S.frame.tabs.find((t) => t.id === data);
     const menu = kind === 'unpin' ? { label: 'Unpin tree', pinned: false } : tab?.pinMenu;
     if (!menu) { closePopover(false); return; }
@@ -1001,11 +1022,11 @@ function renderSheet(reveal) {
   $('tree-edges').innerHTML = view.edges.map((e) => `<path class="${e.kind}" d="M${e.c[0]} C${e.c[1]} ${e.c[2]} ${e.c[3]}"/>`).join('');
   $('tree-nodes').innerHTML = view.tiles.map((t) => {
     const v = visit(t.id);
-    return `<button class="tree-tile${t.path ? ' path' : ''}${t.id === current() ? ' current' : ''}${markClass(v)}" data-id="${t.id}" title="${esc(v.label + (v.live ? ' · Open in memory' : ''))}" style="left:${t.x-t.w/2}px;top:${t.y-t.s/2}px;width:${t.w}px;height:${t.s}px">${markedFav(v, 16, false)}${v.live ? '<i class="live-dot"></i>' : ''}<span class="t">${esc(v.label)}</span></button>`;
+    return `<button class="tree-tile${t.path ? ' path' : ''}${t.id === current() ? ' current' : ''}${markClass(v)}" data-id="${t.id}" title="${esc(v.label + (v.live ? ' · Open in memory' : ''))}" style="left:${t.x-t.w/2}px;top:${t.y-t.s/2}px;width:${t.w}px;height:${t.s}px">${markedFav(v, 16, false)}${v.live ? '<i class="live-dot"></i>' : ''}<span class="t">${esc(v.stub || v.label)}</span></button>`;
   }).join('');
   $('tree-list').innerHTML = view.rows.map((r) => {
     const v = visit(r.id);
-    return `<button class="tree-row${r.path ? ' path' : ''}${r.id === current() ? ' current' : ''}${markClass(v)}" data-id="${r.id}" style="padding-left:${8+r.depth*22}px">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.when)}${v.live ? ' · Open in memory' : ''}</span></button>`;
+    return `<button class="tree-row${r.path ? ' path' : ''}${r.id === current() ? ' current' : ''}${markClass(v)}" data-id="${r.id}" style="padding-left:${8+r.depth*22}px">${markedFav(v, 16)}<span class="grow">${esc(v.stub || v.label)}</span><span class="menu-detail">${esc(v.when)}${v.live ? ' · Open in memory' : ''}</span></button>`;
   }).join('');
   setTreeSide(S.treeSide, reveal);
 }
@@ -1411,7 +1432,7 @@ window.canopy = {
     if (!S.frame) return;
     renderTabs();
     renderWaitingPin();
-    if (S.popover?.kind === 'waiting') refreshPopover();
+    if (S.popover?.kind === 'waiting' || S.popover?.kind === 'node') refreshPopover();
     buildStrip(strip.target ?? targetLayout());
     renderStart();
     renderForest();
@@ -1447,13 +1468,20 @@ window.canopy = {
     }
     const toast = $('toast');
     toast.textContent = text;
+    toast.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+    if (kind === 'settled') {
+      const button = document.createElement('button');
+      button.textContent = 'Undo';
+      button.onclick = () => { toast.hidden = true; intent('undo-settle'); };
+      toast.appendChild(button);
+    }
     toast.className = kind;
     toast.hidden = false;
     clearTimeout(timers.toast);
     timers.toast = setTimeout(() => {
       toast.classList.add('leaving');
       timers.toast = setTimeout(() => { toast.hidden = true; }, 200);
-    }, kind === 'error' ? 5000 : 2600);
+    }, kind === 'settled' ? 6000 : kind === 'error' ? 5000 : 2600);
   },
   toggleFocus() {
     const active = document.activeElement;
@@ -1719,3 +1747,15 @@ document.addEventListener('focusin', (event) => {
     $('form-return-cancel').focus();
   }
 }, true);
+
+document.addEventListener('contextmenu', (event) => {
+  const field = event.target.closest('input, textarea, [contenteditable="true"]');
+  if (field) return;
+  if (event.defaultPrevented) return;
+  event.preventDefault();
+  const el = event.target.closest('#strip-nodes [data-page], #strip-list [data-id], #strip-list [data-page], #tree-nodes [data-id], #tree-list [data-id], #popover.waiting [data-id], #forest-nodes [data-id]');
+  const id = el?.dataset.page || el?.dataset.id;
+  if (!id || !visit(id)) return;
+  openPopover('node', el, id);
+  hideList();
+});

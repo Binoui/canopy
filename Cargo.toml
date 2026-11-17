@@ -205,3 +205,9 @@ name = "strip_smoke"
 path = "tests/strip_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
+
+[[test]]
+name = "node_verbs_smoke"
+path = "tests/node_verbs_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]
