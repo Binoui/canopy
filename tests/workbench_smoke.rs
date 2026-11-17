@@ -159,6 +159,18 @@ fn main() -> Result<()> {
         )?,
         1
     );
+    assert_eq!(
+        chrome(
+            &ui,
+            &format!(
+                "S.frame.treeView.rows[1].id === '{}' && S.frame.treeView.rows.at(-1).id === '{}'",
+                ids[1],
+                ids[ids.len() - 1]
+            )
+        )?,
+        true,
+        "oldest side branch follows its parent immediately; newest child follows side branches"
+    );
     println!(
         "PASS 1 and 3. Chains run right, newest child continues the indent, older children indent."
     );

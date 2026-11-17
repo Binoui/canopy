@@ -82,7 +82,6 @@ pub(crate) fn workbench(forest: &ForestProjection, state: &Workbench) -> Option<
             children
                 .into_iter()
                 .enumerate()
-                .rev()
                 .map(|(n, id)| (id, depth + usize::from(n > 0))),
         );
     }
@@ -434,9 +433,14 @@ mod tests {
         );
         assert_eq!(
             before.rows.iter().map(|r| r.depth).collect::<Vec<_>>(),
-            [0, 0, 0, 0, 1]
+            [0, 0, 1, 0, 0]
         );
-        assert_eq!(before.rows[2].id, ids[3]);
+        assert_eq!(
+            before.rows.iter().map(|r| r.id).collect::<Vec<_>>(),
+            [ids[0], ids[1], ids[2], ids[3], ids[4]]
+        );
+        let parent_row = before.rows.iter().position(|r| r.id == ids[1]).unwrap();
+        assert_eq!(before.rows[parent_row + 1].id, ids[2]);
         assert_eq!(
             before.tiles.iter().map(|t| t.rect).collect::<Vec<_>>(),
             after.tiles.iter().map(|t| t.rect).collect::<Vec<_>>()
