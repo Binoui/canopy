@@ -1,7 +1,7 @@
 mod common;
 #[path = "common/http.rs"]
 mod http;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use canopy::{
     browser::{NavigationTarget, VisitId},
     pages::Go,
@@ -257,11 +257,20 @@ fn main() -> Result<()> {
         target: NavigationTarget::ChildOf(source),
     })?;
     let busy_visit = arrived(&ui, "/busy")?;
+    let shown = format!("canopy.state().loading.page === '{busy_visit}' && document.querySelector('#strip-nodes .pill')?.dataset.page === '{busy_visit}'");
     wait("committed page and loading resource are shown", || {
         site.hit("/resource-busy")
             && ui.pages.selected_page().native.is_loading()
             && status(&ui, "busy")
-            && chrome(&ui, &format!("canopy.state().loading.page === '{busy_visit}' && document.querySelector('#strip-nodes .pill')?.dataset.id === '{busy_visit}'")).is_ok_and(|value| value == true)
+            && chrome(&ui, &shown).is_ok_and(|value| value == true)
+    })
+    .with_context(|| {
+        format!(
+            "native URI {:?}, loading {}, expected {busy_visit}, chrome {:?}",
+            ui.pages.selected_page().native.uri(),
+            ui.pages.selected_page().native.is_loading(),
+            chrome(&ui, "({loading:canopy.state().loading,pills:[...document.querySelectorAll('#strip-nodes .pill')].map(e=>e.dataset.page),buttons:canopy.state().buttons})")
+        )
     })?;
     open_list(&ui)?;
     assert_eq!(text(&ui, "#strip-list [data-key='action-reload']"), "Stop");
@@ -290,7 +299,7 @@ fn main() -> Result<()> {
         text(&ui, "#strip-list [data-key='action-reload']"),
         "Reload"
     );
-    println!("PASS A pressed Stop keeps its DOM key and meaning through native completion.");
+    println!("PASS In-place commits retain progress; a pressed Stop keeps its DOM key and meaning through completion.");
     leave_strip(&ui)?;
 
     ui.pages.go(Go::Address {
@@ -303,8 +312,11 @@ fn main() -> Result<()> {
     open_list(&ui)?;
     click_chrome(&ui, "#strip-list [data-act='stop']")?;
     idle(&ui)?;
+    wait("Stop returns the keyboard to the page", || {
+        ui.pages.selected_page().native.has_focus()
+    })?;
     site.release("/hold-button");
-    println!("PASS The strip Stop button cancels the foreground candidate.");
+    println!("PASS The strip Stop button cancels the foreground candidate and returns the keyboard to the page.");
 
     let queued_count = ui.snapshot()?.visits.len();
     eval(&ui, "document.body.insertAdjacentHTML('beforeend', '<a id=queue href=/hold-background style=position:fixed;top:100px;left:20px>Queue</a>'); JSON.stringify(true)")?;

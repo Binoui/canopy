@@ -1574,6 +1574,7 @@ impl NativeState {
             },
         )?;
         if committed {
+            self.owner().publish_loading();
             let visit = self
                 .navigation
                 .borrow()
@@ -2335,6 +2336,7 @@ impl NativeState {
             self.report(result);
         }
         self.navigation.borrow_mut().same_document(url);
+        self.owner().publish_loading();
         if let Some(document) = self.ticket() {
             self.bind_document();
             if is_selected(&self.pages, &self.native) {

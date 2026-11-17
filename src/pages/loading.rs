@@ -120,9 +120,8 @@ impl NativeState {
             Issue::Loading(ticket) => Some(ticket),
             _ => None,
         };
-        self.loading
-            .borrow()
-            .status(running, self.native.estimated_load_progress())
+        let progress = self.native.estimated_load_progress();
+        self.loading.borrow().status(running, progress)
     }
 }
 
