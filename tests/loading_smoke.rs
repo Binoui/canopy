@@ -256,11 +256,12 @@ fn main() -> Result<()> {
         url: site.url("/busy"),
         target: NavigationTarget::ChildOf(source),
     })?;
-    arrived(&ui, "/busy")?;
-    wait("committed page has a loading resource", || {
+    let busy_visit = arrived(&ui, "/busy")?;
+    wait("committed page and loading resource are shown", || {
         site.hit("/resource-busy")
             && ui.pages.selected_page().native.is_loading()
             && status(&ui, "busy")
+            && chrome(&ui, &format!("canopy.state().loading.page === '{busy_visit}' && document.querySelector('#strip-nodes .pill')?.dataset.id === '{busy_visit}'")).is_ok_and(|value| value == true)
     })?;
     open_list(&ui)?;
     assert_eq!(text(&ui, "#strip-list [data-key='action-reload']"), "Stop");
