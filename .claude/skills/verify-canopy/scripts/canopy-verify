@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+# Drives one private Canopy instance on its own Xvfb display. See ../SKILL.md for usage.
+set -euo pipefail
+
+SKILL=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+REPO=$(git -C "$SKILL" rev-parse --show-toplevel)
+RUNS="$HOME/.cache/canopy-test-rt"
+POINTER="$REPO/.cache/verify/current"
+
+die() { echo "canopy-verify: $*" >&2; exit 1; }
+
+load() {
+  RUN=${CANOPY_RUN:-$(cat "$POINTER" 2>/dev/null || true)}
+  [ -n "$RUN" ] && [ -f "$RUN/run.env" ] || die "no run. Start one with: canopy-verify launch"
+  # shellcheck disable=SC1091
+  . "$RUN/run.env"
+}
+
+alive() { [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null; }
+
+app_env() {
+  env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" GDK_BACKEND=x11 XDG_RUNTIME_DIR="$RUN/rt" "$@"
+}
+
+xdo() { app_env xdotool "$@"; }
+
+window() {
+  local id
+  id=$(xdo search --onlyvisible --name Canopy 2>/dev/null | head -1 || true)
+  [ -n "$id" ] || die "no visible Canopy window on $DISPLAY_NUM"
+  echo "$id"
+}
+
+wait_for() {
+  local label=$1 seconds=$2; shift 2
+  local deadline=$((SECONDS + seconds))
+  until "$@"; do
+    [ $SECONDS -lt $deadline ] || die "timed out after ${seconds}s waiting for $label"
+    sleep 0.25
+  done
+}
+
+has_window() { xdo search --onlyvisible --name Canopy >/dev/null 2>&1; }
+
+start_app() {
+  # Not app_env: a backgrounded function runs in a subshell, and $! would be that shell, not Canopy.
+  env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" GDK_BACKEND=x11 XDG_RUNTIME_DIR="$RUN/rt" \
+    "$BIN" --data-dir "$RUN/data" "$@" >>"$RUN/canopy.log" 2>&1 &
+  echo $! >"$RUN/canopy.pid"
+  wait_for "the Canopy window" 60 has_window
+  sleep 2
+}
+
+app_pid() { cat "$RUN/canopy.pid" 2>/dev/null || true; }
+
+quit_app() {
+  local pid
+  pid=$(app_pid)
+  alive "$pid" || return 0
+  xdo windowfocus --sync "$(window)" key --clearmodifiers ctrl+q || true
+  wait_for "Canopy to exit after Ctrl+Q" 20 bash -c "! kill -0 $pid 2>/dev/null"
+}
+
+cmd_launch() {
+  local bin="" seed=stress size=1240x800
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --bin) bin=$(readlink -f "$2"); shift 2 ;;
+      --seed) seed=$2; shift 2 ;;
+      --size) size=$2; shift 2 ;;
+      *) die "launch: unknown option $1" ;;
+    esac
+  done
+  case $seed in stress|empty) ;; *) die "--seed takes stress or empty" ;; esac
+  if [ -z "$bin" ]; then
+    (cd "$REPO" && cargo build --locked --quiet) || die "cargo build failed"
+    bin="$REPO/target/debug/canopy"
+  fi
+  [ -x "$bin" ] || die "no binary at $bin"
+
+  mkdir -p "$RUNS" "$REPO/.cache/verify"
+  RUN=$(mktemp -d -p "$RUNS" v-XXXXXX)
+  local id=${RUN##*/v-}
+  mkdir -m 700 "$RUN/rt" && mkdir "$RUN/data"
+  local evidence="$REPO/.cache/verify/$id"
+  mkdir -p "$evidence"
+
+  # Not -displayfd: it treats a display as free when its abstract socket is free, and Hyprland's
+  # Xwayland listens only on the socket file, so -displayfd takes over the desktop's :0.
+  local n xvfb=""
+  for n in $(seq 200 299); do
+    [ -e "/tmp/.X$n-lock" ] || [ -e "/tmp/.X11-unix/X$n" ] && continue
+    Xvfb ":$n" -nolisten tcp -screen 0 "${size}x24" >"$RUN/xvfb.log" 2>&1 &
+    xvfb=$!
+    local deadline=$((SECONDS + 10))
+    while alive "$xvfb" && [ ! -S "/tmp/.X11-unix/X$n" ] && [ $SECONDS -lt $deadline ]; do sleep 0.2; done
+    if alive "$xvfb" && [ -S "/tmp/.X11-unix/X$n" ]; then echo "$n" >"$RUN/display"; break; fi
+    kill "$xvfb" 2>/dev/null || true
+    xvfb=""
+  done
+  [ -n "$xvfb" ] || die "no free X display between :200 and :299"
+  python3 -I "$SKILL/fixtures/server.py" 0 >"$RUN/server.out" 2>"$RUN/server.log" &
+  local server=$!
+  wait_for "the fixture server" 10 test -s "$RUN/server.out"
+
+  cat >"$RUN/run.env" <<EOF
+RUN_ID=$id
+RUN=$RUN
+BIN=$bin
+DISPLAY_NUM=:$(cat "$RUN/display")
+PORT=$(head -1 "$RUN/server.out")
+EVIDENCE=$evidence
+XVFB_PID=$xvfb
+SERVER_PID=$server
+REPO=$REPO
+EOF
+  echo "$RUN" >"$POINTER"
+  # shellcheck disable=SC1091
+  . "$RUN/run.env"
+
+  start_app
+  if [ "$seed" = stress ]; then
+    quit_app
+    python3 -I "$SKILL/fixtures/seed.py" "$RUN/data/forest.sqlite3" "$PORT" >"$RUN/seed.log" 2>&1 \
+      || die "seed.py failed (schema change?): $(tail -3 "$RUN/seed.log")"
+    start_app
+  fi
+  echo "run $RUN_ID on $DISPLAY_NUM, fixture port $PORT, seed $seed"
+  echo "binary $BIN"
+  echo "evidence $EVIDENCE"
+}
+
+cmd_doctor() {
+  load
+  local bad=0 pid
+  check() { if eval "$2"; then echo "ok    $1"; else echo "FAIL  $1"; bad=1; fi; }
+  pid=$(app_pid)
+  check "Xvfb $XVFB_PID owns $DISPLAY_NUM" "alive $XVFB_PID && [ -S /tmp/.X11-unix/X${DISPLAY_NUM#:} ]"
+  check "fixture server $SERVER_PID answers on port $PORT" "alive $SERVER_PID && curl -sf -o /dev/null http://127.0.0.1:$PORT/p/doctor"
+  check "Canopy $pid runs $BIN" "alive '$pid' && [ \"\$(readlink -f /proc/$pid/exe)\" = '$BIN' ]"
+  check "Canopy $pid uses data dir $RUN/data" "alive '$pid' && tr '\0' ' ' </proc/$pid/cmdline | grep -qF -- '--data-dir $RUN/data'"
+  check "instance socket exists" "[ -S '$RUN/data/instance.sock' ]"
+  check "a Canopy window is visible on $DISPLAY_NUM" "has_window"
+  check "forest database is readable" "sqlite3 -readonly 'file:$RUN/data/forest.sqlite3?mode=ro' 'SELECT count(*) FROM visits' >/dev/null"
+  local head built
+  head=$(git -C "$REPO" log -1 --format=%ct)
+  built=$(stat -c %Y "$BIN")
+  check "binary is newer than the checkout's last commit" "[ $built -ge $head ]"
+  echo "head $(git -C "$REPO" rev-parse --short HEAD), $(git -C "$REPO" status --short | wc -l) changed files"
+  return $bad
+}
+
+cmd_key() { load; xdo windowfocus --sync "$(window)" key --clearmodifiers "$@"; sleep 0.4; }
+cmd_type() { load; xdo windowfocus --sync "$(window)" type --delay 30 -- "$*"; sleep 0.4; }
+cmd_hover() { load; xdo mousemove --sync "$1" "$2"; sleep "${3:-1.2}"; }
+cmd_click() {
+  load
+  local button=1
+  case ${3:-left} in left) button=1 ;; middle) button=2 ;; right) button=3 ;; *) die "click: button is left, middle or right" ;; esac
+  xdo mousemove --sync "$1" "$2" click "$button"
+  sleep 0.8
+}
+
+cmd_shot() {
+  load
+  [ -n "${1:-}" ] || die "shot NAME"
+  app_env import -window root "$EVIDENCE/$1.png"
+  echo "$EVIDENCE/$1.png"
+}
+
+cmd_db() {
+  load
+  [ -n "${1:-}" ] || die "db SQL [NAME]"
+  local out
+  out=$(sqlite3 -readonly -header "file:$RUN/data/forest.sqlite3?mode=ro" "$1")
+  echo "$out"
+  if [ -n "${2:-}" ]; then printf '%s\n%s\n' "-- $1" "$out" >"$EVIDENCE/$2.txt"; fi
+}
+
+cmd_url() { load; local title=${*:-Home}; echo "http://${CANOPY_HOST:-fixture}.localhost:$PORT/p/${title// /_}"; }
+
+cmd_open() {
+  load
+  [ $# -gt 0 ] || die "open ADDRESS..."
+  app_env "$BIN" --data-dir "$RUN/data" "$@" >>"$RUN/canopy.log" 2>&1
+  sleep 1.5
+}
+
+cmd_quit() { load; quit_app; echo "Canopy exited"; }
+
+cmd_start() {
+  load
+  alive "$(app_pid)" && die "Canopy is already running"
+  start_app
+  echo "Canopy started on $DISPLAY_NUM"
+}
+
+cmd_log() { load; tail -n "${1:-40}" "$RUN/canopy.log"; }
+
+cmd_env() { load; cat "$RUN/run.env"; }
+
+cmd_cleanup() {
+  load
+  local pid
+  for pid in "$(app_pid)" "$SERVER_PID" "$XVFB_PID"; do
+    alive "$pid" && kill "$pid" 2>/dev/null || true
+  done
+  sleep 1
+  for pid in "$(app_pid)" "$SERVER_PID" "$XVFB_PID"; do
+    alive "$pid" && kill -9 "$pid" 2>/dev/null || true
+  done
+  cp "$RUN/canopy.log" "$EVIDENCE/canopy.log" 2>/dev/null || true
+  rm -rf "$RUN"
+  [ "$(cat "$POINTER" 2>/dev/null)" = "$RUN" ] && rm -f "$POINTER"
+  echo "removed $RUN"
+  echo "evidence kept in $EVIDENCE: $(ls "$EVIDENCE" | wc -l) files"
+}
+
+cmd=${1:-help}
+shift || true
+case $cmd in
+  launch|doctor|key|type|hover|click|shot|db|url|open|quit|start|log|env|cleanup) "cmd_$cmd" "$@" ;;
+  *) echo "usage: canopy-verify launch|doctor|key|type|hover|click|shot|db|url|open|quit|start|log|env|cleanup. See $SKILL/SKILL.md" >&2; exit 2 ;;
+esac
