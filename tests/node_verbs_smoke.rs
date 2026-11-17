@@ -273,8 +273,16 @@ fn main() -> Result<()> {
         common::wait("theme", || {
             common::chrome(&f.ui, "canopy.state().dark").is_ok_and(|v| v == (theme == "dark"))
         })?;
-        common::open_list(&f.ui)?;
+        common::item_list(&f.ui, "#strip-nodes .after")?;
         f.menu(&format!("#strip-list [data-id='{waiting}']"))?;
+        assert!(common::text(&f.ui, ".node-menu-title").contains("unread"));
+        assert_eq!(
+            common::chrome(
+                &f.ui,
+                "document.querySelector('.node-menu-title').querySelectorAll('button').length"
+            )?,
+            0
+        );
         f.shot("strip-row-menu", theme)?;
         common::key("Escape")?;
         common::open_list(&f.ui)?;
@@ -286,6 +294,7 @@ fn main() -> Result<()> {
         common::wait("settled selected leaf", || {
             f.ui.snapshot().is_ok_and(|s| s.current == Some(d))
         })?;
+        assert!(common::chrome(&f.ui, "document.getElementById('toast').getBoundingClientRect().top > document.getElementById('strip-clip').getBoundingClientRect().bottom")? == true);
         f.shot("settled-toast", theme)?;
         common::key("ctrl+shift+e")?;
         common::wait("tree sheet", || {
@@ -295,12 +304,23 @@ fn main() -> Result<()> {
         assert!(common::text(&f.ui, "#tree-nodes").contains("pages put away"));
         f.shot("settled-tree", theme)?;
         f.menu(&format!("#tree-nodes [data-id='{e}']"))?;
+        assert!(!common::visible(
+            &f.ui,
+            "[data-node-action='settle-branch']"
+        ));
+        assert!(common::chrome(&f.ui, "document.getElementById('toast').getBoundingClientRect().top > document.querySelector('.sheet-head').getBoundingClientRect().bottom")? == true);
         f.shot("settled-tile-menu", theme)?;
         common::key("Escape")?;
         common::click_chrome(&f.ui, "#tree-side [data-side='list']")?;
         f.shot("settled-list", theme)?;
         f.menu(&format!("#tree-list [data-id='{e}']"))?;
-        f.shot("settled-menu", theme)?;
+        assert!(!common::visible(
+            &f.ui,
+            "[data-node-action='settle-branch']"
+        ));
+        f.shot("resettle-attempt", theme)?;
+        f.ui.pages.settle_branch(e)?;
+        assert!(common::text(&f.ui, "#toast").contains("1 waiting kept"));
         common::click_chrome(&f.ui, "[data-node-action='open']")?;
         common::wait("reopened settled page", || {
             f.ui.snapshot().is_ok_and(|s| s.current == Some(e))
@@ -491,6 +511,76 @@ fn main() -> Result<()> {
         "immediate Undo keeps the retired page's checkpoint history"
     );
     println!("PASS immediate Undo waits for retirement and retains checkpoint history.");
+    let nav_root = f.root("/navigation-root")?;
+    let older = f.child(nav_root, "/older")?;
+    f.select(nav_root)?;
+    let settled = f.child(nav_root, "/put-away")?;
+    let nested = f.child(settled, "/nested")?;
+    let kept = f.queue("/kept")?;
+    f.select(nav_root)?;
+    f.ui.pages.settle_branch(nested)?;
+    f.ui.pages.settle_branch(settled)?;
+    common::wait(
+        "settle counts waiting inside an earlier settled branch",
+        || common::text(&f.ui, "#toast").contains("1 waiting kept"),
+    )?;
+    f.ui.pages.settle_branch(nested)?;
+    f.ui.pages.undo_settle()?;
+    assert!(f
+        .ui
+        .pages
+        .read(|b| b.visit(settled))?
+        .branch_settled_at
+        .is_none());
+    assert!(f
+        .ui
+        .pages
+        .read(|b| b.visit(nested))?
+        .branch_settled_at
+        .is_some());
+    f.select(nav_root)?;
+    f.ui.pages.settle_branch(settled)?;
+    let skipped_sibling = f.queue("/dismissed-sibling")?;
+    f.ui.pages.dismiss(skipped_sibling)?;
+    let newest = f.child(nav_root, "/newest")?;
+    common::key("alt+Down")?;
+    common::wait("Down skips dismissed and settled siblings", || {
+        f.ui.snapshot().is_ok_and(|s| s.current == Some(older))
+    })?;
+    common::key("alt+Up")?;
+    common::wait("Up skips dismissed and settled siblings", || {
+        f.ui.snapshot().is_ok_and(|s| s.current == Some(newest))
+    })?;
+    f.select(older)?;
+    f.select(nav_root)?;
+    common::key("alt+Right")?;
+    common::wait(
+        "Right follows a child last shown from another sibling",
+        || f.ui.snapshot().is_ok_and(|s| s.current == Some(older)),
+    )?;
+    f.select(nav_root)?;
+    f.ui.pages.move_to_tree(settled)?;
+    common::wait("moved settled branch is an open tree", || {
+        common::chrome(
+            &f.ui,
+            &format!("!!document.querySelector('#tab-row .tab[data-id=\"{settled}\"]')"),
+        )
+        .is_ok_and(|v| v == true)
+    })?;
+    assert!(f
+        .ui
+        .pages
+        .read(|b| b.visit(settled))?
+        .branch_settled_at
+        .is_none());
+    assert!(f
+        .ui
+        .pages
+        .read(|b| b.visit(nested))?
+        .branch_settled_at
+        .is_some());
+    assert!(f.ui.pages.read(|b| b.visit(kept))?.opened_at.is_none());
+    println!("PASS repeat settling keeps waiting and does not replace Undo; sibling keys skip inactive pages; Right follows all arrivals; moving clears only the new root's settled mark.");
     f.ui.window.close();
     common::pump(100);
     let restart = tempfile::tempdir()?;

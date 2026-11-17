@@ -143,10 +143,13 @@ function syncLayer() {
     }
     height = Math.ceil(height);
   }
-  const report = `${height}/${modal}`;
+  const settledToast = !$('toast').hidden && $('toast').classList.contains('settled');
+  const undo = settledToast ? $('toast').querySelector('button').getBoundingClientRect() : null;
+  const toastRect = undo ? [Math.floor(undo.x), Math.floor(undo.y), Math.ceil(undo.width), Math.ceil(undo.height)] : null;
+  const report = `${height}/${modal}/${JSON.stringify(toastRect)}`;
   if (report !== S.reported) {
     S.reported = report;
-    post({ t: 'layer', height, modal });
+    post({ t: 'layer', height, modal, toastRect });
   }
 }
 
@@ -506,7 +509,7 @@ function renderList() {
   const source = page && item.page === current() && v.source;
   const preview = S.list.preview;
   const parts = [
-    ['head', `<div class="bl-head"${page ? ` data-page="${item.page}"` : ''}>${item.kind === 'earlier' ? '<span class="bl-glyph">···</span>' : markedFav(v, 16)}<div><b>${esc(item.title)}</b><span>${esc(item.meta)}${v.live ? ' · Open in memory' : ''}</span></div></div>`],
+    ['head', `<div class="bl-head"${page ? ` tabindex="0" data-page="${item.page}"` : ''}>${item.kind === 'earlier' ? '<span class="bl-glyph">···</span>' : markedFav(v, 16)}<div><b>${esc(item.title)}</b><span>${esc(item.meta)}${v.live ? ' · Open in memory' : ''}</span></div></div>`],
     ['snippet', page && preview?.snippet ? `<div class="bl-snippet">${esc(preview.snippet)}</div>` : ''],
     ['source', source ? `<div class="card-source"><div class="card-meta">${esc(source.text)}</div></div>` : ''],
     ['heading', item.heading ? `<div class="menu-heading">${esc(item.heading)}</div>` : ''],
@@ -550,6 +553,10 @@ function renderList() {
       } else el.innerHTML = fresh.innerHTML;
       el.className = fresh.className;
       el.dataset.html = html;
+    }
+    if (key === 'head') {
+      if (page) { el.dataset.page = item.page; el.tabIndex = 0; }
+      else { delete el.dataset.page; el.removeAttribute('tabindex'); }
     }
     if (el !== cursor) list.insertBefore(el, cursor);
     cursor = el.nextElementSibling;
@@ -743,7 +750,7 @@ function renderPopover() {
   if (kind === 'node') {
     const v = visit(data);
     if (!v) { closePopover(false); return; }
-    const html = v.nodeMenu.map((r) => `<button class="menu-row" data-node-action="${r.kind}">${esc(r.label)}</button>`).join('');
+    const html = `<div class="node-menu-title">${visitFav(v, 16)}<span>${esc(v.shortName)}</span></div>` + v.nodeMenu.map((r) => `<button class="menu-row" data-node-action="${r.kind}">${esc(r.label)}</button>`).join('');
     if (popover.dataset.nodeHtml !== html || popover.dataset.nodeId !== data) {
       popover.innerHTML = html;
       popover.dataset.nodeHtml = html;
@@ -1472,15 +1479,16 @@ window.canopy = {
     if (kind === 'settled') {
       const button = document.createElement('button');
       button.textContent = 'Undo';
-      button.onclick = () => { toast.hidden = true; intent('undo-settle'); };
+      button.onclick = () => { toast.hidden = true; syncLayer(); intent('undo-settle'); };
       toast.appendChild(button);
     }
     toast.className = kind;
     toast.hidden = false;
+    syncLayer();
     clearTimeout(timers.toast);
     timers.toast = setTimeout(() => {
       toast.classList.add('leaving');
-      timers.toast = setTimeout(() => { toast.hidden = true; }, 200);
+      timers.toast = setTimeout(() => { toast.hidden = true; syncLayer(); }, 200);
     }, kind === 'settled' ? 6000 : kind === 'error' ? 5000 : 2600);
   },
   toggleFocus() {

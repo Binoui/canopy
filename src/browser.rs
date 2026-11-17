@@ -834,7 +834,7 @@ ORDER BY r.created_at, r.rowid",
         let target = newest(true).context("The branch has no opened page.")?;
         let old_target = newest(false)?;
         tx.execute(
-            "UPDATE visits SET parent_id=NULL WHERE id=?1",
+            "UPDATE visits SET parent_id=NULL, branch_settled_at=NULL WHERE id=?1",
             [head.to_string()],
         )?;
         tx.execute(
@@ -854,7 +854,7 @@ ORDER BY r.created_at, r.rowid",
             .connection
             .query_row(
                 "SELECT v.id FROM visits v JOIN visit_events e ON e.visit_id=v.id
-             WHERE v.parent_id=?1 AND e.from_visit_id=?1 ORDER BY e.id DESC LIMIT 1",
+             WHERE v.parent_id=?1 ORDER BY e.id DESC LIMIT 1",
                 [current.to_string()],
                 |r| r.get(0),
             )

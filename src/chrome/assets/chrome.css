@@ -423,3 +423,7 @@ body[data-overlay="tree"] #pins .pin:not(.on) { visibility: hidden; }
 
 .dismissed { color: var(--muted); }
 .tree-tile.dismissed { background: transparent; border-color: var(--line); }
+
+.node-menu-title { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-bottom: 1px solid var(--border); font-weight: 600; max-width: 280px; }
+.node-menu-title span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#toast.settled { top: calc(var(--window-height) - 18px); transform: translate(-50%, -100%); }

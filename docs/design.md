@@ -94,7 +94,11 @@ At rest, the view covers only the top 94 px. The tree strip stays 52 px high. `g
 
 A 250 ms rest or keyboard focus opens one list below the item, joined by a continuous hover area. Entering the list cancels dismissal. Moving focus outside the item and list or back to the page dismisses it. Its keyed rows and action buttons survive frame updates and refresh deferral between a press and release. Preview requests populate the list head with saved text. Run rows follow path order, Earlier rows reverse it, branch heads are newest first, and waiting children keep queue order. Rows use short names and retain full titles in tooltips and accessible names. The current page lists read children, leaving waiting children to After. Zero counts are omitted. More opens the existing zoomed tree, revealing the earliest hidden page when opened from Earlier. Download leaves and live marks stay on page tiles, and folded items aggregate files. Branch rows retain access to their files.
 
-The view grows to the bottom of the attached list or menu and covers the whole window only for the palette, the reader, and full-page surfaces. Below that region, the page gets clicks.
+The view grows to the bottom of the attached list or menu and covers the whole window for the palette, the reader, full-page surfaces, and bottom settle feedback. Below that region, the page gets clicks.
+
+Node menus name their target with its favicon and short name. Settled pages and their descendants omit Settle branch. Repeating the settle command preserves the existing Undo. Settle feedback counts undismissed waiting links kept anywhere inside the branch, including branches put away earlier. The bottom toast extends the chrome view to the window height; its input region includes only Undo alongside the usual chrome area, so page clicks still pass through.
+
+Alt+Right chooses the direct child with the latest arrival in the visit log, regardless of where that arrival came from. Sibling keys exclude dismissed pages and settled branches. Moving a branch clears the settled mark on its new root and preserves marks below it.
 
 This choice replaces the GTK and cairo chrome. It costs a second WebKit process, measured at about 124 MB of PSS. In exchange, a single interface runs on Linux, macOS and Windows. On Linux, GTK remains the invisible host of both webviews, as in Tauri. The page engine and the host window stay tied to WebKitGTK until the port to macOS and Windows.
 

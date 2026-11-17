@@ -202,6 +202,7 @@ struct Inner {
     size: Cell<(f64, f64)>,
     /// How far down the view reaches, or `None` to cover the window.
     cover: Cell<Option<f64>>,
+    toast_rect: Cell<Option<[i32; 4]>>,
     /// Something is open that Escape closes.
     modal: Cell<bool>,
     frame: RefCell<Option<ChromeFrame>>,
@@ -244,6 +245,7 @@ impl HtmlChrome {
             queue: RefCell::new(Vec::new()),
             size: Cell::new((1., 1.)),
             cover: Cell::new(Some(CHROME_HEIGHT)),
+            toast_rect: Cell::new(None),
             modal: Cell::new(false),
             frame: RefCell::new(None),
             suggested: RefCell::new(Vec::new()),
@@ -460,7 +462,11 @@ impl Inner {
 
     fn apply_bounds(&self) {
         let (width, height) = self.size.get();
-        let height = self.cover.get().map_or(height, |cover| cover.min(height));
+        let height = if self.toast_rect.get().is_some() {
+            height
+        } else {
+            self.cover.get().map_or(height, |cover| cover.min(height))
+        };
         use gtk::prelude::WidgetExt;
         use wry::WebViewExtUnix;
         self.view
@@ -475,6 +481,31 @@ impl Inner {
             width.round() as i32,
             height.round() as i32,
         ));
+        if let Some(window) = self.view.webview().window() {
+            let region = self.toast_rect.get().and_then(|r| {
+                self.cover.get().map(|cover| {
+                    let region =
+                        gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(
+                            0,
+                            0,
+                            width.ceil() as i32,
+                            cover.ceil() as i32,
+                        ));
+                    let _ = region
+                        .union_rectangle(&gtk::cairo::RectangleInt::new(r[0], r[1], r[2], r[3]));
+                    region
+                })
+            });
+            let region = region.unwrap_or_else(|| {
+                gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(
+                    0,
+                    0,
+                    width.ceil() as i32,
+                    height.ceil() as i32,
+                ))
+            });
+            window.input_shape_combine_region(&region, 0, 0);
+        }
         self.raise();
     }
 
@@ -520,7 +551,10 @@ impl Inner {
             "layer" => {
                 self.modal.set(message["modal"].as_bool().unwrap_or(false));
                 let cover = message["height"].as_f64().map(|h| h.max(CHROME_HEIGHT));
-                if self.cover.replace(cover) != cover {
+                let toast_rect =
+                    serde_json::from_value::<Option<[i32; 4]>>(message["toastRect"].clone())?;
+                let changed = self.toast_rect.replace(toast_rect) != toast_rect;
+                if self.cover.replace(cover) != cover || changed {
                     self.apply_bounds();
                 }
             }

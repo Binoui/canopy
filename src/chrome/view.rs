@@ -318,6 +318,7 @@ fn visit_value(
         "parent": visit.parent.map(|id| id.to_string()),
         "url": visit.url.as_str(),
         "label": visit.label(),
+        "shortName": graph::short_name(forest, visit.id),
         "site": site_line(visit),
         "queued": forest.is_waiting(visit.id),
         "dismissed": visit.dismissed_at.is_some(),
@@ -360,7 +361,9 @@ fn node_menu(forest: &ForestProjection, visit: &Visit) -> Vec<Value> {
         ));
     }
     if visit.parent.is_some() {
-        rows.push(row("settle-branch", "Settle branch".into()));
+        if !forest.is_settled(visit.id) {
+            rows.push(row("settle-branch", "Settle branch".into()));
+        }
         if visit.state == VisitState::Opened || forest.opened_descendant_count(visit.id) > 0 {
             rows.push(row("move-to-tree", "Move to its own tree".into()));
         }

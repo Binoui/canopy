@@ -1580,7 +1580,16 @@ impl Pages {
                     match go {
                         Go::Forward => self.read(|b| b.forward(current))?,
                         Go::Sibling { next } => {
-                            let siblings = forest.siblings(current);
+                            let siblings: Vec<_> = forest
+                                .siblings(current)
+                                .into_iter()
+                                .filter(|id| {
+                                    !forest.is_settled(*id)
+                                        && forest
+                                            .visit(*id)
+                                            .is_some_and(|v| v.dismissed_at.is_none())
+                                })
+                                .collect();
                             siblings
                                 .iter()
                                 .position(|id| *id == current)
@@ -1804,6 +1813,9 @@ impl Pages {
                 forest.visit(head).and_then(|v| v.parent).is_some(),
                 "A root is settled as a tree."
             );
+            if forest.is_settled(head) {
+                return Ok(());
+            }
         }
         let candidate = self.branches.candidate.borrow().clone();
         if candidate
@@ -1914,8 +1926,14 @@ impl Pages {
                 .map(|v| v.label().to_owned())
                 .unwrap_or_default(),
         };
-        let waiting = forest.pending_descendant_count(head).unwrap_or(0)
-            + usize::from(forest.is_waiting(head));
+        let waiting = self
+            .read(|b| b.snapshot())?
+            .visits
+            .iter()
+            .filter(|v| {
+                v.opened_at.is_none() && v.dismissed_at.is_none() && target.contains(&forest, v.id)
+            })
+            .count();
         let landing = match target {
             SettleTarget::Tree(tree) => self.browser.borrow_mut().settle_tree(tree)?,
             SettleTarget::Branch(head) => self.browser.borrow_mut().settle_branch(head)?,
