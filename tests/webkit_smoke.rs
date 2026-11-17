@@ -346,8 +346,14 @@ fn main() -> Result<()> {
     ui.chrome
         .toast(canopy::chrome::Toast::Error("Error while settling".into()));
     key("ctrl+k")?;
+    wait("palette allocated before Ctrl+W", || {
+        visible(&ui, "#palette")
+            && ui.chrome.native().allocated_height() == ui.window.allocated_height()
+    })?;
     key("ctrl+w")?;
-    wait("Ctrl+W closes palette", || !visible(&ui, "#palette"))?;
+    wait("Ctrl+W closes palette", || {
+        !visible(&ui, "#palette") && ui.chrome.native().allocated_height() == 94
+    })?;
     assert!(visible(&ui, "#error-toast"));
     key("ctrl+w")?;
     wait("Ctrl+W settles tree", || {
