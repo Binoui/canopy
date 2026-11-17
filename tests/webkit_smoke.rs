@@ -25,6 +25,7 @@ mod common;
 use common::*;
 
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
     start(directory.path())?;
     let icon = gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, true, 8, 16, 16)
@@ -378,6 +379,9 @@ fn main() -> Result<()> {
         loaded(&ui, &format!("/topic-{n}"), 7 + n)?;
     }
     pump(400);
+    assert!(!visible(&ui, "#tab-overflow"), "ten trees fit at 1240 px");
+    ui.window.resize(560, 800);
+    pump(400);
     let roots: Vec<_> = ui
         .snapshot()?
         .visits
@@ -389,7 +393,7 @@ fn main() -> Result<()> {
         .filter(|root| !visible(&ui, &format!("#tab-row [data-id='{}']", root.id)))
         .map(|root| root.label().to_owned())
         .collect();
-    assert!(!hidden.is_empty(), "ten trees overflow a 1240 px tab row");
+    assert!(!hidden.is_empty(), "ten trees overflow a 560 px tab row");
     assert!(visible(
         &ui,
         &format!("#tab-row [data-id='{}']", roots.last().unwrap().id)
@@ -406,20 +410,31 @@ fn main() -> Result<()> {
     .map(|v| v.as_str().unwrap().to_owned())
     .collect();
     assert_eq!(listed, hidden);
-    click_chrome(&ui, "#popover [data-id]")?;
     let hidden_root = roots
         .iter()
         .find(|root| root.label() == hidden[0])
         .unwrap()
         .id;
+    let hidden_target = ui.pages.read(|browser| {
+        browser.tree_states().map(|trees| {
+            trees
+                .into_iter()
+                .find(|tree| tree.root.root() == hidden_root)
+                .unwrap()
+                .last_visit
+        })
+    })?;
+    click_chrome(&ui, "#popover [data-id]")?;
     wait("hidden tree selected", || {
-        ui.snapshot().unwrap().current == Some(hidden_root)
+        ui.snapshot().unwrap().current == Some(hidden_target)
             && !ui.pages.selected_page().native.is_loading()
     })?;
     println!(
         "PASS the overflow arrow lists exactly the hidden trees, in creation order, and opens one."
     );
 
+    ui.window.resize(1240, 800);
+    pump(400);
     key("ctrl+e")?;
     wait("forest open", || visible(&ui, "#forest"))?;
     pump(200);

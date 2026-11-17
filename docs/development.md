@@ -26,6 +26,9 @@ for suite in tests/*_smoke.rs; do
 done
 ```
 
+Each window suite uses a private, short runtime directory under /tmp and removes it on exit: WebKit leaves sandbox folders behind in the session runtime.
+An explicitly supplied XDG_RUNTIME_DIR outside /run/user/<uid> is respected, so external test runners can own cleanup.
+
 Run them all before merging a change to the chrome or the store, and compare any failure with the main branch.
 
 `open_url_smoke` starts the `canopy` binary on temporary data folders and launches it again with addresses, so it checks the hand-off between real processes. It needs no session bus.
@@ -42,7 +45,7 @@ The pictures and the short film in the README come from the real window, browsin
 scripts/readme-shots.sh
 ```
 
-It writes `docs/assets/shots/`. `tests/readme_shots.rs` holds the browsing session and the list of pictures. Run without `CANOPY_README_SHOTS`, that test does nothing.
+It uses a private runtime folder, keeps temporary build files in `.cache/tmp`, and writes `docs/assets/shots/`. `tests/readme_shots.rs` holds the browsing session and the list of pictures. Run without `CANOPY_README_SHOTS`, that test does nothing.
 
 ## Where things live
 

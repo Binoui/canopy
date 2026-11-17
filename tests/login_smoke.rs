@@ -126,6 +126,7 @@ fn fields(ui: &Ui) -> Result<serde_json::Value> {
 }
 
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
     start(directory.path())?;
     let listener = TcpListener::bind("127.0.0.1:0")?;

@@ -53,6 +53,7 @@ fn question(ui: &Ui) -> Result<()> {
     })
 }
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
     start(directory.path())?;
     let server = Server::start()?;

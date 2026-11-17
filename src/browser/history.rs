@@ -73,6 +73,31 @@ impl Browser {
         Ok(forest.tree_of(id.parse()?))
     }
 
+    /// The most recently shown other tree that is still open. Event ids break ties
+    /// when several selections share the same millisecond.
+    pub fn previous_tree(&self) -> Result<Option<TreeId>> {
+        let forest = ForestProjection::from_snapshot(self.snapshot()?, self.tree_states()?)?;
+        let current = forest.current().and_then(|id| forest.tree_of(id));
+        let mut stmt = self
+            .connection
+            .prepare("SELECT visit_id, from_visit_id FROM visit_events ORDER BY id DESC")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+        for row in rows {
+            let (destination, source) = row?;
+            for id in std::iter::once(destination).chain(source) {
+                let id: VisitId = id.parse()?;
+                if let Some(tree) = forest.tree_of(id) {
+                    if Some(tree) != current && forest.open().iter().any(|t| t.id == tree) {
+                        return Ok(Some(tree));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
     pub fn declined(&self) -> Result<HashSet<SuggestionKey>> {
         let mut stmt = self
             .connection

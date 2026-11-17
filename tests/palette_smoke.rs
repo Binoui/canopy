@@ -72,6 +72,7 @@ fn choose(ui: &Ui, query: &str, refreshed: bool, mouse: bool) -> Result<(String,
 }
 
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
     start(directory.path())?;
     let listener = TcpListener::bind("0.0.0.0:0")?;
