@@ -100,6 +100,7 @@ fn parse(xml: &str, origin: &Origin, number: AccountNumber) -> Option<Account> {
                 .find(|u| origin.serves(u))
                 .unwrap_or_else(|| inbox.clone());
             Some(Message {
+                unmarked: None,
                 id: MessageId(id.to_owned()),
                 from,
                 subject: text(entry, "title").unwrap_or("(no subject)").to_owned(),

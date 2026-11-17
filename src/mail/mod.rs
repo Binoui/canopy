@@ -1,6 +1,8 @@
 //! Memory-only unread Gmail, read with the login the pages already hold.
 
 mod feed;
+mod marks;
+pub use marks::Unmarked;
 #[cfg(feature = "desktop")]
 mod watch;
 #[cfg(feature = "desktop")]
@@ -120,6 +122,7 @@ pub struct Message {
     pub snippet: String,
     pub issued: Option<i64>,
     pub link: Url,
+    pub unmarked: Option<Unmarked>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
