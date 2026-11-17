@@ -432,6 +432,20 @@ impl LivePage {
             })
             .cloned()
     }
+    /// The visit Back opens from here: the page behind `native_back`'s entry, else the
+    /// forest parent.
+    pub(super) fn back_target(&self) -> Option<VisitId> {
+        match self.native_back() {
+            Some(item) => self
+                .state
+                .history
+                .borrow()
+                .iter()
+                .find(|e| e.item == item)
+                .map(|e| e.visit),
+            None => self.back_visit().ok().flatten(),
+        }
+    }
     pub(super) fn back_visit(&self) -> Result<Option<VisitId>> {
         let Some(visit) = self.current_visit() else {
             return Ok(None);

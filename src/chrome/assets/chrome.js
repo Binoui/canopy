@@ -19,6 +19,8 @@ const ICONS = {
   spark: '<path d="M11 2.5l1.9 5.6 5.6 1.9-5.6 1.9L11 17.5l-1.9-5.6L3.5 10l5.6-1.9z" fill="currentColor" stroke="none"/><path d="M18.5 14l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z" fill="currentColor" stroke="none" opacity=".7"/>',
   forest: '<circle cx="4.5" cy="12" r="2" stroke-width="1.8"/><circle cx="19.5" cy="5.5" r="2" stroke-width="1.8"/><circle cx="19.5" cy="12" r="2" stroke-width="1.8"/><circle cx="19.5" cy="18.5" r="2" stroke-width="1.8"/><path d="M6.5 12h11M10 12c2.5 0 3-6.5 7.5-6.5M10 12c2.5 0 3 6.5 7.5 6.5" stroke-width="1.8"/>',
   chevron: '<path d="M7 10l5 5 5-5" stroke-width="2"/>',
+  back: '<path d="M19 12H5M11 6l-6 6 6 6" stroke-width="1.9"/>',
+  forward: '<path d="M5 12h14M13 6l6 6-6 6" stroke-width="1.9"/>',
   globe: '<circle cx="12" cy="12" r="8.5" stroke-width="1.7"/><path d="M3.5 12h17M12 3.5c2.6 2.6 2.6 14.4 0 17M12 3.5c-2.6 2.6-2.6 14.4 0 17" stroke-width="1.7"/>',
   close: '<path d="M6 6l12 12M18 6L6 18" stroke-width="1.9"/>',
   file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" stroke-width="1.7"/><path d="M14 3v5h5" stroke-width="1.7"/>',
@@ -30,7 +32,7 @@ const ICONS = {
 const $ = (id) => document.getElementById(id);
 const post = (message) => window.ipc.postMessage(JSON.stringify(message));
 /// The old GTK buttons did not take focus from the page.
-const NAVIGATES = new Set(['reload', 'stop', 'restore', 'select-tree', 'settle-tree', 'settle-current', 'open-suggestion', 'open-bookmark', 'open-mail', 'open-inbox', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
+const NAVIGATES = new Set(['reload', 'back', 'forward', 'stop', 'restore', 'select-tree', 'settle-tree', 'settle-current', 'open-suggestion', 'open-bookmark', 'open-mail', 'open-inbox', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
 const intent = (kind, extra = {}) => {
   post({ t: 'intent', kind, ...extra });
   if (NAVIGATES.has(kind)) post({ t: 'focus', target: 'page' });
@@ -609,7 +611,7 @@ function positionList() {
   const list = $('strip-list');
   const width = Math.min(350, window.innerWidth - 16);
   list.style.width = `${width}px`;
-  const x = r.x - r.w / 2 + strip.shown.pan;
+  const x = r.x - r.w / 2 + strip.shown.pan + (S.strip?.left ?? 0);
   list.style.left = `${clamp(x - 2, 8, window.innerWidth - width - 8)}px`;
   list.style.top = `${HEADER + REST - 6}px`;
   list.style.maxHeight = `${Math.max(0, (S.windowHeight ?? 800) - HEADER - REST - 2)}px`;
@@ -737,8 +739,23 @@ $('strip-list').addEventListener('click', (event) => {
 
 function applyStrip(layouts) {
   S.strip = layouts;
+  $('strip-clip').style.left = `${layouts.left}px`;
   $('strip-clip').style.width = `${layouts.room}px`;
   placePins();
+  renderNav();
+}
+
+/// Back and Forward name the page they open, as Alt+Left and Alt+Right would.
+function renderNav() {
+  $('nav').hidden = !S.strip?.left;
+  $('strip-placeholder').style.left = `${(S.strip?.left ?? 0) + 12}px`;
+  for (const [kind, label, key] of [['back', 'Back', 'Alt+Left'], ['forward', 'Forward', 'Alt+Right']]) {
+    const button = $(`nav-${kind}`);
+    const target = S.strip?.[kind];
+    button.disabled = !target;
+    button.setAttribute('aria-label', target ? `${label} to ${target.label}` : label);
+    button.title = target ? `${label} to ${target.label} · ${key}` : `${label} · ${key}`;
+  }
 }
 
 function placePins() {
@@ -2191,6 +2208,8 @@ document.addEventListener('keydown', (event) => {
 });
 
 $('new-tree').innerHTML = icon('plus');
+$('nav-back').innerHTML = icon('back');
+$('nav-forward').innerHTML = icon('forward');
 $('new-tree-tab').querySelector('.mk').innerHTML = icon('forest');
 $('new-tree-close').innerHTML = icon('close');
 $('forest-button').innerHTML = icon('forest') + '<span>Forest</span>';
@@ -2272,6 +2291,8 @@ $('tab-overflow').addEventListener('click', (event) => {
   else openPopover('trees', $('tab-overflow'));
 });
 $('new-tree').addEventListener('click', () => window.canopy.newTree());
+$('nav-back').addEventListener('click', () => intent('back'));
+$('nav-forward').addEventListener('click', () => intent('forward'));
 $('new-tree-close').addEventListener('click', (event) => {
   event.stopPropagation();
   window.canopy.escape('start');

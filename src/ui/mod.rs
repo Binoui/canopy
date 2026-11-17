@@ -292,6 +292,7 @@ impl Ui {
     }
 
     fn read_frame(&self) -> Result<ChromeFrame> {
+        let back = self.pages.back_target();
         self.pages.read(|browser| {
             let forest =
                 ForestProjection::from_snapshot(browser.snapshot()?, browser.tree_states()?)?;
@@ -306,6 +307,10 @@ impl Ui {
                     download,
                 })
                 .collect();
+            let forward = match forest.current() {
+                Some(current) => browser.forward(current)?,
+                None => None,
+            };
             Ok(ChromeFrame {
                 mail: self.mail.mail(),
                 loaded: self.pages.loaded_visits(),
@@ -317,6 +322,8 @@ impl Ui {
                 declined: browser.declined()?,
                 bookmarks: browser.bookmarks()?,
                 files,
+                back,
+                forward,
             })
         })
     }
@@ -701,6 +708,8 @@ impl ChromeHost for Ui {
         if matches!(
             intent,
             ChromeIntent::Restore(_)
+                | ChromeIntent::Back
+                | ChromeIntent::Forward
                 | ChromeIntent::SelectTree(_)
                 | ChromeIntent::OpenCitation(_)
                 | ChromeIntent::OpenSaved(_)
@@ -764,6 +773,8 @@ impl ChromeHost for Ui {
             ChromeIntent::Restore(visit) => self.pages.go(Go::Visit(visit)),
             ChromeIntent::PageScale(action) => self.pages.page_scale(action),
             ChromeIntent::Reload => self.pages.reload(),
+            ChromeIntent::Back => self.pages.go(Go::Parent),
+            ChromeIntent::Forward => self.pages.go(Go::Forward),
             ChromeIntent::Stop => {
                 self.pages.stop();
                 Ok(())
