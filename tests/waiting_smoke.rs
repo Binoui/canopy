@@ -72,6 +72,7 @@ fn main() -> Result<()> {
     assert_eq!(text(&ui, "#tree-detail"), "1 page · 0 waiting");
     key("Escape")?;
     prove_delivery(&ui)?;
+    key("F6")?;
     assert!(!visible(&ui, "#waiting-pin"));
     for i in 0..3 {
         queue(&ui, &format!("link{i}"))?;
@@ -110,7 +111,7 @@ fn main() -> Result<()> {
         waiting(&ui)?,
         queued.iter().map(|v| v.id.to_string()).collect::<Vec<_>>()
     );
-    assert_eq!(text(&ui, "#tab-row .tab.on .count"), "26");
+    assert_eq!(text(&ui, "#tab-row .tab[aria-selected=true] .count"), "26");
     wait("newest waiting page loaded", || {
         visible(&ui, "#waiting-pin .pending-dot.loaded")
     })?;
@@ -417,15 +418,15 @@ fn prove_tree_sheet(ui: &Ui) -> Result<()> {
     assert_eq!(chrome(ui, "canopy.state().surface")?, "reading");
     assert_eq!(chrome(ui, "canopy.state().overlay")?, "tree");
     assert_eq!(rect(ui, "#zoom-pin")?, pin);
-    assert!(visible(ui, "#zoom-pin.on"));
+    assert!(visible(ui, "#zoom-pin[aria-pressed=true]"));
     assert!(!visible(ui, "#waiting-pin"));
     assert_eq!(rect(ui, ".sheet-box")?.1, 42.);
     assert!(rect(ui, ".sheet-box")?.3 > 52.);
     assert_eq!(cover(ui), None);
     assert!(visible(ui, "#tree-sheet > .scrim"));
     assert!(chrome(ui, "document.querySelector('#tree-title').textContent === S.frame.treeView.title && document.querySelector('#tree-detail').textContent === S.frame.treeView.detail")? == true);
-    assert!(chrome(ui, "document.querySelectorAll('.tree-tile').length === S.frame.treeView.tiles.length && document.querySelectorAll('.tree-tile.current').length === 1 && !!document.querySelector('.tree-tile.pending .pending-dot')")? == true);
-    assert!(chrome(ui, "(() => {const a=document.querySelector('.tree-tile.current').getBoundingClientRect(),b=document.querySelector('#tree-board').getBoundingClientRect();return a.left>=b.left && a.right<=b.right && a.top>=b.top && a.bottom<=b.bottom})()")? == true);
+    assert!(chrome(ui, "document.querySelectorAll('.tree-tile').length === S.frame.treeView.tiles.length && document.querySelectorAll('.tree-tile[aria-current=page]').length === 1 && !!document.querySelector('.tree-tile.pending .pending-dot')")? == true);
+    assert!(chrome(ui, "(() => {const a=document.querySelector('.tree-tile[aria-current=page]').getBoundingClientRect(),b=document.querySelector('#tree-board').getBoundingClientRect();return a.left>=b.left && a.right<=b.right && a.top>=b.top && a.bottom<=b.bottom})()")? == true);
     hover_chrome(ui, ".sheet-head")?;
     pump(400);
     assert_eq!(strip_height(ui), 52);
@@ -440,7 +441,7 @@ fn prove_tree_sheet(ui: &Ui) -> Result<()> {
         pump(100);
         tree_shot(ui, &format!("{theme}-tree"))?;
         click_chrome(ui, "[data-side=list]")?;
-        assert!(chrome(ui, "document.querySelectorAll('.tree-row').length === S.frame.treeView.rows.length && !!document.querySelector('.tree-row.current') && [...document.querySelectorAll('.tree-row.pending')].every(r=>r.querySelector('.menu-detail').textContent === (S.frame.visits[r.dataset.id].loaded ? 'loaded' : 'not loaded'))")? == true);
+        assert!(chrome(ui, "document.querySelectorAll('.tree-row').length === S.frame.treeView.rows.length && !!document.querySelector('.tree-row[aria-current=page]') && [...document.querySelectorAll('.tree-row.pending')].every(r=>r.querySelector('.menu-detail').textContent === (S.frame.visits[r.dataset.id].loaded ? 'loaded' : 'not loaded'))")? == true);
         assert!(chrome(ui, "document.querySelector('#tree-list').scrollHeight > document.querySelector('#tree-list').clientHeight")? == true);
         tree_shot(ui, &format!("{theme}-list"))?;
     }
@@ -463,7 +464,7 @@ fn prove_tree_sheet(ui: &Ui) -> Result<()> {
     wait("sheet scrim closes", || !visible(ui, "#tree-sheet"))?;
     key("ctrl+shift+e")?;
     click_chrome(ui, "[data-side=tree]")?;
-    click_chrome(ui, ".tree-tile.current")?;
+    click_chrome(ui, ".tree-tile[aria-current=page]")?;
     wait("current tile closes", || !visible(ui, "#tree-sheet"))?;
     let target = chrome(ui, "S.frame.treeView.rows[0].id")?
         .as_str()

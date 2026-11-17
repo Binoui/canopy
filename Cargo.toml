@@ -217,3 +217,9 @@ name = "workbench_smoke"
 path = "tests/workbench_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
+
+[[test]]
+name = "keyboard_smoke"
+path = "tests/keyboard_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]

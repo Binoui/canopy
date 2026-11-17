@@ -187,7 +187,9 @@ fn main() -> Result<()> {
     common::wait("moved tree tab selected", || {
         common::chrome(
             &f.ui,
-            &format!("!!document.querySelector('#tab-row .tab.on[data-id=\"{b}\"]')"),
+            &format!(
+                "!!document.querySelector('#tab-row .tab[aria-selected=true][data-id=\"{b}\"]')"
+            ),
         )
         .is_ok_and(|v| v == true)
     })?;

@@ -310,7 +310,13 @@ impl HtmlChrome {
             PaletteScope::NewTree => Value::Null,
             PaletteScope::From(id) => json!(id.to_string()),
         };
-        inner.call("openPalette", &[json!({ "scope": scope, "text": text })]);
+        use gtk::prelude::WidgetExt;
+        use wry::WebViewExtUnix;
+        let from_chrome = inner.view.webview().has_focus();
+        inner.call(
+            "openPalette",
+            &[json!({ "scope": scope, "text": text, "fromChrome": from_chrome })],
+        );
         let _ = inner.view.focus();
     }
 
@@ -361,7 +367,10 @@ impl HtmlChrome {
     }
 
     pub fn toggle_forest(&self) {
-        self.inner.call("toggleForest", &[]);
+        use gtk::prelude::WidgetExt;
+        use wry::WebViewExtUnix;
+        let from_chrome = self.inner.view.webview().has_focus();
+        self.inner.call("toggleForest", &[json!(from_chrome)]);
     }
 
     /// Offers these saved accounts for the sign-in fields on the page. No account takes

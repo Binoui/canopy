@@ -67,6 +67,26 @@ const S = {
   reported: '',
 };
 
+const focusReturns = new Map();
+function rememberFocus(kind, trigger = document.hasFocus() ? document.activeElement : document.body) {
+  focusReturns.set(kind, { trigger, id: trigger?.id, data: trigger?.dataset.id, start: trigger?.dataset.start });
+}
+function returnFocus(kind) {
+  const saved = focusReturns.get(kind);
+  focusReturns.delete(kind);
+  const trigger = saved?.trigger?.isConnected ? saved.trigger
+    : saved?.id ? $(saved.id)
+    : saved?.data ? [...document.querySelectorAll('[data-id]')].find((el) => el.dataset.id === saved.data && el.dataset.start === saved.start && el.getClientRects().length) : null;
+  if (canFocus(trigger)) {
+    post({ t: 'focus', target: 'chrome' });
+    trigger.focus();
+  } else if (pageShows()) post({ t: 'focus', target: 'page' });
+  else if (S.surface === 'start') focusStart();
+}
+// WebKitGTK reports reverse Tab as Unidentified on X11.
+const tabKey = (event) => ['Tab', 'ISO_Left_Tab'].includes(event.key) || event.code === 'Tab' || event.keyCode === 9;
+const controlsIn = (root) => [...root.querySelectorAll('button:not(:disabled), input, [tabindex="0"]')].filter((el) => el.tabIndex >= 0 && el.getClientRects().length);
+
 const visit = (id) => S.frame?.visits[id];
 const current = () => S.frame?.current ?? null;
 /// The files downloaded from a page of the current tree, oldest first.
@@ -120,11 +140,11 @@ function leaveNode(event) {
   S.hovered = null;
   cancel('showList');
   if (event.relatedTarget?.closest('#strip-list')) return;
-  if (S.list) schedule('hideList', 220, hideList);
+  if (S.list) schedule('hideList', 220, () => { if (!$('strip-list').contains(document.activeElement)) hideList(); });
 }
 function setLayer(layer) {
   S.layer = layer;
-  if (layer !== 'none') hideList();
+  if (layer !== 'none' && !S.popover?.anchor.closest('#strip-list')) hideList();
   syncLayer();
 }
 
@@ -164,15 +184,31 @@ function applyTheme() {
 
 // ---------- tab row ----------
 
+function patchChildren(container, html) {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const kept = new Map([...container.children].map((el) => [el.dataset.key || el.dataset.id, el]));
+  let cursor = container.firstElementChild;
+  for (const fresh of [...template.content.children]) {
+    const el = kept.get(fresh.dataset.key || fresh.dataset.id) || fresh;
+    kept.delete(fresh.dataset.key || fresh.dataset.id);
+    for (const attr of fresh.attributes) el.setAttribute(attr.name, attr.value);
+    if (el.innerHTML !== fresh.innerHTML) el.innerHTML = fresh.innerHTML;
+    if (el !== cursor) container.insertBefore(el, cursor);
+    cursor = el.nextElementSibling;
+  }
+  for (const el of kept.values()) el.remove();
+}
+
 function renderTabs() {
   const row = $('tab-row');
   const trees = S.frame?.tabs ?? [];
-  row.innerHTML = trees.map((tree, index) => {
+  const html = trees.map((tree, index) => {
     const root = visit(tree.id);
     const pages = `${tree.pages} page${tree.pages === 1 ? '' : 's'}`;
-    const pending = tree.pending ? `, ${tree.pending} pending` : '';
+    const pending = tree.pending ? `, ${tree.pending} waiting` : '';
     const key = index < 9 ? ` · Ctrl+${index + 1}` : '';
-    return `<button class="tab${tree.active ? ' on' : ''}" data-id="${tree.id}" title="${esc(`${tree.title} · ${pages}${pending}${key}`)}" aria-label="${esc(`${tree.title}, ${pages}${pending}`)}">`
+    return `<button class="tab" role="tab" aria-selected="${tree.active}" data-id="${tree.id}" title="${esc(`${tree.title} · ${pages}${pending}${key}`)}" aria-label="${esc(tree.name)}">`
       + (root ? `<span class="mk">${visitFav(root, 14)}${tree.live ? '<i class="live-dot"></i>' : ''}</span>` : '')
       + `<span class="tab-title">${esc(tree.title)}</span>`
       + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Pinned">${icon('pinned')}</span>` : '')
@@ -180,6 +216,7 @@ function renderTabs() {
       + `<span class="tab-settle" data-settle="${tree.id}" title="Settle${tree.active ? ' · Ctrl+W' : ''}" aria-hidden="true">${icon('close')}</span>`
       + '</button>';
   }).join('');
+  patchChildren(row, html);
   fitTabs();
 }
 
@@ -202,7 +239,7 @@ function fitTabs() {
   tabs.forEach((tab, i) => {
     if (used + widths[i] <= room) { shown.push(i); used += widths[i]; }
   });
-  const active = tabs.findIndex((tab) => tab.classList.contains('on'));
+  const active = tabs.findIndex((tab) => tab.getAttribute('aria-selected') === 'true');
   if (active >= 0 && !shown.includes(active)) {
     while (shown.length && used + widths[active] > room) used -= widths[shown.pop()];
     shown.push(active);
@@ -300,7 +337,10 @@ function buildStrip(layout) {
     if (!['run', 'earlier', 'after'].includes(n.kind)) el.dataset.page = n.page;
     else delete el.dataset.page;
     el.className = `node ${n.kind}` + (n.named ? ' named' : '') + markClass(v);
-    el.setAttribute('aria-label', `${n.title}, ${n.branches.pages} branch pages, ${n.branches.waiting} waiting`);
+    el.setAttribute('aria-label', `${n.name}${v.a11yState}`);
+    el.setAttribute('aria-current', n.kind === 'pill' ? 'page' : 'false');
+    el.setAttribute('aria-controls', 'strip-list');
+    el.setAttribute('aria-expanded', String(S.list?.key === n.id));
     el.removeAttribute('title');
     const html = n.kind === 'after'
       ? (n.read ? `<span class="read-count">${n.read}</span>` : '') + (n.waiting ? `<span class="count wait-count"><i></i>${n.waiting}</span>` : '')
@@ -446,6 +486,12 @@ function activate(id) {
 
 /// Left and Right walk the trunk while a node has the keyboard.
 function walkTrunk(event) {
+  if (event.key === 'ArrowDown' || event.key === 'Enter') {
+    event.preventDefault();
+    showList(event.currentTarget.dataset.id);
+    $('strip-list').querySelector('button')?.focus();
+    return;
+  }
   if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
   const trunk = strip.target?.trunk ?? [];
   const index = trunk.indexOf(event.currentTarget.dataset.id);
@@ -466,6 +512,7 @@ function showList(key) {
   cancel('showList');
   const item = strip.target?.nodes.find((n) => n.id === key);
   if (!item) return;
+  for (const [id, el] of strip.elements) el.setAttribute('aria-expanded', String(id === key));
   const previous = S.list;
   S.list = { key, preview: previous?.key === key ? previous.preview : null };
   renderList();
@@ -483,6 +530,7 @@ function hideList() {
   cancel('showList');
   cancel('hideList');
   S.list = null;
+  for (const el of strip.elements.values()) el.setAttribute('aria-expanded', 'false');
   $('strip-list').hidden = true;
   syncLayer();
 }
@@ -518,7 +566,7 @@ function renderList() {
       const v = visit(row.id);
       const files = filesOf(row.id);
       const leaf = files.length ? `<button class="leaves" data-files="${row.id}" aria-label="${esc(`Files from ${v.label}`)}"><i class="leaf${files.every((f) => f.missing) ? ' missing' : ''}"></i></button>` : '';
-      return [`row-${row.id}`, v ? `<div class="list-entry"><button class="menu-row${markClass(v)}" data-id="${row.id}" title="${esc(v.label)}" aria-label="${esc(v.label)}">${markedFav(v, 16)}<span class="grow">${esc(row.label)}</span><span class="menu-detail">${esc(row.detail)}</span></button>${leaf}</div>` : ''];
+      return [`row-${row.id}`, v ? `<div class="list-entry"><button class="menu-row${markClass(v)}" data-id="${row.id}" title="${esc(v.label)}" aria-current="${row.id === current() ? 'page' : 'false'}" aria-label="${esc(`${row.name}${v.a11yState}`)}">${markedFav(v, 16)}<span class="grow">${esc(row.label)}</span><span class="menu-detail">${esc(row.detail)}</span></button>${leaf}</div>` : ''];
     }),
     ['more', item.more ? `<button class="menu-row more" data-act="more">${icon('expand')}<span class="grow">${esc(item.more)}</span><kbd>Ctrl Shift E</kbd></button>` : ''],
     ...item.actions.map((action) => [`action-${action.kind}`, `<button class="action bl-action" data-act="${action.kind}">${esc(action.label)}</button>`]),
@@ -546,6 +594,7 @@ function renderList() {
         row.className = newRow.className;
         row.title = newRow.title;
         row.setAttribute('aria-label', newRow.getAttribute('aria-label'));
+        row.setAttribute('aria-current', newRow.getAttribute('aria-current'));
         const leaves = el.querySelector('.leaves');
         const newLeaves = fresh.querySelector('.leaves');
         if (leaves && newLeaves) leaves.innerHTML = newLeaves.innerHTML;
@@ -614,10 +663,13 @@ function renderWaitingPin() {
   const ids = S.frame?.waiting.ids ?? [];
   const next = visit(ids[0]);
   $('waiting-pin').innerHTML = next ? markedFav(next, 16) + `<span class="count">${ids.length}</span>` : '';
+  $('waiting-pin').setAttribute('aria-label', S.frame?.waiting.name ?? 'No waiting pages');
   $('waiting-pin').title = next ? `Next waiting page: ${next.label} · Ctrl+Tab` : '';
 }
 
 function openNextWaiting(id = S.frame?.waiting.ids[0]) {
+  cancel('waitingOpen');
+  cancel('waitingClose');
   if (!id) { canopy.toast('info', 'No waiting pages in this tree'); return; }
   closeReader();
   closePalette(false);
@@ -638,7 +690,7 @@ function leaveWaitingPin() {
   cancel('waitingOpen');
   const popover = S.popover;
   if (popover?.kind === 'waiting') schedule('waitingClose', 220, () => {
-    if (S.popover === popover) closePopover(false);
+    if (S.popover === popover) closePopover();
   });
 }
 
@@ -656,8 +708,9 @@ function openPopover(kind, anchor, data, below = anchor) {
   const popover = $('popover');
   const a = anchor.getBoundingClientRect();
   const b = below.getBoundingClientRect();
-  const previous = kind === 'node' && S.popover?.kind === 'waiting' ? S.popover : null;
-  S.popover = { kind, anchor, data, previous, listKey: kind === 'node' ? S.list?.key : null };
+  const parent = anchor.closest('#popover') ? S.popover : null;
+  rememberFocus('popover', anchor);
+  S.popover = { kind, anchor, data, parent, listKey: kind === 'node' ? S.list?.key : null };
   renderPopover();
   popover.hidden = false;
   const width = popover.offsetWidth;
@@ -668,49 +721,32 @@ function openPopover(kind, anchor, data, below = anchor) {
   const above = belowRoom < 200 && a.top > belowRoom;
   popover.style.maxHeight = `${Math.max(40, above ? a.top - 20 : belowRoom - 14)}px`;
   popover.style.top = `${above ? Math.max(8, a.top - popover.offsetHeight - 6) : b.bottom + 6}px`;
-  if (kind === 'node') {
-    post({ t: 'focus', target: 'chrome' });
-    popover.querySelector('button')?.focus({ preventScroll: true });
-  }
+  post({ t: 'focus', target: 'chrome' });
+  controlsIn(popover)[0]?.focus();
   if (S.layer !== 'palette') setLayer('menu');
   syncLayer();
 }
 
-function closePopover(returnFocus = true) {
+function closePopover(restoreFocus = true) {
   if (!S.popover) return;
-  const { kind, anchor, previous, data, listKey } = S.popover;
+  const { anchor, parent, listKey } = S.popover;
   S.popover = null;
-  if (previous && returnFocus) {
-    openPopover(previous.kind, previous.anchor, previous.data);
-    $('popover').querySelector(`[data-id="${data}"]`)?.focus();
-    return;
-  }
   $('popover').hidden = true;
-  if (listKey && returnFocus) {
+  if (listKey && restoreFocus) {
     setLayer(restingLayer());
     showList(listKey);
   }
-  if (((kind === 'node' && returnFocus) || S.overlay === 'tree') && canFocus(anchor)) {
+  if (!restoreFocus && S.overlay === 'tree' && canFocus(anchor)) {
     anchor.focus({ preventScroll: true });
-    returnFocus = false;
   }
   if (S.layer === 'menu') setLayer(restingLayer());
-  if (returnFocus && pageShows() && !S.palette && !S.reader) post({ t: 'focus', target: 'page' });
+  if (restoreFocus && parent) {
+    openPopover(parent.kind, parent.anchor, parent.data);
+    const row = [...$('popover').querySelectorAll('[data-id]')].find((el) => el.dataset.id === anchor.dataset.id && el.dataset.start === anchor.dataset.start);
+    row?.focus();
+  } else if (restoreFocus) returnFocus('popover');
   syncLayer();
 }
-
-$('popover').addEventListener('keydown', (event) => {
-  if (S.popover?.kind !== 'node') return;
-  const rows = [...$('popover').querySelectorAll('[data-node-action]')];
-  let index = rows.indexOf(document.activeElement);
-  if (event.key === 'ArrowDown') index = (index + 1) % rows.length;
-  else if (event.key === 'ArrowUp') index = (index + rows.length - 1) % rows.length;
-  else if (event.key === 'Home') index = 0;
-  else if (event.key === 'End') index = rows.length - 1;
-  else return;
-  event.preventDefault();
-  rows[index]?.focus();
-});
 
 // ---------- saved logins for the page's sign-in fields ----------
 
@@ -723,7 +759,7 @@ function renderLoginChip() {
   const chip = $('login-chip');
   const names = loginNames();
   chip.hidden = !S.save && !names.length && !S.locked;
-  chip.classList.toggle('on', !!S.save);
+  chip.dataset.offer = String(!!S.save);
   if (S.save) {
     chip.innerHTML = `${icon('key')}<span>${S.save.update ? 'Update password?' : 'Save login?'}</span>`;
     chip.title = `${S.save.update ? 'Update the saved password' : 'Save the login'} for ${loginLabel(S.save.username)} on ${S.save.site}`;
@@ -780,19 +816,21 @@ function refreshPopover() {
 function renderPopover() {
   const popover = $('popover');
   const { kind, data } = S.popover;
+  popover.setAttribute('role', ['node', 'tab', 'unpin', 'bookmark'].includes(kind) ? 'menu' : 'dialog');
+  popover.setAttribute('aria-label', kind === 'node' ? 'Page actions' : kind === 'tab' ? 'Tree actions' : kind.replaceAll('-', ' '));
   popover.classList.toggle('waiting', kind === 'waiting');
   if (kind !== 'node') delete popover.dataset.nodeHtml;
   if (kind === 'node') {
     const v = visit(data);
     if (!v) { closePopover(false); return; }
-    const html = `<div class="node-menu-title">${visitFav(v, 16)}<span>${esc(v.shortName)}</span></div>` + v.nodeMenu.map((r) => `<button class="menu-row" data-node-action="${r.kind}">${esc(r.label)}</button>`).join('');
+    const html = `<div class="node-menu-title">${visitFav(v, 16)}<span>${esc(v.shortName)}</span></div>` + v.nodeMenu.map((r) => `<button class="menu-row" role="menuitem" data-node-action="${r.kind}">${esc(r.label)}</button>`).join('');
     if (popover.dataset.nodeHtml !== html || popover.dataset.nodeId !== data) {
       popover.innerHTML = html;
       popover.dataset.nodeHtml = html;
       popover.dataset.nodeId = data;
       for (const button of popover.querySelectorAll('[data-node-action]')) button.onclick = () => {
         const action = button.dataset.nodeAction;
-        closePopover(false);
+        closePopover();
         if (action === 'open') activate(data);
         else if (action === 'new-tree') { uncover(); intent('open-page-in-tree', { id: data }); }
         else if (action === 'branch') openPalette({ scope: data, text: '' });
@@ -804,21 +842,21 @@ function renderPopover() {
     const tab = S.frame.tabs.find((t) => t.id === data);
     const menu = kind === 'unpin' ? { label: 'Unpin tree', pinned: false } : tab?.pinMenu;
     if (!menu) { closePopover(false); return; }
-    popover.innerHTML = (kind === 'tab' ? '<button class="menu-row" data-tab-action="rename">Rename</button>' : '')
-      + `<button class="menu-row" data-tab-action="pin">${esc(menu.label)}</button>`
-      + (kind === 'tab' ? '<button class="menu-row" data-tab-action="settle">Settle tree</button>' : '');
+    popover.innerHTML = (kind === 'tab' ? '<button class="menu-row" role="menuitem" data-tab-action="rename">Rename</button>' : '')
+      + `<button class="menu-row" role="menuitem" data-tab-action="pin">${esc(menu.label)}</button>`
+      + (kind === 'tab' ? '<button class="menu-row" role="menuitem" data-tab-action="settle">Settle tree</button>' : '');
     popover.querySelectorAll('[data-tab-action]').forEach((row) => row.addEventListener('click', () => {
       const anchor = S.popover.anchor;
       const action = row.dataset.tabAction;
-      closePopover(false);
+      closePopover();
       if (action === 'rename') {
         openPopover('rename', anchor, data);
         S.popover.field.focus(); S.popover.field.select();
       } else intent(action === 'pin' ? 'pin-tree' : 'settle-tree', { id: data, pinned: menu.pinned });
     }));
   } else if (kind === 'bookmark') {
-    popover.innerHTML = '<button class="menu-row" data-remove-bookmark>Remove bookmark</button>';
-    popover.querySelector('button').addEventListener('click', () => { closePopover(false); intent('remove-bookmark', { id: Number(data) }); });
+    popover.innerHTML = '<button class="menu-row" role="menuitem" data-remove-bookmark>Remove bookmark</button>';
+    popover.querySelector('button').addEventListener('click', () => { closePopover(); intent('remove-bookmark', { id: Number(data) }); });
   } else if (kind === 'folder') {
     const b = S.frame.start.bookmarks;
     if (data.hidden) {
@@ -834,7 +872,7 @@ function renderPopover() {
     popover.innerHTML = `<div class="pop-head"><span class="menu-heading grow">Waiting in this tree · ${ids.length}</span><span class="menu-detail">${esc(order)}</span></div>`
       + ids.map((id, i) => {
         const v = visit(id);
-        return `<button class="menu-row${i === 0 ? ' next' : ''}" data-id="${id}">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.when)}</span>${i === 0 ? '<kbd>Ctrl Tab</kbd>' : ''}</button>`;
+        return `<button class="menu-row${i === 0 ? ' next' : ''}" data-id="${id}" aria-current="${id === current() ? 'page' : 'false'}" aria-label="${esc(v.name)}">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.when)}</span>${i === 0 ? '<kbd>Ctrl Tab</kbd>' : ''}</button>`;
       }).join('');
     popover.querySelectorAll('[data-id]').forEach((row) => row.addEventListener('click', () => openNextWaiting(row.dataset.id)));
   } else if (kind === 'save-login') {
@@ -875,6 +913,7 @@ function renderPopover() {
     const field = S.popover.field = $('tree-name');
     field.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter') return;
+      event.preventDefault();
       // Enter on the name as it was changes nothing: it stays automatic if it was.
       if (field.value.trim() !== title) intent('rename-tree', { id: data, name: field.value });
       closePopover();
@@ -914,7 +953,7 @@ function renderPopover() {
     const theme = S.frame?.theme ?? 'dark';
     popover.innerHTML = '<div class="menu-heading">Settings</div>'
       + '<div class="menu-heading">Theme</div><div class="segmented" id="theme-mode">'
-      + ['dark', 'light', 'system'].map((mode) => `<button data-mode="${mode}" class="${mode === theme ? 'on' : ''}">${mode[0].toUpperCase()}${mode.slice(1)}</button>`).join('')
+      + ['dark', 'light', 'system'].map((mode) => `<button data-mode="${mode}" aria-pressed="${mode === theme}">${mode[0].toUpperCase()}${mode.slice(1)}</button>`).join('')
       + '</div><div class="menu-separator"></div>'
       + captureRow();
     wireCaptureRow();
@@ -922,14 +961,14 @@ function renderPopover() {
       S.frame.theme = button.dataset.mode;
       applyTheme();
       intent('theme', { mode: button.dataset.mode });
-      renderPopover();
+      refreshPopover();
     }));
   }
 }
 
 function captureRow() {
   const on = !!S.frame?.captureEnabled;
-  return `<button class="menu-row" id="automatic-capture" title="Keep the text of opened pages on this computer. Form fields are never kept."><span class="grow">Remember pages</span><span class="switch${on ? ' on' : ''}"></span></button>`;
+  return `<button class="menu-row" role="switch" aria-checked="${on}" id="automatic-capture" title="Keep the text of opened pages on this computer. Form fields are never kept."><span class="grow">Remember pages</span><span class="switch" aria-hidden="true"></span></button>`;
 }
 
 function wireCaptureRow() {
@@ -937,7 +976,7 @@ function wireCaptureRow() {
     const on = !!S.frame?.captureEnabled;
     S.frame.captureEnabled = !on;
     intent('capture', { on: !on });
-    renderPopover();
+    refreshPopover();
     buildStrip(strip.target ?? targetLayout());
   });
 }
@@ -946,10 +985,11 @@ function wireCaptureRow() {
 
 let paletteSeq = 0, paletteTimer = 0;
 
-function openPalette({ scope, text, typed = false }) {
+function openPalette({ scope, text, typed = false, fromChrome = true }) {
   intent('cancel');
   if (S.surface === 'start') scope = null;
   closePopover(false);
+  rememberFocus('palette', fromChrome ? document.activeElement : document.body);
   S.palette = { scope, rows: [], selected: 0, seq: 0 };
   setLayer('palette');
   renderPaletteContext();
@@ -980,14 +1020,15 @@ function renderPaletteContext() {
   }
 }
 
-function closePalette(returnFocus = true) {
+function closePalette(restoreFocus = true) {
   if (!S.palette) return;
   clearTimeout(paletteTimer);
   S.palette = null;
   $('palette').hidden = true;
   $('palette-results').innerHTML = '';
+  $('palette-input').removeAttribute('aria-activedescendant');
   setLayer(restingLayer());
-  if (returnFocus && pageShows()) post({ t: 'focus', target: 'page' });
+  if (restoreFocus) returnFocus('palette');
   syncLayer();
 }
 
@@ -1005,11 +1046,14 @@ function renderPalette() {
     const heading = row.group !== group ? `<div class="palette-group">${esc(row.group)}</div>` : '';
     group = row.group;
     const glyph = typeof row.icon === 'string' ? icon(row.icon) : fav(row.icon.url, row.icon.opened, 16);
-    return heading + `<button class="palette-item${i === selected ? ' selected' : ''}" data-row="${i}" data-kind="${row.kind}">${glyph}`
+    return heading + `<button class="palette-item" role="option" id="palette-option-${i}" aria-selected="${i === selected}" tabindex="-1" data-row="${i}" data-kind="${row.kind}">${glyph}`
       + `<span class="palette-title">${esc(row.title)}</span>`
       + (row.detail ? `<span class="palette-detail">${esc(row.detail)}</span>` : '') + '</button>';
   }).join('');
-  $('palette-results').querySelector('.selected')?.scrollIntoView({ block: 'nearest' });
+  const active = $('palette-results').querySelector('[aria-selected="true"]');
+  if (active) $('palette-input').setAttribute('aria-activedescendant', active.id);
+  else $('palette-input').removeAttribute('aria-activedescendant');
+  active?.scrollIntoView({ block: 'nearest' });
 }
 
 function runPalette(index, newTree) {
@@ -1073,10 +1117,12 @@ function renderSheet(reveal) {
       const el = kept.get(item.id) || document.createElement('button');
       kept.delete(item.id);
       el.dataset.id = item.id;
-      el.className = `${tile ? 'tree-tile' : 'tree-row'}${r.path ? ' path' : ''}${item.id === current() ? ' current' : ''}${markClass(v)}`;
+      el.className = `${tile ? 'tree-tile' : 'tree-row'}${r.path ? ' path' : ''}${markClass(v)}`;
       el.title = v.label;
       el.setAttribute('aria-current', item.id === current() ? 'page' : 'false');
-      el.setAttribute('aria-level', r.depth + 1);
+      el.setAttribute('role', 'treeitem');
+      el.setAttribute('aria-label', `${v.name}${r.summary ? ', ' + r.summary : ''}`);
+      el.setAttribute('aria-level', r.level);
       if (r.branch) el.setAttribute('aria-expanded', String(!r.folded));
       else el.removeAttribute('aria-expanded');
       el.style.cssText = tile
@@ -1102,7 +1148,6 @@ function setTreeSide(side, reveal = true, target = current()) {
   $('tree-list').hidden = side !== 'list';
   for (const button of $('tree-side').children) {
     const selected = button.dataset.side === side;
-    button.classList.toggle('on', selected);
     button.setAttribute('aria-pressed', String(selected));
   }
   if (reveal) {
@@ -1166,7 +1211,7 @@ $('tree-sheet').addEventListener('keydown', (event) => {
     $('tree-filter').focus();
     $('tree-filter').value += event.key;
     post({ t: 'workbench', query: $('tree-filter').value });
-  } else if (event.key === 'Tab') {
+  } else if (tabKey(event)) {
     const controls = [...$('tree-sheet').querySelectorAll('button, input')].filter((el) => el.getClientRects().length);
     const index = controls.indexOf(document.activeElement);
     controls[(index + (event.shiftKey ? controls.length - 1 : 1)) % controls.length]?.focus();
@@ -1177,7 +1222,7 @@ $('tree-sheet').querySelector('.scrim').addEventListener('mousedown', closeOverl
 $('zoom-pin').innerHTML = icon('expand') + icon('collapse');
 $('zoom-pin').addEventListener('click', (event) => {
   toggleOverlay('tree');
-  if (event.detail && S.overlay === 'tree') S.treeReturn = null;
+  if (event.detail && S.overlay === 'tree') rememberFocus('overlay', document.body);
 });
 
 // ---------- surfaces ----------
@@ -1200,7 +1245,7 @@ const OVERLAYS = {
   forest: {
     el: 'forest', button: 'forest-button',
     available: () => !!S.frame,
-    show(reveal) { renderForest(); if (reveal) fitForest(false); },
+    show(reveal) { renderForest(); if (reveal) { fitForest(false); post({ t: 'focus', target: 'chrome' }); $('forest-titles').focus(); } },
   },
 };
 const restingLayer = () => (S.palette || S.overlay || S.surface !== 'reading') ? 'palette' : 'none';
@@ -1223,10 +1268,9 @@ function setOverlay(kind) {
   if (S.overlay === 'tree') post({ t: 'workbench', query: '', waiting: false });
   if (previous) {
     $(previous.el).hidden = true;
-    $(previous.button).classList.remove('on');
     $(previous.button).setAttribute('aria-pressed', 'false');
   }
-  if (kind === 'tree') S.treeReturn = document.activeElement;
+  if (kind && !S.overlay) rememberFocus('overlay');
   S.overlay = kind;
   document.body.dataset.overlay = kind ?? '';
   const overlay = OVERLAYS[kind];
@@ -1235,7 +1279,6 @@ function setOverlay(kind) {
     hideList();
     closePopover(false);
     $(overlay.el).hidden = false;
-    $(overlay.button).classList.add('on');
     $(overlay.button).setAttribute('aria-pressed', 'true');
     overlay.show(true);
   }
@@ -1252,14 +1295,8 @@ function canFocus(el) {
 }
 
 function closeOverlay() {
-  const trigger = S.overlay === 'tree' ? S.treeReturn : null;
   setOverlay(null);
-  if (canFocus(trigger)) {
-    trigger.focus();
-    return;
-  }
-  if (pageShows()) post({ t: 'focus', target: 'page' });
-  else if (S.surface === 'start') focusStart();
+  returnFocus('overlay');
 }
 
 function toggleOverlay(kind) {
@@ -1361,7 +1398,7 @@ function renderStart() {
   const anchor = S.popover?.anchor.closest('[data-start]');
   const find = (el) => el && [...$('start-content').querySelectorAll('[data-start]')].find((n) => n.dataset.start === el.dataset.start && n.dataset.id === el.dataset.id);
   $('start-content').innerHTML = BANDS.map((band) => band(S.frame.start)).join('');
-  find(focused)?.focus();
+  if (focused) { const next = find(focused); if (next) next.focus(); else focusStart(); }
   if (anchor) {
     const next = find(anchor);
     if (next) S.popover.anchor = next;
@@ -1384,7 +1421,7 @@ function renderForest() {
   const frame = S.frame;
   const layout = forestLayout();
   $('forest-count').textContent = frame.forest.count;
-  $('forest-titles').classList.toggle('on', S.forestLabels);
+  $('forest-titles').setAttribute('aria-pressed', String(S.forestLabels));
   const path = new Set();
   for (let id = current(); id; id = visit(id)?.parent) path.add(id);
   const positions = new Map(layout.nodes.map((n) => [n.id, n]));
@@ -1395,10 +1432,10 @@ function renderForest() {
     maxX = Math.max(maxX, n.x + n.w / 2);
     maxY = Math.max(maxY, n.y + n.s / 2);
     const cls = `forest-node${n.settled ? ' settled' : ''}${S.forestLabels ? '' : ' icon-only'}${path.has(n.id) ? ' path' : ''}${markClass(v)}`;
-    return `<button class="${cls}" data-id="${n.id}" title="${esc(v.label + (v.live ? ' · Open in memory' : ''))}" style="left:${n.x - n.w / 2}px;top:${n.y - n.s / 2}px;width:${n.w}px;height:${n.s}px">`
+    return `<button class="${cls}" data-key="node-${n.id}" data-id="${n.id}" aria-current="${n.id === current() ? 'page' : 'false'}" aria-label="${esc(v.name)}" title="${esc(v.label + (v.live ? ' · Open in memory' : ''))}" style="left:${n.x - n.w / 2}px;top:${n.y - n.s / 2}px;width:${n.w}px;height:${n.s}px">`
       + markedFav(v, 16, false) + (v.live ? '<i class="live-dot"></i>' : '') + (S.forestLabels ? `<span>${esc(v.label)}</span>` : '') + '</button>';
   }).join('');
-  const heads = layout.heads.map((h) => `<button class="forest-head${h.settled ? ' settled' : ''}" data-id="${h.id}" style="top:${h.y}px"><b>${esc(h.title)}</b><span>${esc(h.detail)}</span></button>`).join('');
+  const heads = layout.heads.map((h) => `<button class="forest-head${h.settled ? ' settled' : ''}" data-key="head-${h.id}" data-id="${h.id}" style="top:${h.y}px"><b>${esc(h.title)}</b><span>${esc(h.detail)}</span></button>`).join('');
   const edges = layout.nodes.map((b) => {
     const v = visit(b.id);
     const a = v?.parent && positions.get(v.parent);
@@ -1412,11 +1449,11 @@ function renderForest() {
   svg.setAttribute('height', maxY + 40);
   svg.innerHTML = edges;
   const d = layout.divider;
-  const divider = d ? `<div class="forest-divider" style="top:${d.y}px"><b>${esc(d.title)}</b><span>${esc(d.detail)}</span></div>` : '';
+  const divider = d ? `<div class="forest-divider" data-key="divider" style="top:${d.y}px"><b>${esc(d.title)}</b><span>${esc(d.detail)}</span></div>` : '';
   const content = heads + divider + nodes;
   const layer = $('forest-nodes');
   if (layer.__content !== content) {
-    layer.innerHTML = content;
+    patchChildren(layer, content);
     layer.__content = content;
   }
   applyCamera();
@@ -1509,6 +1546,7 @@ $('forest').querySelector('.scrim').addEventListener('mousedown', closeOverlay);
 // ---------- reader ----------
 
 function showReader(html, list) {
+  if (!S.reader) rememberFocus('reader');
   closePalette(false);
   closePopover(false);
   hideList();
@@ -1518,14 +1556,16 @@ function showReader(html, list) {
   box.querySelector('.reader-close').addEventListener('click', closeReader);
   S.reader = true;
   $('reader').hidden = false;
+  post({ t: 'focus', target: 'chrome' });
+  box.querySelector('.reader-close').focus();
   syncLayer();
 }
 
-function closeReader(returnFocus = true) {
+function closeReader(restoreFocus = true) {
   if (!S.reader) return;
   S.reader = null;
   $('reader').hidden = true;
-  if (returnFocus && pageShows()) post({ t: 'focus', target: 'page' });
+  if (restoreFocus) returnFocus('reader');
   syncLayer();
 }
 $('reader').querySelector('.scrim').addEventListener('mousedown', closeReader);
@@ -1600,7 +1640,7 @@ window.canopy = {
     setSurface('start');
     focusStart();
   },
-  toggleForest() { toggleOverlay('forest'); },
+  toggleForest(fromChrome = true) { toggleOverlay('forest'); if (!fromChrome && S.overlay === 'forest') rememberFocus('overlay', document.body); },
   workbench(view) {
     if (!S.frame) return;
     const id = document.activeElement?.closest('[data-id]')?.dataset.id;
@@ -1609,15 +1649,15 @@ window.canopy = {
     if (id && !document.activeElement?.closest('[data-id]')) focusTree(id);
   },
   tabSelected() { closePopover(false); setOverlay(null); },
-  toggleTree(fromChrome = true) { toggleOverlay('tree'); if (!fromChrome && S.overlay === 'tree') S.treeReturn = null; },
+  toggleTree(fromChrome = true) { toggleOverlay('tree'); if (!fromChrome && S.overlay === 'tree') rememberFocus('overlay', document.body); },
   toast(kind, text) {
     if (kind === 'error') {
       S.errors.unshift(text);
       S.errors.length = Math.min(S.errors.length, 5);
     }
     const toast = $('toast');
-    toast.textContent = text;
     toast.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+    toast.textContent = text;
     if (kind === 'settled') {
       const button = document.createElement('button');
       button.textContent = 'Undo';
@@ -1655,6 +1695,7 @@ window.canopy = {
   },
   /// Closes the topmost thing Escape owns.
   formReturn(open) {
+    if (open && !S.formReturn) rememberFocus('formReturn');
     S.formReturn = open;
     $('form-return').hidden = !open;
     syncLayer();
@@ -1665,7 +1706,7 @@ window.canopy = {
     else if (S.reader) closeReader();
     else if (S.palette) closePalette();
     else if (S.popover) closePopover();
-    else if (S.list) hideList();
+    else if (S.list) { const key = S.list.key; strip.elements.get(key)?.focus(); hideList(); }
     else if (S.overlay === 'tree' && (S.frame.treeView.query || S.frame.treeView.waitingOnly)) {
       $('tree-filter').value = '';
       post({ t: 'workbench', query: '', waiting: false });
@@ -1757,7 +1798,7 @@ for (const type of ['mousedown', 'mouseup', 'mousemove', 'mouseover']) {
 }
 window.addEventListener('blur', () => { releaseRefresh(); hideList(); });
 document.addEventListener('focusout', (event) => {
-  if (!S.list) return;
+  if (!S.list || S.popover) return;
   const next = event.relatedTarget;
   if (!next || (!next.closest('#strip-list') && next.closest('.node')?.dataset.id !== S.list.key)) hideList();
 });
@@ -1851,7 +1892,7 @@ const listEl = $('strip-list');
 listEl.addEventListener('mouseenter', () => { cancel('hideList'); cancel('showList'); });
 listEl.addEventListener('mouseleave', (event) => {
   if (event.relatedTarget?.closest('#strip-nodes')) return;
-  schedule('hideList', 220, hideList);
+  schedule('hideList', 220, () => { if (!$('strip-list').contains(document.activeElement)) hideList(); });
 });
 
 // A press outside an open popover closes it.
@@ -1877,7 +1918,7 @@ function answerFormReturn(proceed, focusPage = true) {
   const question = S.formReturn;
   canopy.formReturn(null);
   post({ t: 'form-return', question, proceed });
-  if (focusPage) post({ t: 'focus', target: 'page' });
+  if (focusPage) { if (proceed) post({ t: 'focus', target: 'page' }); else returnFocus('formReturn'); }
 }
 $('form-return-cancel').addEventListener('click', () => answerFormReturn(false));
 $('form-return-continue').addEventListener('click', () => answerFormReturn(true));
@@ -1888,7 +1929,7 @@ document.addEventListener('mousedown', (event) => {
   }
 }, true);
 document.addEventListener('keydown', (event) => {
-  if (!S.formReturn || !['Tab', 'ISO_Left_Tab'].includes(event.key)) return;
+  if (!S.formReturn || !tabKey(event)) return;
   event.preventDefault();
   const cancel = $('form-return-cancel');
   const proceed = $('form-return-continue');
@@ -1920,5 +1961,37 @@ document.addEventListener('contextmenu', (event) => {
   const id = el?.dataset.page || el?.dataset.id;
   if (!id || !visit(id)) return;
   openPopover('node', el, id);
-  hideList();
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.defaultPrevented) return;
+  if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
+    if (event.target.closest('input, textarea, [contenteditable]')) return;
+    event.preventDefault();
+    event.target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    return;
+  }
+  if (S.list && !S.popover && event.target.closest('#strip-list') && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+    const rows = controlsIn($('strip-list'));
+    const index = rows.indexOf(document.activeElement);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length;
+    rows[next]?.focus();
+    event.preventDefault();
+    return;
+  }
+  const root = S.popover ? $('popover') : S.reader ? $('reader') : S.palette ? $('palette') : S.overlay === 'forest' ? $('forest') : null;
+  if (!root) return;
+  const rows = controlsIn(root);
+  let index = rows.indexOf(document.activeElement);
+  if (tabKey(event)) index += event.shiftKey ? rows.length - 1 : 1;
+  else if (S.popover && !event.target.matches('input') && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+    index = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : index + (event.key === 'ArrowDown' ? 1 : rows.length - 1);
+  } else return;
+  rows[index % rows.length]?.focus();
+  event.preventDefault();
+});
+$('waiting-pin').addEventListener('keydown', (event) => {
+  if (event.key !== 'ArrowDown') return;
+  event.preventDefault();
+  openPopover('waiting', $('waiting-pin'));
 });
