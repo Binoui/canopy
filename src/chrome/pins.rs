@@ -10,6 +10,11 @@ const MARGIN: f64 = 8.;
 const GAP: f64 = 5.;
 const CLEARANCE: f64 = 10.;
 const HEIGHT: f64 = 28.;
+/// Back and Forward sit at the left end of the strip, before the tree: an 8 px margin,
+/// two 28 px buttons and a 2 px gap between them.
+pub(crate) const NAV: f64 = 66.;
+/// The least room the tree keeps beside Back and Forward. Narrower, the buttons give way.
+pub(crate) const NAV_MIN_ROOM: f64 = 280.;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Pin {

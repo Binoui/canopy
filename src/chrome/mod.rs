@@ -81,6 +81,8 @@ pub struct ChromeFrame {
     pub declined: std::collections::HashSet<crate::suggest::SuggestionKey>,
     /// The files downloaded from the current tree's pages, oldest first.
     pub files: Vec<PageFile>,
+    /// The child of the current page that Forward opens: the one shown most recently.
+    pub forward: Option<VisitId>,
 }
 
 /// A file downloaded from a page, and whether it is still where it was saved.
@@ -134,6 +136,10 @@ pub enum ChromeIntent {
     CancelContinuation,
     Restore(VisitId),
     Reload,
+    /// What Alt+Left does: back to the parent page.
+    Back,
+    /// What Alt+Right does: the child shown most recently.
+    Forward,
     /// Activate a queued page, then open a palette anchored on it once it commits.
     BranchFromQueued(VisitId),
     Navigate {
@@ -1145,6 +1151,8 @@ impl Inner {
             },
             "page-scale" => page_scale::intent(message)?,
             "reload" => ChromeIntent::Reload,
+            "back" => ChromeIntent::Back,
+            "forward" => ChromeIntent::Forward,
             "branch-queued" => ChromeIntent::BranchFromQueued(id("id")?),
             "open-citation" => ChromeIntent::OpenCitation(id("id")?),
             "read-captures" => ChromeIntent::ReadCaptures(id("id")?),

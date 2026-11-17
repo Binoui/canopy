@@ -212,6 +212,13 @@ pub(crate) fn tree_view_value(
 
 pub(crate) fn strip_for_frame(frame: &ChromeFrame, width: f64) -> Value {
     let mut strip = strip(&frame.forest, &frame.mail, width);
+    let target = |id: Option<VisitId>| {
+        id.and_then(|id| frame.forest.visit(id))
+            .map(|v| json!({ "id": v.id.to_string(), "label": v.label() }))
+    };
+    let current = frame.forest.current().and_then(|id| frame.forest.visit(id));
+    strip["back"] = json!(target(current.and_then(|v| v.parent)));
+    strip["forward"] = json!(target(current.and(frame.forward)));
     let state = |id: &str| {
         let id: VisitId = id.parse().unwrap();
         format!(
@@ -269,13 +276,20 @@ pub(crate) fn strip(forest: &ForestProjection, mail: &crate::mail::Mail, width: 
         .iter()
         .map(|(pin, r)| json!({ "kind": pin.kind(), "x": r.x, "y": r.y, "w": r.w, "s": r.s }))
         .collect();
+    // In a narrow window the tree keeps the room; the keys and mouse buttons still work.
+    let left = if pins.room - pins::NAV >= pins::NAV_MIN_ROOM {
+        pins::NAV
+    } else {
+        0.
+    };
+    let room = (pins.room - left).max(0.);
     let Some(current) = forest.current() else {
-        return json!({ "room": pins.room, "pins": placed, "height": graph::REST_HEIGHT, "nodes": [], "edges": [], "trunk": [], "width": 0, "pan": 0 });
+        return json!({ "left": left, "room": room, "pins": placed, "height": graph::REST_HEIGHT, "nodes": [], "edges": [], "trunk": [], "width": 0, "pan": 0 });
     };
     let layout = graph::strip_layout(
         forest,
         current,
-        pins.room,
+        room,
         forest.visit(current).map_or(120., pill_width),
     );
     let path = forest.path(current);
@@ -343,7 +357,7 @@ pub(crate) fn strip(forest: &ForestProjection, mail: &crate::mail::Mail, width: 
         json!({"from": nodes[0]["id"], "to": nodes[1]["id"], "kind": if nodes[1]["kind"] == "after" { "pending" } else { "path" },
             "c": [[x,a.y], [x+5.,a.y], [end-5.,b.y], [end,b.y]]})
     }).collect();
-    json!({ "room": pins.room, "pins": placed, "height": graph::REST_HEIGHT, "width": pins.room, "pan": 0,
+    json!({ "left": left, "room": room, "pins": placed, "height": graph::REST_HEIGHT, "width": room, "pan": 0,
         "metrics": { "left": graph::ITEM_LEFT, "right": graph::ITEM_RIGHT, "border": graph::ITEM_BORDER, "icon": graph::ITEM_ICON, "parentGap": graph::PARENT_GAP, "runGap": graph::RUN_GAP },
         "trunk": nodes.iter().map(|n| n["id"].clone()).collect::<Vec<_>>(), "nodes": nodes, "edges": edges })
 }
@@ -774,6 +788,68 @@ mod tests {
     }
 
     #[test]
+    fn back_and_forward_name_their_pages_and_the_tree_starts_after_them() {
+        let (forest, ids) = chain_length(Lifecycle::Open, 4);
+        let frame = |forest: ForestProjection, forward: Option<VisitId>| ChromeFrame {
+            mail: crate::mail::Mail::default(),
+            loaded: HashSet::new(),
+            live: HashSet::new(),
+            forest,
+            capture_enabled: true,
+            trees_help: true,
+            theme: ThemeMode::Dark,
+            declined: Default::default(),
+            bookmarks: vec![],
+            forward,
+            files: Vec::new(),
+        };
+        let strip = strip_for_frame(&frame(forest, Some(ids[3])), 1240.);
+        assert_eq!(
+            strip["back"],
+            json!({ "id": ids[1].to_string(), "label": "Page 1" })
+        );
+        assert_eq!(
+            strip["forward"],
+            json!({ "id": ids[3].to_string(), "label": "Page 3" })
+        );
+        assert_eq!(strip["left"], pins::NAV);
+        let pins = pins::pins(
+            &frame(chain_length(Lifecycle::Open, 4).0, None).forest,
+            &crate::mail::Mail::default(),
+            1240.,
+        );
+        assert_eq!(strip["room"], pins.room - pins::NAV);
+
+        let (root, _) = chain_length(Lifecycle::Open, 2);
+        let strip = strip_for_frame(&frame(root, None), 1240.);
+        assert!(strip["back"].is_null(), "the root has no page before it");
+        assert!(strip["forward"].is_null());
+
+        let narrow = strip_for_frame(&frame(chain_length(Lifecycle::Open, 4).0, None), 390.);
+        assert_eq!(
+            narrow["left"], 0.,
+            "a narrow window leaves the room to the tree"
+        );
+        let pins = pins::pins(
+            &chain_length(Lifecycle::Open, 4).0,
+            &crate::mail::Mail::default(),
+            390.,
+        );
+        assert_eq!(narrow["room"], pins.room);
+
+        let empty = ForestProjection::from_snapshot(
+            Snapshot {
+                visits: vec![],
+                current: None,
+            },
+            vec![],
+        )
+        .unwrap();
+        let strip = strip_for_frame(&frame(empty, None), 1240.);
+        assert!(strip["back"].is_null() && strip["forward"].is_null());
+    }
+
+    #[test]
     fn fully_listed_waiting_children_have_no_empty_more_row() {
         let (forest, _) = chain();
         let value = strip(&forest, &crate::mail::Mail::default(), 1240.);
@@ -843,7 +919,8 @@ mod tests {
         )
         .unwrap();
         let strip = super::strip(&empty, &crate::mail::Mail::default(), 800.);
-        assert_eq!(strip["room"], 800.);
+        assert_eq!(strip["room"], 800. - pins::NAV);
+        assert_eq!(strip["left"], pins::NAV);
         assert_eq!(strip["pins"], json!([]));
     }
 
@@ -873,6 +950,7 @@ mod tests {
             theme: ThemeMode::Light,
             declined: Default::default(),
             bookmarks: vec![],
+            forward: None,
             files: vec![],
         };
         let closed = super::frame(
@@ -944,6 +1022,7 @@ mod tests {
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
+            forward: None,
             files: vec![],
         };
         let value = super::frame(
@@ -1061,6 +1140,7 @@ mod tests {
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
+            forward: None,
             files: Vec::new(),
         };
         let value = super::frame(
@@ -1094,6 +1174,7 @@ mod tests {
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
+            forward: None,
             files: Vec::new(),
         };
         let value = super::frame(
@@ -1132,6 +1213,7 @@ mod tests {
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
+            forward: None,
             files: Vec::new(),
         };
         let value = super::frame(
@@ -1191,6 +1273,7 @@ mod tests {
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
+            forward: None,
             files: vec![
                 file(
                     1,
@@ -1300,6 +1383,7 @@ mod tests {
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
+            forward: None,
             files: vec![],
         };
         let value = super::frame(

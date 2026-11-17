@@ -82,6 +82,7 @@ mod tests {
             theme: ThemeMode::Dark,
             declined: [frozen[0].key()].into(),
             bookmarks: vec![],
+            forward: None,
             files: vec![],
         };
         let start = value(&frame, &frozen);
@@ -118,6 +119,7 @@ mod tests {
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
+            forward: None,
             files: vec![],
         };
         let start = value(&frame, &[]);

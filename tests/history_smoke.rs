@@ -185,6 +185,36 @@ fn main() -> Result<()> {
             .is_ok_and(|value| value == true)
     })?;
     println!("PASS Alt+Right closes the forest overlay and shows the forward page like Back.");
+
+    let nav = |selector: &str| {
+        chrome(
+            &reopened,
+            &format!("(b => [b.disabled, b.title])(document.querySelector('{selector}'))"),
+        )
+    };
+    // /next's child is the /long#end fragment page, shown earlier in this run.
+    wait(
+        "Back names the parent and Forward the child shown last",
+        || {
+            nav("#nav-back").is_ok_and(|v| v == json!([false, "Back to Long page · Alt+Left"]))
+                && nav("#nav-forward")
+                    .is_ok_and(|v| v == json!([false, "Forward to Long page · Alt+Right"]))
+        },
+    )?;
+    click_chrome(&reopened, "#nav-back")?;
+    assert_eq!(arrived(&reopened, "/long")?, long);
+    wait(
+        "on the root, Back is off and Forward names the page just left",
+        || {
+            nav("#nav-forward")
+                .is_ok_and(|v| v == json!([false, "Forward to Next page · Alt+Right"]))
+                && nav("#nav-back").is_ok_and(|v| v == json!([true, "Back · Alt+Left"]))
+        },
+    )?;
+    click_chrome(&reopened, "#nav-forward")?;
+    assert_eq!(arrived(&reopened, "/next")?, next);
+    assert_eq!(reopened.snapshot()?.visits.len(), 4);
+    println!("PASS the Back and Forward buttons name their pages and go where Alt+Left and Alt+Right go.");
     reopened.window.close();
     Ok(())
 }
