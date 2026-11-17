@@ -272,7 +272,7 @@ fn review_regressions(ui: &Ui) -> Result<()> {
     for width in [820, 560, 480] {
         ui.window.resize(width, 800);
         pump(400);
-        assert_eq!(chrome(ui, "(() => { const tab = document.querySelector('.tab.on'); return tab.offsetWidth === 200 && tab.querySelector('.tab-title').clientWidth >= 130; })()")?, true, "active natural title at {width}px");
+        assert_eq!(chrome(ui, "(() => { const tab = document.querySelector('.tab.on'); return tab.offsetWidth === 200 && tab.querySelector('.tab-title').clientWidth >= 110; })()")?, true, "active natural title at {width}px");
     }
     println!("PASS 2 active title keeps 200px at 820, 560 and 480px.");
     chrome(ui, "(intent('select-tree', {id:S.frame.tabs[0].id}), true)")?;

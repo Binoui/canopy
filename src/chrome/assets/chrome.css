@@ -438,6 +438,5 @@ body[data-overlay="tree"] #pins .pin:not(.on) { visibility: hidden; }
 
 .tab.icon-only > .count, .tab.on > .count { display: block; position: absolute; right: 0; top: 2px; font-size: 8px; line-height: 11px; padding: 0 2px; border-radius: 3px; pointer-events: none; }
 .tab.on > .count { right: auto; left: 16px; }
-.tab.on .tab-pinned-mark { display: none; }
 .tab.short:not(.on) .tab-settle { position: absolute; right: 4px; }
 .tab.short:not(.on):hover .tab-title { padding-right: 24px; }

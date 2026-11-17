@@ -69,7 +69,16 @@ pub(super) fn layout(forest: &ForestProjection, room: f64) -> Value {
         forest.open().len(),
         active,
         active
-            .map(|i| super::view::text_width(&forest.open()[i].title, 12.5, 0.56) + 64.)
+            .map(|i| {
+                let tree = &forest.open()[i];
+                let title = super::view::text_width(&tree.title, 12.5, 0.56) + 64.;
+                title
+                    + if tree.pin.is_some() && title >= 160. {
+                        17.
+                    } else {
+                        0.
+                    }
+            })
             .unwrap_or(110.),
         room,
     );
