@@ -400,6 +400,9 @@ fn main() -> Result<()> {
         loaded(&ui, &format!("/topic-{n}"), 7 + n)?;
     }
     pump(400);
+    assert!(!visible(&ui, "#tab-overflow"), "ten trees fit at 1240 px");
+    ui.window.resize(560, 800);
+    pump(400);
     let roots: Vec<_> = ui
         .snapshot()?
         .visits
@@ -411,7 +414,7 @@ fn main() -> Result<()> {
         .filter(|root| !visible(&ui, &format!("#tab-row [data-id='{}']", root.id)))
         .map(|root| root.label().to_owned())
         .collect();
-    assert!(!hidden.is_empty(), "ten trees overflow a 1240 px tab row");
+    assert!(!hidden.is_empty(), "ten trees overflow a 560 px tab row");
     assert!(visible(
         &ui,
         &format!("#tab-row [data-id='{}']", roots.last().unwrap().id)
@@ -442,6 +445,8 @@ fn main() -> Result<()> {
         "PASS the overflow arrow lists exactly the hidden trees, in creation order, and opens one."
     );
 
+    ui.window.resize(1240, 800);
+    pump(400);
     key("ctrl+e")?;
     wait("forest open", || visible(&ui, "#forest"))?;
     pump(200);
