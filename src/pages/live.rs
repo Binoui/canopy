@@ -670,9 +670,6 @@ impl LivePage {
                             let bootstrap = url.is_none()
                                 && state.navigation.borrow().current.is_none()
                                 && state.navigation.borrow().pending_ticket().is_none();
-                            if !bootstrap {
-                                state.foreground_requested();
-                            }
                             state.end_response();
                             state.awaiting_response.set(!bootstrap);
                             state.main_frame_post.set(None);
@@ -1832,11 +1829,45 @@ impl NativeState {
                 .downcast_ref::<NavigationPolicyDecision>()
                 .and_then(|n| n.navigation_action())
             {
-                // A main-frame action changes WebKit's provisional URI already at policy.
-                // An unnamed iframe can have no frame_name too, so name alone is insufficient.
-                let main_action = action.request().and_then(|r| r.uri()) == self.native.uri();
-                if main_action {
+                // Preserve the form-return guard independently of switch intent.
+                if action.request().and_then(|r| r.uri()) == self.native.uri() {
                     self.answer_form_return(false);
+                }
+                // NavigationAction has no main-frame flag. A missing target name is
+                // the closest signal available (unnamed subframes are ambiguous).
+                let main_action = action.frame_name().is_none_or(|name| name == "_top");
+                if main_action {
+                    let modifiers = gdk::ModifierType::from_bits_truncate(action.modifiers());
+                    let background = action.navigation_type() == NavigationType::LinkClicked
+                        && (action.mouse_button() == 2
+                            || modifiers.intersects(
+                                gdk::ModifierType::CONTROL_MASK
+                                    | gdk::ModifierType::META_MASK
+                                    | gdk::ModifierType::SHIFT_MASK,
+                            ));
+                    if action.is_user_gesture()
+                        && !background
+                        && action.request().and_then(|r| r.uri()).is_some_and(|uri| {
+                            self.navigation
+                                .borrow()
+                                .current
+                                .as_ref()
+                                .is_some_and(|document| {
+                                    web_url(&uri).is_ok_and(|url| {
+                                        !same_resource(&document.page_url, &url)
+                                            || url.fragment().is_none()
+                                            || matches!(
+                                                action.navigation_type(),
+                                                NavigationType::FormSubmitted
+                                                    | NavigationType::FormResubmitted
+                                                    | NavigationType::Reload
+                                            )
+                                    })
+                                })
+                        })
+                    {
+                        self.foreground_requested();
+                    }
                 }
                 let returning = action.navigation_type() == NavigationType::BackForward
                     && action

@@ -35,6 +35,33 @@ it will reuse a document or send its form again. First submissions, GET history,
 and Canopy's GET-based Reload do not ask. Checkpoint entries with POST provenance
 still take the existing GET revival path before this guard.
 
+Frame form-result returns remain an unsupported case. A local no-store fixture
+with the WebKit page cache disabled measured BackForward POST policy actions for
+iframe-only Back and Forward, main-document Back restoring an iframe POST, and
+`history.back()` in either the frame or its parent. NavigationAction supplied no
+frame name for these unnamed frames; the fixture identifies the target frame.
+An iframe `location.reload()` instead reported Reload GET and sent no POST.
+
+Extending the hold to these actions prevents the POST, but does not provide the
+same Cancel contract. Measured iframe-only reproduction:
+
+1. Load a parent with an iframe containing a POST form.
+2. Submit it to a no-store result, then navigate that iframe to a GET page with
+   a text input. Type a value into the input; save the native current history item.
+3. Go Back in the WebView and hold the iframe's BackForward POST policy decision.
+4. Click Cancel and ignore the decision. The iframe still displays the GET page,
+   but WebKit's back-list position has moved from index 2 to 1, and Forward is
+   now available. The cursor remains there after three seconds.
+5. Traverse to the saved history item to restore the cursor. The iframe is
+   recreated and the typed value is lost, even with no additional network GET.
+
+Main-document Back is worse: the parent has already committed by the time its
+iframe's POST policy arrives. Ignoring it leaves the parent selected with an
+empty iframe instead of preserving the outgoing page. These are measurements of
+an experimental guard, which was removed. Frame support must preserve both the
+native cursor and the existing documents before that guard can be enabled;
+merely grouping policy decisions cannot undo an already committed parent.
+
 The live view retains one policy decision with a window-unique question number.
 Continue takes it out of the slot, runs the ordinary policy handler once, and
 uses the decision if that handler leaves it to WebKit. Cancel takes it out and
@@ -294,9 +321,17 @@ existing refreshes.
 Tree and branch settling share one scoped command. Its membership predicate selects queued work, never-seen views, hidden live views, candidates and the selected cover. Branch settling routes the selected page to its nearest unsettled ancestor and uses the existing checkpoint, retirement and landing path. If startup finds the cursor inside a settled branch whose landing did not commit, it resumes at the nearest unsettled ancestor. The latest settle record keeps the head and the page to reopen until another settle replaces it or Undo consumes it. It reopens the previous cursor when it was inside the target, otherwise the settled tree's last page or the branch head. Ctrl+Shift+T reopens that tree or branch after the six-second toast disappears. Explicitly opening New tree dismisses existing visual feedback so its Undo button cannot intercept start-page controls. Undo clears that head's settle mark and returns through normal visit routing. A return to the retired current page waits for its checkpoint even after Undo clears the mark. It does not recreate released live documents.
 
 Starting a candidate fails all pending foreground work in the old view and invalidates
-its asynchronous link decisions. The old committed document remains usable. Main-frame
-Started for another document cancels the candidate; same-document changes (pushState,
-replaceState and fragments) and subframe policy decisions do not. Settling cancels
+its asynchronous link decisions. The old committed document remains usable. At
+navigation policy, WebKit's user-gesture flag cancels the candidate for a foreground
+navigation, including forms and full loads to the current address. Fragment steps
+and history state changes keep it. NavigationAction has no main-frame boolean;
+Canopy uses its absent target-frame name (or `_top`) as the closest available
+signal. Unnamed subframes cannot be distinguished reliably at this point. URI
+equality is not a frame signal: the native URI still names the outgoing page.
+A page timer, automatic refresh or redirect without a gesture keeps the switch.
+Started alone does not establish user intent. Background link commands keep it too.
+The new-tree editor stays open across page-driven cursor updates in the outgoing
+tree; owner Back, Reload and visit commands uncover the page explicitly. Settling cancels
 only a candidate targeting that tree. Settling the last tree creates a fresh home view, so the next branch cannot inherit settled history. Release
 keeps valid checkpoints, including those of settled trees.
 

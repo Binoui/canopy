@@ -23,6 +23,7 @@ mod readme_site;
 use common::*;
 
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let Ok(folder) = std::env::var("CANOPY_README_SHOTS") else {
         println!("SKIP set CANOPY_README_SHOTS to a folder to take the README's screenshots.");
         return Ok(());

@@ -1,3 +1,4 @@
+mod common;
 #[path = "common/http.rs"]
 mod http;
 use anyhow::{bail, Result};
@@ -21,6 +22,7 @@ use std::{
 use webkit2gtk::WebViewExt;
 
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
     let home = directory.path().join("home");
     let config = directory.path().join("config");
