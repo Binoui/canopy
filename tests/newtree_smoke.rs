@@ -639,6 +639,7 @@ fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
             )?,
             "1"
         );
+        assert_eq!(chrome(ui, "(() => { const el = document.querySelector('.sg-act'); const r = el.getBoundingClientRect(); return [-11, 11].every(dx => [-11, 11].every(dy => el.contains(document.elementFromPoint(r.x+r.width/2+dx, r.y+r.height/2+dy)))) })()")?, true);
         if std::env::var_os("CANOPY_NEWTREE_SHOTS").is_some() {
             std::fs::create_dir_all(".cache/shots")?;
             save_window(
