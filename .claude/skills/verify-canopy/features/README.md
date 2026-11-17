@@ -26,3 +26,4 @@ Each feature file opens with an H1 and one paragraph of user-visible behavior, t
 - [Settle and the forest](./settle-and-forest.md) covers settling a tree, undo, and finding it again in the forest view.
 - [Back and forward](./back-and-forward.md) covers parent and child navigation by keyboard and mouse, cold restores, and closing overlays.
 - [Find in page](./find-in-page.md) covers the find bar: counting matches, stepping, closing, and closing when the page changes.
+- [Loading and Stop](./loading.md) covers foreground progress, Escape, and the current page's Stop action.
