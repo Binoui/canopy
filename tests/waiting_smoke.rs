@@ -191,6 +191,8 @@ fn main() -> Result<()> {
             )? == true
         );
         chrome(&ui, "(canopy.toggleForest(), true)")?;
+        wait("forest data", || visible(&ui, ".forest-node.pending"))?;
+        chrome(&ui, "(() => { const v=S.frame.visits[S.frame.waiting.ids[0]]; v.loaded=true; v.when='loaded'; const u=S.frame.visits[S.frame.waiting.ids[1]]; u.loaded=false; u.when='not loaded'; canopy.present(S.frame); return true; })()")?;
         assert!(chrome(&ui, "getComputedStyle(document.querySelector('.forest-node.pending.loaded')).borderTopStyle === 'solid'")? == true);
         assert!(chrome(&ui, "getComputedStyle(document.querySelector('.forest-node.pending:not(.loaded)')).borderTopStyle === 'dashed'")? == true);
         assert!(chrome(&ui, "getComputedStyle(document.querySelector('.forest-node.pending.loaded .fav')).opacity === '1'")? == true);
