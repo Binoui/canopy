@@ -1835,12 +1835,13 @@ impl NativeState {
                 if main_action {
                     self.answer_form_return(false);
                     let modifiers = gdk::ModifierType::from_bits_truncate(action.modifiers());
-                    let background = action.mouse_button() == 2
-                        || modifiers.intersects(
-                            gdk::ModifierType::CONTROL_MASK
-                                | gdk::ModifierType::META_MASK
-                                | gdk::ModifierType::SHIFT_MASK,
-                        );
+                    let background = action.navigation_type() == NavigationType::LinkClicked
+                        && (action.mouse_button() == 2
+                            || modifiers.intersects(
+                                gdk::ModifierType::CONTROL_MASK
+                                    | gdk::ModifierType::META_MASK
+                                    | gdk::ModifierType::SHIFT_MASK,
+                            ));
                     if action.is_user_gesture()
                         && !background
                         && action.request().and_then(|r| r.uri()).is_some_and(|uri| {
@@ -1852,6 +1853,12 @@ impl NativeState {
                                     web_url(&uri).is_ok_and(|url| {
                                         !same_resource(&document.page_url, &url)
                                             || url.fragment().is_none()
+                                            || matches!(
+                                                action.navigation_type(),
+                                                NavigationType::FormSubmitted
+                                                    | NavigationType::FormResubmitted
+                                                    | NavigationType::Reload
+                                            )
                                     })
                                 })
                         })
