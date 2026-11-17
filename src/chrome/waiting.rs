@@ -15,6 +15,9 @@ pub(crate) enum WaitState {
 
 impl WaitState {
     pub(crate) fn of(visit: &Visit, loaded: &HashSet<VisitId>) -> Option<Self> {
+        if visit.dismissed_at.is_some() {
+            return None;
+        }
         match visit.state {
             VisitState::Opened => None,
             VisitState::Queued if loaded.contains(&visit.id) => Some(Self::Loaded),
@@ -63,7 +66,7 @@ fn pages_in(forest: &ForestProjection, order: WaitingOrder) -> Vec<&Visit> {
         let Some(visit) = forest.visit(id) else {
             continue;
         };
-        if visit.state == VisitState::Queued {
+        if forest.is_waiting(id) {
             out.push(visit);
         }
         if forest.pending_descendant_count(id).unwrap_or(0) > 0 {
@@ -93,6 +96,8 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, &created_at)| Visit {
+                dismissed_at: None,
+                branch_settled_at: None,
                 id: ids[i],
                 parent: parents[i].map(|p| ids[p]),
                 url: url::Url::parse("https://example.org").unwrap(),

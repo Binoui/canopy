@@ -1,3 +1,4 @@
+mod common;
 #[path = "common/http.rs"]
 mod http;
 use std::{
@@ -19,6 +20,7 @@ use rusqlite::{Connection, OpenFlags};
 const CANOPY: &str = env!("CARGO_BIN_EXE_canopy");
 
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let server = Server::start()?;
     let one = tempfile::tempdir()?;
     let two = tempfile::tempdir()?;

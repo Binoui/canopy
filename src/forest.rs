@@ -20,16 +20,18 @@ pub struct TreeSummary {
     pub lifecycle: Lifecycle,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 struct Node {
     visit: Visit,
     children: Vec<VisitId>,
     tree: TreeId,
     descendants: usize,
+    settled: bool,
     pending_below: usize,
+    opened_below: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct ForestProjection {
     nodes: HashMap<VisitId, Node>,
     trees: Vec<TreeSummary>,
@@ -53,7 +55,9 @@ impl ForestProjection {
                         children: Vec::new(),
                         tree: TreeId(id),
                         descendants: 0,
+                        settled: false,
                         pending_below: 0,
+                        opened_below: 0,
                     },
                 )
                 .is_some()
@@ -78,6 +82,11 @@ impl ForestProjection {
         while let Some((id, tree)) = stack.pop() {
             let node = nodes.get_mut(&id).unwrap();
             node.tree = tree;
+            let parent = node.visit.parent;
+            let settled =
+                node.visit.branch_settled_at.is_some() || parent.is_some_and(|p| nodes[&p].settled);
+            let node = nodes.get_mut(&id).unwrap();
+            node.settled = settled;
             traversal.push(id);
             stack.extend(node.children.iter().rev().map(|&child| (child, tree)));
         }
@@ -88,10 +97,20 @@ impl ForestProjection {
             let node = &nodes[&id];
             if let Some(parent) = node.visit.parent {
                 let descendants = node.descendants + 1;
-                let pending =
-                    node.pending_below + usize::from(node.visit.state == VisitState::Queued);
+                let pending = if node.settled {
+                    0
+                } else {
+                    node.pending_below
+                        + usize::from(
+                            node.visit.state == VisitState::Queued
+                                && node.visit.dismissed_at.is_none(),
+                        )
+                };
+                let opened =
+                    node.opened_below + usize::from(node.visit.state == VisitState::Opened);
                 let parent = nodes.get_mut(&parent).unwrap();
                 parent.descendants += descendants;
+                parent.opened_below += opened;
                 parent.pending_below += pending;
             }
         }
@@ -129,7 +148,11 @@ impl ForestProjection {
                 root_host: node.visit.url.host_str().unwrap_or_default().to_owned(),
                 page_count: node.descendants + 1,
                 pending_count: node.pending_below
-                    + usize::from(node.visit.state == VisitState::Queued),
+                    + usize::from(
+                        node.visit.state == VisitState::Queued
+                            && node.visit.dismissed_at.is_none()
+                            && !node.settled,
+                    ),
                 last_visit,
                 lifecycle,
             });
@@ -154,6 +177,31 @@ impl ForestProjection {
             trees,
             current: snapshot.current,
         })
+    }
+
+    pub fn is_settled(&self, id: VisitId) -> bool {
+        self.nodes.get(&id).is_some_and(|n| n.settled)
+    }
+
+    pub fn is_waiting(&self, id: VisitId) -> bool {
+        self.visit(id)
+            .is_some_and(|v| v.state == VisitState::Queued && v.dismissed_at.is_none())
+            && !self.is_settled(id)
+    }
+
+    pub fn opened_descendant_count(&self, id: VisitId) -> usize {
+        self.nodes.get(&id).map_or(0, |n| n.opened_below)
+    }
+
+    pub fn siblings(&self, id: VisitId) -> Vec<VisitId> {
+        let mut siblings = self
+            .visit(id)
+            .and_then(|v| v.parent)
+            .map_or_else(Vec::new, |p| self.children(p).to_vec());
+        siblings.sort_by_key(|id| {
+            std::cmp::Reverse((self.visit(*id).unwrap().created_at, id.to_string()))
+        });
+        siblings
     }
 
     pub fn trees(&self) -> &[TreeSummary] {
@@ -222,6 +270,8 @@ mod tests {
 
     fn visit(parent: Option<VisitId>, time: i64, state: VisitState) -> Visit {
         Visit {
+            dismissed_at: None,
+            branch_settled_at: None,
             id: Ulid::new().to_string().parse().unwrap(),
             parent,
             url: Url::parse("https://example.org/repeated").unwrap(),

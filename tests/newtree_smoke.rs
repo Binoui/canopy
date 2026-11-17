@@ -52,6 +52,7 @@ fn shots(ui: &Ui, name: &str) -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
     start(directory.path())?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -131,6 +132,26 @@ fn main() -> Result<()> {
             .is_some_and(|v| v.title == "Reading /recipes-child")
             && !ui.pages.selected_page().native.is_loading()
     })?;
+    key("ctrl+t")?;
+    wait("new tree before Back", || {
+        chrome_focused(&ui, "#start-search")
+    })?;
+    key("alt+Left")?;
+    wait("owner Back uncovers page", || {
+        ui.snapshot().unwrap().current == Some(root) && !visible(&ui, "#start-search")
+    })?;
+    println!("PASS owner_back_closes_new_tree");
+    ui.pages.selected_page().navigate(
+        web_url(&format!("http://{address}/recipes-child"))?,
+        NavigationTarget::ChildOf(root),
+    )?;
+    wait("child restored after Back case", || {
+        ui.snapshot()
+            .unwrap()
+            .current_visit()
+            .is_some_and(|v| v.url.path() == "/recipes-child")
+            && !ui.pages.selected_page().native.is_loading()
+    })?;
     let last = ui.snapshot()?.current.unwrap();
     ui.pages.read(|b| b.snapshot())?;
     ui.dispatch(ChromeIntent::SettleTree(tree(&ui, root)));
@@ -201,6 +222,9 @@ fn main() -> Result<()> {
     let (x, y) = chrome_point(&ui, &format!(".pinned-card[data-id='{root}']"))?;
     move_to(x, y)?;
     xdo(&["mousedown", "1"])?;
+    wait("chrome received the held card press", || {
+        chrome(&ui, "canopy.state().buttons").is_ok_and(|buttons| buttons == 1)
+    })?;
     ui.dispatch(ChromeIntent::RenameTree(tree(&ui, other), "Held".into()));
     wait("a refresh while the button is down", || {
         chrome(&ui, "canopy.state().deferred.includes('present')").is_ok_and(|held| held == true)
@@ -639,6 +663,7 @@ fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
             )?,
             "1"
         );
+        assert_eq!(chrome(ui, "(() => { const el = document.querySelector('.sg-act'); const r = el.getBoundingClientRect(); return [-11, 11].every(dx => [-11, 11].every(dy => el.contains(document.elementFromPoint(r.x+r.width/2+dx, r.y+r.height/2+dy)))) })()")?, true);
         if std::env::var_os("CANOPY_NEWTREE_SHOTS").is_some() {
             std::fs::create_dir_all(".cache/shots")?;
             save_window(
@@ -719,6 +744,10 @@ fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
             .as_str()
             .unwrap()
             .parse()?;
+    assert!(
+        !visible(ui, "#toast"),
+        "opening a new tree dismisses the previous page toast"
+    );
     hover_chrome(ui, ".sg-main")?;
     click_chrome(ui, "[data-start=decline]")?;
     wait("cross persists", || {

@@ -11,7 +11,7 @@ const PAGE_LIMIT: usize = 512;
 const HOST_LIMIT: usize = 256;
 const STORED: i32 = 32;
 
-type ChangeHandler = Box<dyn Fn(u64)>;
+type ChangeHandler = Box<dyn Fn(&str, u64)>;
 
 /// Page icons from WebKit's own favicon database, in a bounded cache keyed by page URL, as
 /// PNG bytes for the chrome view. A queued page is never fetched: it borrows an icon already
@@ -46,7 +46,7 @@ impl Favicons {
     }
 
     /// Called with the new revision whenever a newly known icon could change what is drawn.
-    pub fn connect_changed(&self, callback: impl Fn(u64) + 'static) {
+    pub fn connect_changed(&self, callback: impl Fn(&str, u64) + 'static) {
         *self.on_change.borrow_mut() = Some(Box::new(callback));
     }
 
@@ -92,12 +92,12 @@ impl Favicons {
             self.hosts.borrow_mut().insert(host, png.clone());
         }
         let changed = png.is_some();
-        self.pages.borrow_mut().insert(url, png);
+        self.pages.borrow_mut().insert(url.clone(), png);
         if changed {
             let revision = self.revision.get() + 1;
             self.revision.set(revision);
             if let Some(callback) = self.on_change.borrow().as_ref() {
-                callback(revision);
+                callback(&url, revision);
             }
         }
     }

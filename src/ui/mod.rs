@@ -140,6 +140,7 @@ impl Ui {
                 PageEvent::Selected => ui.refresh(),
                 PageEvent::Changed | PageEvent::Loading(false) => ui.schedule_refresh(),
                 PageEvent::Loading(true) => {}
+                PageEvent::Settled(message) => ui.chrome.settled(&message),
                 PageEvent::Error(message) => ui.chrome.toast(Toast::Error(message)),
                 PageEvent::Remembered(_) => ui
                     .chrome
@@ -373,12 +374,21 @@ impl Ui {
         match shortcut {
             Shortcut::Palette(seed) => self.open_palette(seed),
             Shortcut::SettleTree => self.chrome.settle_current(),
+            Shortcut::UndoSettle => self.report(self.pages.undo_settle()),
             Shortcut::Bookmark => self.toggle_bookmark(),
             Shortcut::NewTree => self.chrome.new_tree(),
             Shortcut::Forest => self.chrome.toggle_forest(),
             Shortcut::ZoomTree => self.chrome.toggle_tree(),
+            Shortcut::PreviousTree => match self.pages.read(|b| b.previous_tree()) {
+                Ok(Some(tree)) => self.dispatch(ChromeIntent::SelectTree(tree)),
+                Ok(None) => {}
+                Err(error) => self.report(Err(error)),
+            },
             Shortcut::NextWaiting => self.chrome.next_waiting(),
-            Shortcut::Reload => self.report(self.pages.reload()),
+            Shortcut::Reload => {
+                self.chrome.uncover();
+                self.report(self.pages.reload());
+            }
             Shortcut::RememberSelection => self.report(self.pages.remember_selection()),
             Shortcut::FillLogin => self.chrome.fill_login(),
             Shortcut::Quit => self.window.close(),
@@ -388,7 +398,13 @@ impl Ui {
                     self.dispatch(ChromeIntent::SelectTree(tree));
                 }
             }
-            Shortcut::Back => self.report(self.pages.go(Go::Parent)),
+            Shortcut::Forward => self.report(self.pages.go(Go::Forward)),
+            Shortcut::PreviousSibling => self.report(self.pages.go(Go::Sibling { next: false })),
+            Shortcut::NextSibling => self.report(self.pages.go(Go::Sibling { next: true })),
+            Shortcut::Back => {
+                self.chrome.uncover();
+                self.report(self.pages.go(Go::Parent));
+            }
             Shortcut::ToggleFocus => self.chrome.toggle_focus(),
             Shortcut::Escape if self.chrome.escape() => {}
             Shortcut::Escape => return glib::Propagation::Proceed,
@@ -404,15 +420,20 @@ enum Shortcut {
     NewTree,
     Bookmark,
     SettleTree,
+    UndoSettle,
     Forest,
     ZoomTree,
     NextWaiting,
+    PreviousTree,
     Reload,
     RememberSelection,
     FillLogin,
     Quit,
     Tree(usize),
     Back,
+    Forward,
+    PreviousSibling,
+    NextSibling,
     ToggleFocus,
     Escape,
 }
@@ -464,11 +485,18 @@ impl Shortcut {
                 Self::Palette(PaletteSeed::CurrentAddress),
             ),
             (Modifiers::CONTROL, key::t, Self::NewTree),
+            (Modifiers::CONTROL_SHIFT, key::t, Self::UndoSettle),
             (Modifiers::CONTROL, key::d, Self::Bookmark),
             (Modifiers::CONTROL, key::w, Self::SettleTree),
             (Modifiers::CONTROL, key::e, Self::Forest),
             (Modifiers::CONTROL_SHIFT, key::e, Self::ZoomTree),
             (Modifiers::CONTROL, key::Tab, Self::NextWaiting),
+            (Modifiers::CONTROL_SHIFT, key::Tab, Self::PreviousTree),
+            (
+                Modifiers::CONTROL_SHIFT,
+                key::ISO_Left_Tab,
+                Self::PreviousTree,
+            ),
             (Modifiers::CONTROL, key::r, Self::Reload),
             (Modifiers::CONTROL_SHIFT, key::r, Self::Reload),
             (Modifiers::NONE, key::F5, Self::Reload),
@@ -476,6 +504,9 @@ impl Shortcut {
             (Modifiers::CONTROL_SHIFT, key::l, Self::FillLogin),
             (Modifiers::CONTROL, key::q, Self::Quit),
             (Modifiers::ALT, key::Left, Self::Back),
+            (Modifiers::ALT, key::Right, Self::Forward),
+            (Modifiers::ALT, key::Up, Self::PreviousSibling),
+            (Modifiers::ALT, key::Down, Self::NextSibling),
             (Modifiers::NONE, key::F6, Self::ToggleFocus),
             (Modifiers::NONE, key::Escape, Self::Escape),
         ];
@@ -537,6 +568,15 @@ impl ChromeHost for Ui {
             return;
         }
         self.pages.cancel_continuation();
+        if matches!(
+            intent,
+            ChromeIntent::Restore(_)
+                | ChromeIntent::SelectTree(_)
+                | ChromeIntent::OpenCitation(_)
+                | ChromeIntent::OpenSaved(_)
+        ) {
+            self.chrome.uncover();
+        }
         let result = match intent {
             ChromeIntent::AnswerFormReturn { .. } => unreachable!(),
             ChromeIntent::CancelContinuation => Ok(()),
@@ -577,6 +617,10 @@ impl ChromeHost for Ui {
                 }
                 Ok(())
             }
+            ChromeIntent::Dismiss(head) => self.pages.dismiss(head),
+            ChromeIntent::SettleBranch(head) => self.pages.settle_branch(head),
+            ChromeIntent::MoveToTree(head) => self.pages.move_to_tree(head),
+            ChromeIntent::UndoSettle => self.pages.undo_settle(),
             ChromeIntent::SettleTree(tree) => self.pages.settle_tree(tree),
             ChromeIntent::SelectTree(tree) => self.pages.go(Go::Tree(tree)),
             ChromeIntent::Restore(visit) => self.pages.go(Go::Visit(visit)),
@@ -725,11 +769,18 @@ mod shortcut_tests {
                 Shortcut::Palette(PaletteSeed::CurrentAddress),
             ),
             (key::t, Modifiers::CONTROL, Shortcut::NewTree),
+            (key::t, Modifiers::CONTROL_SHIFT, Shortcut::UndoSettle),
             (key::d, Modifiers::CONTROL, Shortcut::Bookmark),
             (key::w, Modifiers::CONTROL, Shortcut::SettleTree),
             (key::e, Modifiers::CONTROL, Shortcut::Forest),
             (key::e, Modifiers::CONTROL_SHIFT, Shortcut::ZoomTree),
             (key::Tab, Modifiers::CONTROL, Shortcut::NextWaiting),
+            (key::Tab, Modifiers::CONTROL_SHIFT, Shortcut::PreviousTree),
+            (
+                key::ISO_Left_Tab,
+                Modifiers::CONTROL_SHIFT,
+                Shortcut::PreviousTree,
+            ),
             (key::r, Modifiers::CONTROL, Shortcut::Reload),
             (key::r, Modifiers::CONTROL_SHIFT, Shortcut::Reload),
             (key::F5, Modifiers::NONE, Shortcut::Reload),

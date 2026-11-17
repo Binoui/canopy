@@ -25,6 +25,8 @@ use webkit2gtk::WebViewExt;
 pub enum Go {
     Visit(VisitId),
     Parent,
+    Forward,
+    Sibling { next: bool },
     Tree(TreeId),
     Address { url: Url, target: NavigationTarget },
     Citation(VisitId),
@@ -34,6 +36,7 @@ pub enum Go {
 pub enum PageEvent {
     FormReturn(Option<u64>),
     Selected,
+    Settled(String),
     Changed,
     Loading(bool),
     Error(String),
@@ -163,8 +166,36 @@ type PlacementObserver = Rc<dyn Fn(&webkit2gtk::WebView)>;
 
 enum Command {
     Go(Box<Go>, Option<Continuation>, bool),
-    Settle(TreeId),
+    Settle(SettleTarget),
+    Dismiss(VisitId),
+    Move(VisitId),
     Reload,
+}
+
+#[derive(Clone, Copy)]
+enum SettleTarget {
+    Tree(TreeId),
+    Branch(VisitId),
+}
+
+impl SettleTarget {
+    fn head(self) -> VisitId {
+        match self {
+            Self::Tree(tree) => tree.root(),
+            Self::Branch(head) => head,
+        }
+    }
+    fn contains(self, forest: &ForestProjection, visit: VisitId) -> bool {
+        match self {
+            Self::Tree(tree) => forest.tree_of(visit) == Some(tree),
+            Self::Branch(head) => forest.path(visit).contains(&head),
+        }
+    }
+}
+
+struct SettleUndo {
+    head: VisitId,
+    reopen: VisitId,
 }
 
 struct Hidden {
@@ -264,6 +295,7 @@ pub struct Pages {
     continuation: RefCell<Option<PendingContinuation>>,
     observer: RefCell<Option<Observer>>,
     start: Cell<Option<StartPage>>,
+    settle_undo: RefCell<Option<SettleUndo>>,
 }
 
 impl Pages {
@@ -311,6 +343,7 @@ impl Pages {
             continuation: RefCell::new(None),
             observer: RefCell::new(None),
             start: Cell::new(None),
+            settle_undo: RefCell::new(None),
         });
         let weak = Rc::downgrade(&pages);
         container.connect_size_allocate(move |container, a| {
@@ -652,16 +685,19 @@ impl Pages {
             .borrow()
             .clone()
             .filter(|page| !page.native.is_sensitive());
-        let same_retired_tree = if let Some(page) = retired.filter(|page| page.contains(visit)) {
+        let target_retired = if let Some(page) = retired.filter(|page| page.contains(visit)) {
             let forest =
                 self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
-            page.current_visit()
-                .and_then(|current| forest.tree_of(current))
-                == forest.tree_of(visit)
+            page.current_visit() == Some(visit)
+                || forest.is_settled(visit)
+                || forest
+                    .trees()
+                    .iter()
+                    .any(|t| Some(t.id) == forest.tree_of(visit) && !t.lifecycle.is_open())
         } else {
             false
         };
-        if retiring || same_retired_tree {
+        if retiring || target_retired {
             self.cancel_candidate();
             self.commands.borrow_mut().push_back(Command::Go(
                 Box::new(Go::Visit(visit)),
@@ -951,7 +987,9 @@ impl Pages {
                     }
                     result
                 }
-                Command::Settle(tree) => self.settle_tree(tree),
+                Command::Settle(target) => self.settle(target),
+                Command::Dismiss(head) => self.dismiss(head),
+                Command::Move(head) => self.move_to_tree(head),
                 Command::Reload => self.reload(),
             };
             if let Err(error) = result {
@@ -993,12 +1031,15 @@ impl Pages {
         let open = self
             .read(|b| {
                 let forest = ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)?;
-                Ok::<_, anyhow::Error>(forest.tree_of(visit).is_some_and(|id| {
-                    forest
-                        .trees()
-                        .iter()
-                        .any(|t| t.id == id && t.lifecycle.is_open())
-                }))
+                Ok::<_, anyhow::Error>(
+                    forest.is_waiting(visit)
+                        && forest.tree_of(visit).is_some_and(|id| {
+                            forest
+                                .trees()
+                                .iter()
+                                .any(|t| t.id == id && t.lifecycle.is_open())
+                        }),
+                )
             })
             .unwrap_or(false);
         if open {
@@ -1490,6 +1531,8 @@ impl Pages {
                 } | Go::Citation(_)
                     | Go::Saved(_)
                     | Go::Parent
+                    | Go::Forward
+                    | Go::Sibling { .. }
             )
         {
             self.commands
@@ -1529,6 +1572,46 @@ impl Pages {
         let before = page.pending_ticket();
         let result = match go {
             Go::Visit(visit) => self.route(visit),
+            Go::Forward | Go::Sibling { .. } => {
+                let forest = self
+                    .read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
+                let target = if let Some(current) = forest.current() {
+                    match go {
+                        Go::Forward => self.read(|b| b.forward(current))?,
+                        Go::Sibling { next } => {
+                            let siblings: Vec<_> = forest
+                                .siblings(current)
+                                .into_iter()
+                                .filter(|id| {
+                                    !forest.is_settled(*id)
+                                        && forest
+                                            .visit(*id)
+                                            .is_some_and(|v| v.dismissed_at.is_none())
+                                })
+                                .collect();
+                            siblings
+                                .iter()
+                                .position(|id| *id == current)
+                                .and_then(|i| {
+                                    if next {
+                                        siblings.get(i + 1)
+                                    } else {
+                                        i.checked_sub(1).and_then(|i| siblings.get(i))
+                                    }
+                                })
+                                .copied()
+                        }
+                        _ => unreachable!(),
+                    }
+                } else {
+                    None
+                };
+                if let Some(visit) = target {
+                    self.route(visit)
+                } else {
+                    Ok(())
+                }
+            }
             Go::Parent => {
                 if let Some(item) = page.native_back() {
                     self.cancel_candidate();
@@ -1657,24 +1740,36 @@ impl Pages {
     }
 
     pub fn settle_tree(&self, tree: TreeId) -> Result<()> {
-        self.answer_form_return(false);
-        anyhow::ensure!(self.branches.live.borrow().is_some(), "No selected page.");
+        self.settle(SettleTarget::Tree(tree))
+    }
+
+    pub fn settle_branch(&self, head: VisitId) -> Result<()> {
+        self.settle(SettleTarget::Branch(head))
+    }
+
+    pub fn undo_settle(&self) -> Result<()> {
+        let undo = self.settle_undo.borrow_mut().take();
+        if let Some(undo) = undo {
+            self.browser.borrow_mut().undo_settle(undo.head)?;
+            self.receive(PageEvent::Changed);
+            self.go(Go::Visit(undo.reopen))?;
+        }
+        Ok(())
+    }
+
+    pub fn dismiss(&self, head: VisitId) -> Result<()> {
+        if self.busy() {
+            self.commands.borrow_mut().push_back(Command::Dismiss(head));
+            self.end_hold();
+            return Ok(());
+        }
+        self.browser.borrow_mut().dismiss(head)?;
         let forest =
             self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
-        let candidate = self.branches.candidate.borrow().clone();
-        if candidate
-            .as_ref()
-            .and_then(|p| p.background_visit())
-            .is_some_and(|v| forest.tree_of(v) == Some(tree))
-        {
-            if let Some(page) = self.branches.candidate.borrow_mut().take() {
-                page.cancel();
-            }
-        }
         self.branches
             .queued
             .borrow_mut()
-            .retain(|(_, v)| forest.tree_of(*v) != Some(tree));
+            .retain(|(_, v)| forest.is_waiting(*v));
         let removed: Vec<_> = self
             .branches
             .background
@@ -1683,7 +1778,65 @@ impl Pages {
             .filter(|h| {
                 h.page
                     .background_visit()
-                    .is_some_and(|v| forest.tree_of(v) == Some(tree))
+                    .is_some_and(|v| !forest.is_waiting(v))
+            })
+            .map(|h| h.page.view())
+            .collect();
+        for view in removed {
+            self.drop_background(view);
+        }
+        self.receive(PageEvent::Changed);
+        Ok(())
+    }
+
+    pub fn move_to_tree(&self, head: VisitId) -> Result<()> {
+        if self.busy() {
+            self.commands.borrow_mut().push_back(Command::Move(head));
+            self.end_hold();
+            return Ok(());
+        }
+        self.browser.borrow_mut().move_to_tree(head)?;
+        self.receive(PageEvent::Changed);
+        Ok(())
+    }
+
+    fn settle(&self, target: SettleTarget) -> Result<()> {
+        self.answer_form_return(false);
+        anyhow::ensure!(self.branches.live.borrow().is_some(), "No selected page.");
+        let forest =
+            self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
+        if let SettleTarget::Branch(head) = target {
+            anyhow::ensure!(
+                forest.visit(head).and_then(|v| v.parent).is_some(),
+                "A root is settled as a tree."
+            );
+            if forest.is_settled(head) {
+                return Ok(());
+            }
+        }
+        let candidate = self.branches.candidate.borrow().clone();
+        if candidate
+            .as_ref()
+            .and_then(|p| p.background_visit())
+            .is_some_and(|v| target.contains(&forest, v))
+        {
+            if let Some(page) = self.branches.candidate.borrow_mut().take() {
+                page.cancel();
+            }
+        }
+        self.branches
+            .queued
+            .borrow_mut()
+            .retain(|(_, v)| !target.contains(&forest, *v));
+        let removed: Vec<_> = self
+            .branches
+            .background
+            .borrow()
+            .iter()
+            .filter(|h| {
+                h.page
+                    .background_visit()
+                    .is_some_and(|v| target.contains(&forest, v))
             })
             .map(|h| h.page.view())
             .collect();
@@ -1693,29 +1846,31 @@ impl Pages {
         let selected = self.branches.live.borrow().clone();
         if let Some(page) = selected.filter(|page| {
             page.current_visit()
-                .is_some_and(|visit| forest.tree_of(visit) == Some(tree))
+                .is_some_and(|visit| target.contains(&forest, visit))
         }) {
             page.retire();
             self.receive(PageEvent::Login(LoginEvent::NewDocument));
         }
         if self.busy() {
-            self.commands.borrow_mut().push_back(Command::Settle(tree));
+            self.commands
+                .borrow_mut()
+                .push_back(Command::Settle(target));
             self.end_hold();
             return Ok(());
         }
         self.cancel_continuation();
-        let target = self
+        let candidate_target = self
             .branches
             .candidate
             .borrow()
             .as_ref()
             .and_then(|p| p.pending_anchor());
-        if target.is_some_and(|visit| forest.tree_of(visit) == Some(tree)) {
+        if candidate_target.is_some_and(|visit| target.contains(&forest, visit)) {
             self.cancel_candidate();
         }
         let belongs = |page: &LivePage| {
             page.current_visit()
-                .is_some_and(|visit| forest.tree_of(visit) == Some(tree))
+                .is_some_and(|visit| target.contains(&forest, visit))
         };
         let mut removed = Vec::new();
         self.branches.hidden.borrow_mut().retain(|hidden| {
@@ -1755,7 +1910,48 @@ impl Pages {
                 pages.drain_commands();
             });
         }
-        let landing = self.browser.borrow_mut().settle_tree(tree)?;
+        let head = target.head();
+        let name = match target {
+            SettleTarget::Tree(tree) => forest
+                .trees()
+                .iter()
+                .find(|t| t.id == tree)
+                .map(|t| t.title.clone())
+                .unwrap_or_default(),
+            SettleTarget::Branch(_) => forest
+                .visit(head)
+                .map(|v| v.label().to_owned())
+                .unwrap_or_default(),
+        };
+        let waiting = self
+            .read(|b| b.snapshot())?
+            .visits
+            .iter()
+            .filter(|v| {
+                v.opened_at.is_none() && v.dismissed_at.is_none() && target.contains(&forest, v.id)
+            })
+            .count();
+        let landing = match target {
+            SettleTarget::Tree(tree) => self.browser.borrow_mut().settle_tree(tree)?,
+            SettleTarget::Branch(head) => self.browser.borrow_mut().settle_branch(head)?,
+        };
+        *self.settle_undo.borrow_mut() = Some(SettleUndo {
+            head,
+            reopen: forest
+                .current()
+                .filter(|id| target.contains(&forest, *id))
+                .unwrap_or_else(|| match target {
+                    SettleTarget::Tree(tree) => forest
+                        .trees()
+                        .iter()
+                        .find(|t| t.id == tree)
+                        .map_or(head, |t| t.last_visit),
+                    SettleTarget::Branch(_) => head,
+                }),
+        });
+        self.receive(PageEvent::Settled(format!(
+            "Settled ‘{name}’ · {waiting} waiting kept"
+        )));
         self.receive(PageEvent::Changed);
         match landing {
             Landing::Unchanged => Ok(()),
@@ -1793,6 +1989,15 @@ impl Pages {
                     Landing::Unchanged => StartPage::Reload,
                 };
                 self.receive(PageEvent::Changed);
+            } else if let Some(current) = forest.current().filter(|id| forest.is_settled(*id)) {
+                if let Some(ancestor) = forest
+                    .path(current)
+                    .into_iter()
+                    .rev()
+                    .find(|id| !forest.is_settled(*id))
+                {
+                    start = StartPage::Show(ancestor);
+                }
             }
         }
         self.start.set(Some(start));

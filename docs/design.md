@@ -12,6 +12,10 @@ Two structures were compared before implementation. The first gave ownership of 
 
 The alternative brought two things to the chosen design. The navigation intent stays explicit until the load actually happens. The tests check the behaviour with WebKit and compare the forest before and after reopening the database.
 
+Schema 12 adds nullable `dismissed_at` and `branch_settled_at` marks to visits. The migration runs in a transaction and preserves version-11 rows. Selection clears dismissal on the selected visit and settlement on every ancestor in the same transaction as the arrival log and cursor. The forest projection excludes dismissed links and settled subtrees from waiting counts. Strip branch counts omit settled subtrees, while the zoomed tree and attached lists retain a branch stub.
+
+Moving a branch changes only its head's parent and the two tree targets, in one transaction. Moving clears the new root's settled mark and preserves marks below it. Its `tree_state` target is the most recently opened page inside the subtree, ordered by arrival log. The old target moves to the most recently opened page left in the original tree. Native history bindings keep their visit IDs. The existing history guard resolves tree membership against SQLite, so Back cannot cross the detached root.
+
 ## An intent comes before a visit
 
 Each view owns its Navigation, its pending load and its current Document. Browser owns no global load. A LoadTicket ties one incarnation of a view to an attempt number. Title, capture, context and scroll callbacks carry the Document they came from and check its epoch before writing. A failed transaction keeps the load and the Document until Finished. Finished abandons an attempt whose commit did not succeed. A same-document completion abandons a rejected commit immediately, because WebKit sends no Finished for it. The live page does not retry commits.
@@ -30,6 +34,33 @@ This includes page-cache returns: WebKit exposes the same policy action whether
 it will reuse a document or send its form again. First submissions, GET history,
 and Canopy's GET-based Reload do not ask. Checkpoint entries with POST provenance
 still take the existing GET revival path before this guard.
+
+Frame form-result returns remain an unsupported case. A local no-store fixture
+with the WebKit page cache disabled measured BackForward POST policy actions for
+iframe-only Back and Forward, main-document Back restoring an iframe POST, and
+`history.back()` in either the frame or its parent. NavigationAction supplied no
+frame name for these unnamed frames; the fixture identifies the target frame.
+An iframe `location.reload()` instead reported Reload GET and sent no POST.
+
+Extending the hold to these actions prevents the POST, but does not provide the
+same Cancel contract. Measured iframe-only reproduction:
+
+1. Load a parent with an iframe containing a POST form.
+2. Submit it to a no-store result, then navigate that iframe to a GET page with
+   a text input. Type a value into the input; save the native current history item.
+3. Go Back in the WebView and hold the iframe's BackForward POST policy decision.
+4. Click Cancel and ignore the decision. The iframe still displays the GET page,
+   but WebKit's back-list position has moved from index 2 to 1, and Forward is
+   now available. The cursor remains there after three seconds.
+5. Traverse to the saved history item to restore the cursor. The iframe is
+   recreated and the typed value is lost, even with no additional network GET.
+
+Main-document Back is worse: the parent has already committed by the time its
+iframe's POST policy arrives. Ignoring it leaves the parent selected with an
+empty iframe instead of preserving the outgoing page. These are measurements of
+an experimental guard, which was removed. Frame support must preserve both the
+native cursor and the existing documents before that guard can be enabled;
+merely grouping policy decisions cannot undo an already committed parent.
 
 The live view retains one policy decision with a window-unique question number.
 Continue takes it out of the slot, runs the ordinary policy handler once, and
@@ -86,13 +117,42 @@ Back uses an entry still present in WebKit's history only when its visit belongs
 
 The tabs, the tree strip, the palette, the attached lists, the menus, the "New tree" page, the forest view and the reader are drawn in HTML. A second, transparent webview, served by the `canopy://` scheme, sits above the page. Rust keeps the state and every decision: the layouts, the palette results and the intents. The view receives JSON and sends clicks and keys back over IPC.
 
+Chrome frames carry the current tree, open-tab summaries, waiting pages and the
+open palette's scope page. The start page requests its pinned and suggested miniature data when shown. The
+forest requests both layouts on open; Rust rebuilds them when the forest changes
+while open. Closing the forest stops sending its history. Unchanged strip items
+and list rows keep their DOM nodes. After a refresh, the strip keeps WebKit's
+animation clock active for up to 300 ms, as it does during movement, but skips
+all geometry writes when nothing moves. This prevents idle clock startup from
+delaying the next visible update. The clock then stops. Strip motion uses transforms,
+and favicon revisions apply to each page address, including images in the zoomed tree.
+
 At rest, the view covers only the top 94 px. The tree strip stays 52 px high. `graph.rs` builds `StripItem` values for the root, path pages, named parent, same-host runs, Earlier pages, current page, and read or waiting children. Runs exclude the root and parent. At most three middle items nearest the parent stay visible. Older items merge into Earlier, then more fold only as required by the room reserved by `pins.rs`. Rust supplies the padding, borders, favicon size, and gaps used by both the width estimate and CSS. Parent names can use up to 240 px and shrink before another item folds. Rust sends positions, branch subtree counts, list headings, and at most six named rows per item. Parent names reuse `naming.rs` to remove the site and omit title segments shared with their parent, then remove the prefix shared with the current page when a distinct suffix remains. The current pill keeps its full title.
 
 A 250 ms rest or keyboard focus opens one list below the item, joined by a continuous hover area. Entering the list cancels dismissal. Moving focus outside the item and list or back to the page dismisses it. Its keyed rows and action buttons survive frame updates and refresh deferral between a press and release. Preview requests populate the list head with saved text. Run rows follow path order, Earlier rows reverse it, branch heads are newest first, and waiting children keep queue order. Rows use short names and retain full titles in tooltips and accessible names. The current page lists read children, leaving waiting children to After. Zero counts are omitted. More opens the existing zoomed tree, revealing the earliest hidden page when opened from Earlier. Download leaves and live marks stay on page tiles, and folded items aggregate files. Branch rows retain access to their files.
 
-The view grows to the bottom of the attached list or menu and covers the whole window only for the palette, the reader, and full-page surfaces. Below that region, the page gets clicks.
+The view grows to the bottom of the attached list or menu and covers the whole window for the palette, the reader, full-page surfaces, and bottom settle feedback. Below that region, the page gets clicks.
 
-This choice replaces the GTK and cairo chrome. It costs a second WebKit process, measured at about 124 MB of PSS. In exchange, a single interface runs on Linux, macOS and Windows. On Linux, GTK remains the invisible host of both webviews, as in Tauri. The page engine and the host window stay tied to WebKitGTK until the port to macOS and Windows.
+Node menus name their target with its favicon and short name. Settled pages and their descendants omit Settle branch. Repeating the settle command preserves the existing Undo. Settle feedback counts undismissed waiting links kept anywhere inside the branch, including branches put away earlier. The bottom toast extends the chrome view to the window height; its input region includes only Undo alongside the usual chrome area, so page clicks still pass through.
+
+Alt+Right chooses the direct child with the latest arrival in the visit log, regardless of where that arrival came from. Sibling keys exclude dismissed pages and settled branches. Moving a branch clears the settled mark on its new root and preserves marks below it.
+
+The current-tree workbench uses one Rust preorder outline for both Tree tiles and List rows. Older children appear immediately below their parent, oldest first with each subtree indented one level. The newest child follows those side branches at its parent's indent. Tree chains run right in the original 124 by 40 px tiles, and older branches drop below. The same visible outline supplies the List indent and Tree coordinates. Current-path highlighting never changes positions. `Workbench` in `tree_view.rs` holds per-visit fold overrides, a short-name or site query, and the waiting-only flag. `Inner` owns it for the window session, keeping decisions beside the forest projection without persisting browsing presentation in SQLite. A settled branch defaults to folded. Filtering reveals matching pages with their ancestors, temporarily ignoring folds. Rust sends overflow against the window dimensions, short tile titles, fold summaries, and visible rows.
+
+The sheet takes keyboard focus after its final allocation. On close, a visible, focusable keyboard trigger gets focus back; otherwise the page gets focus. A pointer opening returns to the page. Escape clears both filters before closing. Every close clears the filters, while fold overrides last for the window session. The side chosen by the user stays separate from a List forced by overflow. Arrow keys traverse or fold the outline, Enter opens, Delete reuses Dismiss, and Menu or Shift+F10 reuses the node menu. A non-navigation action keeps the sheet open, including settling a branch that moves the current page. Keyed row and tile buttons survive frame refreshes. Filter and toolbar controls also survive refreshes. Node menus focus their first action and share Up, Down, Home, End, Enter, and Escape handling wherever they open.
+
+Transient views retain their trigger in a focus-return record. Menus, search, saved text and the forest take focus and contain Tab. Closing returns focus to the trigger, with a stable DOM locator when a refresh replaced it. Tab buttons retain identity across frames. Attached strip lists take focus on Down or Enter and return to the item on Escape. Menu and Shift+F10 use the same context-menu handlers as pointer input.
+
+Rust builds accessible names, branch-count descriptions and each visit's waiting, loaded and live state suffix. Chrome exposes tab selection, current pages, branch counts, switch state, theme state and palette selection through ARIA. CSS reads the state attributes for selection and toggles. The palette keeps DOM focus on its combobox and exposes the selected listbox option through aria-activedescendant. Two permanent, visually hidden live regions announce status and errors separately. The visible toast carries no live role. Keyboard focus uses the text colour to distinguish it from green selection. Tabs and list headers use inset outlines to keep the full ring visible. The tab row uses roving focus with Left, Right, Home and End. The Memory button follows the current-page item in DOM order. Strip lists retain focus on pointer leave only after keyboard input.
+
+With the desktop reduced-motion preference, strip moves and the forest camera finish immediately, and CSS transitions are disabled.
+
+The zoomed tree sizes its body from the window height sent by Rust, before measuring and centring the current tile. It never uses the temporary native view height. The chrome suppresses WebKit navigation context menus outside editable fields and selected text. GTK tooltip queries are refused while a chrome layer is open, so cached tooltips cannot cover menus even with a stationary pointer. Tooltips work again after the layer closes.
+
+Rust sizes the active tab first from its title width, icon, padding and settle cross, between 110 and 200 px, capped at the room left after the overflow arrow. Other tabs share the remaining room as titles, down to about six characters with their cross overlaid on hover. Tabs become icons one at a time, farthest from the active tree first, then hide behind the arrow. Icon tabs keep a small green waiting count. The active waiting count sits at the icon corner too, preserving title room. Short titles keep the pin in the tooltip and overflow row; wider titled tabs retain the inline pin, whose width Rust includes. A settle click requires the cross to have been visible under the pointer at press time and a click count of one. The cross draws a 16 px hover shape inside its 24 px hit area. The overflow list includes waiting counts, pins and a settle button. Rust remembers the room measured by the view and sends a new tab fit in every frame. The view applies that fit in the same presentation call as the active aria-selected state, without another round trip. Ctrl+Shift+Tab uses the visit log in descending event order to find the most recently shown other open tree.
+
+
+This choice replaces the GTK and cairo chrome. It costs a second WebKit process, measured at about 124 MB of PSS. The HTML chrome can be reused for a future macOS or Windows port. On Linux, GTK remains the invisible host of both webviews, as in Tauri. The page engine and the host window stay tied to WebKitGTK until the port to macOS and Windows.
 
 ## Saved logins are filled on request
 
@@ -143,7 +203,7 @@ own command-line tool.
 
 The first milestone checks navigation, forks and resuming after a restart.
 
-The minimap, the graph layout, page extraction, summaries and the agent wait for a later milestone. The live page has no generic trait. Moving to Servo or CEF will mean revisiting the rendering and profile integration.
+The forest and current-tree layouts and saved-text extraction are built. Summaries and the agent wait for a later milestone. The live page has no generic trait. Moving to Servo or CEF will mean revisiting the rendering and profile integration.
 
 In-app changes inside web applications remain a separate case. The MVP does not promise to turn every JavaScript state change into a visit.
 
@@ -156,7 +216,8 @@ compares URLs. Routing checks a candidate's pending Restore, the selected docume
 and history, then hidden live and dormant histories in MRU order. A tree-tab return
 uses the most recently shown branch's current document, including hidden redirects;
 a specific visit-node selection still requests that historical visit. A view follows
-links and forks in place; queued visits still wait until first selection to load.
+links and forks in place. Queued visits can load in the background under the memory
+budget, but become read only on first selection.
 
 Returning to the current document in a hidden live branch selects its existing
 Document in Browser's selection transaction, with no load or request. Forms,
@@ -257,10 +318,20 @@ existing refreshes.
 
 ### Switch cancellation and page Back
 
+Tree and branch settling share one scoped command. Its membership predicate selects queued work, never-seen views, hidden live views, candidates and the selected cover. Branch settling routes the selected page to its nearest unsettled ancestor and uses the existing checkpoint, retirement and landing path. If startup finds the cursor inside a settled branch whose landing did not commit, it resumes at the nearest unsettled ancestor. The latest settle record keeps the head and the page to reopen until another settle replaces it or Undo consumes it. It reopens the previous cursor when it was inside the target, otherwise the settled tree's last page or the branch head. Ctrl+Shift+T reopens that tree or branch after the six-second toast disappears. Explicitly opening New tree dismisses existing visual feedback so its Undo button cannot intercept start-page controls. Undo clears that head's settle mark and returns through normal visit routing. A return to the retired current page waits for its checkpoint even after Undo clears the mark. It does not recreate released live documents.
+
 Starting a candidate fails all pending foreground work in the old view and invalidates
-its asynchronous link decisions. The old committed document remains usable. Main-frame
-Started for another document cancels the candidate; same-document changes (pushState,
-replaceState and fragments) and subframe policy decisions do not. Settling cancels
+its asynchronous link decisions. The old committed document remains usable. At
+navigation policy, WebKit's user-gesture flag cancels the candidate for a foreground
+navigation, including forms and full loads to the current address. Fragment steps
+and history state changes keep it. NavigationAction has no main-frame boolean;
+Canopy uses its absent target-frame name (or `_top`) as the closest available
+signal. Unnamed subframes cannot be distinguished reliably at this point. URI
+equality is not a frame signal: the native URI still names the outgoing page.
+A page timer, automatic refresh or redirect without a gesture keeps the switch.
+Started alone does not establish user intent. Background link commands keep it too.
+The new-tree editor stays open across page-driven cursor updates in the outgoing
+tree; owner Back, Reload and visit commands uncover the page explicitly. Settling cancels
 only a candidate targeting that tree. Settling the last tree creates a fresh home view, so the next branch cannot inherit settled history. Release
 keeps valid checkpoints, including those of settled trees.
 
@@ -401,3 +472,13 @@ existing shared drop permit, fresh sample between drops, two-second sampling
 limit and teardown grace apply. Settling removes that tree's pending stack entries
 and destroys its never-seen views, including an adopted candidate; queueing in a
 settled tree enrolls no work. Seen-page checkpoints, holds and revival are unchanged.
+
+Favicon revisions follow the cache's exact hostname, including pages borrowing a
+site icon. An arriving icon refreshes retained images on every chrome surface.
+Start cards carry miniature icon URLs independently of the current-tree visit
+map. Reopening clears the old cards. Rust sends pinned trees and bookmarks first;
+the view acknowledges two animation frames before asking Rust to rank suggestions.
+Forest layouts survive closing and reopening until the projection changes. The
+view requests a forest frame after its full-window allocation, and retains that
+payload by revision. A projection, live-page or loaded-page change invalidates the
+payload; an unchanged reopen reuses it without resending all visits.

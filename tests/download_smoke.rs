@@ -24,6 +24,7 @@ mod common;
 use common::*;
 
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
     let home = directory.path().join("home");
     let config = directory.path().join("config");
@@ -122,6 +123,10 @@ fn main() -> Result<()> {
         )?,
         "Downloaded here: report.txt"
     );
+    assert_eq!(chrome(&ui, &format!(
+        "(() => {{ const el = document.querySelector({:?}); const r = el.getBoundingClientRect(); return [-11, 11].every(dx => [1, 23].every(dy => {{ const hit = document.elementFromPoint(r.x+r.width/2+dx, r.y+dy); return hit === el || el.contains(hit); }})); }})()", leaf_button(origin)
+    ))?, true);
+    println!("PASS leaf hit area covers 24 by 24 pixels without enlarging its visible mark.");
     shot(&ui, "one-leaf")?;
     println!("PASS a saved file is recorded on the page it was clicked from, with its path, size and address, and shows as a leaf on that page's node.");
 
@@ -359,6 +364,10 @@ fn main() -> Result<()> {
     wait("side branch files", || visible(&ui, "#popover [data-file]"))?;
     assert!(text(&ui, "#popover").contains("Moved or deleted"));
     shot(&ui, "branch-list")?;
+    key("Escape")?;
+    wait("side branch file trigger regains focus", || {
+        chrome_focused(&ui, &format!("#strip-list [data-files='{after}']"))
+    })?;
     key("Escape")?;
     leave_strip(&ui)?;
     println!("PASS at rest the trunk carries leaves; the attached list keeps side branch files reachable.");

@@ -100,6 +100,8 @@ mod tests {
                     ulid::Ulid::new().to_string().parse().unwrap()
                 };
                 visits.push(Visit {
+                    dismissed_at: None,
+                    branch_settled_at: None,
                     id,
                     parent,
                     url: url::Url::parse("https://example.org/").unwrap(),

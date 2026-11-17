@@ -16,6 +16,7 @@ mod common;
 use common::*;
 
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
     start(directory.path())?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -72,6 +73,7 @@ fn main() -> Result<()> {
     assert_eq!(text(&ui, "#tree-detail"), "1 page · 0 waiting");
     key("Escape")?;
     prove_delivery(&ui)?;
+    key("F6")?;
     assert!(!visible(&ui, "#waiting-pin"));
     for i in 0..3 {
         queue(&ui, &format!("link{i}"))?;
@@ -110,7 +112,7 @@ fn main() -> Result<()> {
         waiting(&ui)?,
         queued.iter().map(|v| v.id.to_string()).collect::<Vec<_>>()
     );
-    assert_eq!(text(&ui, "#tab-row .tab.on .count"), "26");
+    assert_eq!(text(&ui, "#tab-row .tab[aria-selected=true] .count"), "26");
     wait("newest waiting page loaded", || {
         visible(&ui, "#waiting-pin .pending-dot.loaded")
     })?;
@@ -153,6 +155,16 @@ fn main() -> Result<()> {
     println!("PASS pinned counter and fitted strip stay still while scrolling; current pill fits reserved room at three widths.");
     ui.window.resize(1240, 800);
     pump(400);
+    key("ctrl+shift+e")?;
+    wait("sheet from resting chrome", || visible(&ui, "#tree-sheet"))?;
+    assert_eq!(chrome(&ui, "S.treeSide")?, "list");
+    assert_eq!(chrome(&ui, "(() => {const a=document.querySelector('.tree-row[aria-current=page]').getBoundingClientRect(),b=$('tree-list').getBoundingClientRect();return a.top >= b.top && a.bottom <= b.bottom;})()")?, true);
+    chrome(&ui, "(setTreeSide('tree'), true)")?;
+    wait("current tile revealed", || {
+        chrome(&ui, "(() => {const a=document.querySelector('.tree-tile[aria-current=page]').getBoundingClientRect(),b=$('tree-board').getBoundingClientRect();return $('tree-board').scrollHeight > $('tree-board').clientHeight && a.left >= b.left && a.right <= b.right && a.top >= b.top && a.bottom <= b.bottom;})()").is_ok_and(|v| v == true)
+    })?;
+    println!("PASS first sheet open selects List for a tall tree and reveals the current page on both sides.");
+    key("Escape")?;
     prove_tree_sheet(&ui)?;
     for theme in ["dark", "light"] {
         chrome(
@@ -163,6 +175,8 @@ fn main() -> Result<()> {
         hover_waiting(&ui)?;
         wait("waiting list", || visible(&ui, "#popover.waiting"))?;
         assert!(text(&ui, ".pop-head").contains("Waiting in this tree · 26"));
+        assert!(chrome(&ui, "!$('waiting-pin').hasAttribute('title')")? == true);
+        assert!(chrome(&ui, "[...document.querySelectorAll('#popover .menu-detail')].some(e => e.textContent.startsWith('Waiting article'))")? == true);
         assert!(text(&ui, ".pop-head").contains("newest first"));
         assert_eq!(
             chrome(
@@ -175,13 +189,14 @@ fn main() -> Result<()> {
             text(&ui, "#popover .menu-row:first-of-type kbd"),
             "Ctrl Tab"
         );
-        assert!(chrome(&ui, "[...document.querySelectorAll('#popover .menu-row .menu-detail')].every(e => e.textContent === (S.frame.visits[e.closest('.menu-row').dataset.id].loaded ? 'loaded' : 'not loaded'))")? == true);
+        assert!(chrome(&ui, "[...document.querySelectorAll('#popover .menu-row .menu-detail')].every(e => e.textContent === S.frame.visits[e.closest('.menu-row').dataset.id].detail)")? == true);
         assert_eq!(strip_height(&ui), 52);
         assert!(chrome(&ui, "(() => {const d=document.querySelector('#popover .mk .pending-dot').getBoundingClientRect(), i=document.querySelector('#popover .mk .fav').getBoundingClientRect();return d.x+d.width/2 > i.x+i.width/2 && d.y+d.height/2 < i.y+i.height/2})()")? == true);
         shots(&ui, &format!("{theme}-list"))?;
         chrome(&ui, "(canopy.present(S.frame), true)")?;
         assert!(visible(&ui, "#popover.waiting"));
-        chrome(&ui, "(() => { window.unloadedFrame = structuredClone(S.frame); const v=S.frame.visits[S.frame.waiting.ids[0]]; v.loaded=true; v.when='loaded'; const u=S.frame.visits[S.frame.waiting.ids[1]]; u.loaded=false; u.when='not loaded'; canopy.present(S.frame); return true; })()")?;
+        assert!(chrome(&ui, "!$('waiting-pin').hasAttribute('title')")? == true);
+        chrome(&ui, "(() => { window.unloadedFrame = structuredClone(S.frame); const v=S.frame.visits[S.frame.waiting.ids[0]]; v.loaded=true; v.when='loaded'; v.detail='loaded'; const u=S.frame.visits[S.frame.waiting.ids[1]]; u.loaded=false; u.when=''; u.detail=''; canopy.present(S.frame); return true; })()")?;
         assert!(visible(&ui, "#waiting-pin .pending-dot.loaded"));
         assert!(
             chrome(
@@ -190,6 +205,8 @@ fn main() -> Result<()> {
             )? == true
         );
         chrome(&ui, "(canopy.toggleForest(), true)")?;
+        wait("forest data", || visible(&ui, ".forest-node.pending"))?;
+        chrome(&ui, "(() => { const v=S.frame.visits[S.frame.waiting.ids[0]]; v.loaded=true; v.when='loaded'; const u=S.frame.visits[S.frame.waiting.ids[1]]; u.loaded=false; u.when='';u.detail=''; canopy.present(S.frame); return true; })()")?;
         assert!(chrome(&ui, "getComputedStyle(document.querySelector('.forest-node.pending.loaded')).borderTopStyle === 'solid'")? == true);
         assert!(chrome(&ui, "getComputedStyle(document.querySelector('.forest-node.pending:not(.loaded)')).borderTopStyle === 'dashed'")? == true);
         assert!(chrome(&ui, "getComputedStyle(document.querySelector('.forest-node.pending.loaded .fav')).opacity === '1'")? == true);
@@ -417,15 +434,15 @@ fn prove_tree_sheet(ui: &Ui) -> Result<()> {
     assert_eq!(chrome(ui, "canopy.state().surface")?, "reading");
     assert_eq!(chrome(ui, "canopy.state().overlay")?, "tree");
     assert_eq!(rect(ui, "#zoom-pin")?, pin);
-    assert!(visible(ui, "#zoom-pin.on"));
+    assert!(visible(ui, "#zoom-pin[aria-pressed=true]"));
     assert!(!visible(ui, "#waiting-pin"));
     assert_eq!(rect(ui, ".sheet-box")?.1, 42.);
     assert!(rect(ui, ".sheet-box")?.3 > 52.);
     assert_eq!(cover(ui), None);
     assert!(visible(ui, "#tree-sheet > .scrim"));
     assert!(chrome(ui, "document.querySelector('#tree-title').textContent === S.frame.treeView.title && document.querySelector('#tree-detail').textContent === S.frame.treeView.detail")? == true);
-    assert!(chrome(ui, "document.querySelectorAll('.tree-tile').length === S.frame.treeView.tiles.length && document.querySelectorAll('.tree-tile.current').length === 1 && !!document.querySelector('.tree-tile.pending .pending-dot')")? == true);
-    assert!(chrome(ui, "(() => {const a=document.querySelector('.tree-tile.current').getBoundingClientRect(),b=document.querySelector('#tree-board').getBoundingClientRect();return a.left>=b.left && a.right<=b.right && a.top>=b.top && a.bottom<=b.bottom})()")? == true);
+    assert!(chrome(ui, "document.querySelectorAll('.tree-tile').length === S.frame.treeView.tiles.length && document.querySelectorAll('.tree-tile[aria-current=page]').length === 1 && !!document.querySelector('.tree-tile.pending .pending-dot')")? == true);
+    assert!(chrome(ui, "(() => {const a=document.querySelector('.tree-tile[aria-current=page]').getBoundingClientRect(),b=document.querySelector('#tree-board').getBoundingClientRect();return a.left>=b.left && a.right<=b.right && a.top>=b.top && a.bottom<=b.bottom})()")? == true);
     hover_chrome(ui, ".sheet-head")?;
     pump(400);
     assert_eq!(strip_height(ui), 52);
@@ -438,11 +455,11 @@ fn prove_tree_sheet(ui: &Ui) -> Result<()> {
         })?;
         chrome(ui, "(setTreeSide('tree'), true)")?;
         pump(100);
-        tree_shot(ui, &format!("{theme}-tree"))?;
+        tree_shot(ui, &format!("tall-{theme}-tree"))?;
         click_chrome(ui, "[data-side=list]")?;
-        assert!(chrome(ui, "document.querySelectorAll('.tree-row').length === S.frame.treeView.rows.length && !!document.querySelector('.tree-row.current') && [...document.querySelectorAll('.tree-row.pending')].every(r=>r.querySelector('.menu-detail').textContent === (S.frame.visits[r.dataset.id].loaded ? 'loaded' : 'not loaded'))")? == true);
+        assert!(chrome(ui, "document.querySelectorAll('.tree-row').length === S.frame.treeView.rows.length && !!document.querySelector('.tree-row[aria-current=page]') && [...document.querySelectorAll('.tree-row.pending')].every(r=>r.querySelector('.menu-detail').textContent === S.frame.visits[r.dataset.id].detail)")? == true);
         assert!(chrome(ui, "document.querySelector('#tree-list').scrollHeight > document.querySelector('#tree-list').clientHeight")? == true);
-        tree_shot(ui, &format!("{theme}-list"))?;
+        tree_shot(ui, &format!("tall-{theme}-list"))?;
     }
     key("Escape")?;
     wait("sheet escape", || !visible(ui, "#tree-sheet"))?;
@@ -463,7 +480,7 @@ fn prove_tree_sheet(ui: &Ui) -> Result<()> {
     wait("sheet scrim closes", || !visible(ui, "#tree-sheet"))?;
     key("ctrl+shift+e")?;
     click_chrome(ui, "[data-side=tree]")?;
-    click_chrome(ui, ".tree-tile.current")?;
+    click_chrome(ui, ".tree-tile[aria-current=page]")?;
     wait("current tile closes", || !visible(ui, "#tree-sheet"))?;
     let target = chrome(ui, "S.frame.treeView.rows[0].id")?
         .as_str()
@@ -491,6 +508,10 @@ fn tree_shot(ui: &Ui, name: &str) -> Result<()> {
     if let Ok(folder) = std::env::var("CANOPY_TREE_SHOTS") {
         std::fs::create_dir_all(&folder)?;
         save_window(ui, &format!("{folder}/{name}.png"))?;
+        let status = std::process::Command::new("import")
+            .args(["-window", "root", &format!("{folder}/{name}-composed.png")])
+            .status()?;
+        assert!(status.success());
     }
     Ok(())
 }
