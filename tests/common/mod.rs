@@ -276,11 +276,13 @@ pub fn toast_text(ui: &Ui) -> Option<String> {
     visible(ui, "#toast").then(|| text(ui, "#toast"))
 }
 
-/// Opens the Memory menu from the dot on the current-page pill.
-pub fn open_memory_menu(ui: &Ui) -> Result<()> {
+/// Opens the Saved text menu from the dot on the current-page pill.
+pub fn open_saved_text_menu(ui: &Ui) -> Result<()> {
     if !visible(ui, "#popover #automatic-capture") {
         click_chrome(ui, "#memory-dot")?;
-        wait("Memory menu", || visible(ui, "#popover #automatic-capture"))?;
+        wait("Saved text menu", || {
+            visible(ui, "#popover #automatic-capture")
+        })?;
         pump(100);
     }
     Ok(())

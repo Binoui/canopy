@@ -340,7 +340,7 @@ fn search_saved_text(ui: &Ui, query: &str) -> Result<()> {
 }
 
 fn set_remember_pages(ui: &Ui, on: bool) -> Result<()> {
-    open_memory_menu(ui)?;
+    open_saved_text_menu(ui)?;
     let shown = chrome(
         ui,
         "document.querySelector('#automatic-capture').getAttribute('aria-checked') === 'true'",
@@ -352,13 +352,13 @@ fn set_remember_pages(ui: &Ui, on: bool) -> Result<()> {
         })?;
     }
     key("Escape")?;
-    wait("Memory menu closed", || !visible(ui, "#popover"))
+    wait("Saved text menu closed", || !visible(ui, "#popover"))
 }
 
 fn remember_selection(ui: &Ui) -> Result<()> {
-    open_memory_menu(ui)?;
+    open_saved_text_menu(ui)?;
     click_chrome(ui, "#remember-selection")?;
-    wait("Memory menu closed", || !visible(ui, "#popover"))
+    wait("Saved text menu closed", || !visible(ui, "#popover"))
 }
 
 fn page_click(ui: &Ui, id: &str, button: u8, control: bool) -> Result<()> {

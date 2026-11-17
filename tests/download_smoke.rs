@@ -193,7 +193,7 @@ fn main() -> Result<()> {
     pump(300);
     assert_eq!(files(&downloads), before, "no partial file is left behind");
     unchanged()?;
-    open_memory_menu(&ui)?;
+    open_saved_text_menu(&ui)?;
     assert_eq!(
         chrome(
             &ui,
@@ -205,7 +205,7 @@ fn main() -> Result<()> {
         "no download is reported as a page that failed to load"
     );
     key("Escape")?;
-    wait("Memory menu closed", || !visible(&ui, "#popover"))?;
+    wait("Saved text menu closed", || !visible(&ui, "#popover"))?;
     assert_eq!(leaves(&ui, origin), json!([1, 0, "5"]));
     assert_eq!(ui.downloads()?.len(), 5);
     println!("PASS the user is told when a download starts and when it fails, a failed download leaves no partial file and no leaf, and the only error recorded is that failure.");

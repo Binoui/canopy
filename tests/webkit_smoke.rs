@@ -292,11 +292,11 @@ fn main() -> Result<()> {
     })?;
     pump(150);
     assert_eq!(ui.snapshot()?, before_failure);
-    open_memory_menu(&ui)?;
+    open_saved_text_menu(&ui)?;
     assert!(text(&ui, "#popover").contains("Could not load"));
     key("Escape")?;
-    wait("Memory menu closed", || !visible(&ui, "#popover"))?;
-    println!("PASS a network failure shows a toast, stays listed in the Memory menu, and changes nothing.");
+    wait("Saved text menu closed", || !visible(&ui, "#popover"))?;
+    println!("PASS a network failure shows a toast, stays listed in the Saved text menu, and changes nothing.");
 
     ui.pages.selected_page().restore(a)?;
     loaded(&ui, "/a", 5)?;

@@ -431,7 +431,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .form-return-box > div { display: flex; justify-content: flex-end; gap: 12px; }
 .form-return-box button { padding: 8px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--tile); }
 
-/* Grey means the page is still in memory. Green stays for pages not read yet. */
+/* Grey means the page is still open. Green stays for pages not read yet. */
 .live-dot { position: absolute; left: -2px; bottom: -2px; width: 8px; height: 8px; border-radius: 50%; background: var(--memory); box-shadow: 0 0 0 1.5px var(--chrome); pointer-events: none; }
 .mk .live-dot { left: -3px; bottom: -3px; }
 /* Stacked small tiles overlap, so their dot stays inside the tile. */

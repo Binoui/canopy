@@ -143,7 +143,7 @@ The sheet takes keyboard focus after its final allocation. On close, a visible, 
 
 Transient views retain their trigger in a focus-return record. Menus, search, saved text and the forest take focus and contain Tab. Closing returns focus to the trigger, with a stable DOM locator when a refresh replaced it. Tab buttons retain identity across frames. Attached strip lists take focus on Down or Enter and return to the item on Escape. Menu and Shift+F10 use the same context-menu handlers as pointer input.
 
-Rust builds accessible names, branch-count descriptions and each visit's waiting, loaded and live state suffix. Chrome exposes tab selection, current pages, branch counts, switch state, theme state and palette selection through ARIA. CSS reads the state attributes for selection and toggles. The palette keeps DOM focus on its combobox and exposes the selected listbox option through aria-activedescendant. Two permanent, visually hidden live regions announce status and errors separately. The visible toast carries no live role. Keyboard focus uses the text colour to distinguish it from green selection. Tabs and list headers use inset outlines to keep the full ring visible. The tab row uses roving focus with Left, Right, Home and End. The Memory button follows the current-page item in DOM order. Strip lists retain focus on pointer leave only after keyboard input.
+Rust builds accessible names, branch-count descriptions and each visit's waiting, loaded and live state suffix. Chrome exposes tab selection, current pages, branch counts, switch state, theme state and palette selection through ARIA. CSS reads the state attributes for selection and toggles. The palette keeps DOM focus on its combobox and exposes the selected listbox option through aria-activedescendant. Two permanent, visually hidden live regions announce status and errors separately. The visible toast carries no live role. Keyboard focus uses the text colour to distinguish it from green selection. Tabs and list headers use inset outlines to keep the full ring visible. The tab row uses roving focus with Left, Right, Home and End. The Saved text button follows the current-page item in DOM order. Strip lists retain focus on pointer leave only after keyboard input.
 
 With the desktop reduced-motion preference, strip moves and the forest camera finish immediately, and CSS transitions are disabled.
 
@@ -309,7 +309,7 @@ queries). Only that current visit gets a filled grey bottom-left dot (green is k
 for pages not read yet, whose top-right dot is larger);
 selected pages, native back entries and dormant checkpoints do not. The strip,
 forest, tree sheet tree/list and tabs share the mark; a tab uses its tree's last
-visit. Preview metadata, node tooltips and tree list details say “Open in memory”.
+visit. Preview metadata, node tooltips and tree list details say “Still open”.
 Never-seen pages keep their separate top-right waiting dot. Absolute positioning
 preserves node geometry. Hold completion, pressure removal and hidden process death
 notify Changed; candidate history routing and cancellation also notify when a page

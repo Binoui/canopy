@@ -84,7 +84,7 @@ fn main() -> Result<()> {
     settle(&ui)?;
     assert_eq!(chrome(&ui, "(() => { const el = document.getElementById('memory-dot'); const r = el.getBoundingClientRect(); return [-11, 11].every(dx => [-11, 11].every(dy => el.contains(document.elementFromPoint(r.x+r.width/2+dx, r.y+r.height/2+dy)))) })()")?, true);
     assert_eq!(chrome(&ui, "[...document.querySelectorAll('.tab:not([hidden]):not(.icon-only) .tab-settle')].every(el => el.offsetWidth >= 24 && el.offsetHeight >= 24)")?, true);
-    println!("PASS memory dot and tab settle have 24 by 24 hit areas.");
+    println!("PASS saved-text dot and tab settle have 24 by 24 hit areas.");
     review_regressions(&ui)?;
     let original = ui.snapshot()?.current;
     key("ctrl+2")?;

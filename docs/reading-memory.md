@@ -1,4 +1,4 @@
-# The memory of an exploration
+# Keeping an exploration
 
 The reference scenario starts with a comment that holds three links. All three destinations stay in the tree, only one is opened, then the browser is closed. On resume, a search through the saved text finds the article, the comment it came from and the two pending links.
 
