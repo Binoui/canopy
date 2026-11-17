@@ -90,6 +90,13 @@ Back uses an entry still present in WebKit's history only when its visit belongs
 
 The tabs, the tree strip, the palette, the attached lists, the menus, the "New tree" page, the forest view and the reader are drawn in HTML. A second, transparent webview, served by the `canopy://` scheme, sits above the page. Rust keeps the state and every decision: the layouts, the palette results and the intents. The view receives JSON and sends clicks and keys back over IPC.
 
+Chrome frames carry the current tree, open-tab summaries and waiting pages. The
+start page requests its pinned and suggested miniature data when shown. The
+forest requests both layouts on open; Rust rebuilds them when the forest changes
+while open. Closing the forest stops sending its history. Unchanged strip items
+and list rows keep their DOM nodes. Strip motion uses transforms, and favicon
+revisions apply to each page address, including images in the zoomed tree.
+
 At rest, the view covers only the top 94 px. The tree strip stays 52 px high. `graph.rs` builds `StripItem` values for the root, path pages, named parent, same-host runs, Earlier pages, current page, and read or waiting children. Runs exclude the root and parent. At most three middle items nearest the parent stay visible. Older items merge into Earlier, then more fold only as required by the room reserved by `pins.rs`. Rust supplies the padding, borders, favicon size, and gaps used by both the width estimate and CSS. Parent names can use up to 240 px and shrink before another item folds. Rust sends positions, branch subtree counts, list headings, and at most six named rows per item. Parent names reuse `naming.rs` to remove the site and omit title segments shared with their parent, then remove the prefix shared with the current page when a distinct suffix remains. The current pill keeps its full title.
 
 A 250 ms rest or keyboard focus opens one list below the item, joined by a continuous hover area. Entering the list cancels dismissal. Moving focus outside the item and list or back to the page dismisses it. Its keyed rows and action buttons survive frame updates and refresh deferral between a press and release. Preview requests populate the list head with saved text. Run rows follow path order, Earlier rows reverse it, branch heads are newest first, and waiting children keep queue order. Rows use short names and retain full titles in tooltips and accessible names. The current page lists read children, leaving waiting children to After. Zero counts are omitted. More opens the existing zoomed tree, revealing the earliest hidden page when opened from Earlier. Download leaves and live marks stay on page tiles, and folded items aggregate files. Branch rows retain access to their files.

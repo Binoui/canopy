@@ -223,3 +223,7 @@ name = "keyboard_smoke"
 path = "tests/keyboard_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
+
+[[example]]
+name = "frame_probe"
+required-features = ["desktop"]

@@ -47,7 +47,7 @@ const S = {
   save: null,
   locked: null,
   strip: null,
-  rev: 0,
+  revisions: new Map(),
   systemDark: null,
   surface: 'reading',
   overlay: null,
@@ -115,10 +115,10 @@ function fav(url, opened, size) {
   for (let i = 0; i < host.length; i++) hash = Math.imul(hash ^ (host.charCodeAt(i) & 255), 16777619) >>> 0;
   const color = MONOGRAM[hash % MONOGRAM.length];
   const letter = esc((host[0] || '?').toUpperCase());
-  const src = `icon?u=${encodeURIComponent(url)}&o=${opened ? 1 : 0}&r=${S.rev}`;
+  const src = `icon?u=${encodeURIComponent(url)}&o=${opened ? 1 : 0}&r=${S.revisions.get(url) ?? 0}`;
   return `<span class="fav" style="width:${size}px;height:${size}px;background:${color};border-radius:${Math.min(3, size / 4)}px">`
     + `<b aria-hidden="true" style="font-size:${Math.round(size * 0.62)}px">${letter}</b>`
-    + `<img src="${src}" alt="" onload="this.parentNode.style.background='none';this.previousSibling.style.visibility='hidden'" onerror="this.remove()"></span>`;
+    + `<img src="${src}" alt="" onload="this.style.visibility='';this.parentNode.style.background='none';this.previousSibling.style.visibility='hidden'" onerror="this.style.visibility='hidden'"></span>`;
 }
 const waitState = (v) => v.queued ? (v.loaded ? 'loaded' : 'unloaded') : null;
 const markClass = (v) => v.dismissed ? ' dismissed' : waitState(v) === 'loaded' ? ' pending loaded' : waitState(v) ? ' pending' : '';
@@ -284,9 +284,13 @@ const targetLayout = () => S.strip ?? null;
 function animateStrip(duration) {
   const layout = targetLayout();
   if (!layout) return;
+  const changed = buildStrip(layout);
+  const geometry = JSON.stringify([layout.nodes.map(({id, x, y, w, s}) => [id, x, y, w, s]), layout.edges, layout.pan]);
+  if (strip.geometry === geometry) { strip.target = layout; if (changed && !strip.anim) drawStrip(); return; }
   strip.from = strip.shown;
   strip.target = layout;
-  buildStrip(layout);
+  strip.geometry = geometry;
+  cancelAnimationFrame(strip.raf);
   if (!duration) {
     strip.anim = null;
     step(performance.now(), 1);
@@ -296,7 +300,7 @@ function animateStrip(duration) {
   }
   strip.anim = { start: performance.now(), duration };
   syncLayer();
-  requestAnimationFrame(tick);
+  strip.raf = requestAnimationFrame(tick);
 }
 
 function tick(now) {
@@ -304,7 +308,7 @@ function tick(now) {
   const t = (now - strip.anim.start) / strip.anim.duration;
   step(now, t);
   if (t < 1) {
-    requestAnimationFrame(tick);
+    strip.raf = requestAnimationFrame(tick);
   } else {
     strip.anim = null;
     pruneStrip();
@@ -327,6 +331,10 @@ function pruneStrip() {
 
 /// One element per node, kept across frames so hovers and transitions survive a re-layout.
 function buildStrip(layout) {
+  let changed = false;
+  $('strip').style.height = `${layout.height}px`;
+  $('strip-clip').style.height = `${layout.height}px`;
+  $('strip-bg').style.height = `${layout.height}px`;
   for (const [key, value] of Object.entries(layout.metrics ?? {})) {
     const name = key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
     document.documentElement.style.setProperty(`--${key.endsWith('Gap') ? name : `item-${name}`}`, `${value}px`);
@@ -337,6 +345,9 @@ function buildStrip(layout) {
     const v = visit(n.page);
     if (!v) continue;
     let el = strip.elements.get(n.id);
+    const paint = JSON.stringify([n, v, n.ids.map(filesOf), S.list?.key === n.id]);
+    if (el?.dataset.paint === paint) continue;
+    changed = true;
     if (!el) {
       el = document.createElement('button');
       el.className = 'node';
@@ -353,6 +364,10 @@ function buildStrip(layout) {
       nodes.appendChild(el);
       strip.elements.set(n.id, el);
     }
+    el.dataset.paint = paint;
+    el.style.width = `${n.w}px`;
+    el.style.height = `${n.s}px`;
+    el.style.transformOrigin = '0 0';
     if (!['run', 'earlier', 'after'].includes(n.kind)) el.dataset.page = n.page;
     else delete el.dataset.page;
     el.className = `node ${n.kind}` + (n.named ? ' named' : '') + markClass(v);
@@ -423,6 +438,7 @@ function buildStrip(layout) {
   if (pill && pill.nextElementSibling !== dot) pill.after(dot);
   dot.classList.toggle('on', !!S.frame?.captureEnabled);
   dot.title = S.frame?.captureEnabled ? 'Memory · Remembering pages' : 'Memory · Not remembering pages';
+  return changed;
 }
 
 function step(now, t) {
@@ -450,31 +466,25 @@ function step(now, t) {
 
 function drawStrip() {
   const shown = strip.shown;
-  $('strip').style.height = `${shown.height}px`;
-  $('strip-clip').style.height = `${shown.height}px`;
-  const bg = $('strip-bg');
-  bg.style.height = `${shown.height}px`;
   $('strip-canvas').style.transform = `translateX(${shown.pan}px)`;
   for (const [id, r] of shown.nodes) {
     const el = strip.elements.get(id);
     if (!el) continue;
-    el.style.left = `${r.x - r.w / 2}px`;
-    el.style.top = `${r.y - r.s / 2}px`;
-    el.style.width = `${r.w}px`;
-    el.style.height = `${r.s}px`;
+    const target = strip.target.nodes.find((n) => n.id === id);
+    const width = target?.w ?? r.w;
+    const height = target?.s ?? r.s;
+    el.style.transform = `translate(${r.x - r.w / 2}px,${r.y - r.s / 2}px) scale(${width ? r.w / width : 0},${height ? r.s / height : 0})`;
     el.style.opacity = r.o;
     el.style.visibility = r.w < 1 ? 'hidden' : '';
     const badge = strip.badges.get(id);
     if (badge) {
-      badge.style.left = `${r.x + r.w / 2 + 7 - badge.offsetWidth}px`;
-      badge.style.top = `${r.y + r.s / 2 + 6 - 14}px`;
+      badge.style.transform = `translate(${r.x + r.w / 2 + 7}px,${r.y + r.s / 2 - 8}px) translateX(-100%)`;
       badge.style.opacity = r.o;
     }
     const leaves = strip.leaves.get(id);
     if (leaves) {
       // Leaves stand on the node's top edge, clear of its rounded corner.
-      leaves.style.left = `${r.x - r.w / 2 + (leaves.classList.contains('on-pill') ? 5 : 0)}px`;
-      leaves.style.top = `${r.y - r.s / 2 + 1 - leaves.offsetHeight}px`;
+      leaves.style.transform = `translate(${r.x - r.w / 2 + (leaves.classList.contains('on-pill') ? 5 : 0)}px,${r.y - r.s / 2 + 1}px) translateY(-100%)`;
       leaves.style.opacity = r.o;
       leaves.style.visibility = r.w < 1 ? 'hidden' : '';
     }
@@ -485,18 +495,24 @@ function drawStrip() {
   const glow = $('glow');
   dot.hidden = glow.hidden = !r;
   if (r) {
-    dot.style.left = `${r.x + r.w / 2 - ACCESSORY}px`;
-    dot.style.top = `${r.y - 9}px`;
+    dot.style.transform = `translate(${r.x + r.w / 2 - ACCESSORY}px,${r.y - 9}px)`;
     const reach = 40;
     const x = r.x - r.w / 2 + 16;
-    Object.assign(glow.style, { left: `${x - reach}px`, top: `${TRUNK_Y - reach}px`, width: `${2 * reach}px`, height: `${2 * reach}px` });
+    glow.style.transform = `translate(${x - reach}px,${TRUNK_Y - reach}px)`;
   }
   const opacity = new Map([...shown.nodes].map(([id, n]) => [id, n.o]));
-  $('strip-edges').innerHTML = [...shown.edges.values()].map((e) => {
+  const svg = $('strip-edges');
+  const kept = new Set();
+  for (const [key, e] of shown.edges) {
+    kept.add(key);
+    let path = [...svg.children].find((p) => p.dataset.key === key);
+    if (!path) { path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.dataset.key = key; svg.appendChild(path); }
     const [p0, p1, p2, p3] = e.c;
-    const o = e.kind === 'path' ? 1 : (opacity.get(e.to) ?? 1);
-    return `<path class="${e.kind}" style="opacity:${o}" d="M${p0} C${p1} ${p2} ${p3}"/>`;
-  }).join('');
+    path.setAttribute('class', e.kind);
+    path.style.opacity = e.kind === 'path' ? 1 : (opacity.get(e.to) ?? 1);
+    path.setAttribute('d', `M${p0} C${p1} ${p2} ${p3}`);
+  }
+  for (const path of [...svg.children]) if (!kept.has(path.dataset.key)) path.remove();
   positionList();
 
 }
@@ -1296,7 +1312,9 @@ function setOverlay(kind) {
     $(previous.button).setAttribute('aria-pressed', 'false');
   }
   if (kind && !S.overlay) rememberFocus('overlay');
+  const forestChanged = (S.overlay === 'forest') !== (kind === 'forest');
   S.overlay = kind;
+  if (forestChanged) post({ t: 'forest', open: kind === 'forest' });
   document.body.dataset.overlay = kind ?? '';
   const overlay = OVERLAYS[kind];
   if (overlay) {
@@ -1415,8 +1433,8 @@ const START = {
 };
 
 function renderStart() {
-  if (!S.frame) return;
-  const paint = JSON.stringify([S.frame.start, S.rev]);
+  if (!S.frame?.start || S.surface !== 'start') return;
+  const paint = JSON.stringify(S.frame.start);
   if (S.startPaint === paint) return;
   S.startPaint = paint;
   const focused = document.activeElement?.closest('[data-start]');
@@ -1434,7 +1452,7 @@ function renderStart() {
 // ---------- forest view ----------
 
 function forestLayout() {
-  return S.frame?.forest[S.forestLabels ? 'labels' : 'icons'];
+  return S.frame?.forest?.[S.forestLabels ? 'labels' : 'icons'];
 }
 
 function renderForest() {
@@ -1445,6 +1463,7 @@ function renderForest() {
   S.forestDirty = false;
   const frame = S.frame;
   const layout = forestLayout();
+  if (!layout) return;
   $('forest-count').textContent = frame.forest.count;
   $('forest-titles').setAttribute('aria-pressed', String(S.forestLabels));
   const path = new Set();
@@ -1601,10 +1620,16 @@ const when = (at) => new Date(at).toLocaleString(undefined, { day: '2-digit', mo
 
 window.canopy = {
   viewport(height) { S.windowHeight = height; document.documentElement.style.setProperty('--window-height', `${height}px`); positionList(); syncLayer(); },
-  start(value) { if (!S.frame) return; S.frame.start = value; renderStart(); },
+  start(value) { if (!S.frame) return; Object.assign(S.frame.visits, value.visits); S.frame.start = value.start; renderStart(); },
+  forest(value) {
+    if (!S.frame || S.overlay !== 'forest') return;
+    Object.assign(S.frame.visits, value.visits);
+    S.frame.forest = value.forest;
+    renderForest(); fitForest(false);
+  },
   present(frame) {
     const previous = current();
-    S.frame = frame;
+    S.frame = { ...frame, start: frame.start ?? S.frame?.start };
     applyStrip(frame.strip);
     renderWaitingPin();
     applyTheme();
@@ -1632,16 +1657,14 @@ window.canopy = {
     animateStrip(0);
     fitTabs();
   },
-  icons(revision) {
-    S.rev = revision;
-    renderPaletteContext();
-    if (!S.frame) return;
-    renderTabs();
-    renderWaitingPin();
-    if (S.popover?.kind === 'waiting' || S.popover?.kind === 'node') refreshPopover();
-    buildStrip(strip.target ?? targetLayout());
-    renderStart();
-    renderForest();
+  icons(url, revision) {
+    S.revisions.set(url, revision);
+    for (const img of document.querySelectorAll('.fav img')) {
+      const src = new URL(img.src);
+      if (src.searchParams.get('u') !== url) continue;
+      src.searchParams.set('r', revision);
+      img.src = src.href;
+    }
   },
   logins(offer) {
     S.logins = offer.names.length ? offer : null;
@@ -1804,8 +1827,9 @@ window.canopy = {
 const refresh = { buttons: 0, pending: new Map(), release: null };
 function rebuild(kind, apply, args) {
   if (!refresh.buttons) { apply(...args); return; }
-  refresh.pending.delete(kind);
-  refresh.pending.set(kind, { apply, args });
+  const key = kind === 'icons' ? `icons:${args[0]}` : kind;
+  refresh.pending.delete(key);
+  refresh.pending.set(key, { apply, args });
 }
 function releaseRefresh() {
   clearTimeout(refresh.release);
@@ -1816,7 +1840,7 @@ function releaseRefresh() {
     for (const { apply, args } of pending) apply(...args);
   });
 }
-for (const kind of ['present', 'strip', 'icons', 'start', 'logins', 'loginsLocked', 'saveLogin', 'paletteResults', 'previewResult', 'reader', 'readerList']) {
+for (const kind of ['present', 'strip', 'icons', 'start', 'forest', 'logins', 'loginsLocked', 'saveLogin', 'paletteResults', 'previewResult', 'reader', 'readerList']) {
   const apply = window.canopy[kind].bind(window.canopy);
   window.canopy[kind] = (...args) => rebuild(kind, apply, args);
 }
