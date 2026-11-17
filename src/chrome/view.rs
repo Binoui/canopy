@@ -57,7 +57,7 @@ pub(crate) fn frame(
             if let Some(visit) = forest.visit(id) {
                 visits.insert(
                     id.to_string(),
-                    visit_value(forest, visit, &tree.title, &frame.loaded, &frame.live),
+                    visit_value(visit, &frame.loaded, &frame.live),
                 );
             }
             stack.extend(forest.children(id).iter().copied());
@@ -274,7 +274,7 @@ fn forest_value(forest: &ForestProjection, labels: bool) -> Value {
                     "{} · {}{}",
                     plural(tree.page_count, "page"),
                     match tree.lifecycle {
-                        Lifecycle::Open => format!("{} pending", tree.pending_count),
+                        Lifecycle::Open => format!("{} waiting", tree.pending_count),
                         Lifecycle::Settled { since } => format!("settled {}", ago(since)),
                     },
                     if Some(tree.id) == current_tree { " · Current tree" } else { "" },
@@ -284,13 +284,7 @@ fn forest_value(forest: &ForestProjection, labels: bool) -> Value {
     })
 }
 
-fn visit_value(
-    forest: &ForestProjection,
-    visit: &Visit,
-    tree: &str,
-    loaded: &HashSet<VisitId>,
-    live: &HashSet<VisitId>,
-) -> Value {
+fn visit_value(visit: &Visit, loaded: &HashSet<VisitId>, live: &HashSet<VisitId>) -> Value {
     let wait = WaitState::of(visit, loaded);
     let source = visit.source.as_ref().map(|source| {
         let host = source.page_url.host_str().unwrap_or("the source");
@@ -303,6 +297,16 @@ fn visit_value(
             "citation": source.citation_url.is_some(),
         })
     });
+    let detail = visit
+        .source
+        .as_ref()
+        .map(|source| source.link_text.as_str())
+        .filter(|text| !text.is_empty())
+        .unwrap_or(if wait == Some(WaitState::Loaded) {
+            "loaded"
+        } else {
+            ""
+        });
     json!({
         "id": visit.id.to_string(),
         "parent": visit.parent.map(|id| id.to_string()),
@@ -312,9 +316,8 @@ fn visit_value(
         "queued": visit.state == VisitState::Queued,
         "loaded": wait == Some(WaitState::Loaded),
         "live": live.contains(&visit.id),
-        "when": match wait { Some(WaitState::NotLoaded) => "not loaded".into(), Some(WaitState::Loaded) => "loaded".into(), None => ago(visit.opened_at.unwrap_or(visit.created_at)) },
-        "after": forest.descendant_count(visit.id).unwrap_or(0),
-        "tree": tree,
+        "detail": detail,
+        "when": match wait { Some(WaitState::NotLoaded) => String::new(), Some(WaitState::Loaded) => "loaded".into(), None => ago(visit.opened_at.unwrap_or(visit.created_at)) },
         "source": source,
     })
 }
@@ -333,7 +336,7 @@ pub(crate) fn palette_rows(items: &[(Group, PaletteItem)], forest: &ForestProjec
                         .and_then(|tree| forest.trees().iter().find(|t| t.id == tree))
                         .map(|tree| tree.title.clone())
                         .unwrap_or_default();
-                    let pending = if visit.state == VisitState::Queued { " · pending" } else { "" };
+                    let pending = if visit.state == VisitState::Queued { " · waiting" } else { "" };
                     let icon = json!({ "url": visit.url.as_str(), "opened": visit.state == VisitState::Opened });
                     ("page", visit.label().to_owned(), format!("{tree}{pending}"), icon)
                 }
@@ -437,7 +440,7 @@ pub(super) fn text_width(text: &str, size: f64, em: f64) -> f64 {
 pub(crate) fn site_line(visit: &Visit) -> String {
     let host = short_host(&visit.url);
     match visit.state {
-        VisitState::Queued => format!("{host} · pending"),
+        VisitState::Queued => format!("{host} · waiting"),
         VisitState::Opened => format!(
             "{host} · {}",
             ago(visit.opened_at.unwrap_or(visit.created_at))
@@ -589,7 +592,7 @@ mod tests {
             files: vec![],
         };
         let value = super::frame(&frame, &[], 800.);
-        assert_eq!(value["visits"][ids[2].to_string()]["when"], "not loaded");
+        assert_eq!(value["visits"][ids[2].to_string()]["when"], "");
         assert_eq!(value["waiting"]["ids"], json!([ids[2].to_string()]));
         frame.loaded.extend(ids.iter().copied());
         let value = super::frame(&frame, &[], 800.);
@@ -599,6 +602,28 @@ mod tests {
         assert_eq!(value["visits"][ids[0].to_string()]["loaded"], false);
         assert_eq!(value["visits"][ids[0].to_string()]["queued"], false);
         assert_ne!(value["visits"][ids[0].to_string()]["when"], "loaded");
+    }
+
+    #[test]
+    fn waiting_detail_uses_link_text_then_loaded_or_nothing() {
+        let (forest, ids) = chain();
+        let mut visit = forest.visit(ids[2]).unwrap().clone();
+        let loaded = HashSet::from([visit.id]);
+        let empty = HashSet::new();
+        assert_eq!(visit_value(&visit, &empty, &empty)["detail"], "");
+        assert_eq!(visit_value(&visit, &loaded, &empty)["detail"], "loaded");
+        visit.source = Some(crate::browser::SourceContext {
+            page_url: visit.url.clone(),
+            citation_url: None,
+            link_text: "Why this link matters".into(),
+            excerpt: String::new(),
+        });
+        for state in [&empty, &loaded] {
+            assert_eq!(
+                visit_value(&visit, state, &empty)["detail"],
+                "Why this link matters"
+            );
+        }
     }
 
     #[test]

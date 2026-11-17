@@ -64,7 +64,6 @@ const S = {
   manualPan: null,
   forestLabels: true,
   camera: { x: 0, y: 0, zoom: 1 },
-  forestDirty: true,
   reported: '',
 };
 
@@ -199,7 +198,7 @@ function renderTabs() {
   row.innerHTML = trees.map((tree, index) => {
     const root = visit(tree.id);
     const pages = `${tree.pages} page${tree.pages === 1 ? '' : 's'}`;
-    const pending = tree.pending ? `, ${tree.pending} pending` : '';
+    const pending = tree.pending ? `, ${tree.pending} waiting` : '';
     const key = index < 9 ? ` · Ctrl+${index + 1}` : '';
     return `<button class="tab${tree.active ? ' on' : ''}" data-id="${tree.id}" title="${esc(`${tree.title} · ${pages}${pending}${key}`)}" aria-label="${esc(`${tree.title}, ${pages}${pending}`)}">`
       + (root ? `<span class="mk">${visitFav(root, 14)}${tree.live ? '<i class="live-dot"></i>' : ''}</span>` : '')
@@ -262,7 +261,14 @@ function setOpen(open) {
   animateStrip(RESIZE);
 }
 
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+// WebKit can leave CSS media styles stale after a desktop preference change.
+const applyMotionPreference = () => document.documentElement.classList.toggle('reduced-motion', reducedMotion.matches);
+reducedMotion.addEventListener('change', applyMotionPreference);
+applyMotionPreference();
+
 function animateStrip(duration) {
+  if (reducedMotion.matches) duration = 0;
   const layout = targetLayout();
   if (!layout) return;
   strip.from = strip.shown;
@@ -281,7 +287,7 @@ function animateStrip(duration) {
 
 function tick(now) {
   if (!strip.anim) return;
-  const t = (now - strip.anim.start) / strip.anim.duration;
+  const t = reducedMotion.matches ? 1 : (now - strip.anim.start) / strip.anim.duration;
   step(now, t);
   if (t < 1) {
     requestAnimationFrame(tick);
@@ -400,7 +406,7 @@ function buildStrip(layout) {
         leaves.dataset.html = html;
       }
       const label = files.length === 1 ? `Downloaded here: ${files[0].name}` : `${files.length} files downloaded here`;
-      leaves.title = label;
+      setTooltip(leaves, label);
       leaves.setAttribute('aria-label', `${label}, from ${v.label}`);
     } else if (leaves) {
       leaves.remove();
@@ -409,7 +415,7 @@ function buildStrip(layout) {
   }
   const dot = $('memory-dot');
   dot.classList.toggle('on', !!S.frame?.captureEnabled);
-  dot.title = S.frame?.captureEnabled ? 'Memory · Remembering pages' : 'Memory · Not remembering pages';
+  setTooltip(dot, S.frame?.captureEnabled ? 'Memory · Remembering pages' : 'Memory · Not remembering pages');
 }
 
 function step(now, t) {
@@ -552,7 +558,7 @@ function renderCard(preview) {
   const r = strip.shown.nodes.get(id);
   if (!v || !r || S.card !== id) return;
   const isCurrent = id === current();
-  const tags = [isCurrent && 'Current page', v.queued && 'Pending'].filter(Boolean);
+  const tags = [isCurrent && 'Current page', v.queued && 'Waiting'].filter(Boolean);
   const source = isCurrent && v.source;
   const card = $('card');
   card.innerHTML = `<div class="card-head">${visitFav(v, 16)}<div class="card-title">${esc(preview.title)}</div></div>`
@@ -613,7 +619,7 @@ function renderWaitingPin() {
   const ids = S.frame?.waiting.ids ?? [];
   const next = visit(ids[0]);
   $('waiting-pin').innerHTML = next ? markedFav(next, 16) + `<span class="count">${ids.length}</span>` : '';
-  $('waiting-pin').title = next ? `Next waiting page: ${next.label} · Ctrl+Tab` : '';
+  setTooltip($('waiting-pin'), next ? `Next waiting page: ${next.label} · Ctrl+Tab` : '');
 }
 
 function openNextWaiting(id = S.frame?.waiting.ids[0]) {
@@ -651,13 +657,23 @@ $('popover').addEventListener('mouseleave', leaveWaitingPin);
 
 // ---------- popovers: Memory menu, hidden pages, trees that do not fit, a tree's name ----------
 
+function setTooltip(anchor, title) {
+  if (S.popover?.anchor === anchor) {
+    S.popover.title = title;
+    anchor.removeAttribute('title');
+  } else if (title == null) anchor.removeAttribute('title');
+  else anchor.title = title;
+}
+
 /// Opens a menu under `anchor`, or under `below` when the anchor sits on top of something
 /// the menu should not cover.
 function openPopover(kind, anchor, data, below = anchor) {
   const popover = $('popover');
   const a = anchor.getBoundingClientRect();
   const b = below.getBoundingClientRect();
+  closePopover(false);
   S.popover = { kind, anchor, data };
+  setTooltip(anchor, anchor.getAttribute('title'));
   renderPopover();
   popover.hidden = false;
   const width = popover.offsetWidth;
@@ -672,7 +688,9 @@ function openPopover(kind, anchor, data, below = anchor) {
 
 function closePopover(returnFocus = true) {
   if (!S.popover) return;
+  const { anchor, title } = S.popover;
   S.popover = null;
+  setTooltip(anchor, title);
   $('popover').hidden = true;
   if (S.layer === 'menu') setLayer(restingLayer());
   if (returnFocus && pageShows() && !S.palette && !S.reader) post({ t: 'focus', target: 'page' });
@@ -693,14 +711,14 @@ function renderLoginChip() {
   chip.classList.toggle('on', !!S.save);
   if (S.save) {
     chip.innerHTML = `${icon('key')}<span>${S.save.update ? 'Update password?' : 'Save login?'}</span>`;
-    chip.title = `${S.save.update ? 'Update the saved password' : 'Save the login'} for ${loginLabel(S.save.username)} on ${S.save.site}`;
+    setTooltip(chip, `${S.save.update ? 'Update the saved password' : 'Save the login'} for ${loginLabel(S.save.username)} on ${S.save.site}`);
   } else if (S.locked && !names.length) {
     chip.innerHTML = `${icon('key')}<span>${esc(`Unlock ${S.locked}`)}</span>`;
-    chip.title = `Unlock ${S.locked} to fill a saved login · Ctrl+Shift+L`;
+    setTooltip(chip, `Unlock ${S.locked} to fill a saved login · Ctrl+Shift+L`);
   } else if (names.length) {
     const one = names.length === 1;
     chip.innerHTML = `${icon('key')}<span>${esc(one ? loginLabel(names[0]) : `${names.length} logins`)}</span>`;
-    chip.title = `${one ? `Fill the saved login for ${loginLabel(names[0])}` : 'Choose a saved login to fill'} · Ctrl+Shift+L`;
+    setTooltip(chip, `${one ? `Fill the saved login for ${loginLabel(names[0])}` : 'Choose a saved login to fill'} · Ctrl+Shift+L`);
   }
   if (S.popover?.kind === 'save-login' && !S.save) closePopover(false);
   if (S.popover?.kind === 'logins') {
@@ -733,7 +751,7 @@ function pickLogin(index) {
 }
 
 function visitRow(v) {
-  const detail = v.queued ? 'pending' : v.site.split(' · ').slice(1).join(' · ');
+  const detail = v.queued ? 'waiting' : v.site.split(' · ').slice(1).join(' · ');
   return `<button class="menu-row" data-id="${v.id}">${visitFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(detail)}</span></button>`;
 }
 
@@ -782,7 +800,7 @@ function renderPopover() {
     popover.innerHTML = `<div class="pop-head"><span class="menu-heading grow">Waiting in this tree · ${ids.length}</span><span class="menu-detail">${esc(order)}</span></div>`
       + ids.map((id, i) => {
         const v = visit(id);
-        return `<button class="menu-row${i === 0 ? ' next' : ''}" data-id="${id}">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.when)}</span>${i === 0 ? '<kbd>Ctrl Tab</kbd>' : ''}</button>`;
+        return `<button class="menu-row${i === 0 ? ' next' : ''}" data-id="${id}">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.detail)}</span>${i === 0 ? '<kbd>Ctrl Tab</kbd>' : ''}</button>`;
       }).join('');
     popover.querySelectorAll('[data-id]').forEach((row) => row.addEventListener('click', () => openNextWaiting(row.dataset.id)));
   } else if (kind === 'save-login') {
@@ -1021,7 +1039,7 @@ function renderSheet(reveal) {
   }).join('');
   $('tree-list').innerHTML = view.rows.map((r) => {
     const v = visit(r.id);
-    return `<button class="tree-row${r.path ? ' path' : ''}${r.id === current() ? ' current' : ''}${markClass(v)}" data-id="${r.id}" style="padding-left:${8+r.depth*22}px">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.when)}${v.live ? ' · Open in memory' : ''}</span></button>`;
+    return `<button class="tree-row${r.path ? ' path' : ''}${r.id === current() ? ' current' : ''}${markClass(v)}" data-id="${r.id}" style="padding-left:${8+r.depth*22}px">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.queued ? v.detail : v.when)}${v.live ? ' · Open in memory' : ''}</span></button>`;
   }).join('');
   setTreeSide(S.treeSide, reveal);
 }
@@ -1218,8 +1236,10 @@ function renderStart() {
   find(focused)?.focus();
   if (anchor) {
     const next = find(anchor);
-    if (next) S.popover.anchor = next;
-    else closePopover(false);
+    if (next) {
+      S.popover.anchor = next;
+      setTooltip(next, next.getAttribute('title'));
+    } else closePopover(false);
   }
 }
 
@@ -1231,10 +1251,8 @@ function forestLayout() {
 
 function renderForest() {
   if (S.overlay !== 'forest' || !S.frame) {
-    S.forestDirty = true;
     return;
   }
-  S.forestDirty = false;
   const frame = S.frame;
   const layout = forestLayout();
   $('forest-count').textContent = frame.forest.count;
@@ -1288,7 +1306,7 @@ function fitForest(animate) {
   const canvas = $('forest-canvas');
   const to = { x: 0, y: 0, zoom: clamp((canvas.clientWidth - 20) / Math.max(layout.width, 1), 0.3, 1) };
   cancelAnimationFrame(cameraTween);
-  if (!animate) {
+  if (!animate || reducedMotion.matches) {
     S.camera = to;
     applyCamera();
     return;
@@ -1296,7 +1314,7 @@ function fitForest(animate) {
   const from = { ...S.camera };
   const start = performance.now();
   const frame = (now) => {
-    const t = (now - start) / 220;
+    const t = reducedMotion.matches ? 1 : (now - start) / 220;
     const k = ease(t);
     S.camera = { x: mix(from.x, to.x, k), y: mix(from.y, to.y, k), zoom: mix(from.zoom, to.zoom, k) };
     applyCamera();
@@ -1389,7 +1407,10 @@ const when = (at) => new Date(at).toLocaleString(undefined, { day: '2-digit', mo
 // ---------- Rust's side ----------
 
 window.canopy = {
-  viewport(height) { S.windowHeight = height; },
+  viewport(height) {
+    S.windowHeight = height;
+    document.documentElement.style.setProperty('--window-height', `${height}px`);
+  },
   start(value) { if (!S.frame) return; S.frame.start = value; renderStart(); },
   present(frame) {
     const previous = current();
@@ -1626,7 +1647,6 @@ document.addEventListener('keydown', (event) => {
 });
 
 $('new-tree').innerHTML = icon('plus');
-$('agent').innerHTML = icon('spark');
 $('forest-button').innerHTML = icon('forest') + '<span>Forest</span>';
 $('settings-button').innerHTML = icon('settings');
 $('tab-overflow').innerHTML = icon('chevron');

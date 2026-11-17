@@ -231,6 +231,12 @@ impl HtmlChrome {
             .with_url("canopy://localhost/index.html")
             .build_gtk(container)
             .context("Could not create the chrome view.")?;
+        {
+            use webkit2gtk::{HitTestResultExt, WebViewExt};
+            use wry::WebViewExtUnix;
+            view.webview()
+                .connect_context_menu(|_, _, _, hit| !hit.context_is_editable());
+        }
         let inner = Rc::new(Inner {
             view,
             host: RefCell::new(None),

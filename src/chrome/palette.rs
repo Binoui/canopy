@@ -45,7 +45,7 @@ impl Group {
     pub(crate) fn title(self) -> &'static str {
         match self {
             Group::Suggested => "Suggested",
-            Group::Pending => "Pending in this tree",
+            Group::Pending => "Waiting in this tree",
             Group::Forest => "In your forest",
             Group::Bookmarks => "Bookmarks",
             Group::Saved => "Saved text",
