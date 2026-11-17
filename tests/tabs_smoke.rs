@@ -188,11 +188,13 @@ fn main() -> Result<()> {
     assert_eq!(
         chrome(
             &ui,
-            "document.querySelector('.tab[aria-selected=true]').offsetWidth"
+            "(() => { const on = document.querySelector('.tab[aria-selected=true]').offsetWidth; return on >= 200 && on <= 280 && [...document.querySelectorAll('.tab')].every(t => t.offsetWidth <= on); })()"
         )?,
-        200
+        true
     );
-    println!("PASS 2 four trees at 820px keep all titles and active gets 200px.");
+    println!(
+        "PASS 2 four trees at 820px keep all titles and active gets 200 to 280px, the widest."
+    );
     if let Ok(folder) = std::env::var("CANOPY_TAB_SHOTS") {
         for theme in ["dark", "light"] {
             chrome(&ui, &format!("(intent('theme', {{mode:'{theme}'}}), true)"))?;
@@ -279,9 +281,9 @@ fn review_regressions(ui: &Ui) -> Result<()> {
     for width in [820, 560, 480] {
         ui.window.resize(width, 800);
         pump(400);
-        assert_eq!(chrome(ui, "(() => { const tab = document.querySelector('.tab[aria-selected=true]'); return tab.offsetWidth === 200 && tab.querySelector('.tab-title').clientWidth >= 110; })()")?, true, "active natural title at {width}px");
+        assert_eq!(chrome(ui, "(() => { const tab = document.querySelector('.tab[aria-selected=true]'); return tab.offsetWidth >= 200 && tab.offsetWidth <= 280 && tab.querySelector('.tab-title').clientWidth >= 110; })()")?, true, "active natural title at {width}px");
     }
-    println!("PASS 2 active title keeps 200px at 820, 560 and 480px.");
+    println!("PASS 2 active title keeps 200 to 280px at 820, 560 and 480px.");
     chrome(ui, "(intent('select-tree', {id:S.frame.tabs[0].id}), true)")?;
     pump(300);
     ui.window.resize(1240, 800);

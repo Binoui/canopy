@@ -71,7 +71,7 @@ fn main() -> Result<()> {
         canopy::browser::NavigationTarget::Root,
     )?;
     wait("fixture loaded", || {
-        text(&ui, ".tab-title").contains("Tooltip fixture")
+        text(&ui, ".tab-name").contains("Tooltip fixture")
     })?;
     let (x, y) = element_point(&ui, "waiting")?;
     move_to(x, y)?;

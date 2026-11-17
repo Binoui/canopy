@@ -233,9 +233,9 @@ function renderTabs() {
     const pending = tree.pending ? `, ${tree.pending} waiting` : '';
     const pinned = tree.pinned ? ', pinned' : '';
     const key = index < 9 ? ` · Ctrl+${index + 1}` : '';
-    const html = `<button class="tab" role="tab" tabindex="${tree.active ? 0 : -1}" aria-selected="${tree.active}" data-id="${tree.id}" title="${esc(`${tree.title} · ${pages}${pending}${pinned}${key}`)}" aria-label="${esc(tree.name)}">`
+    const html = `<button class="tab" role="tab" tabindex="${tree.active ? 0 : -1}" aria-selected="${tree.active}" data-id="${tree.id}" title="${esc(`${tree.title}${tree.subtitle ? ` · ${tree.subtitle}` : ''} · ${pages}${pending}${pinned}${key}`)}" aria-label="${esc(tree.subtitle ? `${tree.name}, on ${tree.subtitle}` : tree.name)}">`
       + (root ? `<span class="mk">${visitFav(root, 14)}${tree.live ? '<i class="live-dot"></i>' : ''}</span>` : '')
-      + `<span class="tab-title">${esc(tree.title)}</span>`
+      + `<span class="tab-title${tree.subtitle ? ' two-line' : ''}"><span class="tab-name">${esc(tree.title)}</span>${tree.subtitle ? `<span class="tab-sub">${esc(tree.subtitle)}</span>` : ''}</span>`
       + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Pinned">${icon('pinned')}</span>` : '')
       + (tree.pending ? `<span class="count">${tree.pending}</span>` : '')
       + `<span class="tab-settle" data-settle="${tree.id}" title="Settle${tree.active ? ' · Ctrl+W' : ''}" aria-hidden="true">${icon('close')}</span>`

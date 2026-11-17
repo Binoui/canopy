@@ -161,7 +161,7 @@ fn main() -> Result<()> {
 
     key("ctrl+1")?;
     wait("Ctrl+1 selects the first open tab", || shown(&ui, ids[1]))?;
-    assert_eq!(text(&ui, "#tab-row .tab-title"), "Settling /Beta");
+    assert_eq!(text(&ui, "#tab-row .tab-name"), "Settling /Beta");
     println!("PASS Ctrl+1 selects the first open tab after Alpha is settled.");
 
     key("ctrl+w")?;
@@ -229,7 +229,7 @@ fn main() -> Result<()> {
         tabs(&ui) == 2 && shown(&ui, ids[2])
     })?;
     assert_eq!(
-        text(&ui, "#tab-row .tab:first-child .tab-title"),
+        text(&ui, "#tab-row .tab:first-child .tab-name"),
         "Settling /Alpha",
         "Reopened trees retain their creation slots"
     );

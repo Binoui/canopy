@@ -490,7 +490,7 @@ fn main() -> Result<()> {
     assert_eq!(ui.snapshot()?.current, Some(pending.id));
     println!("PASS a tree tab restores its tree's last page.");
 
-    let tab_title = format!("#tab-row [data-id='{a}'] .tab-title");
+    let tab_title = format!("#tab-row [data-id='{a}'] .tab-name");
     let automatic = text(&ui, &tab_title);
     let name_tree = |keys: &dyn Fn() -> Result<()>| -> Result<()> {
         let (x, y) = chrome_point(&ui, &tab_title)?;
