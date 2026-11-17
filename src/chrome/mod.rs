@@ -63,6 +63,7 @@ type ShownPalette = (String, Vec<(Group, PaletteItem)>, usize);
 
 /// Everything the chrome shows, read from SQLite in one go.
 pub struct ChromeFrame {
+    pub mail: crate::mail::Mail,
     pub bookmarks: Vec<crate::browser::Bookmark>,
     pub forest: ForestProjection,
     /// Waiting pages that already have a live view. Nothing fills it yet: background
@@ -98,6 +99,7 @@ pub enum PaletteSeed {
 /// What the chrome asks the browser to do.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChromeIntent {
+    CheckMail,
     AnswerFormReturn {
         question: u64,
         proceed: bool,
@@ -758,9 +760,13 @@ impl Inner {
                 }
             }
             "intent" => {
-                let intent = self
-                    .intent(&message)
-                    .context("The chrome sent an unknown action.")?;
+                let intent = self.intent(&message);
+                if intent.is_none()
+                    && matches!(message["kind"].as_str(), Some("open-mail" | "open-inbox"))
+                {
+                    return Ok(());
+                }
+                let intent = intent.context("The chrome sent an unknown action.")?;
                 if let Some(host) = self.host() {
                     host.dispatch(intent);
                 }
@@ -911,6 +917,18 @@ impl Inner {
         let frame = frame.as_ref()?;
         let index = || message["index"].as_u64().map(|i| i as usize);
         Some(match message["kind"].as_str()? {
+            "check-mail" => ChromeIntent::CheckMail,
+            "open-mail" => ChromeIntent::Navigate {
+                url: frame
+                    .mail
+                    .link_for(message["account"].as_str()?, message["id"].as_str()?)?
+                    .clone(),
+                target: NavigationTarget::Root,
+            },
+            "open-inbox" => ChromeIntent::Navigate {
+                url: frame.mail.inbox(message["account"].as_str()?)?.clone(),
+                target: NavigationTarget::Root,
+            },
             "dismiss" => ChromeIntent::Dismiss(id("id")?),
             "settle-branch" => ChromeIntent::SettleBranch(id("id")?),
             "move-to-tree" => ChromeIntent::MoveToTree(id("id")?),

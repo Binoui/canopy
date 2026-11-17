@@ -117,6 +117,9 @@ fn parse(xml: &str, origin: &Origin, number: AccountNumber) -> Option<Account> {
 
 fn utc_ms(text: &str) -> Option<i64> {
     let (date, time) = text.strip_suffix('Z')?.split_once('T')?;
+    if date.len() != 10 {
+        return None;
+    }
     let date: Vec<i64> = date
         .split('-')
         .map(str::parse)

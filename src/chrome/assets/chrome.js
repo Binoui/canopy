@@ -9,6 +9,7 @@ const MOVE = 300;
 const LEAVES = 3;
 const MONOGRAM = ['#d95c42', '#3b7ad6', '#2e9e5e', '#9c6bde', '#d9962e', '#3b99ad', '#d1547a', '#6b7380'];
 const ICONS = {
+  mail: '<path d="M4 6h16v12H4z" stroke-width="1.7"/><path d="M4 7l8 6 8-6" stroke-width="1.7"/>',
   bookmark: '<path d="M6 3h12v18l-6-4-6 4z" stroke-width="1.7"/>',
   expand: '<path d="M9 4H4v5M15 4h5v5M4 15v5h5M20 15v5h-5" stroke-width="1.7"/>',
   collapse: '<path d="M4 9h5V4M20 9h-5V4M9 20v-5H4M15 20v-5h5" stroke-width="1.7"/>',
@@ -30,7 +31,7 @@ const $ = (id) => document.getElementById(id);
 const post = (message) => window.ipc.postMessage(JSON.stringify(message));
 /// Intents that load a page also give the keyboard back to it, as the GTK buttons that
 /// never took focus did.
-const NAVIGATES = new Set(['reload', 'restore', 'select-tree', 'settle-tree', 'settle-current', 'open-suggestion', 'open-bookmark', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
+const NAVIGATES = new Set(['reload', 'restore', 'select-tree', 'settle-tree', 'settle-current', 'open-suggestion', 'open-bookmark', 'open-mail', 'open-inbox', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
 const intent = (kind, extra = {}) => {
   post({ t: 'intent', kind, ...extra });
   if (NAVIGATES.has(kind)) post({ t: 'focus', target: 'page' });
@@ -715,6 +716,15 @@ function placePins() {
   }
 }
 
+function renderMailPin() {
+  const pin = S.frame?.mail?.pin;
+  if (!pin) return;
+  $('mail-pin').innerHTML = icon('mail') + (pin.count ? `<span class="count">${esc(pin.count)}</span>` : '');
+  $('mail-pin').setAttribute('aria-label', pin.name);
+  $('mail-pin').toggleAttribute('data-stale', pin.stale);
+  setTooltip($('mail-pin'), pin.name);
+}
+
 function renderWaitingPin() {
   const ids = S.frame?.waiting.ids ?? [];
   const next = visit(ids[0]);
@@ -876,9 +886,25 @@ function visitRow(v) {
 
 // A refresh rebuilds an open popover's rows. The row that had the keyboard keeps it.
 function refreshPopover() {
-  const index = [...$('popover').querySelectorAll('button')].indexOf(document.activeElement);
+  if (!S.popover) return;
+  const popover = $('popover');
+  if (S.popover.kind === 'mail') {
+    const active = document.activeElement;
+    const address = active?.dataset.account;
+    const id = active?.dataset.id;
+    const header = active?.classList.contains('mail-inbox');
+    const hadFocus = popover.contains(active);
+    renderPopover();
+    if (S.popover && hadFocus) {
+      const row = [...popover.querySelectorAll('button')].find((el) =>
+        el.dataset.account === address && (id ? el.dataset.id === id : header && el.classList.contains('mail-inbox')));
+      (row ?? popover).focus({ preventScroll: true });
+    }
+    return;
+  }
+  const index = [...popover.querySelectorAll('button')].indexOf(document.activeElement);
   renderPopover();
-  if (index >= 0 && S.popover) $('popover').querySelectorAll('button')[index]?.focus();
+  if (index >= 0 && S.popover) popover.querySelectorAll('button')[index]?.focus();
 }
 
 function renderPopover() {
@@ -887,6 +913,7 @@ function renderPopover() {
   popover.setAttribute('role', ['node', 'tab', 'unpin', 'bookmark'].includes(kind) ? 'menu' : 'dialog');
   popover.setAttribute('aria-label', kind === 'node' ? 'Page actions' : kind === 'tab' ? 'Tree actions' : kind.replaceAll('-', ' '));
   popover.classList.toggle('waiting', kind === 'waiting');
+  popover.classList.toggle('mail', kind === 'mail');
   if (kind !== 'node') delete popover.dataset.nodeHtml;
   if (kind === 'node') {
     const v = visit(data);
@@ -934,6 +961,26 @@ function renderPopover() {
       const rows = data.more ? b.more?.rows : folder?.rows;
       popover.innerHTML = (rows ?? []).map((r) => `<button class="menu-row" data-start="bookmark" data-id="${r.id}" title="${esc(r.label + '\n' + r.url)}">${fav(r.url, true, 16)}<span class="grow">${esc(r.label)}</span></button>`).join('');
     }
+  } else if (kind === 'mail') {
+    const mail = S.frame.mail;
+    if (!mail.accounts.length) { closePopover(false); return; }
+    popover.setAttribute('aria-label', 'Unread mail');
+    popover.innerHTML = (mail.notice ? `<div class="mail-notice" role="status">${esc(mail.notice)}</div>` : '')
+      + mail.accounts.map((a) => '<section class="mail-account">'
+        + `<button class="menu-row mail-inbox" data-account="${esc(a.account)}" aria-label="${esc(a.name)}"><span class="grow">${esc(a.address)}</span><span class="menu-detail">${esc(a.count)}</span></button>`
+        + a.rows.map((r) => `<button class="menu-row mail-row" data-account="${esc(a.account)}" data-id="${esc(r.id)}" aria-label="${esc(r.name)}">`
+          + `<span class="mail-line"><span class="mail-from">${esc(r.from)}</span><span class="menu-detail">${esc(r.when)}</span></span>`
+          + `<span class="mail-subject">${esc(r.subject)}</span><span class="mail-snippet">${esc(r.snippet)}</span></button>`).join('')
+        + (a.more ? `<button class="menu-row mail-more" data-account="${esc(a.account)}">${esc(a.more)}</button>` : '')
+        + '</section>').join('');
+    popover.querySelectorAll('.mail-row').forEach((row) => row.addEventListener('click', () => {
+      closePopover(false);
+      intent('open-mail', { account: row.dataset.account, id: row.dataset.id });
+    }));
+    popover.querySelectorAll('.mail-inbox, .mail-more').forEach((row) => row.addEventListener('click', () => {
+      closePopover(false);
+      intent('open-inbox', { account: row.dataset.account });
+    }));
   } else if (kind === 'waiting') {
     const { ids, order } = S.frame.waiting;
     if (!ids.length) { closePopover(false); return; }
@@ -1705,6 +1752,7 @@ window.canopy = {
     S.frame = { ...frame, start: frame.start ?? S.frame?.start };
     applyStrip(frame.strip);
     renderWaitingPin();
+    renderMailPin();
     applyTheme();
     if (frame.current !== previous) {
       hideList();
@@ -1746,6 +1794,7 @@ window.canopy = {
   strip(layouts) {
     applyStrip(layouts);
     renderWaitingPin();
+    renderMailPin();
     animateStrip(0);
     fitTabs();
   },
@@ -1905,6 +1954,7 @@ window.canopy = {
   /// calls held back while a button is down.
   state() {
     return {
+      mail: S.frame?.mail ?? null,
       buttons: refresh.buttons, start: S.frame?.start, deferred: [...refresh.pending.keys()],
       surface: S.surface, overlay: S.overlay, treeSide: S.treeSide, animating: !!strip.anim, list: S.list?.key ?? null, layer: S.layer, palette: !!S.palette,
       reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported, logins: loginNames(), save: S.save, locked: S.locked,
@@ -2175,4 +2225,18 @@ window.addEventListener('focus', () => {
   if (pageShows() && document.activeElement === document.body) {
     controlsIn(document.body).at(-1)?.focus();
   }
+});
+
+function openMail() {
+  openPopover('mail', $('mail-pin'));
+  intent('check-mail');
+}
+$('mail-pin').addEventListener('click', (event) => {
+  event.stopPropagation();
+  if (S.popover?.kind === 'mail') closePopover(); else openMail();
+});
+$('mail-pin').addEventListener('keydown', (event) => {
+  if (event.key !== 'ArrowDown') return;
+  event.preventDefault();
+  openMail();
 });

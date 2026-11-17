@@ -69,6 +69,7 @@ mod tests {
         };
         let frozen = [page("a"), page("b"), page("c")];
         let frame = ChromeFrame {
+            mail: crate::mail::Mail::default(),
             forest: ForestProjection::from_snapshot(
                 browser.snapshot().unwrap(),
                 browser.tree_states().unwrap(),
@@ -103,6 +104,7 @@ mod tests {
         browser.set_pinned(states[1].root, true).unwrap();
         browser.set_pinned(states[0].root, true).unwrap();
         let frame = ChromeFrame {
+            mail: crate::mail::Mail::default(),
             forest: ForestProjection::from_snapshot(
                 browser.snapshot().unwrap(),
                 browser.tree_states().unwrap(),

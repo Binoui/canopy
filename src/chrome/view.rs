@@ -130,6 +130,7 @@ pub(crate) fn frame(
         "files": files_value(&frame.files),
         "forest": surfaces.forest.then(|| forest_layout.cloned().unwrap_or_else(|| forest_frame(forest))),
         "captureEnabled": frame.capture_enabled,
+        "mail": mail_value(&frame.mail),
         "theme": match frame.theme {
             ThemeMode::System => "system",
             ThemeMode::Light => "light",
@@ -209,7 +210,7 @@ pub(crate) fn tree_view_value(
 }
 
 pub(crate) fn strip_for_frame(frame: &ChromeFrame, width: f64) -> Value {
-    let mut strip = strip(&frame.forest, width);
+    let mut strip = strip(&frame.forest, &frame.mail, width);
     let state = |id: &str| {
         let id: VisitId = id.parse().unwrap();
         format!(
@@ -260,8 +261,8 @@ fn branch_name(label: &str, pages: usize, waiting: usize, queued: bool) -> Strin
 }
 
 /// The current path folded to fit the room left by the pinned controls.
-pub(crate) fn strip(forest: &ForestProjection, width: f64) -> Value {
-    let pins = pins::pins(forest, width);
+pub(crate) fn strip(forest: &ForestProjection, mail: &crate::mail::Mail, width: f64) -> Value {
+    let pins = pins::pins(forest, mail, width);
     let placed: Vec<_> = pins
         .placed
         .iter()
@@ -774,7 +775,7 @@ mod tests {
     #[test]
     fn fully_listed_waiting_children_have_no_empty_more_row() {
         let (forest, _) = chain();
-        let value = strip(&forest, 1240.);
+        let value = strip(&forest, &crate::mail::Mail::default(), 1240.);
         let after = value["nodes"]
             .as_array()
             .unwrap()
@@ -818,7 +819,7 @@ mod tests {
     fn current_pill_fits_reserved_room() {
         let (forest, _) = chain_length(Lifecycle::Open, 40);
         for width in [390., 800., 1240., 1440.] {
-            let strip = super::strip(&forest, width);
+            let strip = super::strip(&forest, &crate::mail::Mail::default(), width);
             let room = strip["room"].as_f64().unwrap();
             assert!(room < width);
             let layout = &strip;
@@ -840,7 +841,7 @@ mod tests {
             vec![],
         )
         .unwrap();
-        let strip = super::strip(&empty, 800.);
+        let strip = super::strip(&empty, &crate::mail::Mail::default(), 800.);
         assert_eq!(strip["room"], 800.);
         assert_eq!(strip["pins"], json!([]));
     }
@@ -858,6 +859,7 @@ mod tests {
         browser.settle_tree(TreeId(roots[1])).unwrap();
         browser.set_pinned(TreeId(roots[1]), true).unwrap();
         let frame = ChromeFrame {
+            mail: crate::mail::Mail::default(),
             forest: ForestProjection::from_snapshot(
                 browser.snapshot().unwrap(),
                 browser.tree_states().unwrap(),
@@ -931,6 +933,7 @@ mod tests {
     fn loaded_frame_serializes_all_three_states() {
         let (forest, ids) = chain();
         let mut frame = ChromeFrame {
+            mail: crate::mail::Mail::default(),
             forest,
             loaded: HashSet::new(),
             live: HashSet::new(),
@@ -1045,6 +1048,7 @@ mod tests {
         )
         .unwrap();
         let frame = ChromeFrame {
+            mail: crate::mail::Mail::default(),
             loaded: HashSet::new(),
             live: HashSet::new(),
             forest,
@@ -1076,6 +1080,7 @@ mod tests {
     fn settled_pages_stay_in_the_visits_map_so_search_and_the_forest_can_open_them() {
         let (forest, ids) = chain_with_lifecycle(Lifecycle::Settled { since: 1 });
         let frame = ChromeFrame {
+            mail: crate::mail::Mail::default(),
             loaded: HashSet::new(),
             live: HashSet::new(),
             forest,
@@ -1112,6 +1117,7 @@ mod tests {
     fn the_frame_carries_every_visit_and_the_folded_strip() {
         let (forest, ids) = chain();
         let frame = ChromeFrame {
+            mail: crate::mail::Mail::default(),
             loaded: HashSet::new(),
             live: HashSet::new(),
             forest,
@@ -1150,6 +1156,7 @@ mod tests {
             .unwrap();
         assert_eq!(pill["id"], ids[1].to_string());
         assert_eq!(value["theme"], "dark");
+        assert!(value["mail"]["pin"].is_null());
         assert_eq!(value["forest"]["count"], "1 tree · 3 pages");
     }
 
@@ -1168,6 +1175,7 @@ mod tests {
             missing,
         };
         let frame = ChromeFrame {
+            mail: crate::mail::Mail::default(),
             loaded: HashSet::new(),
             live: HashSet::new(),
             forest,
@@ -1239,7 +1247,7 @@ mod tests {
     #[test]
     fn edges_carry_four_control_points() {
         let (forest, _) = chain();
-        let strip = strip(&forest, 1240.);
+        let strip = strip(&forest, &crate::mail::Mail::default(), 1240.);
         let edge = &strip["edges"][0];
         assert_eq!(edge["c"].as_array().unwrap().len(), 4);
         assert_eq!(edge["c"][0].as_array().unwrap().len(), 2);
@@ -1275,6 +1283,7 @@ mod tests {
         .unwrap();
         assert_eq!(forest.open()[0].pending_count, 0);
         let frame = ChromeFrame {
+            mail: crate::mail::Mail::default(),
             forest,
             loaded: ids.iter().copied().collect(),
             live: HashSet::new(),
@@ -1327,5 +1336,97 @@ mod tests {
                 .0
                 .is_empty()
         );
+    }
+}
+
+fn mail_value(mail: &crate::mail::Mail) -> Value {
+    use crate::mail::Trouble;
+    let unread = mail.unread();
+    let accounts = plural(mail.accounts.len(), "Gmail account");
+    let name = if unread == 0 {
+        format!("No unread mail in {accounts}")
+    } else {
+        format!("{unread} unread in {accounts}")
+    };
+    let updated = format!("Last update {}", ago(mail.read_at));
+    let notice = mail.trouble.map(|t| {
+        format!(
+            "{} {updated}.",
+            match t {
+                Trouble::Unreachable => "Could not reach Gmail.",
+                Trouble::Unreadable => "Gmail's feed changed, and Canopy cannot read it.",
+            }
+        )
+    });
+    let pin = (!mail.accounts.is_empty()).then(|| {
+        json!({
+            "count": if unread == 0 { String::new() } else { unread.to_string() },
+            "stale": mail.trouble.is_some(),
+            "name": if mail.trouble.is_some() { format!("{name}. {updated}") } else { name },
+        })
+    });
+    json!({
+        "pin": pin,
+        "notice": notice,
+        "accounts": mail.accounts.iter().map(|a| {
+            let count = if a.unread == 0 { "No unread mail".to_owned() } else { format!("{} unread", a.unread) };
+            let more = a.unread.saturating_sub(a.messages.len() as u32);
+            json!({
+                "account": a.address,
+                "address": a.address,
+                "count": count,
+                "name": format!("Open the inbox of {}, {count}", a.address),
+                "more": (more > 0).then(|| format!("{more} more in the inbox")),
+                "rows": a.messages.iter().map(|m| {
+                    let when = m.issued.map(ago).unwrap_or_default();
+                    json!({"id": m.id.as_str(), "from": m.from, "subject": m.subject, "snippet": m.snippet,
+                        "when": when, "name": format!("{}, {}, {when}", m.from, m.subject)})
+                }).collect::<Vec<_>>(),
+            })
+        }).collect::<Vec<_>>(),
+    })
+}
+
+#[cfg(test)]
+mod mail_tests {
+    use super::*;
+    use crate::mail::{Mail, Trouble};
+
+    #[test]
+    fn the_frame_hides_mail_without_accounts_and_names_counts_rows_and_staleness() {
+        assert!(mail_value(&Mail::default())["pin"].is_null());
+        let mut mail = crate::mail::fixture();
+        let value = mail_value(&mail);
+        assert_eq!(value["pin"]["count"], "3");
+        assert_eq!(value["pin"]["name"], "3 unread in 1 Gmail account");
+        assert_eq!(value["pin"]["stale"], false);
+        assert_eq!(value["accounts"][0]["account"], "ana@example.test");
+        assert_eq!(value["accounts"][0]["more"], "2 more in the inbox");
+        assert_eq!(
+            value["accounts"][0]["rows"][0]["when"],
+            ago(mail.accounts[0].messages[0].issued.unwrap())
+        );
+        for (trouble, prefix) in [
+            (Trouble::Unreachable, "Could not reach Gmail."),
+            (Trouble::Unreadable, "Gmail's feed changed"),
+        ] {
+            mail.trouble = Some(trouble);
+            let value = mail_value(&mail);
+            assert_eq!(value["pin"]["stale"], true);
+            assert!(value["notice"].as_str().unwrap().starts_with(prefix));
+            assert!(value["pin"]["name"]
+                .as_str()
+                .unwrap()
+                .contains("Last update"));
+        }
+        mail.accounts[0].unread = 0;
+        let value = mail_value(&mail);
+        assert_eq!(value["pin"]["count"], "");
+        assert!(value["pin"]["name"]
+            .as_str()
+            .unwrap()
+            .starts_with("No unread mail"));
+        assert_eq!(value["accounts"][0]["count"], "No unread mail");
+        assert!(value["accounts"][0]["more"].is_null());
     }
 }

@@ -26,6 +26,7 @@ pub struct Ui {
     pub window: gtk::Window,
     pub pages: Rc<Pages>,
     pub chrome: HtmlChrome,
+    pub mail: Rc<crate::mail::MailWatch>,
     refresh_scheduled: Cell<bool>,
     me: Weak<Ui>,
     inbox: crate::cookies::Inbox,
@@ -92,7 +93,17 @@ impl Ui {
         let ui = Rc::new_cyclic(|me: &Weak<Ui>| {
             let host: Weak<dyn ChromeHost> = me.clone();
             chrome.attach(host);
+            let mail =
+                crate::mail::MailWatch::start(pages.clone(), crate::mail::Origin::configured(), {
+                    let me = me.clone();
+                    move |signed_out| {
+                        if let Some(ui) = me.upgrade() {
+                            ui.mail_checked(&signed_out);
+                        }
+                    }
+                });
             Ui {
+                mail,
                 window,
                 pages,
                 chrome,
@@ -110,6 +121,12 @@ impl Ui {
                 save_watch: RefCell::default(),
                 saving: RefCell::new(None),
                 save_offers: Cell::new(0),
+            }
+        });
+        let mail = Rc::downgrade(&ui.mail);
+        ui.window.connect_destroy(move |_| {
+            if let Some(mail) = mail.upgrade() {
+                mail.stop();
             }
         });
         let weak = Rc::downgrade(&ui);
@@ -282,6 +299,7 @@ impl Ui {
                 })
                 .collect();
             Ok(ChromeFrame {
+                mail: self.mail.mail(),
                 loaded: self.pages.loaded_visits(),
                 live: self.pages.hidden_visits(),
                 forest,
@@ -308,6 +326,16 @@ impl Ui {
         });
     }
 
+    fn mail_checked(&self, signed_out: &[String]) {
+        if !signed_out.is_empty() {
+            self.chrome.toast(Toast::Info(format!(
+                "Signed out of Gmail as {}.",
+                signed_out.join(", ")
+            )));
+        }
+        self.schedule_refresh();
+    }
+
     fn refresh(&self) {
         match self.read_frame() {
             Ok(frame) => {
@@ -320,6 +348,9 @@ impl Ui {
                         |v| format!("{} · Canopy", v.label()),
                     );
                 self.window.set_title(&title);
+                if let Some(visit) = frame.forest.current().and_then(|id| frame.forest.visit(id)) {
+                    self.mail.notice_page(&visit.url, &visit.title);
+                }
                 self.chrome.present(frame);
             }
             Err(error) => self.report_error(&error.to_string()),
@@ -560,6 +591,10 @@ impl ChromeHost for Ui {
 
     fn dispatch(&self, intent: ChromeIntent) {
         let Some(ui) = self.me.upgrade() else { return };
+        if intent == ChromeIntent::CheckMail {
+            self.mail.check_soon();
+            return;
+        }
         if let ChromeIntent::AnswerFormReturn { question, proceed } = intent {
             self.pages.answer_form_return_for(question, proceed);
             return;
@@ -581,7 +616,7 @@ impl ChromeHost for Ui {
             self.chrome.uncover();
         }
         let result = match intent {
-            ChromeIntent::AnswerFormReturn { .. } => unreachable!(),
+            ChromeIntent::AnswerFormReturn { .. } | ChromeIntent::CheckMail => unreachable!(),
             ChromeIntent::CancelContinuation => Ok(()),
             ChromeIntent::OpenPath { first, second } => self.pages.open_path(first, second),
             ChromeIntent::Bookmark { url, title } => {

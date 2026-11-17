@@ -1,6 +1,10 @@
 //! Memory-only unread Gmail, read with the login the pages already hold.
 
 mod feed;
+#[cfg(feature = "desktop")]
+mod watch;
+#[cfg(feature = "desktop")]
+pub use watch::MailWatch;
 
 use std::time::Duration;
 use url::Url;
@@ -239,6 +243,27 @@ fn delay_after(check: &Check, failures: u32) -> Duration {
 
 fn trigger_delay(wanted: Duration, since_last: Option<Duration>, gap: Duration) -> Duration {
     wanted.max(since_last.map_or(Duration::ZERO, |since| gap.saturating_sub(since)))
+}
+
+#[cfg(test)]
+pub(crate) fn fixture() -> Mail {
+    let body = br#"<feed><title>Inbox for ana@example.test</title><fullcount>3</fullcount><entry><id>tag:111</id><title>A subject</title><summary>A snippet</summary><author><name>A sender</name></author><issued>2026-11-17T09:12:33Z</issued></entry></feed>"#;
+    let feed::Outcome::Inbox(account) = feed::read(
+        Some(&feed::Answer {
+            status: 200,
+            location: None,
+            body,
+        }),
+        &Origin::gmail(),
+        AccountNumber(0),
+    ) else {
+        panic!("fixture must parse")
+    };
+    Mail {
+        accounts: vec![account],
+        read_at: 1_794_906_753_000,
+        trouble: None,
+    }
 }
 
 #[cfg(test)]
