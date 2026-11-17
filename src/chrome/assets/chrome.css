@@ -519,7 +519,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 #mail-pin[data-stale] .count { color: var(--muted); }
 #popover.mail { min-width: 360px; max-width: 440px; }
 .mail-tabs { min-width: 0; }
-.mail-tabs .mail-tab { display: flex; align-items: center; justify-content: center; gap: 5px; min-width: 0; padding: 4px 6px; }
+.mail-tabs .mail-tab { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; gap: 5px; min-width: 0; padding: 4px 6px; }
 .mail-tabs .mail-tab[aria-selected="true"] { background: var(--bg); color: var(--text); box-shadow: 0 1px 2px var(--shadow); }
 .mail-tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mail-tab .count { flex: none; color: var(--muted); }
