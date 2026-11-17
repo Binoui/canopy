@@ -485,16 +485,18 @@ fn main() -> Result<()> {
     );
     common::pump(6300);
     assert!(!common::visible(&f.ui, "#toast"));
-    f.ui.pages.undo_settle()?;
-    assert_eq!(f.ui.snapshot()?.current, Some(anchor));
+    common::key("ctrl+shift+t")?;
+    common::wait("shortcut reopens branch after toast", || {
+        f.ui.snapshot().is_ok_and(|s| s.current == Some(leaf))
+    })?;
     assert!(f
         .ui
         .pages
         .read(|b| b.visit(leaf))?
         .branch_settled_at
-        .is_some());
+        .is_none());
     println!(
-        "PASS settle Undo expires after six seconds and only its button receives pointer events."
+        "PASS Ctrl+Shift+T reopens a branch after its toast and only the Undo button receives pointer events."
     );
     let undo_root = f.root("/early-undo-root")?;
     let undo_branch = f.child(undo_root, "/early-undo-branch")?;
@@ -540,6 +542,13 @@ fn main() -> Result<()> {
         .read(|b| b.visit(nested))?
         .branch_settled_at
         .is_some());
+    common::wait(
+        "Undo reopens the off-path branch before navigating away",
+        || {
+            f.ui.snapshot().is_ok_and(|s| s.current == Some(settled))
+                && !f.ui.pages.selected_page().native.is_loading()
+        },
+    )?;
     f.select(nav_root)?;
     f.ui.pages.settle_branch(settled)?;
     let skipped_sibling = f.queue("/dismissed-sibling")?;

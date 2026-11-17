@@ -67,6 +67,15 @@ const S = {
   reported: '',
 };
 
+let inputOrigin = 'keyboard';
+document.addEventListener('mousedown', () => {
+  inputOrigin = 'pointer';
+  if (S.list) S.list.origin = 'pointer';
+}, true);
+document.addEventListener('keydown', () => {
+  inputOrigin = 'keyboard';
+  if (S.list) S.list.origin = 'keyboard';
+}, true);
 const focusReturns = new Map();
 function rememberFocus(kind, trigger = document.hasFocus() ? document.activeElement : document.body) {
   focusReturns.set(kind, { trigger, id: trigger?.id, data: trigger?.dataset.id, start: trigger?.dataset.start });
@@ -108,7 +117,7 @@ function fav(url, opened, size) {
   const letter = esc((host[0] || '?').toUpperCase());
   const src = `icon?u=${encodeURIComponent(url)}&o=${opened ? 1 : 0}&r=${S.rev}`;
   return `<span class="fav" style="width:${size}px;height:${size}px;background:${color};border-radius:${Math.min(3, size / 4)}px">`
-    + `<b style="font-size:${Math.round(size * 0.62)}px">${letter}</b>`
+    + `<b aria-hidden="true" style="font-size:${Math.round(size * 0.62)}px">${letter}</b>`
     + `<img src="${src}" alt="" onload="this.parentNode.style.background='none';this.previousSibling.style.visibility='hidden'" onerror="this.remove()"></span>`;
 }
 const waitState = (v) => v.queued ? (v.loaded ? 'loaded' : 'unloaded') : null;
@@ -134,13 +143,17 @@ function enterNode(key) {
   if (S.layer !== 'none' || S.overlay) return;
   S.hovered = key;
   cancel('hideList');
-  schedule('showList', 250, () => { if (S.hovered === key) showList(key); });
+  schedule('showList', 250, () => { if (S.hovered === key) showList(key, 'pointer'); });
+}
+function listHasKeyboardFocus() {
+  return S.list?.origin === 'keyboard' && ($('strip-list').contains(document.activeElement)
+    || strip.elements.get(S.list.key) === document.activeElement);
 }
 function leaveNode(event) {
   S.hovered = null;
   cancel('showList');
   if (event.relatedTarget?.closest('#strip-list')) return;
-  if (S.list) schedule('hideList', 220, () => { if (!$('strip-list').contains(document.activeElement)) hideList(); });
+  if (S.list) schedule('hideList', 220, () => { if (!listHasKeyboardFocus()) hideList(); });
 }
 function setLayer(layer) {
   S.layer = layer;
@@ -208,7 +221,7 @@ function renderTabs() {
     const pages = `${tree.pages} page${tree.pages === 1 ? '' : 's'}`;
     const pending = tree.pending ? `, ${tree.pending} waiting` : '';
     const key = index < 9 ? ` · Ctrl+${index + 1}` : '';
-    return `<button class="tab" role="tab" aria-selected="${tree.active}" data-id="${tree.id}" title="${esc(`${tree.title} · ${pages}${pending}${key}`)}" aria-label="${esc(tree.name)}">`
+    return `<button class="tab" role="tab" tabindex="${tree.active ? 0 : -1}" aria-selected="${tree.active}" data-id="${tree.id}" title="${esc(`${tree.title} · ${pages}${pending}${key}`)}" aria-label="${esc(tree.name)}">`
       + (root ? `<span class="mk">${visitFav(root, 14)}${tree.live ? '<i class="live-dot"></i>' : ''}</span>` : '')
       + `<span class="tab-title">${esc(tree.title)}</span>`
       + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Pinned">${icon('pinned')}</span>` : '')
@@ -218,6 +231,8 @@ function renderTabs() {
   }).join('');
   patchChildren(row, html);
   fitTabs();
+  const focused = row.contains(document.activeElement) ? document.activeElement : row.querySelector('[aria-selected="true"]') ?? row.querySelector('.tab:not([hidden])');
+  for (const tab of row.children) tab.tabIndex = tab === focused ? 0 : -1;
 }
 
 /// Hides the trees that do not fit behind the overflow arrow, keeping creation order and
@@ -246,6 +261,10 @@ function fitTabs() {
   }
   tabs.forEach((tab, i) => { tab.hidden = !shown.includes(i); });
   overflow.hidden = false;
+  if (!tabs.some((tab) => !tab.hidden && tab.tabIndex === 0)) {
+    const stop = tabs.find((tab) => !tab.hidden && tab.getAttribute('aria-selected') === 'true') ?? tabs.find((tab) => !tab.hidden);
+    for (const tab of tabs) tab.tabIndex = tab === stop ? 0 : -1;
+  }
 }
 
 // ---------- strip ----------
@@ -337,7 +356,7 @@ function buildStrip(layout) {
     if (!['run', 'earlier', 'after'].includes(n.kind)) el.dataset.page = n.page;
     else delete el.dataset.page;
     el.className = `node ${n.kind}` + (n.named ? ' named' : '') + markClass(v);
-    el.setAttribute('aria-label', `${n.name}${v.a11yState}`);
+    el.setAttribute('aria-label', n.name);
     el.setAttribute('aria-current', n.kind === 'pill' ? 'page' : 'false');
     el.setAttribute('aria-controls', 'strip-list');
     el.setAttribute('aria-expanded', String(S.list?.key === n.id));
@@ -391,6 +410,8 @@ function buildStrip(layout) {
       }
       const label = files.length === 1 ? `Downloaded here: ${files[0].name}` : `${files.length} files downloaded here`;
       leaves.title = label;
+      leaves.setAttribute('aria-haspopup', 'menu');
+      leaves.setAttribute('aria-expanded', String(S.popover?.anchor === leaves));
       leaves.setAttribute('aria-label', `${label}, from ${v.label}`);
     } else if (leaves) {
       leaves.remove();
@@ -398,6 +419,8 @@ function buildStrip(layout) {
     }
   }
   const dot = $('memory-dot');
+  const pill = strip.elements.get(layout.nodes.find((node) => node.kind === 'pill')?.id);
+  if (pill && pill.nextElementSibling !== dot) pill.after(dot);
   dot.classList.toggle('on', !!S.frame?.captureEnabled);
   dot.title = S.frame?.captureEnabled ? 'Memory · Remembering pages' : 'Memory · Not remembering pages';
 }
@@ -506,7 +529,7 @@ function walkTrunk(event) {
 let previewSeq = 0;
 const listItem = () => strip.target?.nodes.find((n) => n.id === S.list?.key);
 
-function showList(key) {
+function showList(key, origin = inputOrigin) {
   if (S.layer !== 'none' || S.overlay || S.surface !== 'reading') return;
   cancel('hideList');
   cancel('showList');
@@ -514,7 +537,7 @@ function showList(key) {
   if (!item) return;
   for (const [id, el] of strip.elements) el.setAttribute('aria-expanded', String(id === key));
   const previous = S.list;
-  S.list = { key, preview: previous?.key === key ? previous.preview : null };
+  S.list = { key, origin: previous?.key === key ? previous.origin : origin, preview: previous?.key === key ? previous.preview : null };
   renderList();
   requestListPreview();
 }
@@ -558,15 +581,15 @@ function renderList() {
   const source = page && item.page === current() && v.source;
   const preview = S.list.preview;
   const parts = [
-    ['head', `<div class="bl-head"${page ? ` tabindex="0" data-page="${item.page}"` : ''}>${item.kind === 'earlier' ? '<span class="bl-glyph">···</span>' : markedFav(v, 16)}<div><b>${esc(item.title)}</b><span>${esc(item.meta)}${v.live ? ' · Open in memory' : ''}</span></div></div>`],
+    ['head', `<div class="bl-head"${page ? ` role="group" aria-label="${esc(item.name)}" tabindex="0" data-page="${item.page}"` : ''}>${item.kind === 'earlier' ? '<span class="bl-glyph">···</span>' : markedFav(v, 16)}<div><b>${esc(item.title)}</b><span>${esc(item.meta)}${v.live ? ' · Open in memory' : ''}</span></div></div>`],
     ['snippet', page && preview?.snippet ? `<div class="bl-snippet">${esc(preview.snippet)}</div>` : ''],
     ['source', source ? `<div class="card-source"><div class="card-meta">${esc(source.text)}</div></div>` : ''],
     ['heading', item.heading ? `<div class="menu-heading">${esc(item.heading)}</div>` : ''],
     ...item.rows.map((row) => {
       const v = visit(row.id);
       const files = filesOf(row.id);
-      const leaf = files.length ? `<button class="leaves" data-files="${row.id}" aria-label="${esc(`Files from ${v.label}`)}"><i class="leaf${files.every((f) => f.missing) ? ' missing' : ''}"></i></button>` : '';
-      return [`row-${row.id}`, v ? `<div class="list-entry"><button class="menu-row${markClass(v)}" data-id="${row.id}" title="${esc(v.label)}" aria-current="${row.id === current() ? 'page' : 'false'}" aria-label="${esc(`${row.name}${v.a11yState}`)}">${markedFav(v, 16)}<span class="grow">${esc(row.label)}</span><span class="menu-detail">${esc(row.detail)}</span></button>${leaf}</div>` : ''];
+      const leaf = files.length ? `<button class="leaves" aria-haspopup="menu" aria-expanded="false" data-files="${row.id}" aria-label="${esc(`Files from ${v.label}`)}"><i class="leaf${files.every((f) => f.missing) ? ' missing' : ''}"></i></button>` : '';
+      return [`row-${row.id}`, v ? `<div class="list-entry"><button class="menu-row${markClass(v)}" data-id="${row.id}" title="${esc(v.label)}" aria-current="${row.id === current() ? 'page' : 'false'}" aria-label="${esc(row.name)}">${markedFav(v, 16)}<span class="grow">${esc(row.label)}</span><span class="menu-detail">${esc(row.detail)}</span></button>${leaf}</div>` : ''];
     }),
     ['more', item.more ? `<button class="menu-row more" data-act="more">${icon('expand')}<span class="grow">${esc(item.more)}</span><kbd>Ctrl Shift E</kbd></button>` : ''],
     ...item.actions.map((action) => [`action-${action.kind}`, `<button class="action bl-action" data-act="${action.kind}">${esc(action.label)}</button>`]),
@@ -605,8 +628,8 @@ function renderList() {
       el.dataset.html = html;
     }
     if (key === 'head') {
-      if (page) { el.dataset.page = item.page; el.tabIndex = 0; }
-      else { delete el.dataset.page; el.removeAttribute('tabindex'); }
+      if (page) { el.dataset.page = item.page; el.tabIndex = 0; el.setAttribute('role', 'group'); el.setAttribute('aria-label', item.name); }
+      else { delete el.dataset.page; el.removeAttribute('tabindex'); el.removeAttribute('role'); el.removeAttribute('aria-label'); }
     }
     if (el !== cursor) list.insertBefore(el, cursor);
     cursor = el.nextElementSibling;
@@ -711,6 +734,7 @@ function openPopover(kind, anchor, data, below = anchor) {
   const parent = anchor.closest('#popover') ? S.popover : null;
   rememberFocus('popover', anchor);
   S.popover = { kind, anchor, data, parent, listKey: kind === 'node' ? S.list?.key : null };
+  anchor.setAttribute('aria-expanded', 'true');
   renderPopover();
   popover.hidden = false;
   const width = popover.offsetWidth;
@@ -730,6 +754,7 @@ function openPopover(kind, anchor, data, below = anchor) {
 function closePopover(restoreFocus = true) {
   if (!S.popover) return;
   const { anchor, parent, listKey } = S.popover;
+  anchor.setAttribute('aria-expanded', 'false');
   S.popover = null;
   $('popover').hidden = true;
   if (listKey && restoreFocus) {
@@ -1656,11 +1681,13 @@ window.canopy = {
       S.errors.length = Math.min(S.errors.length, 5);
     }
     const toast = $('toast');
-    toast.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+    $('toast-status').textContent = kind === 'error' ? '' : text + (kind === 'settled' ? ' · Undo (Ctrl+Shift+T)' : '');
+    $('toast-alert').textContent = kind === 'error' ? text : '';
     toast.textContent = text;
     if (kind === 'settled') {
       const button = document.createElement('button');
-      button.textContent = 'Undo';
+      button.textContent = 'Undo (Ctrl+Shift+T)';
+      toast.appendChild(document.createTextNode(' · '));
       button.onclick = () => { toast.hidden = true; syncLayer(); intent('undo-settle'); };
       toast.appendChild(button);
     }
@@ -1674,8 +1701,9 @@ window.canopy = {
     }, kind === 'settled' ? 6000 : kind === 'error' ? 5000 : 2600);
   },
   toggleFocus() {
+    inputOrigin = 'keyboard';
     const active = document.activeElement;
-    if (document.hasFocus() && active?.classList.contains('node')) {
+    if (document.hasFocus() && active?.closest('#tabs, #strip, #strip-list, #pins')) {
       hideList();
       post({ t: 'focus', target: 'page' });
       return;
@@ -1848,6 +1876,18 @@ $('tab-row').addEventListener('click', (event) => {
   uncover();
   intent('select-tree', { id: tab.dataset.id });
 });
+$('tab-row').addEventListener('focusin', (event) => {
+  for (const tab of $('tab-row').children) tab.tabIndex = tab === event.target ? 0 : -1;
+});
+$('tab-row').addEventListener('keydown', (event) => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  const tabs = [...$('tab-row').children].filter((tab) => !tab.hidden);
+  const index = tabs.indexOf(document.activeElement);
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length;
+  for (const tab of tabs) tab.tabIndex = tab === tabs[next] ? 0 : -1;
+  tabs[next]?.focus();
+  event.preventDefault();
+});
 $('tab-row').addEventListener('mousedown', (event) => {
   if (event.button === 1 && event.target.closest('[data-id]')) event.preventDefault();
 });
@@ -1892,7 +1932,7 @@ const listEl = $('strip-list');
 listEl.addEventListener('mouseenter', () => { cancel('hideList'); cancel('showList'); });
 listEl.addEventListener('mouseleave', (event) => {
   if (event.relatedTarget?.closest('#strip-nodes')) return;
-  schedule('hideList', 220, () => { if (!$('strip-list').contains(document.activeElement)) hideList(); });
+  schedule('hideList', 220, () => { if (!listHasKeyboardFocus()) hideList(); });
 });
 
 // A press outside an open popover closes it.
@@ -1994,4 +2034,10 @@ $('waiting-pin').addEventListener('keydown', (event) => {
   if (event.key !== 'ArrowDown') return;
   event.preventDefault();
   openPopover('waiting', $('waiting-pin'));
+});
+
+window.addEventListener('focus', () => {
+  if (pageShows() && document.activeElement === document.body) {
+    controlsIn(document.body).at(-1)?.focus();
+  }
 });

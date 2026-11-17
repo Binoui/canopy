@@ -123,6 +123,11 @@ fn main() -> Result<()> {
         wait("previous toast closed", || !visible(&ui, "#toast"))?;
         chrome(&ui, &format!("intent('theme', {{mode:'{theme}'}})"))?;
         pump(150);
+        ui.pages.selected_page().focus();
+        key("shift+Tab")?;
+        check(&ui, "document.hasFocus() && document.activeElement !== document.body && document.activeElement !== document.documentElement")?;
+        key("F6")?;
+        assert!(ui.pages.selected_page().native.has_focus());
         key("F6")?;
         check(&ui, "document.activeElement.matches('#strip-nodes [aria-current=page]') && !document.getElementById('strip-list').hidden")?;
         check(&ui, "getComputedStyle(document.activeElement).outlineColor === getComputedStyle(document.body).color && getComputedStyle(document.activeElement).outlineStyle === 'solid'")?;
@@ -131,6 +136,10 @@ fn main() -> Result<()> {
             "parseFloat(getComputedStyle(document.activeElement).outlineOffset) > 0",
         )?;
         capture(&shots, "strip-focus", theme)?;
+        key("Tab")?;
+        check(&ui, "document.activeElement.id === 'memory-dot'")?;
+        key("F6")?;
+        key("F6")?;
         key("Left")?;
         key("Right")?;
         check(
@@ -140,7 +149,21 @@ fn main() -> Result<()> {
         key("Left")?;
         key("Down")?;
         check(&ui, "document.activeElement.matches('#strip-list button')")?;
+        check(&ui, "[...document.querySelectorAll('#strip-list [data-id]')].some(el=>el.getAttribute('aria-label').includes('1 branch page, 1 waiting')) && [...document.querySelectorAll('#strip-list [data-id]')].every(el=>!/(waiting.*waiting|1 branch pages)/.test(el.getAttribute('aria-label')))")?;
         capture(&shots, "list-focus", theme)?;
+        key("Home")?;
+        check(&ui, "document.activeElement.matches('.bl-head[role=group]') && document.activeElement.getAttribute('aria-label').startsWith(document.activeElement.querySelector('b:not([aria-hidden])').textContent) && parseFloat(getComputedStyle(document.activeElement).borderRadius) > 0 && parseFloat(getComputedStyle(document.activeElement).outlineOffset) < 0")?;
+        capture(&shots, "list-header-ring", theme)?;
+        key("F6")?;
+        assert!(ui.pages.selected_page().native.has_focus());
+        key("F6")?;
+        key("Left")?;
+        key("Down")?;
+        key("F6")?;
+        assert!(ui.pages.selected_page().native.has_focus());
+        key("F6")?;
+        key("Left")?;
+        key("Down")?;
         key("Escape")?;
         check(&ui, "document.activeElement.matches('#strip-nodes button') && document.getElementById('strip-list').hidden")?;
         key("Menu")?;
@@ -159,6 +182,22 @@ fn main() -> Result<()> {
         key("Escape")?;
         check(&ui, "document.activeElement.matches('#strip-list button')")?;
         key("Escape")?;
+        ui.window.resize(1400, 800);
+        pump(250);
+        focus(&ui, "#tab-row [aria-selected=true]")?;
+        key("Home")?;
+        check(
+            &ui,
+            "document.activeElement === document.querySelector('#tab-row .tab:not([hidden])')",
+        )?;
+        key("Right")?;
+        check(&ui, "document.activeElement === [...document.querySelectorAll('#tab-row .tab:not([hidden])')][1]")?;
+        key("Left")?;
+        key("End")?;
+        check(&ui, "document.activeElement === [...document.querySelectorAll('#tab-row .tab:not([hidden])')].at(-1) && document.querySelectorAll('#tab-row [tabindex=\"0\"]').length === 1 && parseFloat(getComputedStyle(document.activeElement).outlineOffset) < 0")?;
+        capture(&shots, "tab-ring", theme)?;
+        ui.window.resize(820, 800);
+        pump(250);
         focus(&ui, "#tab-row [aria-selected=true]")?;
         key("Menu")?;
         check(&ui, "document.activeElement.dataset.tabAction === 'rename'")?;
@@ -190,6 +229,10 @@ fn main() -> Result<()> {
         focus(&ui, "#tab-overflow")?;
         key("Return")?;
         check(&ui, "document.activeElement.matches('#popover button')")?;
+        check(
+            &ui,
+            "document.getElementById('tab-overflow').getAttribute('aria-expanded') === 'true'",
+        )?;
         capture(&shots, "overflow", theme)?;
         key("Escape")?;
         check(&ui, "document.activeElement.id === 'tab-overflow'")?;
@@ -221,6 +264,10 @@ fn main() -> Result<()> {
         key("Return")?;
         check(&ui, "document.activeElement.matches('#theme-mode button')")?;
         check(&ui, &format!("document.querySelector('#theme-mode [data-mode={theme}]').getAttribute('aria-pressed') === 'true'"))?;
+        check(
+            &ui,
+            "document.getElementById('settings-button').getAttribute('aria-expanded') === 'true'",
+        )?;
         capture(&shots, "settings", theme)?;
         key("End")?;
         check(
@@ -236,6 +283,9 @@ fn main() -> Result<()> {
         key("space")?;
         key("Escape")?;
         check(&ui, "document.activeElement.id === 'settings-button'")?;
+        key("F6")?;
+        assert!(ui.pages.selected_page().native.has_focus());
+        key("F6")?;
         focus(&ui, "#search-pill")?;
         key("Return")?;
         wait("palette options", || {
@@ -246,6 +296,10 @@ fn main() -> Result<()> {
             .is_ok_and(|v| v == true)
         })?;
         check(&ui, "document.activeElement.getAttribute('role') === 'combobox' && document.getElementById(document.activeElement.getAttribute('aria-activedescendant')).getAttribute('aria-selected') === 'true'")?;
+        check(
+            &ui,
+            "getComputedStyle(document.getElementById('palette-input')).outlineStyle === 'none'",
+        )?;
         key("Down")?;
         capture(&shots, "palette", theme)?;
         key("Escape")?;
@@ -257,6 +311,10 @@ fn main() -> Result<()> {
         )?;
         key("Down")?;
         check(&ui, "document.activeElement.matches('#popover [data-id]') && document.activeElement.getAttribute('aria-label').includes('waiting')")?;
+        check(
+            &ui,
+            "document.getElementById('waiting-pin').getAttribute('aria-expanded') === 'true'",
+        )?;
         capture(&shots, "waiting", theme)?;
         key("Menu")?;
         key("Escape")?;
@@ -290,6 +348,10 @@ fn main() -> Result<()> {
         check(&ui, "document.activeElement.id === 'forest-button'")?;
         focus(&ui, "#memory-dot")?;
         key("Return")?;
+        check(
+            &ui,
+            "document.getElementById('memory-dot').getAttribute('aria-expanded') === 'true'",
+        )?;
         key("End")?;
         key("Return")?;
         wait("reader takes focus", || {
@@ -308,15 +370,43 @@ fn main() -> Result<()> {
         chrome(&ui, "canopy.toast('info', 'Keyboard status')")?;
         check(
             &ui,
-            "document.getElementById('toast').getAttribute('role') === 'status'",
+            "document.getElementById('toast-status').textContent === 'Keyboard status' && document.getElementById('toast-status').getAttribute('role') === 'status' && getComputedStyle(document.getElementById('toast-status')).display !== 'none' && document.getElementById('toast-alert').textContent === ''",
         )?;
         capture(&shots, "status", theme)?;
         chrome(&ui, "canopy.toast('error', 'Keyboard error')")?;
         check(
             &ui,
-            "document.getElementById('toast').getAttribute('role') === 'alert'",
+            "document.getElementById('toast-alert').textContent === 'Keyboard error' && document.getElementById('toast-alert').getAttribute('role') === 'alert' && getComputedStyle(document.getElementById('toast-alert')).display !== 'none' && document.getElementById('toast-status').textContent === ''",
         )?;
         capture(&shots, "alert", theme)?;
+        ui.pages.selected_page().focus();
+        key("ctrl+w")?;
+        wait("settle shortcut toast", || {
+            text(&ui, "#toast").contains("Undo (Ctrl+Shift+T)")
+        })?;
+        capture(&shots, "settle-shortcut", theme)?;
+        wait("settle toast gone", || !visible(&ui, "#toast"))?;
+        key("ctrl+shift+t")?;
+        wait("reopen after toast", || {
+            ui.snapshot().is_ok_and(|s| s.current == Some(*selected))
+        })?;
+        ui.pages.settle_tree(
+            ui.pages
+                .read(|b| {
+                    canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)
+                })?
+                .tree_of(trees[4].2)
+                .unwrap(),
+        )?;
+        wait("other tree settled", || {
+            text(&ui, "#toast").contains("small")
+        })?;
+        key("ctrl+shift+t")?;
+        wait("reopen other tree at last page", || {
+            ui.snapshot().is_ok_and(|s| s.current == Some(trees[4].2))
+        })?;
+        ui.pages.go(Go::Visit(*selected))?;
+        settle(&ui)?;
         key("ctrl+t")?;
         wait("start visible", || visible(&ui, "#start"))?;
         chrome(
@@ -373,18 +463,41 @@ fn main() -> Result<()> {
         focus(&ui, "#strip-canvas .leaves")?;
         key("Return")?;
         check(&ui, "document.activeElement.matches('[data-file]')")?;
+        check(&ui, "document.querySelector('#strip-canvas .leaves[aria-expanded=true]').getAttribute('aria-haspopup') === 'menu'")?;
         capture(&shots, "files", theme)?;
         key("Escape")?;
         check(
             &ui,
             "document.activeElement.matches('#strip-canvas .leaves')",
         )?;
+        check(&ui, "['tab-overflow','settings-button','waiting-pin','memory-dot'].every(id=>document.getElementById(id).getAttribute('aria-haspopup') === 'menu' && document.getElementById(id).getAttribute('aria-expanded') === 'false') && document.getElementById('tab-overflow').getAttribute('aria-label') === 'More trees'")?;
+        check(&ui, "[...document.querySelectorAll('.fav b')].every(el=>el.getAttribute('aria-hidden') === 'true') && document.querySelector('#strip-nodes [aria-current=page]').nextElementSibling.id === 'memory-dot'")?;
         ui.pages.go(Go::Visit(*selected))?;
         pump(200);
+        ui.pages.selected_page().focus();
+        hover_chrome(&ui, "#strip-nodes [aria-current=page]")?;
+        wait("pointer list", || visible(&ui, "#strip-list"))?;
+        click_chrome(&ui, "#strip-list .bl-head")?;
+        move_to(700, 600)?;
+        wait("pointer list closes after click and leave", || {
+            !visible(&ui, "#strip-list")
+        })?;
+        key("F6")?;
+        hover_chrome(&ui, "#strip-nodes [aria-current=page]")?;
+        move_to(700, 600)?;
+        pump(350);
+        check(&ui, "!document.getElementById('strip-list').hidden")?;
+        key("Down")?;
+        hover_chrome(&ui, "#strip-list .bl-head")?;
+        move_to(700, 600)?;
+        pump(350);
+        check(&ui, "!document.getElementById('strip-list').hidden")?;
+        key("Escape")?;
+        ui.pages.selected_page().focus();
     }
     println!("PASS real keys enter and leave strip lists, node menus, tab Rename and Pin, settings, palette, waiting, forest, reader and pinned menus in both themes; tab focus survives frames.");
     check(&ui, "document.getElementById('tab-row').getAttribute('role') === 'tablist' && document.querySelectorAll('#tab-row [aria-selected=true]').length === 1")?;
-    check(&ui, "[...document.querySelectorAll('#strip-list [data-id]')].every(el=>el.getAttribute('aria-label').includes('branch pages'))")?;
+    check(&ui, "[...document.querySelectorAll('#strip-nodes .node, #strip-list [data-id]')].every(el=>!/(\\b0 branch|\\b0 waiting|\\b1 branch pages|waiting.*waiting)/.test(el.getAttribute('aria-label'))) && !/(waiting.*waiting)/.test(document.getElementById('waiting-pin').getAttribute('aria-label'))")?;
     println!("PASS DOM names and states expose tab selection, page location, branch counts, waiting, switches, theme, palette selection and live toast roles.");
     ui.window.close();
     Ok(())
@@ -392,7 +505,7 @@ fn main() -> Result<()> {
 
 fn check(ui: &Ui, expression: &str) -> Result<()> {
     if chrome(ui, expression)? != true {
-        anyhow::bail!("{expression}: {}", chrome(ui, "JSON.stringify({active:document.activeElement.outerHTML.slice(0,600),focused:document.hasFocus(),menu:S.popover?.kind,overlay:S.overlay})")?);
+        anyhow::bail!("{expression}: {}", chrome(ui, "JSON.stringify({active:document.activeElement.outerHTML.slice(0,600),tabs:[...document.querySelectorAll('#tab-row .tab')].map(e=>({text:e.textContent,hidden:e.hidden,active:e===document.activeElement})),focused:document.hasFocus(),menu:S.popover?.kind,overlay:S.overlay})")?);
     }
     Ok(())
 }
@@ -409,7 +522,7 @@ fn focus(ui: &Ui, selector: &str) -> Result<()> {
 fn capture(dir: &Option<std::path::PathBuf>, name: &str, theme: &str) -> Result<()> {
     if let Some(dir) = dir {
         std::fs::create_dir_all(dir)?;
-        pump(200);
+        pump(450);
         anyhow::ensure!(
             std::process::Command::new("import")
                 .args(["-window", "root"])

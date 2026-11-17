@@ -289,7 +289,7 @@ impl HtmlChrome {
         inner.call("viewport", &[json!(height)]);
         if previous.0 != width {
             if let Some(frame) = inner.frame.borrow().as_ref() {
-                inner.call("strip", &[view::strip(&frame.forest, width)]);
+                inner.call("strip", &[view::strip_for_frame(frame, width)]);
             }
         }
     }

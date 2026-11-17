@@ -31,6 +31,7 @@ Ctrl+K    Search your forest or go to an address
 Ctrl+L    Same, starting from the current address
 Ctrl+E    Forest view
 Ctrl+T    New tree
+Ctrl+Shift+T  Reopen the most recently settled tree or branch
 Ctrl+1…9  Switch to a tree
 F6        Move between the page and the tree strip
 Alt+←     Back to the parent page

@@ -70,11 +70,13 @@ pub(crate) fn frame(
     let waiting_name = waiting_pages.first().map_or_else(
         || "No waiting pages".into(),
         |next| {
-            format!(
-                "{} waiting, next {}",
-                waiting_pages.len(),
-                visits[&next.id.to_string()]["name"].as_str().unwrap()
-            )
+            let visit = &visits[&next.id.to_string()];
+            let label = visit["label"].as_str().unwrap();
+            let state = visit["a11yState"]
+                .as_str()
+                .unwrap()
+                .replace(", waiting", "");
+            format!("{} waiting, next {label}{state}", waiting_pages.len())
         },
     );
     let pages: usize = forest.trees().iter().map(|tree| tree.page_count).sum();
@@ -82,7 +84,7 @@ pub(crate) fn frame(
         "current": current.map(|id| id.to_string()),
         "tabs": tabs,
         "visits": visits,
-        "strip": strip(forest, width),
+        "strip": strip_for_frame(frame, width),
         "treeView": tree_view_value(forest, workbench, viewport),
         "waiting": { "name": waiting_name, "order": WaitingOrder::CHOSEN.label(), "ids": waiting_pages.iter().map(|v| v.id.to_string()).collect::<Vec<_>>() },
         "files": files_value(&frame.files),
@@ -161,6 +163,57 @@ pub(crate) fn tree_view_value(
     })
 }
 
+pub(crate) fn strip_for_frame(frame: &ChromeFrame, width: f64) -> Value {
+    let mut strip = strip(&frame.forest, width);
+    let state = |id: &str| {
+        let id: VisitId = id.parse().unwrap();
+        format!(
+            "{}{}",
+            if frame.loaded.contains(&id) && frame.forest.is_waiting(id) {
+                ", loaded"
+            } else {
+                ""
+            },
+            if frame.live.contains(&id) {
+                ", open in memory"
+            } else {
+                ""
+            }
+        )
+    };
+    for node in strip["nodes"].as_array_mut().unwrap() {
+        node["name"] = json!(format!(
+            "{}{}",
+            node["name"].as_str().unwrap(),
+            state(node["page"].as_str().unwrap())
+        ));
+        for row in node["rows"].as_array_mut().unwrap() {
+            row["name"] = json!(format!(
+                "{}{}",
+                row["name"].as_str().unwrap(),
+                state(row["id"].as_str().unwrap())
+            ));
+        }
+    }
+    strip
+}
+
+fn branch_name(label: &str, pages: usize, waiting: usize, queued: bool) -> String {
+    let mut name = label.to_owned();
+    if pages > 0 {
+        name.push_str(&format!(
+            ", {pages} branch {}",
+            if pages == 1 { "page" } else { "pages" }
+        ));
+    }
+    if waiting > 0 {
+        name.push_str(&format!(", {waiting} waiting"));
+    } else if queued {
+        name.push_str(", waiting");
+    }
+    name
+}
+
 /// The current path folded to fit the room left by the pinned controls.
 pub(crate) fn strip(forest: &ForestProjection, width: f64) -> Value {
     let pins = pins::pins(forest, width);
@@ -207,7 +260,7 @@ pub(crate) fn strip(forest: &ForestProjection, width: f64) -> Value {
             let counts = if matches!(node.item, StripItem::Run { .. } | StripItem::Earlier { .. }) {
                 graph::branch_counts(forest, &graph::branch_heads(forest, &[*id], &path))
             } else { graph::branch_counts(forest, &[*id]) };
-            json!({ "id": id.to_string(), "name": format!("{}, {} branch pages, {} waiting", forest.visit(*id).unwrap().label(), counts.pages, counts.waiting), "label": graph::short_name(forest, *id), "pages": counts.pages, "waiting": counts.waiting,
+            json!({ "id": id.to_string(), "name": branch_name(forest.visit(*id).unwrap().label(), counts.pages, counts.waiting, forest.is_waiting(*id)), "label": graph::short_name(forest, *id), "pages": counts.pages, "waiting": counts.waiting,
                 "detail": if matches!(node.item, StripItem::Run { .. } | StripItem::Earlier { .. }) && counts.pages == 0 {
                     ago(forest.visit(*id).unwrap().opened_at.unwrap_or(forest.visit(*id).unwrap().created_at))
                 } else if forest.visit(*id).unwrap().branch_settled_at.is_some() { format!("{} pages put away", forest.descendant_count(*id).unwrap_or(0)+1) } else { nonzero_parts(&[(counts.pages, if counts.pages == 1 { "page" } else { "pages" }), (counts.waiting, "waiting")]) } })
@@ -231,7 +284,7 @@ pub(crate) fn strip(forest: &ForestProjection, width: f64) -> Value {
             "id": if kind == "after" { format!("after-{current}") } else { id.to_string() },
             "page": id.to_string(), "ids": ids.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "named": kind == "root" && forest.visit(current).unwrap().parent == Some(id),
-            "kind": kind, "name": if kind == "after" { format!("After {title}, {waiting} waiting pages, {read} read pages") } else { format!("{title}, {} branch pages, {} waiting", node.branches.pages, node.branches.waiting) }, "label": label, "title": title, "meta": meta, "heading": heading, "more": more, "rows": rows,
+            "kind": kind, "name": if kind == "after" { format!("After {title}{}{}", if waiting > 0 { format!(", {} waiting {}", waiting, if waiting == 1 { "page" } else { "pages" }) } else { String::new() }, if read > 0 { format!(", {read} read {}", if read == 1 { "page" } else { "pages" }) } else { String::new() }) } else { branch_name(&title, node.branches.pages, node.branches.waiting, forest.is_waiting(id)) }, "label": label, "title": title, "meta": meta, "heading": heading, "more": more, "rows": rows,
             "branches": { "pages": node.branches.pages, "waiting": node.branches.waiting },
             "waiting": waiting, "read": read,
             "x": node.rect.x, "y": node.rect.y, "w": node.rect.w, "s": node.rect.s,
@@ -600,6 +653,20 @@ pub(crate) fn ago(timestamp_ms: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn branch_names_omit_zero_counts_and_repeat_no_state() {
+        assert_eq!(super::branch_name("Leaf", 0, 0, false), "Leaf");
+        assert_eq!(
+            super::branch_name("Fork", 1, 0, false),
+            "Fork, 1 branch page"
+        );
+        assert_eq!(
+            super::branch_name("Fork", 2, 1, true),
+            "Fork, 2 branch pages, 1 waiting"
+        );
+        assert_eq!(super::branch_name("Leaf", 0, 0, true), "Leaf, waiting");
+    }
+
     use super::*;
     use crate::browser::{Download, Snapshot, TreeId, TreeState};
 
@@ -756,6 +823,12 @@ mod tests {
             value["visits"][ids[0].to_string()]["a11yState"],
             ", open in memory"
         );
+        assert_eq!(value["strip"], super::strip_for_frame(&frame, 800.));
+        assert!(value["strip"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["name"].as_str().unwrap().contains("open in memory")));
         assert_eq!(value["visits"][ids[2].to_string()]["loaded"], true);
         assert_eq!(value["visits"][ids[2].to_string()]["queued"], true);
         assert_eq!(value["visits"][ids[2].to_string()]["when"], "loaded");

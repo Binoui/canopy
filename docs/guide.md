@@ -22,7 +22,9 @@ Rest the pointer on an item for a quarter of a second, or focus it, to open one 
 
 The Bookmarks band shows up to sixteen top-level tiles, with folder chips to the right of its heading. Overflow tiles and chips open lists. Right-click a tile or list row to remove its bookmark.
 
-Chrome menus take focus when opened. Arrow keys walk menu actions, Home and End move to the first and last action, and Tab stays inside the menu. Escape returns to the trigger. Forest, saved text and search also keep Tab inside their overlay and return focus when closed. Focus has a text-coloured outline outside the selected item. On the waiting counter, Down opens the waiting list.
+The tab row has one Tab stop. **Left** and **Right** move between visible tabs, and **Home** and **End** move to the ends. **Tab** from the current-page strip item reaches **Memory** next. **F6** from a header control, strip item or strip-list row returns to the page.
+
+Chrome menus take focus when opened. Arrow keys walk menu actions, Home and End move to the first and last action, and Tab stays inside the menu. Escape returns to the trigger. Forest, saved text and search also keep Tab inside their overlay and return focus when closed. Focus has a text-coloured outline distinct from selection. On the waiting counter, Down opens the waiting list.
 
 Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not affect them.
 
@@ -33,6 +35,7 @@ Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not aff
 - **Ctrl+T** or **+** opens the new-tree page. Type immediately to search in a new tree, or click its search field. Pinned trees appear in a stable three-column band above bookmarks and up to three suggestions from your history. A pinned card restores the tree where you left it, even after you settle it. Suggested pages plant a new tree, suggested trees reopen where you left them, and suggested paths load a root and its next page. The reason appears under each title. Hover a chip to **Keep** it as a bookmark or pinned tree, or use the cross to stop suggesting it permanently. Keep on a path bookmarks its first page. Suggestions stay in place until you leave the page. The empty search palette lists the same suggestions in the same order. Chrome history fills spare places while Canopy has little history. **Escape** returns to your page.
 - **Menu** or **Shift+F10** on a focused tab, or a right-click, opens **Rename**, **Pin tree** or **Unpin tree**, and **Settle tree**. Pinned tabs show a pin mark. Right-click a pinned card to unpin it. Pinning and settling are independent.
 - **Ctrl+W**, a middle click on a tab, or the **×** on a tab settles a tree. A settled tree leaves the tabs and keeps every page. It waits under **Settled** in the forest view, and opening any of its pages brings its tab back. With the new-tree page, the forest view or the palette open, **Ctrl+W** closes that instead.
+- **Ctrl+Shift+T** reopens the most recently settled tree or branch, even after its toast disappears. The toast shows this shortcut beside **Undo**.
 - **Ctrl+1** to **Ctrl+9** switch to a tab. Shift is also accepted for layouts such as AZERTY.
 - **F6** moves the keyboard focus between the page and the current page in the strip. **Left** and **Right** walk the strip items, and **Down** or **Enter** enters the item's list. **Up** and **Down** move between its rows. **Escape** returns to the strip item.
 - **Alt+Left** goes back to the parent page. **Alt+Right** opens the child shown most recently, however you reached it. **Alt+Up** and **Alt+Down** open the previous and next sibling, newest first, skip dismissed pages and settled branches, and stop at either end.

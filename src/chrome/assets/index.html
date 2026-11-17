@@ -10,13 +10,13 @@
   <button id="forest-button" class="label-button" title="Forest · Ctrl+E" aria-pressed="false"></button>
   <div class="tabs-divider"></div>
   <div id="tab-row" role="tablist" aria-label="Open trees"></div>
-  <button id="tab-overflow" class="icon-button" title="More trees" hidden></button>
+  <button id="tab-overflow" aria-haspopup="menu" aria-expanded="false" class="icon-button" title="More trees" aria-label="More trees" hidden></button>
   <button id="new-tree" class="icon-button" title="New tree · Ctrl+T" aria-label="New tree"></button>
   <div class="spacer"></div>
   <button id="login-chip" class="label-button" hidden></button>
   <button id="search-pill" title="Search your forest or go to an address · Ctrl+K"><span>Search or go…</span><kbd>Ctrl K</kbd></button>
   <button id="agent" class="icon-button" title="Agent · Coming soon" aria-label="Agent" disabled></button>
-  <button id="settings-button" class="icon-button" title="Settings" aria-label="Settings"></button>
+  <button id="settings-button" aria-haspopup="menu" aria-expanded="false" class="icon-button" title="Settings" aria-label="Settings"></button>
 </header>
 
 <section id="strip">
@@ -27,7 +27,7 @@
       <div id="glow"></div>
       <svg id="strip-edges" width="1" height="1"></svg>
       <div id="strip-nodes"></div>
-      <button id="memory-dot" aria-label="Memory" hidden><i></i></button>
+      <button id="memory-dot" aria-haspopup="menu" aria-expanded="false" aria-label="Memory" hidden><i></i></button>
     </div>
   </div>
 </section>
@@ -42,7 +42,7 @@
     <div id="tree-list" role="tree" aria-label="Pages" class="sheet-body" hidden></div>
   </div>
 </div>
-<div id="pins"><button id="waiting-pin" class="pin" data-pin="waiting" aria-label="Next waiting page" hidden></button><button id="zoom-pin" class="pin icon-pin" data-pin="zoom" aria-pressed="false" title="Zoom into this tree · Ctrl+Shift+E" aria-label="Zoom into this tree" hidden></button></div>
+<div id="pins"><button id="waiting-pin" aria-haspopup="menu" aria-expanded="false" class="pin" data-pin="waiting" aria-label="Next waiting page" hidden></button><button id="zoom-pin" class="pin icon-pin" data-pin="zoom" aria-pressed="false" title="Zoom into this tree · Ctrl+Shift+E" aria-label="Zoom into this tree" hidden></button></div>
 
 <div id="start" class="surface dapple" hidden>
   <div id="start-column">
@@ -94,7 +94,9 @@
   <div class="reader-box" id="reader-box"></div>
 </div>
 
-<div id="toast" role="status" aria-atomic="true" hidden></div>
+<div id="toast" hidden></div>
+<div id="toast-status" class="live-region" role="status" aria-atomic="true"></div>
+<div id="toast-alert" class="live-region" role="alert" aria-atomic="true"></div>
 
 <script src="chrome.js"></script>
 </body>
