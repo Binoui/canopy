@@ -12,6 +12,7 @@ mod find;
 mod forest_layout;
 pub(crate) mod graph;
 mod loading;
+mod page_scale;
 mod palette;
 mod pins;
 mod start;
@@ -102,6 +103,7 @@ pub enum PaletteSeed {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChromeIntent {
     CheckMail,
+    PageScale(crate::pages::PageScaleAction),
     AnswerFormReturn {
         question: u64,
         proceed: bool,
@@ -965,6 +967,7 @@ impl Inner {
                 url: frame.forest.visit(id("id")?)?.url.clone(),
                 target: NavigationTarget::Root,
             },
+            "page-scale" => page_scale::intent(message)?,
             "reload" => ChromeIntent::Reload,
             "branch-queued" => ChromeIntent::BranchFromQueued(id("id")?),
             "open-citation" => ChromeIntent::OpenCitation(id("id")?),
