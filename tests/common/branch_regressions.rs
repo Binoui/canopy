@@ -925,10 +925,17 @@ pub fn owner_action_during_switch(action: &str) -> Result<()> {
     wait("pending new tree", || {
         f.server.hits("/gate/owner/target") > 0
     })?;
+    super::common::focus_window()?;
+    f.pages.selected_page().native.grab_focus();
+    pump_for(100);
     match action {
         "enter" => {
             click(&f, "q")?;
-            super::common::key("Return")?;
+            wait("form input focused", || {
+                f.eval("return document.activeElement.id;")
+                    .is_ok_and(|id| id == "q")
+            })?;
+            super::common::xdo(&["key", "Return"])?;
         }
         "frame" => {
             let native = f.pages.selected_page().native.clone();
