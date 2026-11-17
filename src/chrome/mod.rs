@@ -315,6 +315,7 @@ impl HtmlChrome {
     }
 
     pub fn tab(&self, index: usize) -> Option<TreeId> {
+        self.inner.call("tabSelected", &[]);
         self.inner
             .frame
             .borrow()

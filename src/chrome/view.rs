@@ -114,20 +114,37 @@ pub(crate) fn tree_view_value(
         "tiles": view.tiles.iter().map(|t| json!({"id": t.id.to_string(), "x": t.rect.x, "y": t.rect.y, "w": t.rect.w, "s": t.rect.s, "path": t.on_path})).collect::<Vec<_>>(),
         "edges": view.edges.iter().map(|e| json!({"from": e.from.to_string(), "to": e.to.to_string(), "kind": match e.kind { EdgeKind::Path => "path", EdgeKind::Pending => "pending", EdgeKind::Plain => "plain" }, "c": e.curve})).collect::<Vec<_>>(),
         "rows": view.rows.iter().map(|r| {
-            let counts = graph::branch_counts(forest, forest.children(r.id));
+            let visit = forest.visit(r.id).unwrap();
+            let settled = visit.branch_settled_at.is_some();
             let folded = state.query.is_empty() && !state.waiting_only && state.folded(forest, r.id);
+            let short_name = graph::short_name(forest, r.id);
             let siblings = forest.siblings(r.id);
-            let title = graph::short_name(forest, r.id);
-            let related = siblings.iter().find(|&&id| id != r.id).map(|&id| graph::short_name(forest, id));
-            let title = related.map_or_else(|| title.clone(), |other| {
-                let distinct = graph::distinct_name(&title, &other);
-                if distinct != title { return distinct; }
-                let common: usize = title.chars().zip(other.chars()).take_while(|(a, b)| a == b).map(|(c, _)| c.len_utf8()).sum();
-                title[..common].rfind(char::is_whitespace).map(|at| title[at..].trim().to_owned()).filter(|suffix| !suffix.is_empty()).unwrap_or(title.clone())
+            let related = siblings.iter().filter(|&&id| id != r.id).map(|&id| graph::short_name(forest, id))
+                .max_by_key(|other| short_name.chars().zip(other.chars()).take_while(|(a, b)| a == b).count());
+            let tile_title = related.map_or_else(|| short_name.clone(), |other| {
+                let distinct = graph::distinct_name(&short_name, &other);
+                if distinct != short_name { return distinct; }
+                let common = short_name.chars().zip(other.chars()).take_while(|(a, b)| a == b).filter(|(c, _)| c.is_whitespace()).count();
+                if common == 0 { return short_name.clone(); }
+                let words: Vec<_> = short_name.split_whitespace().collect();
+                if words.len() <= 3 { return short_name.clone(); }
+                format!("…{}", words[words.len()-3..].join(" "))
             });
+            let branch = !forest.children(r.id).is_empty();
+            let mut waiting = 0;
+            let mut stack = if folded { vec![r.id] } else { Vec::new() };
+            while let Some(id) = stack.pop() {
+                let v = forest.visit(id).unwrap();
+                waiting += usize::from(v.state == VisitState::Queued && v.dismissed_at.is_none() && (settled || !forest.is_settled(id)));
+                stack.extend(forest.children(id));
+            }
             json!({"id": r.id.to_string(), "depth": r.depth, "path": r.on_path,
-                "title": title, "branch": !forest.children(r.id).is_empty(), "folded": folded,
-                "summary": if folded && !forest.children(r.id).is_empty() { format!("{} pages · {} waiting", forest.descendant_count(r.id).unwrap_or(0) + 1, counts.waiting + usize::from(forest.is_waiting(r.id))) } else { String::new() }})
+                "title": if folded && settled { format!("{} pages put away", forest.descendant_count(r.id).unwrap_or(0) + 1) } else { short_name },
+                "tileTitle": if folded && settled { format!("{} pages put away", forest.descendant_count(r.id).unwrap_or(0) + 1) } else { tile_title },
+                "branch": branch, "folded": folded,
+                "summary": if folded && settled { format!(" · {waiting} waiting") }
+                    else if folded && branch { format!("{} pages · {} waiting", forest.descendant_count(r.id).unwrap_or(0) + 1, waiting) }
+                    else if settled { "put away".to_owned() } else { String::new() }})
         }).collect::<Vec<_>>(),
     })
 }

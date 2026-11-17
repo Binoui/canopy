@@ -53,6 +53,7 @@ const S = {
   overlay: null,
   formReturn: false,
   treeSide: 'tree',
+  treePreference: 'tree',
   layer: 'none',
   hovered: null,
   list: null,
@@ -655,29 +656,61 @@ function openPopover(kind, anchor, data, below = anchor) {
   const popover = $('popover');
   const a = anchor.getBoundingClientRect();
   const b = below.getBoundingClientRect();
-  S.popover = { kind, anchor, data };
+  const previous = kind === 'node' && S.popover?.kind === 'waiting' ? S.popover : null;
+  S.popover = { kind, anchor, data, previous, listKey: kind === 'node' ? S.list?.key : null };
   renderPopover();
   popover.hidden = false;
   const width = popover.offsetWidth;
   popover.style.left = `${clamp(a.left, 8, window.innerWidth - width - 8)}px`;
-  const belowRoom = (S.windowHeight ?? window.innerHeight) - b.bottom - 14;
+  const windowHeight = S.windowHeight ?? window.innerHeight;
+  const bottom = S.overlay === 'tree' ? Math.min(windowHeight, $('tree-sheet').querySelector('.sheet-box').getBoundingClientRect().bottom) : windowHeight;
+  const belowRoom = bottom - b.bottom - 14;
   const above = belowRoom < 200 && a.top > belowRoom;
-  popover.style.maxHeight = `${Math.max(40, above ? a.top - 14 : belowRoom)}px`;
+  popover.style.maxHeight = `${Math.max(40, above ? a.top - 20 : belowRoom - 14)}px`;
   popover.style.top = `${above ? Math.max(8, a.top - popover.offsetHeight - 6) : b.bottom + 6}px`;
+  if (kind === 'node') {
+    post({ t: 'focus', target: 'chrome' });
+    popover.querySelector('button')?.focus({ preventScroll: true });
+  }
   if (S.layer !== 'palette') setLayer('menu');
   syncLayer();
 }
 
 function closePopover(returnFocus = true) {
   if (!S.popover) return;
-  const anchor = S.popover.anchor;
+  const { kind, anchor, previous, data, listKey } = S.popover;
   S.popover = null;
-  if (S.overlay === 'tree' && anchor?.isConnected) anchor.focus();
+  if (previous && returnFocus) {
+    openPopover(previous.kind, previous.anchor, previous.data);
+    $('popover').querySelector(`[data-id="${data}"]`)?.focus();
+    return;
+  }
   $('popover').hidden = true;
+  if (listKey && returnFocus) {
+    setLayer(restingLayer());
+    showList(listKey);
+  }
+  if (((kind === 'node' && returnFocus) || S.overlay === 'tree') && canFocus(anchor)) {
+    anchor.focus({ preventScroll: true });
+    returnFocus = false;
+  }
   if (S.layer === 'menu') setLayer(restingLayer());
   if (returnFocus && pageShows() && !S.palette && !S.reader) post({ t: 'focus', target: 'page' });
   syncLayer();
 }
+
+$('popover').addEventListener('keydown', (event) => {
+  if (S.popover?.kind !== 'node') return;
+  const rows = [...$('popover').querySelectorAll('[data-node-action]')];
+  let index = rows.indexOf(document.activeElement);
+  if (event.key === 'ArrowDown') index = (index + 1) % rows.length;
+  else if (event.key === 'ArrowUp') index = (index + rows.length - 1) % rows.length;
+  else if (event.key === 'Home') index = 0;
+  else if (event.key === 'End') index = rows.length - 1;
+  else return;
+  event.preventDefault();
+  rows[index]?.focus();
+});
 
 // ---------- saved logins for the page's sign-in fields ----------
 
@@ -1049,7 +1082,7 @@ function renderSheet(reveal) {
       el.style.cssText = tile
         ? `left:${item.x-item.w/2}px;top:${item.y-item.s/2}px;width:${item.w}px;height:${item.s}px`
         : `padding-left:${8+r.depth*22}px`;
-      const html = `<span data-fold="${r.branch ? item.id : ''}" class="tree-fold">${r.branch ? (r.folded ? '▸' : '▾') : ''}</span>${markedFav(v, 16)}<span class="${tile ? 't' : 'grow'}">${esc(v.stub || (tile ? r.title : v.label))}${r.summary ? `<small>${esc(r.summary)}</small>` : ''}</span>${!tile ? `<span class="menu-detail">${esc(v.when)}${v.live ? ' · Open in memory' : ''}</span>` : v.live ? '<i class="live-dot"></i>' : ''}`;
+      const html = `<span data-fold="${r.branch ? item.id : ''}" class="tree-fold">${r.branch ? (r.folded ? '▸' : '▾') : ''}</span>${markedFav(v, 16)}<span class="${tile ? 't' : 'grow'}">${esc(tile ? r.tileTitle : r.title)}${r.summary ? `<small>${esc(r.summary)}</small>` : ''}</span>${!tile ? `<span class="menu-detail">${esc(v.when)}${v.live ? ' · Open in memory' : ''}</span>` : ''}`;
       if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
       if (el !== cursor) container.insertBefore(el, cursor);
       cursor = el.nextElementSibling;
@@ -1085,7 +1118,7 @@ function setTreeSide(side, reveal = true, target = current()) {
 
 $('tree-side').addEventListener('click', (event) => {
   const button = event.target.closest('[data-side]');
-  if (button) { setTreeSide(button.dataset.side); focusTree(current()); }
+  if (button) { S.treePreference = button.dataset.side; setTreeSide(button.dataset.side); focusTree(current()); }
 });
 $('tree-sheet').addEventListener('click', (event) => {
   const page = event.target.closest('[data-id]');
@@ -1095,18 +1128,21 @@ $('tree-sheet').addEventListener('click', (event) => {
 $('tree-filter').addEventListener('input', () => post({ t: 'workbench', query: $('tree-filter').value }));
 $('tree-waiting').addEventListener('click', () => post({ t: 'workbench', waiting: !S.frame.treeView.waitingOnly }));
 $('tree-board').addEventListener('wheel', (event) => {
-  if (event.ctrlKey || event.deltaX || !event.deltaY) return;
-  const board = $('tree-board');
-  if (board.scrollWidth <= board.clientWidth) return;
+  if (event.ctrlKey || !event.shiftKey || event.deltaX || !event.deltaY) return;
   event.preventDefault();
-  board.scrollLeft += event.deltaY;
+  $('tree-board').scrollLeft += event.deltaY;
 }, { passive: false });
 function focusTree(id) {
+  for (const el of $('tree-sheet').querySelectorAll('.keyboard-focus')) el.classList.remove('keyboard-focus');
   const body = $(S.treeSide === 'tree' ? 'tree-nodes' : 'tree-list');
   const el = body.querySelector(`[data-id="${id}"]`) || body.querySelector('[data-id]');
   (el || $('tree-filter')).focus({ preventScroll: true });
+  el?.classList.add('keyboard-focus');
   el?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
+$('tree-sheet').addEventListener('pointerdown', () => {
+  for (const el of $('tree-sheet').querySelectorAll('.keyboard-focus')) el.classList.remove('keyboard-focus');
+});
 $('tree-sheet').addEventListener('keydown', (event) => {
   if (S.popover || event.ctrlKey || event.altKey || event.metaKey || event.isComposing) return;
   const field = event.target === $('tree-filter');
@@ -1123,7 +1159,9 @@ $('tree-sheet').addEventListener('keydown', (event) => {
     if (visit(id).nodeMenu.some((r) => r.kind === 'dismiss')) intent('dismiss', { id });
   } else if (!field && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) && id) {
     openPopover('node', event.target.closest('[data-id]'), id);
-    $('popover').querySelector('button')?.focus();
+  } else if (!field && event.key === ' ') {
+    event.preventDefault();
+    return;
   } else if (!field && event.key.length === 1) {
     $('tree-filter').focus();
     $('tree-filter').value += event.key;
@@ -1137,7 +1175,10 @@ $('tree-sheet').addEventListener('keydown', (event) => {
 });
 $('tree-sheet').querySelector('.scrim').addEventListener('mousedown', closeOverlay);
 $('zoom-pin').innerHTML = icon('expand') + icon('collapse');
-$('zoom-pin').addEventListener('click', () => toggleOverlay('tree'));
+$('zoom-pin').addEventListener('click', (event) => {
+  toggleOverlay('tree');
+  if (event.detail && S.overlay === 'tree') S.treeReturn = null;
+});
 
 // ---------- surfaces ----------
 
@@ -1150,7 +1191,7 @@ const OVERLAYS = {
       if (reveal) requestAnimationFrame(() => {
         if (S.overlay !== 'tree') return;
         const view = S.frame.treeView;
-        setTreeSide(view.overflows ? 'list' : S.treeSide, true);
+        setTreeSide(view.overflows ? 'list' : S.treePreference, true);
         post({ t: 'focus', target: 'chrome' });
         focusTree(current());
       });
@@ -1179,6 +1220,7 @@ function setSurface(surface) {
 function setOverlay(kind) {
   if (S.overlay === kind) return;
   const previous = OVERLAYS[S.overlay];
+  if (S.overlay === 'tree') post({ t: 'workbench', query: '', waiting: false });
   if (previous) {
     $(previous.el).hidden = true;
     $(previous.button).classList.remove('on');
@@ -1201,10 +1243,18 @@ function setOverlay(kind) {
   syncLayer();
 }
 
+function canFocus(el) {
+  if (!el?.isConnected || el.disabled || el.tabIndex < 0 || el.closest('[hidden], [inert]')) return false;
+  const style = getComputedStyle(el), rect = el.getBoundingClientRect();
+  return style.visibility === 'visible' && style.display !== 'none' && style.opacity !== '0'
+    && rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0
+    && rect.top < window.innerHeight && rect.left < window.innerWidth;
+}
+
 function closeOverlay() {
   const trigger = S.overlay === 'tree' ? S.treeReturn : null;
   setOverlay(null);
-  if (trigger?.isConnected && trigger !== document.body) {
+  if (canFocus(trigger)) {
     trigger.focus();
     return;
   }
@@ -1558,6 +1608,7 @@ window.canopy = {
     renderSheet(false);
     if (id && !document.activeElement?.closest('[data-id]')) focusTree(id);
   },
+  tabSelected() { closePopover(false); setOverlay(null); },
   toggleTree(fromChrome = true) { toggleOverlay('tree'); if (!fromChrome && S.overlay === 'tree') S.treeReturn = null; },
   toast(kind, text) {
     if (kind === 'error') {
@@ -1615,7 +1666,10 @@ window.canopy = {
     else if (S.palette) closePalette();
     else if (S.popover) closePopover();
     else if (S.list) hideList();
-    else if (S.overlay) closeOverlay();
+    else if (S.overlay === 'tree' && (S.frame.treeView.query || S.frame.treeView.waitingOnly)) {
+      $('tree-filter').value = '';
+      post({ t: 'workbench', query: '', waiting: false });
+    } else if (S.overlay) closeOverlay();
     else if (S.surface !== 'reading' && current()) {
       setSurface(S.frame?.tabs.length ? 'reading' : 'start');
       post({ t: 'focus', target: 'page' });
@@ -1847,12 +1901,22 @@ document.addEventListener('focusin', (event) => {
   }
 }, true);
 
+const NODE_TARGETS = '#strip-nodes [data-page], #strip-list [data-id], #strip-list [data-page], #tree-nodes [data-id], #tree-list [data-id], #popover.waiting [data-id], #forest-nodes [data-id]';
+document.addEventListener('keydown', (event) => {
+  if (event.defaultPrevented || S.popover || !(event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) return;
+  const el = event.target.closest(NODE_TARGETS);
+  const id = el?.dataset.page || el?.dataset.id;
+  if (!id || !visit(id)) return;
+  event.preventDefault();
+  openPopover('node', el, id);
+});
+
 document.addEventListener('contextmenu', (event) => {
   const field = event.target.closest('input, textarea, [contenteditable="true"]');
   if (field) return;
   if (event.defaultPrevented) return;
   event.preventDefault();
-  const el = event.target.closest('#strip-nodes [data-page], #strip-list [data-id], #strip-list [data-page], #tree-nodes [data-id], #tree-list [data-id], #popover.waiting [data-id], #forest-nodes [data-id]');
+  const el = event.target.closest(NODE_TARGETS);
   const id = el?.dataset.page || el?.dataset.id;
   if (!id || !visit(id)) return;
   openPopover('node', el, id);

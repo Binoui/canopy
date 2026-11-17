@@ -174,7 +174,7 @@ body[data-overlay="tree"] #pins .pin:not(.on) { visibility: hidden; }
 #tree-edges path { fill: none; stroke: var(--line); stroke-width: 1.3; }
 #tree-edges path.path { stroke: var(--green); stroke-width: 2; }
 #tree-edges path.pending { stroke-dasharray: 3 3; }
-.tree-tile { position: absolute; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 9px; border: 1px solid var(--tile-border); border-radius: 9px; background: var(--tile); text-align: left; }
+.tree-tile { position: absolute; display: flex; align-items: center; gap: 5px; padding: 0 5px; border: 1px solid var(--tile-border); border-radius: 9px; background: var(--tile); text-align: left; }
 .tree-tile:hover { border-color: var(--faint); box-shadow: 0 0 0 3px var(--hover); }
 .tree-tile .t { font-size: 11.5px; font-weight: 500; line-height: 1.22; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
 .tree-tile.path { border-color: color-mix(in srgb, var(--green) 55%, var(--tile-border)); }
@@ -432,6 +432,8 @@ body[data-overlay="tree"] #pins .pin:not(.on) { visibility: hidden; }
 .tree-tools button { padding: 5px 8px; border-radius: 6px; }
 .tree-tools button[aria-pressed="true"] { background: var(--green-soft); color: var(--green-ink); }
 .tree-fold { flex: none; width: 16px; min-height: 24px; display: inline-flex; align-items: center; justify-content: center; }
-.tree-tile .tree-fold { width: 10px; }
+.tree-tile .tree-fold { width: 8px; }
 .tree-row small, .tree-tile small { display: block; color: var(--muted); font-size: 11px; font-weight: normal; }
-.tree-tile:focus-visible, .tree-row:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.tree-tile:has(small) .t { font-size: 10px; line-height: 1.1; -webkit-line-clamp: 3; }
+.tree-tile small { font-size: 9px; }
+.tree-tile:focus-visible, .tree-row:focus-visible, .tree-tile.keyboard-focus:focus, .tree-row.keyboard-focus:focus { outline: 2px solid var(--text); outline-offset: 2px; }

@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 use super::graph::{self, Edge, EdgeKind, Rect};
 use crate::{browser::VisitId, forest::ForestProjection};
 
-const TILE_WIDTH: f64 = 200.;
-const TILE_HEIGHT: f64 = 64.;
+const TILE_WIDTH: f64 = 124.;
+const TILE_HEIGHT: f64 = 40.;
 const COLUMN: f64 = TILE_WIDTH + 22.;
 const ROW: f64 = TILE_HEIGHT + 10.;
 const PAD: f64 = 14.;
@@ -78,14 +78,24 @@ pub(crate) fn workbench(forest: &ForestProjection, state: &Workbench) -> Option<
         children.sort_by_key(|id| {
             std::cmp::Reverse((forest.visit(*id).unwrap().created_at, id.to_string()))
         });
-        let next_depth = depth + usize::from(children.len() > 1);
-        stack.extend(children.into_iter().rev().map(|id| (id, next_depth)));
+        stack.extend(
+            children
+                .into_iter()
+                .enumerate()
+                .rev()
+                .map(|(n, id)| (id, depth + usize::from(n > 0))),
+        );
     }
     let mut admitted = HashSet::new();
     if filtering {
         for row in outline.iter().rev() {
             let v = forest.visit(row.id).unwrap();
-            if (v.label().to_lowercase().contains(&query)
+            if ((graph::short_name(forest, row.id)
+                .to_lowercase()
+                .contains(&query)
+                || super::view::short_host(&v.url)
+                    .to_lowercase()
+                    .contains(&query))
                 && (!state.waiting_only || forest.is_waiting(row.id)))
                 || admitted.contains(&row.id)
             {
@@ -115,8 +125,23 @@ pub(crate) fn workbench(forest: &ForestProjection, state: &Workbench) -> Option<
     let mut cells = HashMap::new();
     let mut tiles = Vec::new();
     let mut edges = Vec::new();
-    for (index, row) in rows.iter().enumerate() {
-        let rect = cell_rect(row.depth, index);
+    let mut positions = HashMap::new();
+    let mut last_row = 0;
+    let mut columns = 1;
+    for row in &rows {
+        let (column, y) = forest
+            .visit(row.id)
+            .unwrap()
+            .parent
+            .and_then(|id| positions.get(&id).copied())
+            .map_or((0, 0), |(column, y, depth)| {
+                let y = if row.depth == depth { y } else { last_row + 1 };
+                (column + 1, y)
+            });
+        positions.insert(row.id, (column, y, row.depth));
+        last_row = last_row.max(y);
+        columns = columns.max(column + 1);
+        let rect = cell_rect(column, y);
         cells.insert(row.id, rect);
         tiles.push(Tile {
             id: row.id,
@@ -134,7 +159,7 @@ pub(crate) fn workbench(forest: &ForestProjection, state: &Workbench) -> Option<
                     from: parent,
                     to: row.id,
                     kind,
-                    from_bottom: false,
+                    from_bottom: from.y != rect.y,
                 };
                 edges.push(PlacedEdge {
                     from: parent,
@@ -146,10 +171,8 @@ pub(crate) fn workbench(forest: &ForestProjection, state: &Workbench) -> Option<
         }
     }
     Some(TreeView {
-        width: PAD * 2.
-            + rows.iter().map(|r| r.depth).max().unwrap_or(0) as f64 * COLUMN
-            + TILE_WIDTH,
-        height: PAD * 2. + rows.len().saturating_sub(1) as f64 * ROW + TILE_HEIGHT,
+        width: PAD * 2. + (columns - 1) as f64 * COLUMN + TILE_WIDTH,
+        height: PAD * 2. + last_row as f64 * ROW + TILE_HEIGHT,
         tiles,
         edges,
         rows,
@@ -411,13 +434,34 @@ mod tests {
         );
         assert_eq!(
             before.rows.iter().map(|r| r.depth).collect::<Vec<_>>(),
-            [0, 0, 1, 1, 1]
+            [0, 0, 0, 0, 1]
         );
         assert_eq!(before.rows[2].id, ids[3]);
         assert_eq!(
             before.tiles.iter().map(|t| t.rect).collect::<Vec<_>>(),
             after.tiles.iter().map(|t| t.rect).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn a_ten_page_chain_and_its_side_branch_use_two_rows() {
+        let mut parents = vec![None];
+        parents.extend((0..8).map(Some));
+        parents.push(Some(3));
+        let (forest, ids) = fixture(&parents, 8);
+        let view = tree_view(&forest).unwrap();
+        assert_eq!(view.height, 118.);
+        let root = view.tiles.iter().find(|t| t.id == ids[0]).unwrap().rect;
+        let newest = view.tiles.iter().find(|t| t.id == ids[9]).unwrap().rect;
+        let older = view.tiles.iter().find(|t| t.id == ids[4]).unwrap().rect;
+        assert_eq!(newest.y, root.y);
+        assert!(newest.x > root.x);
+        assert!(older.y > newest.y);
+        assert_eq!(older.x, newest.x);
+        assert!(view
+            .tiles
+            .iter()
+            .all(|t| t.rect.w == 124. && t.rect.s == 40.));
     }
 
     #[test]
@@ -624,7 +668,7 @@ mod tests {
             view.rows.iter().map(|r| r.id).collect::<HashSet<_>>(),
             ids.iter().copied().collect()
         );
-        assert_eq!(view.rows.iter().find(|r| r.id == ids[6]).unwrap().depth, 1);
+        assert_eq!(view.rows.iter().find(|r| r.id == ids[6]).unwrap().depth, 0);
         assert!(view
             .edges
             .iter()
