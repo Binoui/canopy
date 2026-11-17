@@ -1829,22 +1829,30 @@ impl NativeState {
                 .downcast_ref::<NavigationPolicyDecision>()
                 .and_then(|n| n.navigation_action())
             {
-                // A main-frame action changes WebKit's provisional URI already at policy.
-                // An unnamed iframe can have no frame_name too, so name alone is insufficient.
-                let main_action = action.request().and_then(|r| r.uri()) == self.native.uri();
+                // NavigationAction has no main-frame flag. A missing target name is
+                // the closest signal available (unnamed subframes are ambiguous).
+                let main_action = action.frame_name().is_none_or(|name| name == "_top");
                 if main_action {
                     self.answer_form_return(false);
-                    // A timer or script in the outgoing page cannot revoke an owner's switch.
-                    // Same-document gestures keep the candidate too.
+                    let modifiers = gdk::ModifierType::from_bits_truncate(action.modifiers());
+                    let background = action.mouse_button() == 2
+                        || modifiers.intersects(
+                            gdk::ModifierType::CONTROL_MASK
+                                | gdk::ModifierType::META_MASK
+                                | gdk::ModifierType::SHIFT_MASK,
+                        );
                     if action.is_user_gesture()
+                        && !background
                         && action.request().and_then(|r| r.uri()).is_some_and(|uri| {
                             self.navigation
                                 .borrow()
                                 .current
                                 .as_ref()
                                 .is_some_and(|document| {
-                                    web_url(&uri)
-                                        .is_ok_and(|url| !same_resource(&document.page_url, &url))
+                                    web_url(&uri).is_ok_and(|url| {
+                                        !same_resource(&document.page_url, &url)
+                                            || url.fragment().is_none()
+                                    })
                                 })
                         })
                     {

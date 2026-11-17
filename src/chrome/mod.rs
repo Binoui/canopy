@@ -331,6 +331,10 @@ impl HtmlChrome {
         self.inner.call("settleCurrent", &[]);
     }
 
+    pub fn uncover(&self) {
+        let _ = self.evaluate("uncover()");
+    }
+
     pub fn new_tree(&self) {
         self.inner.call("newTree", &[]);
         let _ = self.inner.view.focus();

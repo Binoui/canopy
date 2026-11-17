@@ -281,13 +281,17 @@ existing refreshes.
 ### Switch cancellation and page Back
 
 Starting a candidate fails all pending foreground work in the old view and invalidates
-its asynchronous link decisions. The old committed document remains usable. Main-frame
-policy for a user gesture to another document cancels the candidate; same-document
-changes (pushState, replaceState and fragments) and subframe policy decisions do not.
-A page's script, timer or automatic refresh never cancels an owner-requested switch
-or new tree. Started alone does not establish user intent. The new-tree address
-editor stays open across cursor updates within the outgoing tree; a redirect cannot
-close it while the owner types. Settling cancels
+its asynchronous link decisions. The old committed document remains usable. At
+navigation policy, WebKit's user-gesture flag cancels the candidate for a foreground
+navigation, including forms and full loads to the current address. Fragment steps
+and history state changes keep it. NavigationAction has no main-frame boolean;
+Canopy uses its absent target-frame name (or `_top`) as the closest available
+signal. Unnamed subframes cannot be distinguished reliably at this point. URI
+equality is not a frame signal: the native URI still names the outgoing page.
+A page timer, automatic refresh or redirect without a gesture keeps the switch.
+Started alone does not establish user intent. Background link commands keep it too.
+The new-tree editor stays open across page-driven cursor updates in the outgoing
+tree; owner Back, Reload and visit commands uncover the page explicitly. Settling cancels
 only a candidate targeting that tree. Settling the last tree creates a fresh home view, so the next branch cannot inherit settled history. Release
 keeps valid checkpoints, including those of settled trees.
 
