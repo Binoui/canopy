@@ -108,12 +108,14 @@ impl Fixture {
                             } else {
                                 ("200 OK", "", atom(&origin, n, account, mode))
                             }
-                        } else {
+                        } else if signed_in {
                             (
                                 "302 Found",
-                                "Location: https://accounts.google.com/ServiceLogin\r\n",
+                                "Location: /mail/u/0/feed/atom\r\n",
                                 String::new(),
                             )
+                        } else {
+                            ("401 Unauthorized", "", String::new())
                         }
                     } else if path == "/redirect" {
                         ("302 Found", "Location: /target\r\n", String::new())

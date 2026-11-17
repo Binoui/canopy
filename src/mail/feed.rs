@@ -31,8 +31,8 @@ pub(super) fn read(answer: Option<&Answer<'_>>, origin: &Origin, number: Account
         300..=399
             if answer
                 .location
-                .and_then(|s| url::Url::parse(s).ok())
-                .is_some_and(|u| u.host_str() == Some(SIGN_IN_HOST)) =>
+                .and_then(|s| origin.feed(number).join(s).ok())
+                .is_some_and(|to| leaves_account(origin, number, &to)) =>
         {
             Outcome::SignedOut
         }
@@ -40,6 +40,19 @@ pub(super) fn read(answer: Option<&Answer<'_>>, origin: &Origin, number: Account
         403 | 408 | 429 | 500..=599 => Outcome::Trouble(Trouble::Unreachable),
         _ => Outcome::Trouble(Trouble::Unreadable),
     }
+}
+
+/// Gmail sends a number that is not signed in to Google's sign-in page, or, while another
+/// account is signed in, to that account's feed (measured 2026-11-17: `u/3` to `u/0`).
+fn leaves_account(origin: &Origin, number: AccountNumber, to: &url::Url) -> bool {
+    to.host_str() == Some(SIGN_IN_HOST)
+        || (origin.serves(to)
+            && to
+                .path()
+                .strip_prefix("/mail/u/")
+                .and_then(|rest| rest.strip_suffix("/feed/atom"))
+                .and_then(|n| n.parse::<u8>().ok())
+                .is_some_and(|n| n != number.get()))
 }
 
 fn child<'a, 'input>(node: Node<'a, 'input>, name: &str) -> Option<Node<'a, 'input>> {
@@ -252,6 +265,11 @@ mod tests {
             (200, None, 0),
             (302, Some("https://accounts.google.com/ServiceLogin"), 1),
             (401, None, 1),
+            (302, Some("https://mail.google.com/mail/u/1/feed/atom"), 1),
+            (302, Some("/mail/u/2/feed/atom"), 1),
+            (302, Some("https://mail.google.com/mail/u/0/feed/atom"), 2),
+            (302, Some("https://mail.google.com/mail/u/0/"), 2),
+            (302, Some("https://elsewhere.test/mail/u/1/feed/atom"), 2),
             (302, Some("https://elsewhere.test/"), 2),
             (302, None, 2),
             (403, None, 3),
