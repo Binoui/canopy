@@ -206,6 +206,9 @@ impl Navigation {
 
     pub fn same_document(&mut self, page_url: Url) {
         if let Some(document) = &mut self.current {
+            if document.page_url.origin() != page_url.origin() {
+                return;
+            }
             if document.page_url != page_url {
                 self.epoch += 1;
                 document.epoch = self.epoch;
@@ -218,6 +221,18 @@ impl Navigation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_document_cannot_replace_the_committed_origin() {
+        let mut navigation = Navigation::default();
+        let committed = Url::parse("https://example.org/page").unwrap();
+        navigation.publish(Ulid::new().to_string().parse().unwrap(), committed.clone());
+        navigation.same_document(Url::parse("https://other.org/provisional").unwrap());
+        assert_eq!(navigation.current.as_ref().unwrap().page_url, committed);
+        let fragment = Url::parse("https://example.org/page#part").unwrap();
+        navigation.same_document(fragment.clone());
+        assert_eq!(navigation.current.as_ref().unwrap().page_url, fragment);
+    }
 
     #[test]
     fn completion_ticket_stays_identifiable_after_finish_but_not_after_another_load() {

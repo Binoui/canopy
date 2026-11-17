@@ -1,7 +1,9 @@
 mod bookmarks;
 mod history;
+mod page_scale;
 pub use bookmarks::{Bookmark, BookmarkId, BookmarkToggle, ImportedBookmark};
 pub use history::{Arrival, ArrivalKind};
+pub use page_scale::PageScale;
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
@@ -316,7 +318,7 @@ impl Browser {
              INSERT OR IGNORE INTO session(singleton, current_id) VALUES(1, NULL);",
         )?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version > 12 {
+        if version > 13 {
             bail!("This database comes from a newer version of Canopy.");
         }
         if version == 0 {
@@ -510,6 +512,11 @@ impl Browser {
                 ALTER TABLE visits ADD COLUMN branch_settled_at INTEGER;
                 PRAGMA user_version=12;",
             )?;
+            tx.commit()?;
+        }
+        if version < 13 {
+            let tx = connection.transaction()?;
+            page_scale::migrate(&tx)?;
             tx.commit()?;
         }
         Ok(Self { connection })
@@ -2265,7 +2272,7 @@ mod tests {
             b.connection
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            12
+            13
         );
     }
 
@@ -3838,7 +3845,7 @@ mod tests {
             b.connection
                 .execute_batch(
                     "ALTER TABLE visits DROP COLUMN dismissed_at;
-                ALTER TABLE visits DROP COLUMN branch_settled_at; PRAGMA user_version=11;",
+                ALTER TABLE visits DROP COLUMN branch_settled_at; DROP TABLE site_page_scale; PRAGMA user_version=11;",
                 )
                 .unwrap();
             (snapshot, b.tree_states().unwrap(), events(&b))
