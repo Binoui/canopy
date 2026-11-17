@@ -120,6 +120,8 @@ fn main() -> Result<()> {
             loaded: Default::default(),
             live: Default::default(),
             files: vec![],
+            back: None,
+            forward: None,
             capture_enabled: false,
             trees_help: true,
             theme: ThemeMode::Light,

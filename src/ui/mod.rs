@@ -292,6 +292,7 @@ impl Ui {
     }
 
     fn read_frame(&self) -> Result<ChromeFrame> {
+        let back = self.pages.back_target();
         self.pages.read(|browser| {
             let forest =
                 ForestProjection::from_snapshot(browser.snapshot()?, browser.tree_states()?)?;
@@ -321,6 +322,7 @@ impl Ui {
                 declined: browser.declined()?,
                 bookmarks: browser.bookmarks()?,
                 files,
+                back,
                 forward,
             })
         })

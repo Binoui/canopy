@@ -1048,6 +1048,12 @@ impl Pages {
             .collect()
     }
 
+    /// The page Back would open from the selected page, for the chrome to name.
+    pub fn back_target(&self) -> Option<VisitId> {
+        let page = self.branches.live.borrow().clone()?;
+        page.back_target()
+    }
+
     pub fn loaded_visits(&self) -> std::collections::HashSet<VisitId> {
         self.branches
             .background

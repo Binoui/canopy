@@ -81,6 +81,8 @@ pub struct ChromeFrame {
     pub declined: std::collections::HashSet<crate::suggest::SuggestionKey>,
     /// The files downloaded from the current tree's pages, oldest first.
     pub files: Vec<PageFile>,
+    /// The page Back opens: the previous native history entry in this tree, else the parent.
+    pub back: Option<VisitId>,
     /// The child of the current page that Forward opens: the one shown most recently.
     pub forward: Option<VisitId>,
 }

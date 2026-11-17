@@ -322,7 +322,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .hint-line { padding: 9px 11px; border: 1px dashed var(--tile-border); border-radius: 10px; color: var(--muted); font-size: 12px; }
 .tab-pinned-mark { display: inline-flex; color: var(--green); }
 .tab-pinned-mark svg.icon { width: 10px; height: 12px; }
-#strip-placeholder { position: absolute; left: 78px; top: 12px; height: 28px; padding: 5px 10px; border: 1px dashed var(--faint); border-radius: 9px; color: var(--muted); font-size: 12px; }
+#strip-placeholder { position: absolute; left: 12px; top: 12px; height: 28px; padding: 5px 10px; border: 1px dashed var(--faint); border-radius: 9px; color: var(--muted); font-size: 12px; }
 .mt { position: relative; display: block; flex: none; }
 .mt svg { position: absolute; left: 0; top: 0; overflow: visible; }
 .mt path { fill: none; stroke: var(--line); stroke-width: 1.2; }

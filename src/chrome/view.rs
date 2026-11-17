@@ -216,8 +216,8 @@ pub(crate) fn strip_for_frame(frame: &ChromeFrame, width: f64) -> Value {
         id.and_then(|id| frame.forest.visit(id))
             .map(|v| json!({ "id": v.id.to_string(), "label": v.label() }))
     };
-    let current = frame.forest.current().and_then(|id| frame.forest.visit(id));
-    strip["back"] = json!(target(current.and_then(|v| v.parent)));
+    let current = frame.forest.current();
+    strip["back"] = json!(target(current.and(frame.back)));
     strip["forward"] = json!(target(current.and(frame.forward)));
     let state = |id: &str| {
         let id: VisitId = id.parse().unwrap();
@@ -790,20 +790,24 @@ mod tests {
     #[test]
     fn back_and_forward_name_their_pages_and_the_tree_starts_after_them() {
         let (forest, ids) = chain_length(Lifecycle::Open, 4);
-        let frame = |forest: ForestProjection, forward: Option<VisitId>| ChromeFrame {
-            mail: crate::mail::Mail::default(),
-            loaded: HashSet::new(),
-            live: HashSet::new(),
-            forest,
-            capture_enabled: true,
-            trees_help: true,
-            theme: ThemeMode::Dark,
-            declined: Default::default(),
-            bookmarks: vec![],
-            forward,
-            files: Vec::new(),
+        let frame = |forest: ForestProjection, back: Option<VisitId>, forward: Option<VisitId>| {
+            ChromeFrame {
+                mail: crate::mail::Mail::default(),
+                loaded: HashSet::new(),
+                live: HashSet::new(),
+                forest,
+                capture_enabled: true,
+                trees_help: true,
+                theme: ThemeMode::Dark,
+                declined: Default::default(),
+                bookmarks: vec![],
+                back,
+                forward,
+                files: Vec::new(),
+            }
         };
-        let strip = strip_for_frame(&frame(forest, Some(ids[3])), 1240.);
+        let mut chain = frame(forest, Some(ids[1]), Some(ids[3]));
+        let strip = strip_for_frame(&chain, 1240.);
         assert_eq!(
             strip["back"],
             json!({ "id": ids[1].to_string(), "label": "Page 1" })
@@ -812,20 +816,23 @@ mod tests {
             strip["forward"],
             json!({ "id": ids[3].to_string(), "label": "Page 3" })
         );
+        // Back can return through WebKit's history to a page that is not the parent.
+        chain.back = Some(ids[0]);
+        assert_eq!(strip_for_frame(&chain, 1240.)["back"]["label"], "Page 0");
         assert_eq!(strip["left"], pins::NAV);
         let pins = pins::pins(
-            &frame(chain_length(Lifecycle::Open, 4).0, None).forest,
+            &chain_length(Lifecycle::Open, 4).0,
             &crate::mail::Mail::default(),
             1240.,
         );
         assert_eq!(strip["room"], pins.room - pins::NAV);
 
         let (root, _) = chain_length(Lifecycle::Open, 2);
-        let strip = strip_for_frame(&frame(root, None), 1240.);
+        let strip = strip_for_frame(&frame(root, None, None), 1240.);
         assert!(strip["back"].is_null(), "the root has no page before it");
         assert!(strip["forward"].is_null());
 
-        let narrow = strip_for_frame(&frame(chain_length(Lifecycle::Open, 4).0, None), 390.);
+        let narrow = strip_for_frame(&frame(chain_length(Lifecycle::Open, 4).0, None, None), 390.);
         assert_eq!(
             narrow["left"], 0.,
             "a narrow window leaves the room to the tree"
@@ -845,7 +852,7 @@ mod tests {
             vec![],
         )
         .unwrap();
-        let strip = strip_for_frame(&frame(empty, None), 1240.);
+        let strip = strip_for_frame(&frame(empty, Some(ids[1]), Some(ids[3])), 1240.);
         assert!(strip["back"].is_null() && strip["forward"].is_null());
     }
 
@@ -950,6 +957,7 @@ mod tests {
             theme: ThemeMode::Light,
             declined: Default::default(),
             bookmarks: vec![],
+            back: None,
             forward: None,
             files: vec![],
         };
@@ -1022,6 +1030,7 @@ mod tests {
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
+            back: None,
             forward: None,
             files: vec![],
         };
@@ -1140,6 +1149,7 @@ mod tests {
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
+            back: None,
             forward: None,
             files: Vec::new(),
         };
@@ -1174,6 +1184,7 @@ mod tests {
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
+            back: None,
             forward: None,
             files: Vec::new(),
         };
@@ -1213,6 +1224,7 @@ mod tests {
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
+            back: None,
             forward: None,
             files: Vec::new(),
         };
@@ -1273,6 +1285,7 @@ mod tests {
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
+            back: None,
             forward: None,
             files: vec![
                 file(
@@ -1383,6 +1396,7 @@ mod tests {
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
+            back: None,
             forward: None,
             files: vec![],
         };

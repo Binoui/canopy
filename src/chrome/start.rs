@@ -82,6 +82,7 @@ mod tests {
             theme: ThemeMode::Dark,
             declined: [frozen[0].key()].into(),
             bookmarks: vec![],
+            back: None,
             forward: None,
             files: vec![],
         };
@@ -119,6 +120,7 @@ mod tests {
             theme: ThemeMode::Dark,
             declined: Default::default(),
             bookmarks: vec![],
+            back: None,
             forward: None,
             files: vec![],
         };

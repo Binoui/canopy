@@ -214,6 +214,19 @@ fn main() -> Result<()> {
     click_chrome(&reopened, "#nav-forward")?;
     assert_eq!(arrived(&reopened, "/next")?, next);
     assert_eq!(reopened.snapshot()?.visits.len(), 4);
+
+    // A second branch from the root, opened from /next: Back returns through WebKit's
+    // history to /next, not to the root, and the button says so.
+    reopened
+        .pages
+        .selected_page()
+        .navigate(server.url("/side")?, NavigationTarget::ChildOf(long))?;
+    arrived(&reopened, "/side")?;
+    wait("Back names the page WebKit's history returns to", || {
+        nav("#nav-back").is_ok_and(|v| v == json!([false, "Back to Next page · Alt+Left"]))
+    })?;
+    click_chrome(&reopened, "#nav-back")?;
+    assert_eq!(arrived(&reopened, "/next")?, next);
     println!("PASS the Back and Forward buttons name their pages and go where Alt+Left and Alt+Right go.");
     reopened.window.close();
     Ok(())
@@ -259,6 +272,7 @@ impl Server {
                 let (status, body) = match path.as_str() {
                     "/long" => ("200 OK", "<!doctype html><title>Long page</title><body style=\"margin:0\"><div style=\"height:6000px\">Long page</div>"),
                     "/next" => ("200 OK", "<!doctype html><title>Next page</title><p>Next page</p>"),
+                    "/side" => ("200 OK", "<!doctype html><title>Side page</title><p>Side page</p>"),
                     _ => ("404 Not Found", ""),
                 };
                 let _ = write!(

@@ -742,6 +742,7 @@ function applyStrip(layouts) {
 /// Back and Forward name the page they open, as Alt+Left and Alt+Right would.
 function renderNav() {
   $('nav').hidden = !S.strip?.left;
+  $('strip-placeholder').style.left = `${(S.strip?.left ?? 0) + 12}px`;
   for (const [kind, label, key] of [['back', 'Back', 'Alt+Left'], ['forward', 'Forward', 'Alt+Right']]) {
     const button = $(`nav-${kind}`);
     const target = S.strip?.[kind];
