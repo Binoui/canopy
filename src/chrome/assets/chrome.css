@@ -506,6 +506,8 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .tab.short:not([aria-selected="true"]) .tab-settle { position: absolute; right: 4px; }
 .tab.short:not([aria-selected="true"]):hover .tab-title { padding-right: 24px; }
 
+#page-scale { margin-right: 4px; color: var(--green-ink); background: var(--green-soft); border-color: transparent; font-variant-numeric: tabular-nums; }
+#page-scale:hover { border-color: var(--green); }
 #load-progress { position: absolute; bottom: 0; left: 0; right: 0; height: 2px; pointer-events: none; z-index: 2; overflow: hidden; }
 #load-progress i { display: block; height: 100%; background: var(--green); transition: width 120ms linear; }
 #load-progress.waiting i { animation: load-wait 1.2s ease-in-out infinite; }

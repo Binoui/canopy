@@ -48,6 +48,14 @@ Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not aff
 - **Ctrl+F** opens a find bar at the right of the tab row. Matches are highlighted as you type, and the bar shows which one is selected, such as **3 of 12**, or **No matches**. Matching ignores case. **Enter** and **Shift+Enter** in the bar, or **Ctrl+G**, **Ctrl+Shift+G**, **F3** and **Shift+F3** anywhere, go to the next or previous match and wrap at either end. A click in the page does not move the count: the next match follows the one counted. If the page changes and the number of matches with it, the count starts again at the first match. **F6** gives the keyboard back to the page and leaves the bar open. **Ctrl+F** again selects the text in the bar. **Escape** closes the bar and clears the highlights. Find belongs to the page it was opened on: switching pages or loading another document closes it. An address change inside the same document, such as a fragment, keeps it open.
 - **Ctrl+Q** quits Canopy.
 
+## Change page size
+
+Press **Ctrl+=** or **Ctrl+plus** to make the page larger, and **Ctrl+-** to make it smaller. Shifted plus works too. The keypad's Add and Subtract keys do the same. Hold **Ctrl** and turn the wheel over the page to change its size one step at a time, from 25% to 500%.
+
+A percentage button appears in the top row when the size is not 100%. Click it, or press **Ctrl+0** or **Ctrl+keypad 0**, to reset to 100%. On AZERTY, **Ctrl+à** and **Ctrl+Shift+0** also reset.
+
+Canopy remembers the size for each site, including after a restart. Pages on the same scheme, host and port share it across trees and waiting pages. Different paths share a size; a different scheme or port has its own. The tabs, strip and forest keep their usual size.
+
 ## Act on a page or branch
 
 Press **Menu** or **Shift+F10** on a focused page in the strip, an attached list, the zoomed tree, the forest or the waiting list. A right-click opens the same menu. The keys also open menus on pinned cards and bookmarks. Its heading shows the page icon and short name. Up and Down move between menu rows, Home and End select the first and last rows, Enter runs the focused row, and Escape returns to the trigger. The same menu offers **Open**, **Open in a new tree**, **New branch here**, and **Copy address**. The remaining rows appear when they apply.

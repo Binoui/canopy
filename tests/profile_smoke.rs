@@ -87,7 +87,10 @@ fn main() -> Result<()> {
     println!("PASS a persistent HTTP cookie written by the old wry construction reaches the server through the real native Ui.");
     println!("PASS localStorage written by the old wry construction survives process exit and is read by the real native Ui. Only old-to-new compatibility is required.");
 
-    ui.pages.selected_page().native.set_zoom_level(1.5);
+    key("ctrl+equal")?;
+    key("ctrl+equal")?;
+    key("ctrl+equal")?;
+    assert_eq!(ui.pages.selected_page().native.zoom_level(), 1.5);
     eval(&ui, "JSON.stringify((window.mouseEvents = [], ['mousedown', 'mouseup'].forEach(kind => document.addEventListener(kind, event => { window.mouseEvents.push([event.type, event.button, event.buttons, event.clientX, event.clientY]); event.preventDefault(); })), true))")?;
     let (x, y) = screen_point(&ui, &ui.pages.selected_page().native, 90, 90)?;
     focus_window()?;
@@ -110,7 +113,8 @@ fn main() -> Result<()> {
         ui.pages.selected_page().native.uri().as_deref(),
         Some(fixture.url("/read").as_str())
     );
-    ui.pages.selected_page().native.set_zoom_level(1.);
+    key("ctrl+0")?;
+    assert_eq!(ui.pages.selected_page().native.zoom_level(), 1.);
     println!("PASS back and forward mouse buttons reach page JavaScript at zoomed CSS coordinates and respect preventDefault.");
 
     let events = Rc::new(RefCell::new(Vec::new()));

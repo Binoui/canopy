@@ -25,6 +25,8 @@ pub(super) mod find;
 mod login_fields;
 #[path = "mouse.rs"]
 mod mouse;
+#[path = "page_scale.rs"]
+pub(super) mod page_scale;
 
 use crate::{
     address::web_url,
@@ -1062,6 +1064,7 @@ impl LivePage {
         });
         signals.push((native.clone().upcast(), favicon));
         state.owner().register_view(&native);
+        signals.extend(page_scale::setup(&state));
         Ok(Self {
             last_shown: Cell::new(0),
             native,
@@ -1574,6 +1577,7 @@ impl NativeState {
             },
         )?;
         if committed {
+            self.report(self.apply_page_scale());
             self.owner().publish_loading();
             let visit = self
                 .navigation
@@ -1583,6 +1587,7 @@ impl NativeState {
                 .expect("committed document")
                 .visit;
             self.owner().committed(ticket, visit);
+            self.owner().publish_page_scale();
         }
         Ok(committed)
     }
@@ -2346,6 +2351,7 @@ impl NativeState {
                     .borrow_mut()
                     .select_document(&self.navigation.borrow(), &document);
                 self.report(result);
+                self.owner().publish_page_scale();
             }
             self.emit(PageEvent::Changed);
         }
