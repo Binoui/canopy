@@ -16,6 +16,8 @@ use webkit2gtk::{
     ResponsePolicyDecisionExt, URIRequestExt, URIResponseExt, UserContentInjectedFrames,
     UserContentManagerExt, UserScript, UserScriptInjectionTime, WebViewExt,
 };
+#[path = "find.rs"]
+pub(super) mod find;
 #[path = "login_fields.rs"]
 mod login_fields;
 #[path = "mouse.rs"]
@@ -148,6 +150,7 @@ struct NativeState {
     awaiting_response: Cell<bool>,
     reload_candidate: RefCell<Option<Url>>,
     main_frame_post: Cell<Option<(LoadTicket, bool)>>,
+    find: RefCell<find::Driver>,
     #[cfg(feature = "gui-smoke")]
     revival_refusals: Cell<usize>,
 }
@@ -528,6 +531,7 @@ impl LivePage {
             awaiting_response: Cell::new(false),
             reload_candidate: RefCell::new(None),
             main_frame_post: Cell::new(None),
+            find: RefCell::default(),
             #[cfg(feature = "gui-smoke")]
             revival_refusals: Cell::new(0),
         });
@@ -653,6 +657,7 @@ impl LivePage {
                 .into_iter()
                 .map(|id| (manager.clone().upcast(), id)),
         );
+        signals.extend(find::setup(&state));
         {
             let weak = Rc::downgrade(&state);
             signals.push((
@@ -745,6 +750,7 @@ impl LivePage {
                             }
                             // The new document reports its own sign-in fields.
                             state.emit(PageEvent::Login(LoginEvent::NewDocument));
+                            state.reconcile_find();
                         }
                         LoadEvent::Finished => {
                             let next = state
@@ -1592,6 +1598,7 @@ impl NativeState {
                 |_| {},
             );
         }
+        self.reconcile_find();
     }
 
     fn ticket(&self) -> Option<Document> {

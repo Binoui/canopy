@@ -12,6 +12,9 @@ use crate::{
 };
 use anyhow::Result;
 use gtk::prelude::*;
+pub use live::find::{
+    FindAction, FindClose, FindId, FindMatches, FindReadout, FindTarget, FindUpdate,
+};
 use live::LivePage;
 pub use native::{CookieApplyError, DownloadEvent};
 use std::{
@@ -44,6 +47,7 @@ pub enum PageEvent {
     Download(DownloadEvent),
     OpenBranchPalette { visit: VisitId },
     Login(LoginEvent),
+    Find(FindUpdate),
 }
 
 /// What the selected page reports about signing in.
@@ -817,6 +821,7 @@ impl Pages {
         let focus = old.as_ref().is_some_and(|p| p.native.is_focus());
         incoming.show();
         if let Some(old) = old {
+            old.close_find();
             old.native.set_child_visible(false);
             if !old.native.is_sensitive() {
                 self.release_outgoing(old);
@@ -856,6 +861,7 @@ impl Pages {
         let old = self.branches.live.borrow_mut().replace(candidate.clone());
         let focus = old.as_ref().is_some_and(|page| page.native.is_focus());
         if let Some(old) = old {
+            old.close_find();
             self.hold_page(old, &candidate, last_shown);
         } else {
             candidate.show();

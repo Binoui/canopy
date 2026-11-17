@@ -60,6 +60,7 @@ const S = {
   popover: null,
   palette: null,
   reader: null,
+  find: null,
   errors: [],
   forestLabels: true,
   camera: { x: 0, y: 0, zoom: 1 },
@@ -1680,6 +1681,25 @@ $('reader').querySelector('.scrim').addEventListener('mousedown', closeReader);
 
 const when = (at) => new Date(at).toLocaleString(undefined, { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
+// ---------- find bar ----------
+
+/// The count shows only for the query in the field; a newer edit dims the last one.
+function renderFind() {
+  const find = S.find;
+  $('find-bar').hidden = !find;
+  document.body.toggleAttribute('data-find', !!find);
+  if (!find) return;
+  const state = find.query === $('find-input').value ? find.matches.state : 'pending';
+  $('find-bar').dataset.state = state;
+  const count = $('find-count');
+  if (state === 'position') count.textContent = `${find.matches.index} of ${find.matches.total}`;
+  else if (state === 'none') count.textContent = 'No matches';
+  else if (state === 'empty') count.textContent = '';
+  for (const id of ['find-previous', 'find-next']) $(id).disabled = state === 'empty' || state === 'none';
+}
+
+const findIntent = (action, extra = {}) => { if (S.find) intent('find', { session: S.find.id, action, ...extra }); };
+
 // ---------- Rust's side ----------
 
 window.canopy = {
@@ -1861,7 +1881,7 @@ window.canopy = {
     else if (S.surface !== 'reading' && current()) {
       setSurface(S.frame?.tabs.length ? 'reading' : 'start');
       post({ t: 'focus', target: 'page' });
-    }
+    } else if (S.find) findIntent('close');
   },
   paletteResults(seq, { rows, first }) {
     if (!S.palette || seq !== S.palette.seq) return;
@@ -1901,6 +1921,31 @@ window.canopy = {
     S.systemDark = dark;
     applyTheme();
   },
+  /// Shows a find session, or with null closes the bar: 'user' closed it and Rust gave
+  /// the page the keyboard, 'context' means the page changed under it.
+  find(value, kind) {
+    const input = $('find-input');
+    if (!value) {
+      const focused = $('find-bar').contains(document.activeElement);
+      S.find = null;
+      renderFind();
+      fitTabs();
+      if (kind === 'context' && focused) post({ t: 'focus', target: 'page' });
+      return;
+    }
+    if (kind === 'focus') {
+      uncover();
+      if (S.find?.id !== value.id) input.value = value.query;
+    }
+    const opening = !S.find;
+    S.find = value;
+    renderFind();
+    if (opening) fitTabs();
+    if (kind === 'focus') {
+      input.focus();
+      input.select();
+    }
+  },
   /// For tests: what the view shows, without reaching into the DOM. `deferred` names the
   /// calls held back while a button is down.
   state() {
@@ -1911,6 +1956,7 @@ window.canopy = {
       dark: document.documentElement.classList.contains('dark'),
       nodes: [...strip.elements.keys()], rows: S.palette?.rows ?? [],
       waiting: S.frame?.waiting.ids ?? [], pins: (S.strip?.pins ?? []).map((p) => p.kind), room: S.strip?.room ?? null,
+      find: S.find && { ...S.find, input: $('find-input').value, count: $('find-count').textContent, state: $('find-bar').dataset.state },
     };
   },
 };
@@ -1986,6 +2032,23 @@ $('forest-button').innerHTML = icon('forest') + '<span>Forest</span>';
 $('settings-button').innerHTML = icon('settings');
 $('tab-overflow').innerHTML = icon('chevron');
 $('search-pill').insertAdjacentHTML('afterbegin', icon('search'));
+$('find-previous').innerHTML = icon('chevron');
+$('find-next').innerHTML = icon('chevron');
+$('find-close').innerHTML = icon('close');
+$('find-input').addEventListener('input', () => {
+  findIntent('query', { text: $('find-input').value });
+  renderFind();
+});
+$('find-input').addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  findIntent(event.shiftKey ? 'previous' : 'next');
+});
+// Buttons leave the keyboard in the field.
+$('find-bar').addEventListener('mousedown', (event) => { if (event.target.closest('button')) event.preventDefault(); });
+$('find-previous').addEventListener('click', () => findIntent('previous'));
+$('find-next').addEventListener('click', () => findIntent('next'));
+$('find-close').addEventListener('click', () => findIntent('close'));
 
 let settlePress = null;
 window.addEventListener('mousedown', (event) => {
