@@ -558,7 +558,7 @@ function renderCard(preview) {
   const r = strip.shown.nodes.get(id);
   if (!v || !r || S.card !== id) return;
   const isCurrent = id === current();
-  const tags = [isCurrent && 'Current page', v.queued && 'Waiting'].filter(Boolean);
+  const tags = [isCurrent && 'Current page'].filter(Boolean);
   const source = isCurrent && v.source;
   const card = $('card');
   card.innerHTML = `<div class="card-head">${visitFav(v, 16)}<div class="card-title">${esc(preview.title)}</div></div>`

@@ -234,8 +234,9 @@ impl HtmlChrome {
         {
             use webkit2gtk::{HitTestResultExt, WebViewExt};
             use wry::WebViewExtUnix;
-            view.webview()
-                .connect_context_menu(|_, _, _, hit| !hit.context_is_editable());
+            view.webview().connect_context_menu(|_, _, _, hit| {
+                !(hit.context_is_editable() || hit.context_is_selection())
+            });
         }
         let inner = Rc::new(Inner {
             view,
@@ -251,6 +252,21 @@ impl HtmlChrome {
             start: Cell::new(false),
             palette: RefCell::new(None),
         });
+        {
+            use gtk::prelude::*;
+            use wry::WebViewExtUnix;
+            let weak = Rc::downgrade(&inner);
+            inner
+                .view
+                .webview()
+                .connect_query_tooltip(move |view, _, _, _, _| {
+                    if weak.upgrade().is_some_and(|inner| inner.modal.get()) {
+                        // WebKit caches title text on pointer motion, before a menu may open.
+                        view.stop_signal_emission_by_name("query-tooltip");
+                    }
+                    false
+                });
+        }
         *slot.borrow_mut() = Rc::downgrade(&inner);
         let weak = Rc::downgrade(&inner);
         favicons.connect_changed(move |revision| {

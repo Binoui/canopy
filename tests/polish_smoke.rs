@@ -2,7 +2,9 @@ use anyhow::Result;
 use canopy::ui::Ui;
 use gtk::prelude::*;
 use std::{cell::Cell, rc::Rc};
-use webkit2gtk::{HitTestResultExt, WebViewExt};
+use webkit2gtk::{
+    ContextMenuAction, ContextMenuExt, ContextMenuItemExt, HitTestResultExt, WebViewExt,
+};
 mod common;
 use common::*;
 
@@ -19,10 +21,19 @@ fn main() -> Result<()> {
     println!("PASS no disabled Agent button.");
     let menus = Rc::new(Cell::new(0));
     let seen = menus.clone();
+    let copies = Rc::new(Cell::new(0));
+    let copy_seen = copies.clone();
     ui.chrome
         .native()
-        .connect_context_menu(move |_, _, _, hit| {
-            assert!(hit.context_is_editable());
+        .connect_context_menu(move |_, menu, _, hit| {
+            assert!(hit.context_is_editable() || hit.context_is_selection());
+            if hit.context_is_selection() {
+                assert!(menu
+                    .items()
+                    .iter()
+                    .any(|item| item.stock_action() == ContextMenuAction::Copy));
+                copy_seen.set(copy_seen.get() + 1);
+            }
             seen.set(seen.get() + 1);
             false
         });
@@ -40,11 +51,107 @@ fn main() -> Result<()> {
     println!(
         "PASS right-click suppresses chrome navigation menus and preserves native editing menus."
     );
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let url = format!("http://{}", listener.local_addr()?);
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for mut stream in listener.incoming().flatten() {
+            let mut request = [0; 4096];
+            let _ = stream.read(&mut request);
+            let body = "<title>Tooltip fixture</title><a id='waiting' href='/waiting'>An article to read later</a>";
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    ui.pages.selected_page().navigate(
+        canopy::address::web_url(&url)?,
+        canopy::browser::NavigationTarget::Root,
+    )?;
+    wait("fixture loaded", || {
+        text(&ui, ".tab-title").contains("Tooltip fixture")
+    })?;
+    let (x, y) = element_point(&ui, "waiting")?;
+    move_to(x, y)?;
+    xdo(&["click", "2"])?;
+    wait("waiting counter", || visible(&ui, "#waiting-pin"))?;
     for theme in ["dark", "light"] {
         chrome(&ui, &format!("(intent('theme', {{mode:'{theme}'}}), true)"))?;
         wait("theme", || {
             chrome(&ui, "S.frame.theme").is_ok_and(|v| v == theme)
         })?;
+        for (name, selector, button) in [
+            ("waiting", "#waiting-pin", None),
+            ("settings", "#settings-button", Some("1")),
+            ("overflow", "#tab-overflow", Some("1")),
+            ("tab", ".tab", Some("3")),
+        ] {
+            chrome(&ui, "(closePopover(false), true)")?;
+            if name == "overflow" {
+                chrome(&ui, "($('tab-overflow').hidden=false, true)")?;
+            }
+            hover_chrome(&ui, selector)?;
+            pump(100);
+            if let Some(button) = button {
+                xdo(&["click", button])?;
+            }
+            wait("open anchored menu", || visible(&ui, "#popover"))?;
+            if name == "tab" {
+                chrome(&ui, "(renderTabs(), true)")?;
+            }
+            pump(1000);
+            let shown = tooltip_query(&ui, selector)?;
+            assert!(
+                !shown,
+                "{theme} {name} tooltip query must refuse the stationary pointer"
+            );
+            shot(&ui, &format!("{theme}-{name}-held"))?;
+            chrome(&ui, "(closePopover(false), true)")?;
+            move_to(1300, 900)?;
+        }
+        println!("PASS {theme} stationary pointer tooltip queries refuse waiting, settings, overflow and refreshed tab menus after 1 s.");
+        hover_chrome(&ui, "#settings-button")?;
+        pump(1000);
+        assert!(
+            tooltip_query(&ui, "#settings-button")?,
+            "tooltips must resume after menus close"
+        );
+        for layer in ["palette", "overlay"] {
+            if layer == "palette" {
+                key("ctrl+k")?;
+            } else {
+                key("ctrl+e")?;
+            }
+            pump(1000);
+            assert!(
+                !tooltip_query(&ui, "#settings-button")?,
+                "{layer} must refuse tooltips"
+            );
+            key("Escape")?;
+        }
+        chrome(&ui, "(canopy.reader({title:'Saved article',kind:'Page',at:0,url:'https://example.org',text:'A saved passage to select and copy.'}), true)")?;
+        wait("reader", || visible(&ui, "#capture-text"))?;
+        chrome(&ui, "(() => {const r=document.createRange();r.selectNodeContents($('capture-text'));getSelection().removeAllRanges();getSelection().addRange(r);return true;})()")?;
+        hover_chrome(&ui, "#capture-text")?;
+        let before = copies.get();
+        xdo(&["click", "3"])?;
+        wait("reader Copy menu", || copies.get() == before + 1)?;
+        shot(&ui, &format!("{theme}-reader-copy"))?;
+        key("Escape")?;
+        key("Escape")?;
+        println!("PASS {theme} selected reader text offers native Copy.");
+        open_strip(&ui)?;
+        hover_chrome(&ui, ".node.pending")?;
+        wait("waiting card", || visible(&ui, "#card"))?;
+        assert!(text(&ui, "#card .card-meta").contains("waiting"));
+        assert!(!text(&ui, "#card").contains("Waiting"));
+        shot(&ui, &format!("{theme}-waiting-card"))?;
+        key("Escape")?;
+        move_to(1300, 900)?;
+        pump(500);
+        println!("PASS {theme} waiting card names the state once in its site line.");
         for (kind, anchor) in [
             ("settings", "settings-button"),
             ("trees", "tab-overflow"),
@@ -111,16 +218,26 @@ fn shot(ui: &Ui, name: &str) -> Result<()> {
     if let Ok(folder) = std::env::var("CANOPY_POLISH_SHOTS") {
         std::fs::create_dir_all(&folder)?;
         save_window(ui, &format!("{folder}/{name}.png"))?;
-        if name == "light-settings" {
+        {
             let status = std::process::Command::new("import")
-                .args([
-                    "-window",
-                    "root",
-                    &format!("{folder}/light-settings-composed.png"),
-                ])
+                .args(["-window", "root", &format!("{folder}/{name}-composed.png")])
                 .status()?;
             assert!(status.success());
         }
     }
     Ok(())
+}
+
+fn tooltip_query(ui: &Ui, selector: &str) -> Result<bool> {
+    let (x, y, w, h) = rect(ui, selector)?;
+    let tooltip: gtk::Tooltip = glib::Object::new();
+    Ok(ui.chrome.native().emit_by_name::<bool>(
+        "query-tooltip",
+        &[
+            &((x + w / 2.) as i32),
+            &((y + h / 2.) as i32),
+            &false,
+            &tooltip,
+        ],
+    ))
 }

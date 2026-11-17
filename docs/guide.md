@@ -46,7 +46,7 @@ Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not aff
 4. Close the browser, then start it again with the same data folder.
 5. Search a few words of the saved text with **Ctrl+K**. Open a **Saved text** result to read the passage offline, or go back to the source to find the links that are still waiting.
 
-Results cover titles, URLs, saved text and source context. Saved text carries its date. Reading saved text and loading the live page are two separate actions. On the current page's card, **Back to source** and **Open comment** lead back to where the page was found.
+Results cover titles, URLs, saved text and source context. Saved text carries its date. Select reader text and right-click for **Copy**. Reading saved text and loading the live page are two separate actions. On the current page's card, **Back to source** and **Open comment** lead back to where the page was found.
 
 Turn off **Remember pages** in the Memory menu to stop automatic capture. Remembering a selection stays available. **Read saved text** shows the text saved for the current page. The Memory menu also lists recent errors, which otherwise appear briefly under the tab row.
 
