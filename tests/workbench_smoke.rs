@@ -33,7 +33,7 @@ fn main() -> Result<()> {
         - 86_400_000;
     for (shape, depth, children) in [
         ("chain", 8, 0),
-        ("fan", 3, 12),
+        ("fan", 5, 12),
         ("trail", 34, 0),
         ("thread", 1, 18),
         ("small", 2, 0),
@@ -43,7 +43,7 @@ fn main() -> Result<()> {
             let id: VisitId = ulid::Ulid::new().to_string().parse()?;
             let parent = if i == 0 {
                 None
-            } else if shape == "fan" && i == 3 {
+            } else if shape == "fan" && [3, 5].contains(&i) {
                 Some(ids[1])
             } else if i < depth {
                 ids.last().copied()
@@ -55,6 +55,11 @@ fn main() -> Result<()> {
                 "Tokio tutorial · Framing".to_owned()
             } else if shape == "chain" {
                 format!("Tokio tutorial · Spawning {i}")
+            } else if shape == "thread" && (1..=3).contains(&i) {
+                format!(
+                    "A practical guide to async Rust part {}",
+                    ["one", "two", "three"][i - 1]
+                )
             } else if shape == "fan" && i == 1 {
                 "Ask HN · What are you building this month?".to_owned()
             } else if shape == "fan" && i == 2 {
@@ -102,7 +107,7 @@ fn main() -> Result<()> {
             let text = String::from_utf8_lossy(&request[..n]);
             let path = text.split_whitespace().nth(1).unwrap_or("/");
             let title = titles.get(path).map_or("Fixture", String::as_str);
-            let body = format!("<!doctype html><title>{title}</title><body style='font:20px sans-serif;padding:60px;background:#eee;color:#333'><h1>{title}</h1><p>Reading the local fixture.</p>");
+            let body = format!("<!doctype html><title>{title}</title><body style='font:20px sans-serif;padding:60px;background:#eee;color:#333;min-height:4000px'><h1>{title}</h1><p>Reading the local fixture.</p>");
             let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
         }
     });
@@ -118,10 +123,75 @@ fn main() -> Result<()> {
             && !ui.pages.selected_page().native.is_loading()
     })?;
     settle(&ui)?;
+    key("ctrl+shift+e")?;
+    wait("workbench open", || visible(&ui, "#tree-sheet"))?;
+    let geometry = chrome(
+        &ui,
+        "S.frame.treeView.tiles.map(t=>({x:t.x,y:t.y,w:t.w,h:t.s}))",
+    )?;
+    println!("Tree geometry {geometry}");
+    assert_eq!(
+        chrome(
+            &ui,
+            "S.frame.treeView.tiles.some((t,i,a)=>i && t.y===a[0].y && t.x>a[0].x)"
+        )?,
+        true,
+        "newest-child chains run right on the same row"
+    );
+    let root_depth = chrome(
+        &ui,
+        &format!("S.frame.treeView.rows.find(r=>r.id==='{}').depth", ids[0]),
+    )?;
+    assert_eq!(
+        chrome(
+            &ui,
+            &format!(
+                "S.frame.treeView.rows.find(r=>r.id==='{}').depth",
+                ids[ids.len() - 1]
+            )
+        )?,
+        root_depth
+    );
+    assert_eq!(
+        chrome(
+            &ui,
+            &format!("S.frame.treeView.rows.find(r=>r.id==='{}').depth", ids[1])
+        )?,
+        1
+    );
+    println!(
+        "PASS 1 and 3. Chains run right, newest child continues the indent, older children indent."
+    );
+    key("Escape")?;
+    click_chrome(&ui, "#zoom-pin")?;
+    wait("mouse sheet open", || visible(&ui, "#tree-sheet"))?;
+    key("Escape")?;
+    wait("mouse close returns page focus", || {
+        ui.pages.selected_page().native.has_focus()
+    })?;
+    key("Next")?;
+    assert!(
+        eval(&ui, "JSON.stringify(window.scrollY)")?
+            .as_f64()
+            .unwrap()
+            > 0.
+    );
+    key("ctrl+k")?;
+    wait("palette focused", || visible(&ui, "#palette"))?;
+    key("ctrl+shift+e")?;
+    wait("palette replaced by workbench", || {
+        visible(&ui, "#tree-sheet")
+    })?;
+    key("Escape")?;
+    wait("hidden palette cannot keep focus", || {
+        ui.pages.selected_page().native.has_focus()
+    })?;
+    println!("PASS 4. Mouse trigger and hidden palette return focus to page; Page Down scrolls.");
     for theme in ["dark", "light"] {
-        let waiting = if theme == "dark" { ids[4] } else { ids[5] };
+        let waiting = if theme == "dark" { ids[6] } else { ids[7] };
         chrome(&ui, &format!("intent('theme', {{mode:'{theme}'}})"))?;
         pump(150);
+        ui.chrome.native().grab_focus();
         chrome(&ui, "(document.getElementById('zoom-pin').focus(),true)")?;
         key("ctrl+shift+e")?;
         wait("large tree opens List with row focus", || {
@@ -158,7 +228,7 @@ fn main() -> Result<()> {
         wait("typed title filter", || {
             chrome(&ui, "S.frame.treeView.query").is_ok_and(|v| v == "fan page 5")
         })?;
-        assert_eq!(chrome(&ui, "S.frame.treeView.rows.length")?, 2);
+        assert_eq!(chrome(&ui, "S.frame.treeView.rows.length")?, 3);
         capture(&shots, "filter", theme)?;
         chrome(&ui, "(document.getElementById('tree-filter').value='',document.getElementById('tree-filter').dispatchEvent(new Event('input')),true)")?;
         wait("filter cleared", || {
@@ -175,7 +245,42 @@ fn main() -> Result<()> {
             visible(&ui, "[data-node-action='copy']")
         })?;
         capture(&shots, "menu", theme)?;
-        click_chrome(&ui, "[data-node-action='copy']")?;
+        assert_eq!(chrome(&ui, "(()=>{const r=$('popover').getBoundingClientRect();return r.top>=0 && r.bottom<=S.windowHeight && r.right<=innerWidth})()")?, true);
+        assert_eq!(
+            chrome(&ui, "document.activeElement.dataset.nodeAction")?,
+            "open"
+        );
+        key("Down")?;
+        assert_eq!(
+            chrome(&ui, "document.activeElement.dataset.nodeAction")?,
+            "new-tree"
+        );
+        key("End")?;
+        assert_eq!(
+            chrome(
+                &ui,
+                "document.activeElement=== $('popover').querySelector('button:last-child')"
+            )?,
+            true
+        );
+        key("Home")?;
+        key("Escape")?;
+        assert_eq!(
+            chrome(&ui, "document.activeElement.dataset.id")?,
+            waiting.to_string()
+        );
+        key("shift+F10")?;
+        key("Down")?;
+        key("Down")?;
+        key("Down")?;
+        assert_eq!(
+            chrome(&ui, "document.activeElement.dataset.nodeAction")?,
+            "copy"
+        );
+        key("Return")?;
+        let copied = gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).wait_for_text();
+        let expected_url = ui.pages.read(|b| b.visit(waiting))?.url.to_string();
+        assert_eq!(copied.as_deref(), Some(expected_url.as_str()));
         assert!(visible(&ui, "#tree-sheet"));
         key("Delete")?;
         wait("Delete dismisses waiting page", || {
@@ -199,13 +304,145 @@ fn main() -> Result<()> {
         capture(&shots, "tree", theme)?;
         ui.window.resize(480, 800);
         pump(200);
-        assert_eq!(chrome(&ui, "(()=>{const b=document.getElementById('tree-board'); b.scrollLeft=0;b.dispatchEvent(new WheelEvent('wheel',{deltaY:100,cancelable:true}));return b.scrollWidth>b.clientWidth && b.scrollLeft>0})()")?, true);
+        assert_eq!(chrome(&ui, "(()=>{const b=$('tree-board');b.scrollLeft=0;b.scrollTop=0;return b.scrollWidth>b.clientWidth && b.scrollHeight>b.clientHeight})()")?, true);
+        let (x, y) = chrome_point(&ui, "#tree-board")?;
+        move_to(x, y)?;
+        xdo(&["click", "5"])?;
+        pump(150);
+        assert_eq!(
+            chrome(
+                &ui,
+                "$('tree-board').scrollTop>0 && $('tree-board').scrollLeft===0"
+            )?,
+            true
+        );
+        xdo(&["keydown", "Shift_L", "click", "5", "keyup", "Shift_L"])?;
+        pump(150);
+        assert_eq!(chrome(&ui, "$('tree-board').scrollLeft>0")?, true);
+        chrome(&ui, "($('tree-board').scrollLeft=0,true)")?;
+        xdo(&["click", "7"])?;
+        pump(150);
+        assert_eq!(chrome(&ui, "$('tree-board').scrollLeft>0")?, true);
+        println!("PASS 2. Vertical wheel moves down; Shift+wheel and horizontal wheel move right.");
         ui.window.resize(820, 800);
         pump(100);
         key("Escape")?;
         assert_eq!(chrome(&ui, "document.activeElement.id")?, "zoom-pin");
     }
     println!("PASS List default, focus and return, arrows, folds, typing, Waiting only, keyboard menu, Delete, non-navigation stays open, and keyed nodes across frames.");
+    ui.pages.go(Go::Visit(ids[2]))?;
+    wait("background branch read", || {
+        ui.snapshot().is_ok_and(|s| s.current == Some(ids[2]))
+            && !ui.pages.selected_page().native.is_loading()
+    })?;
+    ui.pages.go(Go::Visit(*selected))?;
+    wait("current restored with hidden branch", || {
+        ui.snapshot().is_ok_and(|s| s.current == Some(*selected))
+            && !ui.pages.selected_page().native.is_loading()
+    })?;
+    settle(&ui)?;
+    hover_chrome(&ui, "#strip-nodes .pill")?;
+    xdo(&["click", "3"])?;
+    wait("strip node menu", || {
+        visible(&ui, "[data-node-action='open']")
+    })?;
+    key("Down")?;
+    assert_eq!(
+        chrome(&ui, "document.activeElement.dataset.nodeAction")?,
+        "new-tree"
+    );
+    key("End")?;
+    key("Up")?;
+    assert_ne!(
+        chrome(&ui, "document.activeElement.dataset.nodeAction")?,
+        "open"
+    );
+    key("Escape")?;
+    assert_eq!(
+        chrome(&ui, "document.activeElement.matches('#strip-nodes .pill')")?,
+        true
+    );
+    key("Menu")?;
+    wait("Menu key opens strip node menu", || {
+        visible(&ui, "[data-node-action='open']")
+    })?;
+    key("Down")?;
+    assert_eq!(
+        chrome(&ui, "document.activeElement.dataset.nodeAction")?,
+        "new-tree"
+    );
+    key("Escape")?;
+    hover_chrome(&ui, "#strip-nodes .root")?;
+    wait("root list rows", || {
+        visible(&ui, "#strip-list .list-entry [data-id]")
+    })?;
+    hover_chrome(&ui, "#strip-list .list-entry [data-id]")?;
+    xdo(&["click", "3"])?;
+    wait("attached list node menu", || {
+        visible(&ui, "[data-node-action='open']")
+    })?;
+    key("Down")?;
+    assert_eq!(
+        chrome(&ui, "document.activeElement.dataset.nodeAction")?,
+        "new-tree"
+    );
+    key("Escape")?;
+    assert_eq!(
+        chrome(
+            &ui,
+            "document.activeElement.matches('#strip-list [data-id]')"
+        )?,
+        true
+    );
+    hover_chrome(&ui, "#waiting-pin")?;
+    wait("waiting list", || {
+        visible(&ui, "#popover.waiting [data-id]")
+    })?;
+    hover_chrome(&ui, "#popover.waiting [data-id]")?;
+    xdo(&["click", "3"])?;
+    wait("waiting node menu", || {
+        visible(&ui, "[data-node-action='open']")
+    })?;
+    key("Down")?;
+    assert_eq!(
+        chrome(&ui, "document.activeElement.dataset.nodeAction")?,
+        "new-tree"
+    );
+    key("Escape")?;
+    assert_eq!(
+        chrome(
+            &ui,
+            "document.activeElement.matches('#popover.waiting [data-id]')"
+        )?,
+        true
+    );
+    key("Escape")?;
+    println!("PASS 7. Node menus from the sheet, strip, attached list, and waiting list support arrows and Escape return; Home, End, Enter and Menu key work.");
+    key("ctrl+shift+e")?;
+    wait("filter tests open", || visible(&ui, "#tree-sheet"))?;
+    type_text("Ask HN")?;
+    wait("short-name filter projected", || {
+        chrome(&ui, "S.frame.treeView.query").is_ok_and(|v| v == "Ask HN")
+    })?;
+    assert_eq!(chrome(&ui, "S.frame.treeView.rows.length")?, 2);
+    key("Escape")?;
+    type_text("docs.localhost")?;
+    wait("site filter projected", || {
+        chrome(&ui, "S.frame.treeView.rows.length").is_ok_and(|v| v == ids.len())
+    })?;
+    key("Escape")?;
+    click_chrome(&ui, "#tree-side [data-side='tree']")?;
+    assert_eq!(chrome(&ui, "[...$('tree-nodes').children].filter(e=>visit(e.dataset.id).live).every(e=>e.querySelectorAll('.live-dot').length===1)")?,true);
+    assert_eq!(
+        chrome(
+            &ui,
+            "[...$('tree-nodes').children].some(e=>visit(e.dataset.id).live)"
+        )?,
+        true
+    );
+    println!("PASS 9 and 11. Live tiles have one memory dot; filter matches short names and site.");
+    key("Escape")?;
+    ui.pages.settle_branch(ids[5])?;
     ui.pages.settle_branch(ids[1])?;
     pump(200);
     key("ctrl+shift+e")?;
@@ -228,6 +465,23 @@ fn main() -> Result<()> {
         pump(150);
         capture(&shots, "settled", theme)?;
     }
+    assert!(text(&ui, "#tree-list").contains("5 pages put away"));
+    assert!(text(&ui, "#tree-list").contains("1 waiting"));
+    assert!(text(&ui, "#toast").contains("1 waiting kept"));
+    if shots.is_some() {
+        wait("settle toast expires for tile capture", || {
+            !visible(&ui, "#toast")
+        })?;
+    }
+    click_chrome(&ui, "#tree-side [data-side='tree']")?;
+    chrome(&ui, &format!("(focusTree('{}'),true)", ids[1]))?;
+    for theme in ["dark", "light"] {
+        chrome(&ui, &format!("intent('theme',{{mode:'{theme}'}})"))?;
+        pump(100);
+        capture(&shots, "settled-tree", theme)?;
+    }
+    assert_eq!(chrome(&ui,&format!("(()=>{{const e=$('tree-nodes').querySelector('[data-id=\"{}\"]');return e.querySelector('small').getBoundingClientRect().bottom <= e.getBoundingClientRect().bottom}})()",ids[1]))?,true,"settled waiting count fits in tile");
+    click_chrome(&ui, "#tree-side [data-side='list']")?;
     chrome(&ui, &format!("(focusTree('{}'),true)", ids[1]))?;
     key("Right")?;
     wait("settled branch can unfold", || {
@@ -237,6 +491,18 @@ fn main() -> Result<()> {
         )
         .is_ok_and(|v| v == true)
     })?;
+    assert!(text(&ui, "#tree-list").contains("put away"));
+    assert_eq!(
+        chrome(
+            &ui,
+            &format!(
+                "$('tree-list').querySelector('[data-id=\"{}\"] .grow').firstChild.textContent",
+                ids[1]
+            )
+        )?,
+        "Ask HN · What are you building this month?"
+    );
+    println!("PASS 10. Folded settled counts include nested waiting and match the toast; unfolded head keeps its title.");
     key("Return")?;
     wait("Enter opens and closes sheet", || {
         !visible(&ui, "#tree-sheet") && ui.snapshot().is_ok_and(|s| s.current == Some(ids[1]))
@@ -263,7 +529,7 @@ fn main() -> Result<()> {
         ui.snapshot().is_ok_and(|s| s.current == Some(small))
             && !ui.pages.selected_page().native.is_loading()
     })?;
-    chrome(&ui, "(S.treeSide='tree',true)")?;
+    chrome(&ui, "(S.treePreference='tree',true)")?;
     key("ctrl+shift+e")?;
     wait("small tree remembers Tree side", || {
         chrome(&ui, "S.overlay==='tree' && S.treeSide==='tree'").is_ok_and(|v| v == true)
@@ -275,7 +541,103 @@ fn main() -> Result<()> {
         chrome(&ui, "S.overlay==='tree' && S.treeSide==='list'").is_ok_and(|v| v == true)
     })?;
     key("Escape")?;
-    println!("PASS small trees remember the last side and the wheel pans an overflowing Tree at 480 pixels.");
+    click_chrome(&ui, "#zoom-pin")?;
+    wait("small workbench for preference", || {
+        visible(&ui, "#tree-sheet")
+    })?;
+    click_chrome(&ui, "#tree-side [data-side='tree']")?;
+    key("Escape")?;
+    ui.pages.go(Go::Visit(trees[2].2))?;
+    wait("large tree selected", || {
+        ui.snapshot().is_ok_and(|s| s.current == Some(trees[2].2))
+            && !ui.pages.selected_page().native.is_loading()
+    })?;
+    settle(&ui)?;
+    key("ctrl+shift+e")?;
+    wait("large tree forces List", || {
+        chrome(&ui, "S.treeSide==='list'").is_ok_and(|v| v == true)
+    })?;
+    key("Escape")?;
+    ui.pages.go(Go::Visit(small))?;
+    wait("small tree restored", || {
+        ui.snapshot().is_ok_and(|s| s.current == Some(small))
+            && !ui.pages.selected_page().native.is_loading()
+    })?;
+    settle(&ui)?;
+    key("ctrl+shift+e")?;
+    wait("forced List preserves preference", || {
+        chrome(&ui, "S.treeSide==='tree'").is_ok_and(|v| v == true)
+    })?;
+    println!("PASS 8. Forced List preserves the chosen Tree side on a smaller tree.");
+    key("space")?;
+    assert_eq!(chrome(&ui, "S.frame.treeView.query")?, "");
+    assert_eq!(
+        chrome(&ui, "getComputedStyle(document.activeElement).outlineStyle")?,
+        "solid"
+    );
+    println!("PASS 13. Keyboard reopening after a mouse click shows a focus ring; Space leaves the row and filter alone; menus fit the window.");
+    type_text("small")?;
+    wait("query typed", || {
+        chrome(&ui, "S.frame.treeView.query").is_ok_and(|v| v == "small")
+    })?;
+    click_chrome(&ui, "#tree-waiting")?;
+    key("Escape")?;
+    wait("Escape clears both filters first", || {
+        chrome(
+            &ui,
+            "S.overlay==='tree' && S.frame.treeView.query==='' && !S.frame.treeView.waitingOnly",
+        )
+        .is_ok_and(|v| v == true)
+    })?;
+    key("Escape")?;
+    key("ctrl+shift+e")?;
+    assert_eq!(
+        chrome(
+            &ui,
+            "S.frame.treeView.query==='' && !S.frame.treeView.waitingOnly"
+        )?,
+        true
+    );
+    type_text("small")?;
+    click_chrome(&ui, "#zoom-pin")?;
+    key("ctrl+shift+e")?;
+    wait("close also clears filters", || {
+        chrome(
+            &ui,
+            "S.frame.treeView.query==='' && !S.frame.treeView.waitingOnly",
+        )
+        .is_ok_and(|v| v == true)
+    })?;
+    println!(
+        "PASS 5. Escape clears both filters before close and closing clears them for reopening."
+    );
+    key("ctrl+1")?;
+    wait("tab shortcut closes workbench", || {
+        !visible(&ui, "#tree-sheet")
+    })?;
+    key("ctrl+shift+e")?;
+    key("ctrl+1")?;
+    wait("same-tab shortcut closes workbench", || {
+        !visible(&ui, "#tree-sheet")
+    })?;
+    println!("PASS 12. Tab shortcuts close the sheet, including the active tab.");
+    ui.pages.go(Go::Visit(trees[3].2))?;
+    settle(&ui)?;
+    key("ctrl+shift+e")?;
+    wait("prefix tree open", || visible(&ui, "#tree-sheet"))?;
+    click_chrome(&ui, "#tree-side [data-side='tree']")?;
+    assert_eq!(
+        chrome(
+            &ui,
+            &format!(
+                "$('tree-nodes').querySelector('[data-id=\"{}\"] .t').textContent",
+                trees[3].1[2]
+            )
+        )?,
+        "…Rust part two"
+    );
+    println!("PASS 6. Shared-prefix tiles keep the last three words, including Rust part two.");
+    key("Escape")?;
     ui.window.close();
     Ok(())
 }
