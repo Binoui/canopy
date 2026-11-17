@@ -642,7 +642,7 @@ fn resize_and_show() -> Result<()> {
                     .find(|v| v.url.path() == "/queued")
                     .unwrap()
                     .id;
-            open_strip(&u.ui)?;
+            item_list(&u.ui, "#strip-nodes .after")?;
             click_chrome(&u.ui, &node(q))?;
             anyhow::ensure!(u.arrives(q, 6000), "queued strip node arrives");
             geometry(&u)?;

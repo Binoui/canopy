@@ -1,5 +1,5 @@
 //! Both sides of the current-tree sheet, independent of the viewport.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::graph::{self, Edge, EdgeKind, Rect};
 use crate::{browser::VisitId, forest::ForestProjection};
@@ -38,41 +38,143 @@ pub(crate) struct ListRow {
     pub on_path: bool,
 }
 
+#[derive(Default)]
+pub(crate) struct Workbench {
+    pub folds: HashMap<(VisitId, Option<i64>), bool>,
+    pub query: String,
+    pub waiting_only: bool,
+}
+
+impl Workbench {
+    pub fn folded(&self, forest: &ForestProjection, id: VisitId) -> bool {
+        let settled_at = forest.visit(id).and_then(|v| v.branch_settled_at);
+        self.folds
+            .get(&(id, settled_at))
+            .copied()
+            .unwrap_or(settled_at.is_some())
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn tree_view(forest: &ForestProjection) -> Option<TreeView> {
+    workbench(forest, &Workbench::default())
+}
+
+pub(crate) fn workbench(forest: &ForestProjection, state: &Workbench) -> Option<TreeView> {
     let path = forest.path(forest.current()?);
-    let grid = place(forest, &path);
-    let rows = list(forest, &path);
-    let tiles = rows
-        .iter()
-        .map(|row| {
-            let &(col, y) = &grid.cells[&row.id];
-            Tile {
-                id: row.id,
-                rect: cell_rect(col, y),
-                on_path: row.on_path,
+    let root = *path.first()?;
+    let path: HashSet<_> = path.into_iter().collect();
+    let filtering = !state.query.is_empty() || state.waiting_only;
+    let query = state.query.to_lowercase();
+    let mut outline = Vec::new();
+    let mut stack = vec![(root, 0)];
+    while let Some((id, depth)) = stack.pop() {
+        outline.push(ListRow {
+            id,
+            depth,
+            on_path: path.contains(&id),
+        });
+        let mut children = forest.children(id).to_vec();
+        children.sort_by_key(|id| {
+            std::cmp::Reverse((forest.visit(*id).unwrap().created_at, id.to_string()))
+        });
+        stack.extend(
+            children
+                .into_iter()
+                .enumerate()
+                .map(|(n, id)| (id, depth + usize::from(n > 0))),
+        );
+    }
+    let mut admitted = HashSet::new();
+    if filtering {
+        for row in outline.iter().rev() {
+            let v = forest.visit(row.id).unwrap();
+            if ((graph::short_name(forest, row.id)
+                .to_lowercase()
+                .contains(&query)
+                || super::view::short_host(&v.url)
+                    .to_lowercase()
+                    .contains(&query))
+                && (!state.waiting_only || forest.is_waiting(row.id)))
+                || admitted.contains(&row.id)
+            {
+                admitted.insert(row.id);
+                if let Some(parent) = v.parent {
+                    admitted.insert(parent);
+                }
             }
-        })
-        .collect();
-    let edges = grid
-        .edges
-        .iter()
-        .map(|edge| {
-            let (ac, ar) = grid.cells[&edge.from];
-            let (bc, br) = grid.cells[&edge.to];
-            PlacedEdge {
-                from: edge.from,
-                to: edge.to,
-                kind: edge.kind,
-                curve: graph::edge_curve(edge, cell_rect(ac, ar), cell_rect(bc, br)),
+        }
+    }
+    let mut hidden = HashSet::new();
+    let mut rows = Vec::new();
+    for row in outline {
+        let parent = forest.visit(row.id).unwrap().parent;
+        if parent.is_some_and(|p| hidden.contains(&p)) {
+            hidden.insert(row.id);
+            continue;
+        }
+        if filtering && !admitted.contains(&row.id) {
+            continue;
+        }
+        if !filtering && state.folded(forest, row.id) {
+            hidden.insert(row.id);
+        }
+        rows.push(row);
+    }
+    let mut cells = HashMap::new();
+    let mut tiles = Vec::new();
+    let mut edges = Vec::new();
+    let mut positions = HashMap::new();
+    let mut last_row = 0;
+    let mut columns = 1;
+    for row in &rows {
+        let (column, y) = forest
+            .visit(row.id)
+            .unwrap()
+            .parent
+            .and_then(|id| positions.get(&id).copied())
+            .map_or((0, 0), |(column, y, depth)| {
+                let y = if row.depth == depth { y } else { last_row + 1 };
+                (column + 1, y)
+            });
+        positions.insert(row.id, (column, y, row.depth));
+        last_row = last_row.max(y);
+        columns = columns.max(column + 1);
+        let rect = cell_rect(column, y);
+        cells.insert(row.id, rect);
+        tiles.push(Tile {
+            id: row.id,
+            rect,
+            on_path: row.on_path,
+        });
+        if let Some(parent) = forest.visit(row.id).unwrap().parent {
+            if let Some(&from) = cells.get(&parent) {
+                let kind = if row.on_path {
+                    EdgeKind::Path
+                } else {
+                    graph::edge_kind(forest, row.id)
+                };
+                let edge = Edge {
+                    from: parent,
+                    to: row.id,
+                    kind,
+                    from_bottom: from.y != rect.y,
+                };
+                edges.push(PlacedEdge {
+                    from: parent,
+                    to: row.id,
+                    kind,
+                    curve: graph::edge_curve(&edge, from, rect),
+                });
             }
-        })
-        .collect();
+        }
+    }
     Some(TreeView {
+        width: PAD * 2. + (columns - 1) as f64 * COLUMN + TILE_WIDTH,
+        height: PAD * 2. + last_row as f64 * ROW + TILE_HEIGHT,
         tiles,
         edges,
         rows,
-        width: PAD * 2. + (grid.columns - 1) as f64 * COLUMN + TILE_WIDTH,
-        height: PAD * 2. + (grid.rows - 1) as f64 * ROW + TILE_HEIGHT,
     })
 }
 
@@ -157,7 +259,7 @@ pub(crate) fn miniature(
             x,
             y,
             last: id == tree.last_visit,
-            waiting: forest.visit(id).unwrap().state == crate::browser::VisitState::Queued,
+            waiting: forest.is_waiting(id),
         })
         .collect();
     nodes.sort_by(|a, b| a.y.total_cmp(&b.y).then_with(|| a.x.total_cmp(&b.x)));
@@ -248,6 +350,9 @@ fn place(forest: &ForestProjection, path: &[VisitId]) -> Grid {
                 }
                 cells.push((id, col, row));
                 last_col = last_col.max(col);
+                if forest.is_settled(id) {
+                    continue;
+                }
                 for (n, &next) in forest.children(id).iter().enumerate().rev() {
                     edges.push(Edge {
                         from: id,
@@ -273,38 +378,6 @@ fn place(forest: &ForestProjection, path: &[VisitId]) -> Grid {
     grid
 }
 
-fn list(forest: &ForestProjection, path: &[VisitId]) -> Vec<ListRow> {
-    let mut rows = vec![];
-    for (i, &id) in path.iter().enumerate() {
-        rows.push(ListRow {
-            id,
-            depth: 0,
-            on_path: true,
-        });
-        let mut stack: Vec<_> = forest
-            .children(id)
-            .iter()
-            .rev()
-            .filter(|&&child| path.get(i + 1) != Some(&child))
-            .map(|&child| (child, 1))
-            .collect();
-        while let Some((id, depth)) = stack.pop() {
-            rows.push(ListRow {
-                id,
-                depth,
-                on_path: false,
-            });
-            stack.extend(
-                forest
-                    .children(id)
-                    .iter()
-                    .rev()
-                    .map(|&child| (child, depth + 1)),
-            );
-        }
-    }
-    rows
-}
 fn cell_rect(column: usize, row: usize) -> Rect {
     Rect {
         x: PAD + column as f64 * COLUMN + TILE_WIDTH / 2.,
@@ -319,6 +392,151 @@ mod tests {
     use super::*;
     use crate::browser::{Lifecycle, Snapshot, TreeId, TreeState, Visit, VisitState};
     use std::collections::HashSet;
+
+    #[test]
+    fn outline_stays_put_when_current_moves_and_only_indents_forks() {
+        let parents = [None, Some(0), Some(1), Some(1), Some(3)];
+        let (mut forest, ids) = fixture(&parents, 2);
+        let before = tree_view(&forest).unwrap();
+        let mut snapshot = Snapshot {
+            visits: ids
+                .iter()
+                .map(|&id| forest.visit(id).unwrap().clone())
+                .collect(),
+            current: forest.current(),
+        };
+        snapshot.current = Some(ids[3]);
+        forest = ForestProjection::from_snapshot(
+            snapshot,
+            vec![TreeState {
+                root: TreeId(ids[0]),
+                last_visit: ids[3],
+                lifecycle: Lifecycle::Open,
+                name: None,
+                pin: None,
+                last_event_at: None,
+            }],
+        )
+        .unwrap();
+        let after = tree_view(&forest).unwrap();
+        assert_eq!(
+            before
+                .rows
+                .iter()
+                .map(|r| (r.id, r.depth))
+                .collect::<Vec<_>>(),
+            after
+                .rows
+                .iter()
+                .map(|r| (r.id, r.depth))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            before.rows.iter().map(|r| r.depth).collect::<Vec<_>>(),
+            [0, 0, 1, 0, 0]
+        );
+        assert_eq!(
+            before.rows.iter().map(|r| r.id).collect::<Vec<_>>(),
+            [ids[0], ids[1], ids[2], ids[3], ids[4]]
+        );
+        let parent_row = before.rows.iter().position(|r| r.id == ids[1]).unwrap();
+        assert_eq!(before.rows[parent_row + 1].id, ids[2]);
+        assert_eq!(
+            before.tiles.iter().map(|t| t.rect).collect::<Vec<_>>(),
+            after.tiles.iter().map(|t| t.rect).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_ten_page_chain_and_its_side_branch_use_two_rows() {
+        let mut parents = vec![None];
+        parents.extend((0..8).map(Some));
+        parents.push(Some(3));
+        let (forest, ids) = fixture(&parents, 8);
+        let view = tree_view(&forest).unwrap();
+        assert_eq!(view.height, 118.);
+        let root = view.tiles.iter().find(|t| t.id == ids[0]).unwrap().rect;
+        let newest = view.tiles.iter().find(|t| t.id == ids[9]).unwrap().rect;
+        let older = view.tiles.iter().find(|t| t.id == ids[4]).unwrap().rect;
+        assert_eq!(newest.y, root.y);
+        assert!(newest.x > root.x);
+        assert!(older.y > newest.y);
+        assert_eq!(older.x, newest.x);
+        assert!(view
+            .tiles
+            .iter()
+            .all(|t| t.rect.w == 124. && t.rect.s == 40.));
+    }
+
+    #[test]
+    fn a_new_settlement_starts_folded_after_an_earlier_unfold() {
+        let (forest, ids) = fixture(&[None, Some(0), Some(1)], 0);
+        let mut state = Workbench::default();
+        state.folds.insert((ids[1], None), false);
+        let settled = |stamp| {
+            let visits = ids
+                .iter()
+                .map(|&id| {
+                    let mut v = forest.visit(id).unwrap().clone();
+                    if id == ids[1] {
+                        v.branch_settled_at = Some(stamp);
+                    }
+                    v
+                })
+                .collect();
+            ForestProjection::from_snapshot(
+                Snapshot {
+                    visits,
+                    current: Some(ids[0]),
+                },
+                vec![TreeState {
+                    root: TreeId(ids[0]),
+                    last_visit: ids[0],
+                    lifecycle: Lifecycle::Open,
+                    name: None,
+                    pin: None,
+                    last_event_at: None,
+                }],
+            )
+            .unwrap()
+        };
+        let first = settled(10);
+        assert!(state.folded(&first, ids[1]));
+        state.folds.insert((ids[1], Some(10)), false);
+        assert!(!state.folded(&first, ids[1]));
+        assert!(state.folded(&settled(20), ids[1]));
+    }
+
+    #[test]
+    fn folds_hide_descendants_and_filters_reveal_matching_pages_with_ancestors() {
+        let (forest, ids) = fixture(&[None, Some(0), Some(1), Some(0)], 1);
+        let mut state = Workbench::default();
+        state.folds.insert((ids[0], None), true);
+        assert_eq!(workbench(&forest, &state).unwrap().rows.len(), 1);
+        state.query = "page 2".into();
+        assert_eq!(
+            workbench(&forest, &state)
+                .unwrap()
+                .rows
+                .iter()
+                .map(|r| r.id)
+                .collect::<Vec<_>>(),
+            ids[..3]
+        );
+        state.query.clear();
+        state.waiting_only = true;
+        assert_eq!(
+            workbench(&forest, &state)
+                .unwrap()
+                .rows
+                .iter()
+                .map(|r| r.id)
+                .collect::<Vec<_>>(),
+            [ids[0], ids[3]]
+        );
+        state.query = "absent".into();
+        assert!(workbench(&forest, &state).unwrap().rows.is_empty());
+    }
 
     #[test]
     fn miniature_shows_a_child_of_the_last_page_on_the_first_row_and_marks_waiting() {
@@ -385,6 +603,8 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, p)| Visit {
+                dismissed_at: None,
+                branch_settled_at: None,
                 id: ids[i],
                 parent: p.map(|p| ids[p]),
                 url: url::Url::parse("https://example.org/").unwrap(),
@@ -449,24 +669,10 @@ mod tests {
             .iter()
             .all(|t| t.rect.w >= 124. && t.rect.s >= 40.));
         assert_eq!(
-            view.rows
-                .iter()
-                .map(|r| (r.id, r.depth))
-                .collect::<Vec<_>>(),
-            [
-                (ids[0], 0),
-                (ids[4], 1),
-                (ids[5], 2),
-                (ids[6], 3),
-                (ids[1], 0),
-                (ids[7], 1),
-                (ids[2], 0),
-                (ids[8], 1),
-                (ids[3], 0),
-                (ids[9], 1),
-                (ids[10], 1)
-            ]
+            view.rows.iter().map(|r| r.id).collect::<HashSet<_>>(),
+            ids.iter().copied().collect()
         );
+        assert_eq!(view.rows.iter().find(|r| r.id == ids[6]).unwrap().depth, 0);
         assert!(view
             .edges
             .iter()

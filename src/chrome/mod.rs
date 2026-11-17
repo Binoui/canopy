@@ -1,9 +1,9 @@
-//! The chrome: tabs, the tree strip, the palette, cards, menus, the new-tree page, the forest
-//! view and the saved-text reader, drawn in HTML by a transparent web view over the page.
+//! Tabs, the tree strip, the palette, attached lists, menus, the new-tree page, the forest
+//! and the saved-text reader, drawn in HTML by a transparent web view over the page.
 //!
 //! Rust owns the state and every decision: layouts, palette results, intents. The view paints
 //! what `view` serializes and reports input over IPC. At rest the view covers only the top
-//! 94 px. It grows down to whatever is open over the page (the open strip, a card, a menu)
+//! 94 px. It grows down to whatever is open over the page (an attached list or a menu)
 //! and covers the window only for the palette, the reader and the full-page surfaces, so the
 //! page keeps its clicks everywhere else.
 
@@ -13,6 +13,7 @@ pub(crate) mod graph;
 mod palette;
 mod pins;
 mod start;
+mod tabs;
 mod tree_view;
 mod view;
 mod waiting;
@@ -103,6 +104,10 @@ pub enum ChromeIntent {
     },
     SelectTree(TreeId),
     SettleTree(TreeId),
+    Dismiss(VisitId),
+    SettleBranch(VisitId),
+    MoveToTree(VisitId),
+    UndoSettle,
     SettleCurrent,
     /// Name a tree; an empty name goes back to the automatic one.
     RenameTree(TreeId, String),
@@ -118,6 +123,7 @@ pub enum ChromeIntent {
     SetTheme(ThemeMode),
     CancelContinuation,
     Restore(VisitId),
+    Reload,
     /// Activate a queued page, then open a palette anchored on it once it commits.
     BranchFromQueued(VisitId),
     Navigate {
@@ -197,13 +203,20 @@ struct Inner {
     size: Cell<(f64, f64)>,
     /// How far down the view reaches, or `None` to cover the window.
     cover: Cell<Option<f64>>,
+    toast_rect: Cell<Option<[i32; 4]>>,
     /// Something is open that Escape closes.
     modal: Cell<bool>,
     frame: RefCell<Option<ChromeFrame>>,
+    tab_room: Cell<f64>,
     suggested: RefCell<Vec<crate::suggest::Suggestion>>,
     start: Cell<bool>,
+    forest_open: Cell<bool>,
+    forest_revision: Cell<u64>,
+    palette_scope: Cell<Option<VisitId>>,
+    forest_layout: RefCell<Value>,
     /// The last palette results, so Enter runs exactly the row the view showed.
     palette: RefCell<Option<ShownPalette>>,
+    workbench: RefCell<tree_view::Workbench>,
 }
 
 impl HtmlChrome {
@@ -231,6 +244,13 @@ impl HtmlChrome {
             .with_url("canopy://localhost/index.html")
             .build_gtk(container)
             .context("Could not create the chrome view.")?;
+        {
+            use webkit2gtk::{HitTestResultExt, WebViewExt};
+            use wry::WebViewExtUnix;
+            view.webview().connect_context_menu(|_, _, _, hit| {
+                !(hit.context_is_editable() || hit.context_is_selection())
+            });
+        }
         let inner = Rc::new(Inner {
             view,
             host: RefCell::new(None),
@@ -239,17 +259,39 @@ impl HtmlChrome {
             queue: RefCell::new(Vec::new()),
             size: Cell::new((1., 1.)),
             cover: Cell::new(Some(CHROME_HEIGHT)),
+            toast_rect: Cell::new(None),
             modal: Cell::new(false),
             frame: RefCell::new(None),
+            tab_room: Cell::new(0.),
             suggested: RefCell::new(Vec::new()),
             start: Cell::new(false),
+            forest_open: Cell::new(false),
+            forest_revision: Cell::new(0),
+            palette_scope: Cell::new(None),
+            forest_layout: RefCell::new(Value::Null),
             palette: RefCell::new(None),
+            workbench: RefCell::default(),
         });
+        {
+            use gtk::prelude::*;
+            use wry::WebViewExtUnix;
+            let weak = Rc::downgrade(&inner);
+            inner
+                .view
+                .webview()
+                .connect_query_tooltip(move |view, _, _, _, _| {
+                    if weak.upgrade().is_some_and(|inner| inner.modal.get()) {
+                        // WebKit caches title text on pointer motion, before a menu may open.
+                        view.stop_signal_emission_by_name("query-tooltip");
+                    }
+                    false
+                });
+        }
         *slot.borrow_mut() = Rc::downgrade(&inner);
         let weak = Rc::downgrade(&inner);
-        favicons.connect_changed(move |revision| {
+        favicons.connect_changed(move |url, revision| {
             if let Some(inner) = weak.upgrade() {
-                inner.call("icons", &[json!(revision)]);
+                inner.call("icons", &[json!(url), json!(revision)]);
             }
         });
         Ok(Self { inner })
@@ -262,11 +304,40 @@ impl HtmlChrome {
 
     pub fn present(&self, frame: ChromeFrame) {
         let inner = &self.inner;
-        let (width, _) = inner.size.get();
-        inner.call(
-            "present",
-            &[view::frame(&frame, &inner.suggested.borrow(), width)],
+        let changed = !inner.forest_layout.borrow().is_null()
+            && inner
+                .frame
+                .borrow()
+                .as_ref()
+                .is_none_or(|old| old.forest != frame.forest);
+        if inner
+            .frame
+            .borrow()
+            .as_ref()
+            .is_none_or(|old| changed || old.loaded != frame.loaded || old.live != frame.live)
+        {
+            inner.forest_revision.set(inner.forest_revision.get() + 1);
+        }
+        if changed {
+            *inner.forest_layout.borrow_mut() = Value::Null;
+        }
+        if inner.forest_open.get() && inner.forest_layout.borrow().is_null() {
+            *inner.forest_layout.borrow_mut() = view::forest_frame(&frame.forest);
+        }
+        let mut value = view::frame(
+            &frame,
+            &inner.suggested.borrow(),
+            inner.size.get(),
+            &inner.workbench.borrow(),
+            view::Surfaces {
+                start: inner.start.get(),
+                forest: inner.forest_open.get(),
+                palette: inner.palette_scope.get(),
+            },
+            Some(&inner.forest_layout.borrow()),
         );
+        value["tabFit"] = tabs::layout(&frame.forest, inner.tab_room.get());
+        inner.call("present", &[value]);
         *inner.frame.borrow_mut() = Some(frame);
     }
 
@@ -278,7 +349,7 @@ impl HtmlChrome {
         inner.call("viewport", &[json!(height)]);
         if previous.0 != width {
             if let Some(frame) = inner.frame.borrow().as_ref() {
-                inner.call("strip", &[view::strip(&frame.forest, width)]);
+                inner.call("strip", &[view::strip_for_frame(frame, width)]);
             }
         }
     }
@@ -299,11 +370,18 @@ impl HtmlChrome {
             PaletteScope::NewTree => Value::Null,
             PaletteScope::From(id) => json!(id.to_string()),
         };
-        inner.call("openPalette", &[json!({ "scope": scope, "text": text })]);
+        use gtk::prelude::WidgetExt;
+        use wry::WebViewExtUnix;
+        let from_chrome = inner.view.webview().has_focus();
+        inner.call(
+            "openPalette",
+            &[json!({ "scope": scope, "text": text, "fromChrome": from_chrome })],
+        );
         let _ = inner.view.focus();
     }
 
     pub fn tab(&self, index: usize) -> Option<TreeId> {
+        self.inner.call("tabSelected", &[]);
         self.inner
             .frame
             .borrow()
@@ -345,11 +423,18 @@ impl HtmlChrome {
     }
 
     pub fn toggle_tree(&self) {
-        self.inner.call("toggleTree", &[]);
+        use gtk::prelude::WidgetExt;
+        use wry::WebViewExtUnix;
+        let from_chrome = self.inner.view.webview().has_focus();
+        self.inner.call("toggleTree", &[json!(from_chrome)]);
+        let _ = self.inner.view.focus();
     }
 
     pub fn toggle_forest(&self) {
-        self.inner.call("toggleForest", &[]);
+        use gtk::prelude::WidgetExt;
+        use wry::WebViewExtUnix;
+        let from_chrome = self.inner.view.webview().has_focus();
+        self.inner.call("toggleForest", &[json!(from_chrome)]);
     }
 
     /// Offers these saved accounts for the sign-in fields on the page. No account takes
@@ -378,6 +463,10 @@ impl HtmlChrome {
     /// Fills the only offered login, or opens the list when there are several.
     pub fn fill_login(&self) {
         self.inner.call("fillLogin", &[]);
+    }
+
+    pub fn settled(&self, text: &str) {
+        self.inner.call("toast", &[json!("settled"), json!(text)]);
     }
 
     pub fn toast(&self, toast: Toast) {
@@ -455,7 +544,11 @@ impl Inner {
 
     fn apply_bounds(&self) {
         let (width, height) = self.size.get();
-        let height = self.cover.get().map_or(height, |cover| cover.min(height));
+        let height = if self.toast_rect.get().is_some() {
+            height
+        } else {
+            self.cover.get().map_or(height, |cover| cover.min(height))
+        };
         use gtk::prelude::WidgetExt;
         use wry::WebViewExtUnix;
         self.view
@@ -470,6 +563,31 @@ impl Inner {
             width.round() as i32,
             height.round() as i32,
         ));
+        if let Some(window) = self.view.webview().window() {
+            let region = self.toast_rect.get().and_then(|r| {
+                self.cover.get().map(|cover| {
+                    let region =
+                        gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(
+                            0,
+                            0,
+                            width.ceil() as i32,
+                            cover.ceil() as i32,
+                        ));
+                    let _ = region
+                        .union_rectangle(&gtk::cairo::RectangleInt::new(r[0], r[1], r[2], r[3]));
+                    region
+                })
+            });
+            let region = region.unwrap_or_else(|| {
+                gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(
+                    0,
+                    0,
+                    width.ceil() as i32,
+                    height.ceil() as i32,
+                ))
+            });
+            window.input_shape_combine_region(&region, 0, 0);
+        }
         self.raise();
     }
 
@@ -506,17 +624,118 @@ impl Inner {
                     self.view.evaluate_script(&script)?;
                 }
             }
+            "paletteScope" => {
+                self.palette_scope
+                    .set(message["id"].as_str().map(str::parse).transpose()?);
+            }
+            "forest" => {
+                self.forest_open
+                    .set(message["open"].as_bool().unwrap_or(false));
+                if self.forest_open.get() {
+                    if let Some(frame) = self.frame.borrow().as_ref() {
+                        if self.forest_layout.borrow().is_null() {
+                            *self.forest_layout.borrow_mut() = view::forest_frame(&frame.forest);
+                        }
+                        self.call(
+                            "forest",
+                            &[
+                                if message["revision"].as_u64() == Some(self.forest_revision.get())
+                                {
+                                    Value::Null
+                                } else {
+                                    view::frame(
+                                        frame,
+                                        &self.suggested.borrow(),
+                                        self.size.get(),
+                                        &self.workbench.borrow(),
+                                        view::Surfaces {
+                                            start: self.start.get(),
+                                            forest: true,
+                                            palette: self.palette_scope.get(),
+                                        },
+                                        Some(&self.forest_layout.borrow()),
+                                    )
+                                },
+                                json!(self.forest_revision.get()),
+                            ],
+                        );
+                    }
+                }
+            }
+            "suggestions" => {
+                if self.start.get() {
+                    let frame = self.frame.borrow();
+                    if let Some(frame) = frame.as_ref() {
+                        *self.suggested.borrow_mut() = self
+                            .host()
+                            .context("The browser closed.")?
+                            .suggestions(&frame.forest)?;
+                        self.call(
+                            "start",
+                            &[json!({"start": start::value(frame, &self.suggested.borrow())})],
+                        );
+                    }
+                }
+            }
             "surface" => {
                 let start = message["start"].as_bool().unwrap_or(false);
                 if self.start.replace(start) != start && start {
                     self.freeze()?;
                 }
             }
+            "tab-room" => {
+                if let Some(room) = message["room"]
+                    .as_f64()
+                    .filter(|v| v.is_finite() && *v >= 0.)
+                {
+                    self.tab_room.set(room);
+                    if let Some(frame) = self.frame.borrow().as_ref() {
+                        self.call("tabsFit", &[tabs::layout(&frame.forest, room)]);
+                    }
+                }
+            }
             "layer" => {
                 self.modal.set(message["modal"].as_bool().unwrap_or(false));
                 let cover = message["height"].as_f64().map(|h| h.max(CHROME_HEIGHT));
-                if self.cover.replace(cover) != cover {
+                let toast_rect =
+                    serde_json::from_value::<Option<[i32; 4]>>(message["toastRect"].clone())?;
+                let changed = self.toast_rect.replace(toast_rect) != toast_rect;
+                if self.cover.replace(cover) != cover || changed {
                     self.apply_bounds();
+                }
+            }
+            "workbench" => {
+                if let Some(frame) = self.frame.borrow().as_ref() {
+                    let mut state = self.workbench.borrow_mut();
+                    if let Some(query) = message["query"].as_str() {
+                        state.query = query.to_owned();
+                    }
+                    if let Some(waiting) = message["waiting"].as_bool() {
+                        state.waiting_only = waiting;
+                    }
+                    if let Some(id) = message["id"].as_str().and_then(|id| id.parse().ok()) {
+                        if frame.forest.visit(id).is_some() {
+                            let folded = message["folded"]
+                                .as_bool()
+                                .unwrap_or(!state.folded(&frame.forest, id));
+                            let settled_at =
+                                frame.forest.visit(id).and_then(|v| v.branch_settled_at);
+                            state.folds.insert((id, settled_at), folded);
+                        }
+                    }
+                    self.call(
+                        "workbench",
+                        &[view::tree_view_value(
+                            &frame.forest,
+                            &state,
+                            self.size.get(),
+                        )],
+                    );
+                }
+            }
+            "copy" => {
+                if let Some(text) = message["text"].as_str() {
+                    gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).set_text(text);
                 }
             }
             "focus" => {
@@ -655,11 +874,25 @@ impl Inner {
         let Some(frame) = frame.as_ref() else {
             return Ok(());
         };
-        *self.suggested.borrow_mut() = self
-            .host()
-            .context("The browser closed.")?
-            .suggestions(&frame.forest)?;
-        self.call("start", &[start::value(frame, &self.suggested.borrow())]);
+        self.suggested.borrow_mut().clear();
+        self.call(
+            "start",
+            &[
+                view::frame(
+                    frame,
+                    &self.suggested.borrow(),
+                    self.size.get(),
+                    &self.workbench.borrow(),
+                    view::Surfaces {
+                        start: true,
+                        forest: self.forest_open.get(),
+                        palette: self.palette_scope.get(),
+                    },
+                    Some(&self.forest_layout.borrow()),
+                ),
+                json!(true),
+            ],
+        );
         Ok(())
     }
 
@@ -678,6 +911,10 @@ impl Inner {
         let frame = frame.as_ref()?;
         let index = || message["index"].as_u64().map(|i| i as usize);
         Some(match message["kind"].as_str()? {
+            "dismiss" => ChromeIntent::Dismiss(id("id")?),
+            "settle-branch" => ChromeIntent::SettleBranch(id("id")?),
+            "move-to-tree" => ChromeIntent::MoveToTree(id("id")?),
+            "undo-settle" => ChromeIntent::UndoSettle,
             "settle-tree" => ChromeIntent::SettleTree(TreeId(id("id")?)),
             "settle-current" => ChromeIntent::SettleCurrent,
             "select-tree" => ChromeIntent::SelectTree(TreeId(id("id")?)),
@@ -685,6 +922,11 @@ impl Inner {
                 ChromeIntent::RenameTree(TreeId(id("id")?), message["name"].as_str()?.to_owned())
             }
             "restore" => ChromeIntent::Restore(id("id")?),
+            "open-page-in-tree" => ChromeIntent::Navigate {
+                url: frame.forest.visit(id("id")?)?.url.clone(),
+                target: NavigationTarget::Root,
+            },
+            "reload" => ChromeIntent::Reload,
             "branch-queued" => ChromeIntent::BranchFromQueued(id("id")?),
             "open-citation" => ChromeIntent::OpenCitation(id("id")?),
             "read-captures" => ChromeIntent::ReadCaptures(id("id")?),

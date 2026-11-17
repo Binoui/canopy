@@ -45,7 +45,7 @@ fn choose(ui: &Ui, query: &str, refreshed: bool, mouse: bool) -> Result<(String,
     let rows = chrome(ui, "canopy.state().rows")?;
     let default = chrome(
         ui,
-        "document.querySelector('.palette-item.selected').dataset.row",
+        "document.querySelector('.palette-item[aria-selected=true]').dataset.row",
     )?;
     assert_ne!(default, "2", "third row must not be the default");
     let title = rows[2]["title"].as_str().unwrap().to_owned();
@@ -62,7 +62,7 @@ fn choose(ui: &Ui, query: &str, refreshed: bool, mouse: bool) -> Result<(String,
         assert_eq!(
             chrome(
                 ui,
-                "document.querySelector('.palette-item.selected').dataset.row"
+                "document.querySelector('.palette-item[aria-selected=true]').dataset.row"
             )?,
             "2"
         );

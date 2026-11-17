@@ -151,7 +151,12 @@ fn marked(f: &Fixture, id: canopy::browser::VisitId) -> bool {
         .is_ok_and(|v| v == true)
 }
 fn strip_marked(f: &Fixture, id: canopy::browser::VisitId) -> bool {
-    common::visible(&f.ui, &format!(".node[data-id='{id}'] .live-dot"))
+    common::visible(
+        &f.ui,
+        &format!(
+            ".node[data-id='{id}'] .live-dot, #strip-list .menu-row[data-id='{id}'] .live-dot"
+        ),
+    )
 }
 fn switching_marks_only_the_page_left_behind() -> Result<()> {
     let f = Fixture::new()?;
@@ -171,7 +176,7 @@ fn switching_marks_only_the_page_left_behind() -> Result<()> {
     common::wait("hidden page marked", || marked(&f, a))?;
     assert!(!marked(&f, b));
     f.select(a)?;
-    common::open_strip(&f.ui)?;
+    common::open_list(&f.ui)?;
     common::wait("strip marks outgoing page", || strip_marked(&f, b))?;
     assert!(!strip_marked(&f, a));
     Ok(())
@@ -204,6 +209,11 @@ fn hidden_navigation_moves_the_mark_to_the_current_document() -> Result<()> {
     f.root("/river")?;
     common::wait("old visit marked", || marked(&f, a))?;
     eval_native(&view, "location.href='/new-orchard';JSON.stringify(true)")?;
+    common::wait("hidden navigation committed", || {
+        f.ui.snapshot()
+            .is_ok_and(|s| s.visits.iter().any(|v| v.url.path() == "/new-orchard"))
+    })?;
+    common::chrome(&f.ui, "(canopy.toggleForest(),true)")?;
     common::wait("mark moves to hidden commit", || {
         f.ui.snapshot().is_ok_and(|s| {
             s.visits
@@ -241,7 +251,7 @@ fn never_seen_pages_keep_the_loaded_dot_until_opened_and_left() -> Result<()> {
     assert!(!marked(&f, queued));
     f.select(queued)?;
     f.select(a)?;
-    common::open_strip(&f.ui)?;
+    common::open_list(&f.ui)?;
     common::wait("seen page live in strip", || strip_marked(&f, queued))?;
     assert!(common::chrome(&f.ui,&format!("!document.querySelector('.node[data-id=\"{queued}\"] .pending-dot') && !S.frame.visits['{queued}'].queued"))? == true);
     Ok(())
@@ -255,23 +265,22 @@ fn marks_share_surfaces_without_moving_nodes() -> Result<()> {
     f.root("/meadow")?;
     f.root("/river")?;
     f.select(branch)?;
-    common::open_strip(&f.ui)?;
+    common::open_list(&f.ui)?;
     common::wait("root marked", || strip_marked(&f, root))?;
     let selector = format!(".node[data-id='{root}']");
     let before = common::rect(&f.ui, &selector)?;
     common::chrome(
         &f.ui,
-        &format!("(document.querySelector(\"{selector} .live-dot\").remove(),true)"),
+        &format!("(() => {{globalThis.__removedDot=document.querySelector(\"{selector} .live-dot\"); __removedDot.remove(); return true;}})()"),
     )?;
     assert_eq!(
         common::rect(&f.ui, &selector)?,
         before,
         "dot cannot move or resize a node"
     );
-    // The strip keeps a node whose markup is unchanged, so forget the edited markup first.
     common::chrome(
         &f.ui,
-        &format!("(delete document.querySelector(\"{selector}\").dataset.html,canopy.present(S.frame),true)"),
+        &format!("(document.querySelector(\"{selector}\").appendChild(__removedDot),true)"),
     )?;
     common::wait("root marked again", || strip_marked(&f, root))?;
     for theme in ["dark", "light"] {
@@ -291,17 +300,22 @@ fn marks_share_surfaces_without_moving_nodes() -> Result<()> {
             common::visible(&f.ui, &format!(".tree-tile[data-id='{root}'] .live-dot"))
         })?;
         shot(&f, &format!("{theme}-tree"))?;
-        common::chrome(&f.ui, "(setTreeSide('list'),true)")?;
-        assert!(common::visible(
+        common::chrome(
             &f.ui,
-            &format!(".tree-row[data-id='{root}'] .live-dot")
-        ));
+            "(document.querySelector('#tree-side [data-side=list]').click(),true)",
+        )?;
+        common::wait("list live mark", || {
+            common::visible(&f.ui, &format!(".tree-row[data-id='{root}'] .live-dot"))
+        })?;
         assert!(
             common::text(&f.ui, &format!(".tree-row[data-id='{root}'] .menu-detail"))
                 .contains("Open in memory")
         );
         shot(&f, &format!("{theme}-list"))?;
-        common::chrome(&f.ui, "(setTreeSide('tree'),canopy.toggleTree(),true)")?;
+        common::chrome(
+            &f.ui,
+            "(document.querySelector('#tree-side [data-side=tree]').click(),canopy.toggleTree(),true)",
+        )?;
     }
     Ok(())
 }

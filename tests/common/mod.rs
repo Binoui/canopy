@@ -231,7 +231,7 @@ pub fn chrome_focused(ui: &Ui, selector: &str) -> bool {
 }
 
 pub fn node(id: impl std::fmt::Display) -> String {
-    format!("#strip-nodes [data-id='{id}']")
+    format!(":is(#strip-nodes, #strip-list) [data-id='{id}']")
 }
 
 pub fn strip_height(ui: &Ui) -> i64 {
@@ -247,21 +247,27 @@ pub fn cover(ui: &Ui) -> Option<i64> {
     state.as_str()?.split('/').next()?.parse().ok()
 }
 
-/// Hovers the strip and waits until it has opened and its nodes settled.
-pub fn open_strip(ui: &Ui) -> Result<()> {
-    let (left, _, width, _) = rect(ui, "#strip-clip")?;
-    let (x, y) = page_point(ui, (left + width - 24.) as i32, 42 + 26)?;
-    move_to(x, y)?;
-    wait("strip open", || strip_height(ui) == 120)?;
-    pump(350);
+/// Opens the current page's attached list with real pointer input.
+pub fn open_list(ui: &Ui) -> Result<()> {
+    item_list(ui, "#strip-nodes .pill")?;
+    assert_eq!(strip_height(ui), 52);
     Ok(())
+}
+
+pub fn item_list(ui: &Ui, selector: &str) -> Result<()> {
+    hover_chrome(ui, selector)?;
+    wait("item list", || {
+        chrome(ui, &format!("document.getElementById('strip-list').dataset.item === document.querySelector({})?.dataset.id && !document.getElementById('strip-list').hidden", quoted(selector))).is_ok_and(|v| v == true)
+    })
 }
 
 pub fn leave_strip(ui: &Ui) -> Result<()> {
     let (left, _, width, _) = rect(ui, "#strip-clip")?;
     let (x, y) = page_point(ui, (left + width - 24.) as i32, 600)?;
     move_to(x, y)?;
-    wait("strip closed", || strip_height(ui) == 52)?;
+    wait("list closed", || {
+        !visible(ui, "#strip-list") && strip_height(ui) == 52
+    })?;
     pump(300);
     Ok(())
 }

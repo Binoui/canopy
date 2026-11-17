@@ -3,8 +3,8 @@
 // palette results and intents all come from Rust.
 'use strict';
 
-const HEADER = 42, REST = 52, OPEN = 120, TRUNK_Y = 26, CARD_WIDTH = 304, ACCESSORY = 22;
-const MOVE = 300, RESIZE = 220;
+const HEADER = 42, REST = 52, TRUNK_Y = 26, ACCESSORY = 22;
+const MOVE = 300;
 /// A page with more files than this shows one leaf and their count.
 const LEAVES = 3;
 const MONOGRAM = ['#d95c42', '#3b7ad6', '#2e9e5e', '#9c6bde', '#d9962e', '#3b99ad', '#d1547a', '#6b7380'];
@@ -30,7 +30,7 @@ const $ = (id) => document.getElementById(id);
 const post = (message) => window.ipc.postMessage(JSON.stringify(message));
 /// Intents that load a page also give the keyboard back to it, as the GTK buttons that
 /// never took focus did.
-const NAVIGATES = new Set(['restore', 'select-tree', 'settle-tree', 'settle-current', 'open-suggestion', 'open-bookmark', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
+const NAVIGATES = new Set(['reload', 'restore', 'select-tree', 'settle-tree', 'settle-current', 'open-suggestion', 'open-bookmark', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
 const intent = (kind, extra = {}) => {
   post({ t: 'intent', kind, ...extra });
   if (NAVIGATES.has(kind)) post({ t: 'focus', target: 'page' });
@@ -47,26 +47,53 @@ const S = {
   save: null,
   locked: null,
   strip: null,
-  rev: 0,
+  revisions: new Map(),
   systemDark: null,
   surface: 'reading',
   overlay: null,
   formReturn: false,
   treeSide: 'tree',
-  open: false,
+  treePreference: 'tree',
   layer: 'none',
   hovered: null,
-  card: null,
+  list: null,
   popover: null,
   palette: null,
   reader: null,
   errors: [],
-  manualPan: null,
   forestLabels: true,
   camera: { x: 0, y: 0, zoom: 1 },
-  forestDirty: true,
   reported: '',
 };
+
+let inputOrigin = 'keyboard';
+document.addEventListener('mousedown', () => {
+  inputOrigin = 'pointer';
+  if (S.list) S.list.origin = 'pointer';
+}, true);
+document.addEventListener('keydown', () => {
+  inputOrigin = 'keyboard';
+  if (S.list) S.list.origin = 'keyboard';
+}, true);
+const focusReturns = new Map();
+function rememberFocus(kind, trigger = document.hasFocus() ? document.activeElement : document.body) {
+  focusReturns.set(kind, { trigger, id: trigger?.id, data: trigger?.dataset.id, start: trigger?.dataset.start });
+}
+function returnFocus(kind) {
+  const saved = focusReturns.get(kind);
+  focusReturns.delete(kind);
+  const trigger = saved?.trigger?.isConnected ? saved.trigger
+    : saved?.id ? $(saved.id)
+    : saved?.data ? [...document.querySelectorAll('[data-id]')].find((el) => el.dataset.id === saved.data && el.dataset.start === saved.start && el.getClientRects().length) : null;
+  if (canFocus(trigger)) {
+    post({ t: 'focus', target: 'chrome' });
+    trigger.focus();
+  } else if (pageShows()) post({ t: 'focus', target: 'page' });
+  else if (S.surface === 'start') focusStart();
+}
+// WebKitGTK reports reverse Tab as Unidentified on X11.
+const tabKey = (event) => ['Tab', 'ISO_Left_Tab'].includes(event.key) || event.code === 'Tab' || event.keyCode === 9;
+const controlsIn = (root) => [...root.querySelectorAll('button:not(:disabled), input, [tabindex="0"]')].filter((el) => el.tabIndex >= 0 && el.getClientRects().length);
 
 const visit = (id) => S.frame?.visits[id];
 const current = () => S.frame?.current ?? null;
@@ -74,6 +101,10 @@ const current = () => S.frame?.current ?? null;
 const filesOf = (id) => S.frame?.files?.[id] ?? [];
 
 // ---------- favicons ----------
+
+function iconSite(url) {
+  try { return new URL(url).hostname; } catch { return url; }
+}
 
 function hostOf(url) {
   try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return '?'; }
@@ -87,13 +118,13 @@ function fav(url, opened, size) {
   for (let i = 0; i < host.length; i++) hash = Math.imul(hash ^ (host.charCodeAt(i) & 255), 16777619) >>> 0;
   const color = MONOGRAM[hash % MONOGRAM.length];
   const letter = esc((host[0] || '?').toUpperCase());
-  const src = `icon?u=${encodeURIComponent(url)}&o=${opened ? 1 : 0}&r=${S.rev}`;
+  const src = `icon?u=${encodeURIComponent(url)}&o=${opened ? 1 : 0}&r=${S.revisions.get(iconSite(url)) ?? 0}`;
   return `<span class="fav" style="width:${size}px;height:${size}px;background:${color};border-radius:${Math.min(3, size / 4)}px">`
-    + `<b style="font-size:${Math.round(size * 0.62)}px">${letter}</b>`
-    + `<img src="${src}" alt="" onload="this.parentNode.style.background='none';this.previousSibling.style.visibility='hidden'" onerror="this.remove()"></span>`;
+    + `<b aria-hidden="true" style="font-size:${Math.round(size * 0.62)}px">${letter}</b>`
+    + `<img src="${src}" alt="" onload="this.style.visibility='';this.parentNode.style.background='none';this.previousSibling.style.visibility='hidden'" onerror="this.style.visibility='hidden'"></span>`;
 }
 const waitState = (v) => v.queued ? (v.loaded ? 'loaded' : 'unloaded') : null;
-const markClass = (v) => waitState(v) === 'loaded' ? ' pending loaded' : waitState(v) ? ' pending' : '';
+const markClass = (v) => v.dismissed ? ' dismissed' : waitState(v) === 'loaded' ? ' pending loaded' : waitState(v) ? ' pending' : '';
 const visitFav = (v, size) => fav(v.url, waitState(v) !== 'unloaded', size);
 const markedFav = (v, size, live = v.live) => `<span class="mk">${visitFav(v, size)}`
   + (live ? '<i class="live-dot"></i>' : '')
@@ -111,75 +142,51 @@ function cancel(name) {
   delete timers[name];
 }
 
-function enterStrip() {
-  if (S.layer === 'palette') return;
-  cancel('close');
-  if (!S.open) schedule('open', 110, () => { if (!S.open && S.layer === 'none') setOpen(true); });
+function enterNode(key) {
+  if (S.layer !== 'none' || S.overlay) return;
+  S.hovered = key;
+  cancel('hideList');
+  schedule('showList', 250, () => { if (S.hovered === key) showList(key, 'pointer'); });
 }
-function leaveStrip() {
-  cancel('open');
-  if (S.open) schedule('close', 380, closeStrip);
+function listHasKeyboardFocus() {
+  return S.list?.origin === 'keyboard' && ($('strip-list').contains(document.activeElement)
+    || strip.elements.get(S.list.key) === document.activeElement);
 }
-function closeStrip() {
-  if (S.open && S.layer !== 'menu') {
-    setOpen(false);
-    hideCard();
-  }
-}
-function enterNode(id) {
-  if (S.layer !== 'none') return;
-  S.hovered = id;
-  cancel('hideCard');
-  schedule('showCard', S.card ? 40 : 260, () => {
-    if (S.open && S.layer === 'none' && S.hovered && S.card !== S.hovered) showCard(S.hovered);
-  });
-}
-function leaveNode() {
+function leaveNode(event) {
   S.hovered = null;
-  cancel('showCard');
-  if (S.card) schedule('hideCard', 160, hideCard);
+  cancel('showList');
+  if (event.relatedTarget?.closest('#strip-list')) return;
+  if (S.list) schedule('hideList', 220, () => { if (!listHasKeyboardFocus()) hideList(); });
 }
 function setLayer(layer) {
-  const previous = S.layer;
   S.layer = layer;
-  if (layer === 'palette') {
-    cancel('open');
-    cancel('close');
-    if (S.open) setOpen(false);
-    hideCard();
-  } else if (layer === 'menu') {
-    cancel('close');
-    hideCard();
-  } else if (previous === 'menu' && S.open) {
-    schedule('close', 380, closeStrip);
-  }
+  if (layer !== 'none' && !S.popover?.anchor.closest('#strip-list')) hideList();
   syncLayer();
 }
 
 /// Tells Rust how far down the view must reach (null for the whole window), and whether
 /// Escape is ours. Below that, the page gets the pointer.
 function syncLayer() {
-  const modal = !!(S.formReturn || S.reader || S.palette || S.popover || S.card || S.open || S.overlay
+  const modal = !!(S.formReturn || S.reader || S.palette || S.popover || S.list || S.overlay
     || (S.surface !== 'reading' && current()));
   let height = HEADER + REST;
   if (S.formReturn || S.palette || S.reader || S.overlay || S.surface !== 'reading') {
     height = null;
   } else {
-    if (S.open || strip.anim) {
-      const strips = [strip.shown.height, strip.target?.height ?? REST, strip.anim ? strip.from.height : REST];
-      height = Math.max(height, HEADER + Math.max(...strips) + 24);
-    }
-    for (const el of [S.card && $('card'), S.popover && $('popover')]) {
+    for (const el of [S.list && $('strip-list'), S.popover && $('popover')]) {
       if (!el) continue;
-      const bottom = el.hidden ? HEADER + OPEN + 260 : el.getBoundingClientRect().bottom;
+      const bottom = el.hidden ? HEADER + REST + 420 : el.getBoundingClientRect().bottom;
       height = Math.max(height, bottom + 30);
     }
     height = Math.ceil(height);
   }
-  const report = `${height}/${modal}`;
+  const settledToast = !$('toast').hidden && $('toast').classList.contains('settled');
+  const undo = settledToast ? $('toast').querySelector('button').getBoundingClientRect() : null;
+  const toastRect = undo ? [Math.floor(undo.x), Math.floor(undo.y), Math.ceil(undo.width), Math.ceil(undo.height)] : null;
+  const report = `${height}/${modal}/${JSON.stringify(toastRect)}`;
   if (report !== S.reported) {
     S.reported = report;
-    post({ t: 'layer', height, modal });
+    post({ t: 'layer', height, modal, toastRect });
   }
 }
 
@@ -193,51 +200,70 @@ function applyTheme() {
 
 // ---------- tab row ----------
 
+function patchChildren(container, html) {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const kept = new Map([...container.children].map((el) => [el.dataset.key || el.dataset.id, el]));
+  let cursor = container.firstElementChild;
+  for (const fresh of [...template.content.children]) {
+    const el = kept.get(fresh.dataset.key || fresh.dataset.id) || fresh;
+    kept.delete(fresh.dataset.key || fresh.dataset.id);
+    if (el !== fresh) {
+      for (const attr of fresh.attributes) if (el.getAttribute(attr.name) !== attr.value) el.setAttribute(attr.name, attr.value);
+      if (el.innerHTML !== fresh.innerHTML) el.innerHTML = fresh.innerHTML;
+    }
+    if (el !== cursor) container.insertBefore(el, cursor);
+    cursor = el.nextElementSibling;
+  }
+  for (const el of kept.values()) el.remove();
+}
+
 function renderTabs() {
   const row = $('tab-row');
   const trees = S.frame?.tabs ?? [];
-  row.innerHTML = trees.map((tree, index) => {
+  const kept = new Map([...row.children].map((tab) => [tab.dataset.id, tab]));
+  const nodes = trees.map((tree, index) => {
     const root = visit(tree.id);
     const pages = `${tree.pages} page${tree.pages === 1 ? '' : 's'}`;
-    const pending = tree.pending ? `, ${tree.pending} pending` : '';
+    const pending = tree.pending ? `, ${tree.pending} waiting` : '';
+    const pinned = tree.pinned ? ', pinned' : '';
     const key = index < 9 ? ` · Ctrl+${index + 1}` : '';
-    return `<button class="tab${tree.active ? ' on' : ''}" data-id="${tree.id}" title="${esc(`${tree.title} · ${pages}${pending}${key}`)}" aria-label="${esc(`${tree.title}, ${pages}${pending}`)}">`
+    const html = `<button class="tab" role="tab" tabindex="${tree.active ? 0 : -1}" aria-selected="${tree.active}" data-id="${tree.id}" title="${esc(`${tree.title} · ${pages}${pending}${pinned}${key}`)}" aria-label="${esc(tree.name)}">`
       + (root ? `<span class="mk">${visitFav(root, 14)}${tree.live ? '<i class="live-dot"></i>' : ''}</span>` : '')
       + `<span class="tab-title">${esc(tree.title)}</span>`
       + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Pinned">${icon('pinned')}</span>` : '')
       + (tree.pending ? `<span class="count">${tree.pending}</span>` : '')
       + `<span class="tab-settle" data-settle="${tree.id}" title="Settle${tree.active ? ' · Ctrl+W' : ''}" aria-hidden="true">${icon('close')}</span>`
       + '</button>';
-  }).join('');
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    const fresh = template.content.firstChild;
+    const tab = kept.get(tree.id) ?? fresh;
+    if (tab !== fresh) {
+      tab.setAttribute('aria-selected', String(tree.active));
+      setTooltip(tab, fresh.title);
+      tab.setAttribute('aria-label', fresh.getAttribute('aria-label'));
+      const settle = tab.querySelector('[data-settle]');
+      const freshSettle = fresh.querySelector('[data-settle]');
+      settle.title = freshSettle.title;
+      freshSettle.replaceWith(settle);
+      tab.replaceChildren(...fresh.childNodes);
+    }
+    return tab;
+  });
+  [...row.children].filter((tab) => !nodes.includes(tab)).forEach((tab) => tab.remove());
+  nodes.forEach((tab, index) => { if (row.children[index] !== tab) row.insertBefore(tab, row.children[index] ?? null); });
+  if (S.frame?.tabFit) window.canopy.tabsFit(S.frame.tabFit);
   fitTabs();
+  const focused = row.contains(document.activeElement) && !document.activeElement.hidden ? document.activeElement : row.querySelector('[aria-selected="true"]') ?? row.querySelector('.tab:not([hidden])');
+  for (const tab of row.children) tab.tabIndex = tab === focused ? 0 : -1;
 }
 
-/// Hides the trees that do not fit behind the overflow arrow, keeping creation order and
-/// the active tree visible.
 function fitTabs() {
-  const row = $('tab-row');
-  const tabs = [...row.children];
-  tabs.forEach((tab) => { tab.hidden = false; });
-  const overflow = $('tab-overflow');
-  overflow.hidden = true;
   const header = $('tabs');
-  const fixed = [...header.children].filter((el) => el !== row && !el.classList.contains('spacer'))
-    .reduce((sum, el) => sum + (el.hidden ? 0 : el.offsetWidth + 4), 0);
-  const room = header.clientWidth - 14 - fixed - 36;
-  const widths = tabs.map((tab) => tab.offsetWidth + 2);
-  if (widths.reduce((a, b) => a + b, 0) <= room + 36) return;
-  const shown = [];
-  let used = 0;
-  tabs.forEach((tab, i) => {
-    if (used + widths[i] <= room) { shown.push(i); used += widths[i]; }
-  });
-  const active = tabs.findIndex((tab) => tab.classList.contains('on'));
-  if (active >= 0 && !shown.includes(active)) {
-    while (shown.length && used + widths[active] > room) used -= widths[shown.pop()];
-    shown.push(active);
-  }
-  tabs.forEach((tab, i) => { tab.hidden = !shown.includes(i); });
-  overflow.hidden = false;
+  const fixed = [...header.children].filter((el) => !['tab-row', 'tab-overflow'].includes(el.id) && !el.classList.contains('spacer'))
+    .reduce((sum, el) => sum + (el.hidden ? 0 : el.getBoundingClientRect().width + parseFloat(getComputedStyle(el).marginLeft || 0) + parseFloat(getComputedStyle(el).marginRight || 0) + 2), 0);
+  post({ t: 'tab-room', room: Math.max(0, header.clientWidth - 14 - fixed - 4) });
 }
 
 // ---------- strip ----------
@@ -247,135 +273,149 @@ const strip = {
   from: null,
   target: null,
   anim: null,
+  awakeUntil: 0,
   elements: new Map(),
-  dots: new Map(),
   badges: new Map(),
   leaves: new Map(),
 };
 
-const targetLayout = () => S.strip?.[S.open ? 'open' : 'rest'] ?? null;
+const targetLayout = () => S.strip ?? null;
 
-function setOpen(open) {
-  S.open = open;
-  S.manualPan = null;
-  syncLayer();
-  animateStrip(RESIZE);
-}
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+// WebKit can leave CSS media styles stale after a desktop preference change.
+const applyMotionPreference = () => document.documentElement.classList.toggle('reduced-motion', reducedMotion.matches);
+reducedMotion.addEventListener('change', applyMotionPreference);
+applyMotionPreference();
 
 function animateStrip(duration) {
+  if (reducedMotion.matches) duration = 0;
   const layout = targetLayout();
   if (!layout) return;
+  const changed = buildStrip(layout);
+  const geometry = JSON.stringify([layout.nodes.map(({id, x, y, w, s}) => [id, x, y, w, s]), layout.edges, layout.pan]);
+  // Keep WebKit's rendering clock warm without repainting unchanged geometry.
+  // Letting it sleep delays the next visible update.
+  strip.awakeUntil = performance.now() + duration;
+  if (strip.geometry === geometry) {
+    strip.target = layout;
+    if (changed && !strip.anim) drawStrip();
+    if (duration && !strip.raf) strip.raf = requestAnimationFrame(tick);
+    return;
+  }
   strip.from = strip.shown;
   strip.target = layout;
-  buildStrip(layout);
+  strip.geometry = geometry;
+  cancelAnimationFrame(strip.raf);
+  strip.raf = null;
   if (!duration) {
     strip.anim = null;
     step(performance.now(), 1);
+    pruneStrip();
     syncLayer();
     return;
   }
   strip.anim = { start: performance.now(), duration };
   syncLayer();
-  requestAnimationFrame(tick);
+  strip.raf = requestAnimationFrame(tick);
 }
 
 function tick(now) {
-  if (!strip.anim) return;
-  const t = (now - strip.anim.start) / strip.anim.duration;
-  step(now, t);
-  if (t < 1) {
-    requestAnimationFrame(tick);
-  } else {
-    strip.anim = null;
-    for (const [id, el] of strip.elements) {
-      if (!strip.target.nodes.some((n) => n.id === id)) {
-        el.remove();
-        strip.elements.delete(id);
-        strip.dots.get(id)?.remove();
-        strip.dots.delete(id);
-        strip.badges.get(id)?.remove();
-        strip.badges.delete(id);
-        strip.leaves.get(id)?.remove();
-        strip.leaves.delete(id);
-      }
+  strip.raf = null;
+  if (strip.anim) {
+    const t = reducedMotion.matches ? 1 : (now - strip.anim.start) / strip.anim.duration;
+    step(now, t);
+    if (t >= 1) {
+      strip.anim = null;
+      pruneStrip();
+      syncLayer();
     }
-    syncLayer();
   }
+  if (strip.anim || now < strip.awakeUntil) strip.raf = requestAnimationFrame(tick);
 }
 
-function iconSize(kind, size) {
-  if (kind === 'pill') return 16;
-  if (size <= 14) return Math.round(size);
-  if (size >= 30) return 18;
-  if (size >= 24) return 16;
-  if (size >= 20) return 13;
-  return 12;
+function pruneStrip() {
+  for (const [id, el] of strip.elements) {
+    if (!strip.target.nodes.some((n) => n.id === id)) {
+      el.remove();
+      strip.elements.delete(id);
+      strip.badges.get(id)?.remove();
+      strip.badges.delete(id);
+      strip.leaves.get(id)?.remove();
+      strip.leaves.delete(id);
+    }
+  }
 }
 
 /// One element per node, kept across frames so hovers and transitions survive a re-layout.
 function buildStrip(layout) {
+  let changed = false;
+  $('strip').style.height = `${layout.height}px`;
+  $('strip-clip').style.height = `${layout.height}px`;
+  $('strip-bg').style.height = `${layout.height}px`;
+  for (const [key, value] of Object.entries(layout.metrics ?? {})) {
+    const name = key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+    document.documentElement.style.setProperty(`--${key.endsWith('Gap') ? name : `item-${name}`}`, `${value}px`);
+  }
   const nodes = $('strip-nodes');
   const canvas = $('strip-canvas');
   for (const n of layout.nodes) {
-    const v = visit(n.id);
+    const v = visit(n.page);
     if (!v) continue;
     let el = strip.elements.get(n.id);
+    const paint = JSON.stringify([n, v, n.ids.map(filesOf), S.list?.key === n.id]);
+    if (el?.dataset.paint === paint) continue;
+    changed = true;
     if (!el) {
       el = document.createElement('button');
       el.className = 'node';
       el.dataset.id = n.id;
       el.addEventListener('mouseenter', () => enterNode(el.dataset.id));
       el.addEventListener('mouseleave', leaveNode);
-      el.addEventListener('click', () => activate(el.dataset.id));
+      el.addEventListener('focus', () => showList(el.dataset.id));
+      el.addEventListener('click', () => {
+        const item = strip.target.nodes.find((n) => n.id === el.dataset.id);
+        if (['run', 'earlier', 'after'].includes(item.kind)) showList(item.id);
+        else activate(item.page);
+      });
       el.addEventListener('keydown', walkTrunk);
       nodes.appendChild(el);
       strip.elements.set(n.id, el);
     }
-    el.className = `node ${n.kind}` + (n.kind === 'tile' && n.s < 24 ? ' sm' : '') + markClass(v);
-    el.setAttribute('aria-label', `${v.label}, ${v.site}`);
-    const html = (n.kind === 'bud' ? ''
-      : n.kind === 'pill'
-        ? visitFav(v, 16) + `<span class="pill-text"><span class="pill-title">${esc(v.label)}</span><span class="pill-site">${esc(v.site)}</span></span>`
-        : visitFav(v, iconSize(n.kind, n.s)))
-      + (v.live && n.kind !== 'bud' ? `<i class="live-dot${filesOf(n.id).length ? ' above-leaves' : ''}"></i>` : '');
+    el.dataset.paint = paint;
+    el.style.width = `${n.w}px`;
+    el.style.height = `${n.s}px`;
+    el.style.transformOrigin = '0 0';
+    if (!['run', 'earlier', 'after'].includes(n.kind)) el.dataset.page = n.page;
+    else delete el.dataset.page;
+    el.className = `node ${n.kind}` + (n.named ? ' named' : '') + markClass(v);
+    el.setAttribute('aria-label', n.name);
+    el.setAttribute('aria-current', n.kind === 'pill' ? 'page' : 'false');
+    el.setAttribute('aria-controls', 'strip-list');
+    el.setAttribute('aria-expanded', String(S.list?.key === n.id));
+    el.removeAttribute('title');
+    const html = n.kind === 'after'
+      ? (n.read ? `<span class="read-count">${n.read}</span>` : '') + (n.waiting ? `<span class="count wait-count"><i></i>${n.waiting}</span>` : '')
+      : n.kind === 'earlier' ? `<span>${esc(n.label)}</span>`
+      : n.kind === 'pill' ? visitFav(v, 16) + `<span class="pill-text"><span class="pill-title">${esc(v.label)}</span><span class="pill-site">${esc(v.site)}</span></span>` + (v.live ? '<i class="live-dot"></i>' : '')
+      : visitFav(v, n.kind === 'root' || n.kind === 'page' ? 16 : 14) + (n.kind === 'parent' || n.kind === 'run' || n.named ? `<span class="item-label">${esc(n.label)}</span>` : '')
+        + (v.live && n.kind !== 'run' ? `<i class="live-dot${filesOf(n.page).length ? ' above-leaves' : ''}"></i>` : '');
     if (el.dataset.html !== html) {
       el.innerHTML = html;
       el.dataset.html = html;
     }
-    let dot = strip.dots.get(n.id);
-    if (v.queued && n.kind !== 'bud') {
-      if (!dot) {
-        dot = document.createElement('div');
-        dot.className = 'pending-dot';
-        canvas.appendChild(dot);
-        strip.dots.set(n.id, dot);
-      }
-    } else if (dot) {
-      dot.remove();
-      strip.dots.delete(n.id);
-    }
-    if (dot) dot.classList.toggle('loaded', waitState(v) === 'loaded');
     let badge = strip.badges.get(n.id);
-    if (n.hidden.length) {
+    if (n.branches.pages && n.kind !== 'pill') {
       if (!badge) {
-        badge = document.createElement('button');
-        badge.className = 'badge';
-        badge.addEventListener('click', (event) => {
-          event.stopPropagation();
-          openPopover('hidden', badge, JSON.parse(badge.dataset.hidden));
-        });
+        badge = document.createElement('i');
         canvas.appendChild(badge);
         strip.badges.set(n.id, badge);
       }
-      badge.textContent = `+${n.hidden.length}`;
-      badge.dataset.hidden = JSON.stringify(n.hidden);
-      badge.setAttribute('aria-label', `${n.hidden.length} more pages`);
+      badge.className = `branch-count${n.branches.waiting ? ' waiting' : ''}`;
+      badge.textContent = n.branches.pages;
     } else if (badge) {
-      badge.remove();
-      strip.badges.delete(n.id);
+      badge.remove(); strip.badges.delete(n.id);
     }
-    // A bud is too small to carry leaves; they show once the strip opens.
-    const files = n.kind === 'bud' ? [] : filesOf(n.id);
+    const files = n.ids.flatMap(filesOf);
     let leaves = strip.leaves.get(n.id);
     if (files.length) {
       if (!leaves) {
@@ -384,12 +424,13 @@ function buildStrip(layout) {
         leaves.addEventListener('click', (event) => {
           event.stopPropagation();
           const id = leaves.dataset.id;
-          if (S.popover?.kind === 'files' && S.popover.data === id) closePopover();
-          else openPopover('files', leaves, id, strip.elements.get(id));
+          if (S.popover?.kind === 'files' && S.popover.anchor === leaves) closePopover();
+          else openPopover('files', leaves, JSON.parse(leaves.dataset.ids), strip.elements.get(id));
         });
         canvas.appendChild(leaves);
         strip.leaves.set(n.id, leaves);
       }
+      leaves.dataset.ids = JSON.stringify(n.ids);
       leaves.className = `leaves${n.kind === 'pill' ? ' on-pill' : ''}`;
       const few = files.length <= LEAVES;
       const html = few
@@ -400,7 +441,9 @@ function buildStrip(layout) {
         leaves.dataset.html = html;
       }
       const label = files.length === 1 ? `Downloaded here: ${files[0].name}` : `${files.length} files downloaded here`;
-      leaves.title = label;
+      setTooltip(leaves, label);
+      leaves.setAttribute('aria-haspopup', 'menu');
+      leaves.setAttribute('aria-expanded', String(S.popover?.anchor === leaves));
       leaves.setAttribute('aria-label', `${label}, from ${v.label}`);
     } else if (leaves) {
       leaves.remove();
@@ -408,8 +451,11 @@ function buildStrip(layout) {
     }
   }
   const dot = $('memory-dot');
+  const pill = strip.elements.get(layout.nodes.find((node) => node.kind === 'pill')?.id);
+  if (pill && pill.nextElementSibling !== dot) pill.after(dot);
   dot.classList.toggle('on', !!S.frame?.captureEnabled);
-  dot.title = S.frame?.captureEnabled ? 'Memory · Remembering pages' : 'Memory · Not remembering pages';
+  setTooltip(dot, S.frame?.captureEnabled ? 'Memory · Remembering pages' : 'Memory · Not remembering pages');
+  return changed;
 }
 
 function step(now, t) {
@@ -430,53 +476,32 @@ function step(now, t) {
     const a = from.edges.get(key)?.c || e.c;
     edges.set(key, { kind: e.kind, to: e.to, c: e.c.map((p, i) => [mix(a[i][0], p[0], k), mix(a[i][1], p[1], k)]) });
   }
-  const pan = S.manualPan ?? mix(from.pan, to.pan, k);
+  const pan = mix(from.pan, to.pan, k);
   strip.shown = { height: mix(from.height, to.height, k), pan, nodes, edges, width: to.width };
   drawStrip();
 }
 
 function drawStrip() {
   const shown = strip.shown;
-  const width = stripRoom();
-  const openness = clamp((shown.height - REST) / (OPEN - REST), 0, 1);
-  $('strip').style.height = `${shown.height}px`;
-  $('strip-clip').style.height = `${shown.height}px`;
-  const bg = $('strip-bg');
-  bg.style.height = `${shown.height}px`;
-  bg.style.background = `color-mix(in srgb, var(--chrome) ${Math.round(openness * 100)}%, var(--bg))`;
-  bg.style.borderRadius = `0 0 ${12 * openness}px ${12 * openness}px`;
-  bg.style.boxShadow = openness > 0 ? `0 ${10 * openness}px ${24 * openness}px var(--shadow)` : 'none';
-  bg.style.setProperty('--rest-line', String(1 - openness));
   $('strip-canvas').style.transform = `translateX(${shown.pan}px)`;
   for (const [id, r] of shown.nodes) {
     const el = strip.elements.get(id);
     if (!el) continue;
-    el.style.left = `${r.x - r.w / 2}px`;
-    el.style.top = `${r.y - r.s / 2}px`;
-    el.style.width = `${r.w}px`;
-    el.style.height = `${r.s}px`;
+    const target = strip.target.nodes.find((n) => n.id === id);
+    const width = target?.w ?? r.w;
+    const height = target?.s ?? r.s;
+    el.style.transform = `translate(${r.x - r.w / 2}px,${r.y - r.s / 2}px) scale(${width ? r.w / width : 0},${height ? r.s / height : 0})`;
     el.style.opacity = r.o;
     el.style.visibility = r.w < 1 ? 'hidden' : '';
-    const dot = strip.dots.get(id);
-    if (dot) {
-      const raw = el.classList.contains('raw');
-      const size = raw ? 6 : 9, inset = raw ? 2 : 4;
-      dot.style.width = dot.style.height = `${size}px`;
-      dot.style.left = `${r.x + r.w / 2 + inset - size}px`;
-      dot.style.top = `${r.y - r.s / 2 - inset}px`;
-      dot.style.opacity = r.o;
-    }
     const badge = strip.badges.get(id);
     if (badge) {
-      badge.style.left = `${r.x + r.w / 2 + 7 - badge.offsetWidth}px`;
-      badge.style.top = `${r.y + r.s / 2 + 6 - 14}px`;
+      badge.style.transform = `translate(${r.x + r.w / 2 + 7}px,${r.y + r.s / 2 - 8}px) translateX(-100%)`;
       badge.style.opacity = r.o;
     }
     const leaves = strip.leaves.get(id);
     if (leaves) {
       // Leaves stand on the node's top edge, clear of its rounded corner.
-      leaves.style.left = `${r.x - r.w / 2 + (leaves.classList.contains('on-pill') ? 5 : 0)}px`;
-      leaves.style.top = `${r.y - r.s / 2 + 1 - leaves.offsetHeight}px`;
+      leaves.style.transform = `translate(${r.x - r.w / 2 + (leaves.classList.contains('on-pill') ? 5 : 0)}px,${r.y - r.s / 2 + 1}px) translateY(-100%)`;
       leaves.style.opacity = r.o;
       leaves.style.visibility = r.w < 1 ? 'hidden' : '';
     }
@@ -487,27 +512,26 @@ function drawStrip() {
   const glow = $('glow');
   dot.hidden = glow.hidden = !r;
   if (r) {
-    dot.style.left = `${r.x + r.w / 2 - ACCESSORY}px`;
-    dot.style.top = `${r.y - 9}px`;
-    const reach = 40 + 12 * openness;
+    dot.style.transform = `translate(${r.x + r.w / 2 - ACCESSORY}px,${r.y - 9}px)`;
+    const reach = 40;
     const x = r.x - r.w / 2 + 16;
-    Object.assign(glow.style, { left: `${x - reach}px`, top: `${TRUNK_Y - reach}px`, width: `${2 * reach}px`, height: `${2 * reach}px` });
+    glow.style.transform = `translate(${x - reach}px,${TRUNK_Y - reach}px)`;
   }
   const opacity = new Map([...shown.nodes].map(([id, n]) => [id, n.o]));
-  $('strip-edges').innerHTML = [...shown.edges.values()].map((e) => {
+  const svg = $('strip-edges');
+  const kept = new Set();
+  for (const [key, e] of shown.edges) {
+    kept.add(key);
+    let path = [...svg.children].find((p) => p.dataset.key === key);
+    if (!path) { path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.dataset.key = key; svg.appendChild(path); }
     const [p0, p1, p2, p3] = e.c;
-    const o = e.kind === 'path' ? 1 : (opacity.get(e.to) ?? 1);
-    return `<path class="${e.kind}" style="opacity:${o}" d="M${p0} C${p1} ${p2} ${p3}"/>`;
-  }).join('');
-  const fill = openness > 0.5 ? 'var(--chrome)' : 'var(--bg)';
-  const left = $('fade-left'), right = $('fade-right');
-  left.hidden = shown.pan >= -1;
-  right.hidden = !(shown.width + shown.pan > width + 1);
-  for (const [el, side] of [[left, 'left'], [right, 'right']]) {
-    el.style.height = `${shown.height - 2}px`;
-    el.style[side] = '0';
-    el.style.background = `linear-gradient(to ${side === 'left' ? 'right' : 'left'}, ${fill}, transparent)`;
+    path.setAttribute('class', e.kind);
+    path.style.opacity = e.kind === 'path' ? 1 : (opacity.get(e.to) ?? 1);
+    path.setAttribute('d', `M${p0} C${p1} ${p2} ${p3}`);
   }
+  for (const path of [...svg.children]) if (!kept.has(path.dataset.key)) path.remove();
+  positionList();
+
 }
 
 function activate(id) {
@@ -518,6 +542,12 @@ function activate(id) {
 
 /// Left and Right walk the trunk while a node has the keyboard.
 function walkTrunk(event) {
+  if (event.key === 'ArrowDown' || event.key === 'Enter') {
+    event.preventDefault();
+    showList(event.currentTarget.dataset.id);
+    $('strip-list').querySelector('button')?.focus();
+    return;
+  }
   if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
   const trunk = strip.target?.trunk ?? [];
   const index = trunk.indexOf(event.currentTarget.dataset.id);
@@ -527,75 +557,151 @@ function walkTrunk(event) {
   event.preventDefault();
 }
 
-// ---------- card ----------
+// ---------- attached strip list ----------
 
 let previewSeq = 0;
-function showCard(id) {
-  S.card = id;
+const listItem = () => strip.target?.nodes.find((n) => n.id === S.list?.key);
+
+function showList(key, origin = inputOrigin) {
+  if (S.layer !== 'none' || S.overlay || S.surface !== 'reading') return;
+  cancel('hideList');
+  cancel('showList');
+  const item = strip.target?.nodes.find((n) => n.id === key);
+  if (!item) return;
+  for (const [id, el] of strip.elements) el.setAttribute('aria-expanded', String(id === key));
+  const previous = S.list;
+  S.list = { key, origin: previous?.key === key ? previous.origin : origin, preview: previous?.key === key ? previous.preview : null };
+  renderList();
+  requestListPreview();
+}
+
+function requestListPreview() {
+  const item = listItem();
+  if (!item?.preview) return;
   previewSeq += 1;
-  post({ t: 'preview', id, seq: previewSeq });
+  post({ t: 'preview', id: item.page, seq: previewSeq });
+}
+
+function hideList() {
+  cancel('showList');
+  cancel('hideList');
+  S.list = null;
+  for (const el of strip.elements.values()) el.setAttribute('aria-expanded', 'false');
+  $('strip-list').hidden = true;
   syncLayer();
 }
 
-function hideCard() {
-  cancel('showCard');
-  cancel('hideCard');
-  if (!S.card) return;
-  S.card = null;
-  $('card').hidden = true;
-  syncLayer();
+function positionList() {
+  const item = listItem();
+  const r = item && strip.shown.nodes.get(item.id);
+  if (!r) return;
+  const list = $('strip-list');
+  const width = Math.min(350, window.innerWidth - 16);
+  list.style.width = `${width}px`;
+  const x = r.x - r.w / 2 + strip.shown.pan;
+  list.style.left = `${clamp(x - 2, 8, window.innerWidth - width - 8)}px`;
+  list.style.top = `${HEADER + REST - 6}px`;
+  list.style.maxHeight = `${Math.max(0, (S.windowHeight ?? 800) - HEADER - REST - 2)}px`;
 }
 
-function renderCard(preview) {
-  const id = preview.id;
-  const v = visit(id);
-  const r = strip.shown.nodes.get(id);
-  if (!v || !r || S.card !== id) return;
-  const isCurrent = id === current();
-  const tags = [isCurrent && 'Current page', v.queued && 'Pending'].filter(Boolean);
-  const source = isCurrent && v.source;
-  const card = $('card');
-  card.innerHTML = `<div class="card-head">${visitFav(v, 16)}<div class="card-title">${esc(preview.title)}</div></div>`
-    + '<div class="card-body">'
-    + `<div class="card-meta">${esc(preview.meta)}${v.live ? ' · Open in memory' : ''}</div>`
-    + (tags.length ? `<div class="card-tags">${tags.map((t) => `<span class="tag">${t}</span>`).join('')}</div>` : '')
-    + (preview.snippet ? `<div class="card-snippet">${esc(preview.snippet)}</div>` : '')
-    + (source ? `<div class="card-source"><div class="card-meta">${esc(source.text)}</div><div class="card-actions">`
-      + `<button class="action" data-act="source"${v.parent ? '' : ' disabled'}>Back to source</button>`
-      + `<button class="action" data-act="comment"${source.citation ? '' : ' disabled'}>Open comment</button></div></div>` : '')
-    + '<div class="card-actions">'
-    + `<button class="action" data-act="open">${isCurrent ? 'Reload' : 'Open'}</button>`
-    + '<button class="action" data-act="branch">New branch here</button>'
-    + '</div></div>';
-  const x = r.x + strip.shown.pan;
-  card.style.left = `${clamp(x - CARD_WIDTH / 2, 8, window.innerWidth - CARD_WIDTH - 8)}px`;
-  card.style.top = `${HEADER + OPEN + 8}px`;
-  card.hidden = false;
-  syncLayer();
-  card.querySelectorAll('[data-act]').forEach((button) => button.addEventListener('click', () => {
-    const act = button.dataset.act;
-    hideCard();
-    if (act === 'open') {
-      if (isCurrent) { uncover(); intent('restore', { id }); }
-      else activate(id);
-    } else if (act === 'branch') {
-      if (v.queued) intent('branch-queued', { id });
-      else openPalette({ scope: id, text: '' });
-    } else if (act === 'source') {
-      activate(v.parent);
-    } else if (act === 'comment') {
-      intent('open-citation', { id });
+function renderList() {
+  const item = listItem();
+  if (!item) { hideList(); return; }
+  const v = visit(item.page);
+  if (!v) { hideList(); return; }
+  const list = $('strip-list');
+  const page = item.preview;
+  const source = page && item.page === current() && v.source;
+  const preview = S.list.preview;
+  const parts = [
+    ['head', `<div class="bl-head"${page ? ` role="group" aria-label="${esc(item.name)}" tabindex="0" data-page="${item.page}"` : ''}>${item.kind === 'earlier' ? '<span class="bl-glyph">···</span>' : markedFav(v, 16)}<div><b>${esc(item.title)}</b><span>${esc(item.meta)}${v.live ? ' · Open in memory' : ''}</span></div></div>`],
+    ['snippet', page && preview?.snippet ? `<div class="bl-snippet">${esc(preview.snippet)}</div>` : ''],
+    ['source', source ? `<div class="card-source"><div class="card-meta">${esc(source.text)}</div></div>` : ''],
+    ['heading', item.heading ? `<div class="menu-heading">${esc(item.heading)}</div>` : ''],
+    ...item.rows.map((row) => {
+      const v = visit(row.id);
+      const files = filesOf(row.id);
+      const leaf = files.length ? `<button class="leaves" aria-haspopup="menu" aria-expanded="false" data-files="${row.id}" aria-label="${esc(`Files from ${v.label}`)}"><i class="leaf${files.every((f) => f.missing) ? ' missing' : ''}"></i></button>` : '';
+      return [`row-${row.id}`, v ? `<div class="list-entry"><button class="menu-row${markClass(v)}" data-id="${row.id}" title="${esc(v.label)}" aria-current="${row.id === current() ? 'page' : 'false'}" aria-label="${esc(row.name)}">${markedFav(v, 16)}<span class="grow">${esc(row.label)}</span><span class="menu-detail">${esc(row.detail)}</span></button>${leaf}</div>` : ''];
+    }),
+    ['more', item.more ? `<button class="menu-row more" data-act="more">${icon('expand')}<span class="grow">${esc(item.more)}</span><kbd>Ctrl Shift E</kbd></button>` : ''],
+    ...item.actions.map((action) => [`action-${action.kind}`, `<button class="action bl-action" data-act="${action.kind}">${esc(action.label)}</button>`]),
+  ];
+  const kept = new Set();
+  let cursor = list.firstElementChild;
+  for (const [key, html] of parts) {
+    if (!html) continue;
+    kept.add(key);
+    let el = [...list.children].find((el) => el.dataset.key === key);
+    if (!el) {
+      const template = document.createElement('template');
+      template.innerHTML = html;
+      el = template.content.firstElementChild;
+      el.dataset.key = key;
+      el.dataset.html = html;
+    } else if (el.dataset.html !== html) {
+      const template = document.createElement('template');
+      template.innerHTML = html;
+      const fresh = template.content.firstElementChild;
+      const row = el.querySelector('.menu-row[data-id]');
+      const newRow = fresh.querySelector('.menu-row[data-id]');
+      if (row && newRow) {
+        row.innerHTML = newRow.innerHTML;
+        row.className = newRow.className;
+        row.title = newRow.title;
+        row.setAttribute('aria-label', newRow.getAttribute('aria-label'));
+        row.setAttribute('aria-current', newRow.getAttribute('aria-current'));
+        const leaves = el.querySelector('.leaves');
+        const newLeaves = fresh.querySelector('.leaves');
+        if (leaves && newLeaves) leaves.innerHTML = newLeaves.innerHTML;
+        else if (newLeaves) el.appendChild(newLeaves);
+        else leaves?.remove();
+      } else el.innerHTML = fresh.innerHTML;
+      el.className = fresh.className;
+      el.dataset.html = html;
     }
-  }));
+    if (key === 'head') {
+      if (page) { el.dataset.page = item.page; el.tabIndex = 0; el.setAttribute('role', 'group'); el.setAttribute('aria-label', item.name); }
+      else { delete el.dataset.page; el.removeAttribute('tabindex'); el.removeAttribute('role'); el.removeAttribute('aria-label'); }
+    }
+    if (el !== cursor) list.insertBefore(el, cursor);
+    cursor = el.nextElementSibling;
+  }
+  for (const el of [...list.children]) if (!kept.has(el.dataset.key)) el.remove();
+  list.dataset.item = item.id;
+  list.hidden = false;
+  positionList();
+  syncLayer();
 }
+
+$('strip-list').addEventListener('click', (event) => {
+  const file = event.target.closest('[data-files]');
+  if (file) { openPopover('files', file, file.dataset.files); return; }
+  const row = event.target.closest('[data-id]');
+  const action = event.target.closest('[data-act]')?.dataset.act;
+  const item = listItem();
+  if (!item) return;
+  const v = visit(item.page);
+  if (row) { activate(row.dataset.id); return; }
+  if (!action) return;
+  hideList();
+  if (action === 'more') {
+    canopy.toggleTree();
+    requestAnimationFrame(() => setTreeSide(S.treeSide, true, item.moreTarget));
+  }
+  else if (action === 'reload') { uncover(); intent('reload'); }
+  else if (action === 'open') { uncover(); intent('restore', { id: item.page }); }
+  else if (action === 'branch') {
+    if (v.queued) intent('branch-queued', { id: item.page });
+    else openPalette({ scope: item.page, text: '' });
+  } else if (action === 'source') activate(v.parent);
+  else if (action === 'comment') intent('open-citation', { id: item.page });
+});
 
 // ---------- waiting pages and pinned controls ----------
 
-const stripRoom = () => S.strip?.room ?? 0;
-
 function applyStrip(layouts) {
   S.strip = layouts;
-  S.manualPan = null;
   $('strip-clip').style.width = `${layouts.room}px`;
   placePins();
 }
@@ -613,10 +719,13 @@ function renderWaitingPin() {
   const ids = S.frame?.waiting.ids ?? [];
   const next = visit(ids[0]);
   $('waiting-pin').innerHTML = next ? markedFav(next, 16) + `<span class="count">${ids.length}</span>` : '';
-  $('waiting-pin').title = next ? `Next waiting page: ${next.label} · Ctrl+Tab` : '';
+  $('waiting-pin').setAttribute('aria-label', S.frame?.waiting.name ?? 'No waiting pages');
+  setTooltip($('waiting-pin'), next ? `Next waiting page: ${next.label} · Ctrl+Tab` : '');
 }
 
 function openNextWaiting(id = S.frame?.waiting.ids[0]) {
+  cancel('waitingOpen');
+  cancel('waitingClose');
   if (!id) { canopy.toast('info', 'No waiting pages in this tree'); return; }
   closeReader();
   closePalette(false);
@@ -629,8 +738,6 @@ function enterWaitingPin() {
   if (S.layer !== 'none' || S.popover) return;
   schedule('waitingOpen', 120, () => {
     if (S.layer !== 'none' || S.popover || !S.frame?.waiting.ids.length) return;
-    cancel('open');
-    if (S.open) setOpen(false);
     openPopover('waiting', $('waiting-pin'), null);
   });
 }
@@ -639,7 +746,7 @@ function leaveWaitingPin() {
   cancel('waitingOpen');
   const popover = S.popover;
   if (popover?.kind === 'waiting') schedule('waitingClose', 220, () => {
-    if (S.popover === popover) closePopover(false);
+    if (S.popover === popover) closePopover();
   });
 }
 
@@ -649,7 +756,15 @@ $('waiting-pin').addEventListener('mouseleave', leaveWaitingPin);
 $('popover').addEventListener('mouseenter', () => cancel('waitingClose'));
 $('popover').addEventListener('mouseleave', leaveWaitingPin);
 
-// ---------- popovers: Memory menu, hidden pages, trees that do not fit, a tree's name ----------
+// ---------- popovers: Memory menu, trees that do not fit, a tree's name ----------
+
+function setTooltip(anchor, title) {
+  if (S.popover?.anchor === anchor) {
+    S.popover.title = title;
+    anchor.removeAttribute('title');
+  } else if (title == null) anchor.removeAttribute('title');
+  else anchor.title = title;
+}
 
 /// Opens a menu under `anchor`, or under `below` when the anchor sits on top of something
 /// the menu should not cover.
@@ -657,25 +772,47 @@ function openPopover(kind, anchor, data, below = anchor) {
   const popover = $('popover');
   const a = anchor.getBoundingClientRect();
   const b = below.getBoundingClientRect();
-  S.popover = { kind, anchor, data };
+  const parent = anchor.closest('#popover') ? S.popover : null;
+  rememberFocus('popover', anchor);
+  S.popover = { kind, anchor, data, parent, listKey: kind === 'node' ? S.list?.key : null };
+  anchor.setAttribute('aria-expanded', 'true');
+  setTooltip(anchor, anchor.getAttribute('title'));
   renderPopover();
   popover.hidden = false;
   const width = popover.offsetWidth;
   popover.style.left = `${clamp(a.left, 8, window.innerWidth - width - 8)}px`;
-  const belowRoom = (S.windowHeight ?? window.innerHeight) - b.bottom - 14;
+  const windowHeight = S.windowHeight ?? window.innerHeight;
+  const bottom = S.overlay === 'tree' ? Math.min(windowHeight, $('tree-sheet').querySelector('.sheet-box').getBoundingClientRect().bottom) : windowHeight;
+  const belowRoom = bottom - b.bottom - 14;
   const above = belowRoom < 200 && a.top > belowRoom;
-  popover.style.maxHeight = `${Math.max(40, above ? a.top - 14 : belowRoom)}px`;
+  popover.style.maxHeight = `${Math.max(40, above ? a.top - 20 : belowRoom - 14)}px`;
   popover.style.top = `${above ? Math.max(8, a.top - popover.offsetHeight - 6) : b.bottom + 6}px`;
+  post({ t: 'focus', target: 'chrome' });
+  controlsIn(popover)[0]?.focus();
   if (S.layer !== 'palette') setLayer('menu');
   syncLayer();
 }
 
-function closePopover(returnFocus = true) {
+function closePopover(restoreFocus = true) {
   if (!S.popover) return;
+  const { anchor, title, parent, listKey } = S.popover;
+  anchor.setAttribute('aria-expanded', 'false');
   S.popover = null;
+  setTooltip(anchor, title);
   $('popover').hidden = true;
+  if (listKey && restoreFocus) {
+    setLayer(restingLayer());
+    showList(listKey);
+  }
+  if (!restoreFocus && S.overlay === 'tree' && canFocus(anchor)) {
+    anchor.focus({ preventScroll: true });
+  }
   if (S.layer === 'menu') setLayer(restingLayer());
-  if (returnFocus && pageShows() && !S.palette && !S.reader) post({ t: 'focus', target: 'page' });
+  if (restoreFocus && parent) {
+    openPopover(parent.kind, parent.anchor, parent.data);
+    const row = [...$('popover').querySelectorAll('[data-id]')].find((el) => el.dataset.id === anchor.dataset.id && el.dataset.start === anchor.dataset.start);
+    row?.focus();
+  } else if (restoreFocus) returnFocus('popover');
   syncLayer();
 }
 
@@ -690,17 +827,17 @@ function renderLoginChip() {
   const chip = $('login-chip');
   const names = loginNames();
   chip.hidden = !S.save && !names.length && !S.locked;
-  chip.classList.toggle('on', !!S.save);
+  chip.dataset.offer = String(!!S.save);
   if (S.save) {
     chip.innerHTML = `${icon('key')}<span>${S.save.update ? 'Update password?' : 'Save login?'}</span>`;
-    chip.title = `${S.save.update ? 'Update the saved password' : 'Save the login'} for ${loginLabel(S.save.username)} on ${S.save.site}`;
+    setTooltip(chip, `${S.save.update ? 'Update the saved password' : 'Save the login'} for ${loginLabel(S.save.username)} on ${S.save.site}`);
   } else if (S.locked && !names.length) {
     chip.innerHTML = `${icon('key')}<span>${esc(`Unlock ${S.locked}`)}</span>`;
-    chip.title = `Unlock ${S.locked} to fill a saved login · Ctrl+Shift+L`;
+    setTooltip(chip, `Unlock ${S.locked} to fill a saved login · Ctrl+Shift+L`);
   } else if (names.length) {
     const one = names.length === 1;
     chip.innerHTML = `${icon('key')}<span>${esc(one ? loginLabel(names[0]) : `${names.length} logins`)}</span>`;
-    chip.title = `${one ? `Fill the saved login for ${loginLabel(names[0])}` : 'Choose a saved login to fill'} · Ctrl+Shift+L`;
+    setTooltip(chip, `${one ? `Fill the saved login for ${loginLabel(names[0])}` : 'Choose a saved login to fill'} · Ctrl+Shift+L`);
   }
   if (S.popover?.kind === 'save-login' && !S.save) closePopover(false);
   if (S.popover?.kind === 'logins') {
@@ -733,7 +870,7 @@ function pickLogin(index) {
 }
 
 function visitRow(v) {
-  const detail = v.queued ? 'pending' : v.site.split(' · ').slice(1).join(' · ');
+  const detail = v.queued ? 'waiting' : v.site.split(' · ').slice(1).join(' · ');
   return `<button class="menu-row" data-id="${v.id}">${visitFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(detail)}</span></button>`;
 }
 
@@ -747,26 +884,47 @@ function refreshPopover() {
 function renderPopover() {
   const popover = $('popover');
   const { kind, data } = S.popover;
+  popover.setAttribute('role', ['node', 'tab', 'unpin', 'bookmark'].includes(kind) ? 'menu' : 'dialog');
+  popover.setAttribute('aria-label', kind === 'node' ? 'Page actions' : kind === 'tab' ? 'Tree actions' : kind.replaceAll('-', ' '));
   popover.classList.toggle('waiting', kind === 'waiting');
-  if (kind === 'tab' || kind === 'unpin') {
+  if (kind !== 'node') delete popover.dataset.nodeHtml;
+  if (kind === 'node') {
+    const v = visit(data);
+    if (!v) { closePopover(false); return; }
+    const html = `<div class="node-menu-title">${visitFav(v, 16)}<span>${esc(v.shortName)}</span></div>` + v.nodeMenu.map((r) => `<button class="menu-row" role="menuitem" data-node-action="${r.kind}">${esc(r.label)}</button>`).join('');
+    if (popover.dataset.nodeHtml !== html || popover.dataset.nodeId !== data) {
+      popover.innerHTML = html;
+      popover.dataset.nodeHtml = html;
+      popover.dataset.nodeId = data;
+      for (const button of popover.querySelectorAll('[data-node-action]')) button.onclick = () => {
+        const action = button.dataset.nodeAction;
+        closePopover();
+        if (action === 'open') activate(data);
+        else if (action === 'new-tree') { uncover(); intent('open-page-in-tree', { id: data }); }
+        else if (action === 'branch') openPalette({ scope: data, text: '' });
+        else if (action === 'copy') post({ t: 'copy', text: visit(data).url });
+        else intent(action, { id: data });
+      };
+    }
+  } else if (kind === 'tab' || kind === 'unpin') {
     const tab = S.frame.tabs.find((t) => t.id === data);
     const menu = kind === 'unpin' ? { label: 'Unpin tree', pinned: false } : tab?.pinMenu;
     if (!menu) { closePopover(false); return; }
-    popover.innerHTML = (kind === 'tab' ? '<button class="menu-row" data-tab-action="rename">Rename</button>' : '')
-      + `<button class="menu-row" data-tab-action="pin">${esc(menu.label)}</button>`
-      + (kind === 'tab' ? '<button class="menu-row" data-tab-action="settle">Settle tree</button>' : '');
+    popover.innerHTML = (kind === 'tab' ? '<button class="menu-row" role="menuitem" data-tab-action="rename">Rename</button>' : '')
+      + `<button class="menu-row" role="menuitem" data-tab-action="pin">${esc(menu.label)}</button>`
+      + (kind === 'tab' ? '<button class="menu-row" role="menuitem" data-tab-action="settle">Settle tree</button>' : '');
     popover.querySelectorAll('[data-tab-action]').forEach((row) => row.addEventListener('click', () => {
       const anchor = S.popover.anchor;
       const action = row.dataset.tabAction;
-      closePopover(false);
+      closePopover();
       if (action === 'rename') {
         openPopover('rename', anchor, data);
         S.popover.field.focus(); S.popover.field.select();
       } else intent(action === 'pin' ? 'pin-tree' : 'settle-tree', { id: data, pinned: menu.pinned });
     }));
   } else if (kind === 'bookmark') {
-    popover.innerHTML = '<button class="menu-row" data-remove-bookmark>Remove bookmark</button>';
-    popover.querySelector('button').addEventListener('click', () => { closePopover(false); intent('remove-bookmark', { id: Number(data) }); });
+    popover.innerHTML = '<button class="menu-row" role="menuitem" data-remove-bookmark>Remove bookmark</button>';
+    popover.querySelector('button').addEventListener('click', () => { closePopover(); intent('remove-bookmark', { id: Number(data) }); });
   } else if (kind === 'folder') {
     const b = S.frame.start.bookmarks;
     if (data.hidden) {
@@ -782,7 +940,7 @@ function renderPopover() {
     popover.innerHTML = `<div class="pop-head"><span class="menu-heading grow">Waiting in this tree · ${ids.length}</span><span class="menu-detail">${esc(order)}</span></div>`
       + ids.map((id, i) => {
         const v = visit(id);
-        return `<button class="menu-row${i === 0 ? ' next' : ''}" data-id="${id}">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.when)}</span>${i === 0 ? '<kbd>Ctrl Tab</kbd>' : ''}</button>`;
+        return `<button class="menu-row${i === 0 ? ' next' : ''}" data-id="${id}" aria-current="${id === current() ? 'page' : 'false'}" aria-label="${esc(v.name)}">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.detail)}</span>${i === 0 ? '<kbd>Ctrl Tab</kbd>' : ''}</button>`;
       }).join('');
     popover.querySelectorAll('[data-id]').forEach((row) => row.addEventListener('click', () => openNextWaiting(row.dataset.id)));
   } else if (kind === 'save-login') {
@@ -801,24 +959,42 @@ function renderPopover() {
       closePopover(false);
       pickLogin(index);
     }));
-  } else if (kind === 'hidden') {
-    popover.innerHTML = data.map(visit).filter(Boolean).map(visitRow).join('');
-    popover.querySelectorAll('[data-id]').forEach((row) => row.addEventListener('click', () => {
-      closePopover();
-      activate(row.dataset.id);
-    }));
   } else if (kind === 'trees') {
     const hidden = [...$('tab-row').children].filter((tab) => tab.hidden).map((tab) => tab.dataset.id);
-    popover.innerHTML = (S.frame?.tabs ?? []).filter((tree) => hidden.includes(tree.id)).map((tree) => {
+    const rows = (S.frame?.tabs ?? []).filter((tree) => hidden.includes(tree.id));
+    const kept = new Map([...popover.children].map((row) => [row.dataset.tree, row]));
+    const nodes = rows.map((tree) => {
       const root = visit(tree.id);
-      return `<button class="menu-row" data-id="${tree.id}">${root ? visitFav(root, 16) : ''}<span class="grow">${esc(tree.title)}</span>`
-        + (tree.pending ? `<span class="count">${tree.pending}</span>` : '') + '</button>';
-    }).join('');
-    popover.querySelectorAll('[data-id]').forEach((row) => row.addEventListener('click', () => {
-      closePopover();
-      uncover();
-      intent('select-tree', { id: row.dataset.id });
-    }));
+      const row = kept.get(tree.id) ?? document.createElement('div');
+      row.className = 'overflow-tree';
+      row.dataset.tree = tree.id;
+      const html = `<button class="menu-row" data-id="${tree.id}">${root ? visitFav(root, 16) : ''}<span class="grow">${esc(tree.title)}</span>`
+        + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Pinned">${icon('pinned')}</span>` : '')
+        + (tree.pending ? `<span class="count" aria-label="${tree.pending} waiting">${tree.pending}</span>` : '') + '</button>'
+        + `<button class="overflow-settle" data-settle="${tree.id}" title="Settle tree" aria-label="Settle ${esc(tree.title)}">${icon('close')}</button>`;
+      if (row.dataset.html !== html) {
+        row.dataset.html = html;
+        const select = row.querySelector('[data-id]');
+        const settle = row.querySelector('[data-settle]');
+        row.innerHTML = html;
+        if (select) {
+          select.innerHTML = row.querySelector('[data-id]').innerHTML;
+          row.querySelector('[data-id]').replaceWith(select);
+        }
+        if (settle) row.querySelector('[data-settle]').replaceWith(settle);
+        row.querySelector('[data-id]').onclick = () => {
+          closePopover();
+          uncover();
+          intent('select-tree', { id: tree.id });
+        };
+        row.querySelector('[data-settle]').onclick = () => {
+          intent('settle-tree', { id: tree.id });
+        };
+      }
+      return row;
+    });
+    [...popover.children].filter((row) => !nodes.includes(row)).forEach((row) => row.remove());
+    nodes.forEach((row, index) => { if (popover.children[index] !== row) popover.insertBefore(row, popover.children[index] ?? null); });
   } else if (kind === 'rename') {
     // A frame that arrives while a name is being typed must not reset the field.
     if (S.popover.field) return;
@@ -829,17 +1005,19 @@ function renderPopover() {
     const field = S.popover.field = $('tree-name');
     field.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter') return;
+      event.preventDefault();
       // Enter on the name as it was changes nothing: it stays automatic if it was.
       if (field.value.trim() !== title) intent('rename-tree', { id: data, name: field.value });
       closePopover();
     });
   } else if (kind === 'files') {
-    const files = filesOf(data);
+    const pages = (Array.isArray(data) ? data : [data]).filter((id) => filesOf(id).length);
+    const files = pages.flatMap(filesOf);
     if (!files.length) {
       closePopover(false);
       return;
     }
-    popover.innerHTML = `<div class="menu-heading">${files.length === 1 ? 'Downloaded from this page' : `${files.length} files downloaded from this page`}</div>`
+    popover.innerHTML = `<div class="menu-heading">${pages.length > 1 ? `${files.length} files from ${pages.length} pages` : files.length === 1 ? 'Downloaded from this page' : `${files.length} files downloaded from this page`}</div>`
       + files.map((f) => `<div class="file-row${f.missing ? ' missing' : ''}">`
         + `<button class="menu-row" data-file="${f.id}" title="${esc(f.missing ? `${f.name} was moved or deleted` : `Open ${f.name}`)}">`
         + `${icon('file')}<span class="grow">${esc(f.name)}</span><span class="menu-detail">${esc(f.detail)}</span></button>`
@@ -867,7 +1045,7 @@ function renderPopover() {
     const theme = S.frame?.theme ?? 'dark';
     popover.innerHTML = '<div class="menu-heading">Settings</div>'
       + '<div class="menu-heading">Theme</div><div class="segmented" id="theme-mode">'
-      + ['dark', 'light', 'system'].map((mode) => `<button data-mode="${mode}" class="${mode === theme ? 'on' : ''}">${mode[0].toUpperCase()}${mode.slice(1)}</button>`).join('')
+      + ['dark', 'light', 'system'].map((mode) => `<button data-mode="${mode}" aria-pressed="${mode === theme}">${mode[0].toUpperCase()}${mode.slice(1)}</button>`).join('')
       + '</div><div class="menu-separator"></div>'
       + captureRow();
     wireCaptureRow();
@@ -875,14 +1053,14 @@ function renderPopover() {
       S.frame.theme = button.dataset.mode;
       applyTheme();
       intent('theme', { mode: button.dataset.mode });
-      renderPopover();
+      refreshPopover();
     }));
   }
 }
 
 function captureRow() {
   const on = !!S.frame?.captureEnabled;
-  return `<button class="menu-row" id="automatic-capture" title="Keep the text of opened pages on this computer. Form fields are never kept."><span class="grow">Remember pages</span><span class="switch${on ? ' on' : ''}"></span></button>`;
+  return `<button class="menu-row" role="switch" aria-checked="${on}" id="automatic-capture" title="Keep the text of opened pages on this computer. Form fields are never kept."><span class="grow">Remember pages</span><span class="switch" aria-hidden="true"></span></button>`;
 }
 
 function wireCaptureRow() {
@@ -890,7 +1068,7 @@ function wireCaptureRow() {
     const on = !!S.frame?.captureEnabled;
     S.frame.captureEnabled = !on;
     intent('capture', { on: !on });
-    renderPopover();
+    refreshPopover();
     buildStrip(strip.target ?? targetLayout());
   });
 }
@@ -899,10 +1077,12 @@ function wireCaptureRow() {
 
 let paletteSeq = 0, paletteTimer = 0;
 
-function openPalette({ scope, text, typed = false }) {
+function openPalette({ scope, text, typed = false, fromChrome = true }) {
   intent('cancel');
   if (S.surface === 'start') scope = null;
   closePopover(false);
+  rememberFocus('palette', fromChrome ? document.activeElement : document.body);
+  post({ t: 'paletteScope', id: scope });
   S.palette = { scope, rows: [], selected: 0, seq: 0 };
   setLayer('palette');
   renderPaletteContext();
@@ -933,14 +1113,16 @@ function renderPaletteContext() {
   }
 }
 
-function closePalette(returnFocus = true) {
+function closePalette(restoreFocus = true) {
   if (!S.palette) return;
   clearTimeout(paletteTimer);
   S.palette = null;
+  post({ t: 'paletteScope', id: null });
   $('palette').hidden = true;
   $('palette-results').innerHTML = '';
+  $('palette-input').removeAttribute('aria-activedescendant');
   setLayer(restingLayer());
-  if (returnFocus && pageShows()) post({ t: 'focus', target: 'page' });
+  if (restoreFocus) returnFocus('palette');
   syncLayer();
 }
 
@@ -958,11 +1140,14 @@ function renderPalette() {
     const heading = row.group !== group ? `<div class="palette-group">${esc(row.group)}</div>` : '';
     group = row.group;
     const glyph = typeof row.icon === 'string' ? icon(row.icon) : fav(row.icon.url, row.icon.opened, 16);
-    return heading + `<button class="palette-item${i === selected ? ' selected' : ''}" data-row="${i}" data-kind="${row.kind}">${glyph}`
+    return heading + `<button class="palette-item" role="option" id="palette-option-${i}" aria-selected="${i === selected}" tabindex="-1" data-row="${i}" data-kind="${row.kind}">${glyph}`
       + `<span class="palette-title">${esc(row.title)}</span>`
       + (row.detail ? `<span class="palette-detail">${esc(row.detail)}</span>` : '') + '</button>';
   }).join('');
-  $('palette-results').querySelector('.selected')?.scrollIntoView({ block: 'nearest' });
+  const active = $('palette-results').querySelector('[aria-selected="true"]');
+  if (active) $('palette-input').setAttribute('aria-activedescendant', active.id);
+  else $('palette-input').removeAttribute('aria-activedescendant');
+  active?.scrollIntoView({ block: 'nearest' });
 }
 
 function runPalette(index, newTree) {
@@ -1006,6 +1191,8 @@ $('palette').querySelector('.scrim').addEventListener('mousedown', () => closePa
 
 function renderSheet(reveal) {
   if (S.overlay !== 'tree') return;
+  const focused = document.activeElement?.closest('#tree-sheet [data-id]');
+  const focusedIndex = focused ? [...focused.parentElement.children].indexOf(focused) : -1;
   const view = S.frame?.treeView;
   if (!view) { closeOverlay(); return; }
   $('tree-title').textContent = view.title;
@@ -1015,29 +1202,51 @@ function renderSheet(reveal) {
   $('tree-edges').setAttribute('width', view.width);
   $('tree-edges').setAttribute('height', view.height);
   $('tree-edges').innerHTML = view.edges.map((e) => `<path class="${e.kind}" d="M${e.c[0]} C${e.c[1]} ${e.c[2]} ${e.c[3]}"/>`).join('');
-  $('tree-nodes').innerHTML = view.tiles.map((t) => {
-    const v = visit(t.id);
-    return `<button class="tree-tile${t.path ? ' path' : ''}${t.id === current() ? ' current' : ''}${markClass(v)}" data-id="${t.id}" title="${esc(v.label + (v.live ? ' · Open in memory' : ''))}" style="left:${t.x-t.w/2}px;top:${t.y-t.s/2}px;width:${t.w}px;height:${t.s}px">${markedFav(v, 16, false)}${v.live ? '<i class="live-dot"></i>' : ''}<span class="t">${esc(v.label)}</span></button>`;
-  }).join('');
-  $('tree-list').innerHTML = view.rows.map((r) => {
-    const v = visit(r.id);
-    return `<button class="tree-row${r.path ? ' path' : ''}${r.id === current() ? ' current' : ''}${markClass(v)}" data-id="${r.id}" style="padding-left:${8+r.depth*22}px">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.when)}${v.live ? ' · Open in memory' : ''}</span></button>`;
-  }).join('');
+  const rows = new Map(view.rows.map((r) => [r.id, r]));
+  for (const [container, items, tile] of [[$('tree-nodes'), view.tiles, true], [$('tree-list'), view.rows, false]]) {
+    const kept = new Map([...container.children].map((el) => [el.dataset.id, el]));
+    let cursor = container.firstElementChild;
+    for (const item of items) {
+      const r = rows.get(item.id), v = visit(item.id);
+      const el = kept.get(item.id) || document.createElement('button');
+      kept.delete(item.id);
+      el.dataset.id = item.id;
+      el.className = `${tile ? 'tree-tile' : 'tree-row'}${r.path ? ' path' : ''}${markClass(v)}`;
+      el.title = v.label;
+      el.setAttribute('aria-current', item.id === current() ? 'page' : 'false');
+      el.setAttribute('role', 'treeitem');
+      el.setAttribute('aria-label', `${v.name}${r.summary ? ', ' + r.summary : ''}`);
+      el.setAttribute('aria-level', r.level);
+      if (r.branch) el.setAttribute('aria-expanded', String(!r.folded));
+      else el.removeAttribute('aria-expanded');
+      el.style.cssText = tile
+        ? `left:${item.x-item.w/2}px;top:${item.y-item.s/2}px;width:${item.w}px;height:${item.s}px`
+        : `padding-left:${8+r.depth*22}px`;
+      const html = `<span data-fold="${r.branch ? item.id : ''}" class="tree-fold">${r.branch ? (r.folded ? '▸' : '▾') : ''}</span>${markedFav(v, 16)}<span class="${tile ? 't' : 'grow'}">${esc(tile ? r.tileTitle : r.title)}${r.summary ? `<small>${esc(r.summary)}</small>` : ''}</span>${!tile ? `<span class="menu-detail">${esc(v.queued ? v.detail : v.when)}${v.live ? ' · Open in memory' : ''}</span>` : ''}`;
+      if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
+      if (el !== cursor) container.insertBefore(el, cursor);
+      cursor = el.nextElementSibling;
+    }
+    for (const el of kept.values()) el.remove();
+  }
+  $('tree-waiting').setAttribute('aria-pressed', String(view.waitingOnly));
+  $('tree-empty').hidden = view.rows.length !== 0;
+  if (document.activeElement !== $('tree-filter')) $('tree-filter').value = view.query;
   setTreeSide(S.treeSide, reveal);
+  if (focused && !focused.isConnected) focusTree(view.rows[Math.min(focusedIndex, view.rows.length - 1)]?.id);
 }
 
-function setTreeSide(side, reveal = true) {
+function setTreeSide(side, reveal = true, target = current()) {
   S.treeSide = side;
   $('tree-board').hidden = side !== 'tree';
   $('tree-list').hidden = side !== 'list';
   for (const button of $('tree-side').children) {
     const selected = button.dataset.side === side;
-    button.classList.toggle('on', selected);
     button.setAttribute('aria-pressed', String(selected));
   }
   if (reveal) {
     const body = $(side === 'tree' ? 'tree-board' : 'tree-list');
-    const selected = body.querySelector('.current');
+    const selected = body.querySelector(`[data-id="${target}"]`);
     if (selected) {
       const a = selected.getBoundingClientRect(), b = body.getBoundingClientRect();
       body.scrollLeft += a.left - b.left - (b.width-a.width)/2;
@@ -1048,15 +1257,67 @@ function setTreeSide(side, reveal = true) {
 
 $('tree-side').addEventListener('click', (event) => {
   const button = event.target.closest('[data-side]');
-  if (button) setTreeSide(button.dataset.side);
+  if (button) { S.treePreference = button.dataset.side; setTreeSide(button.dataset.side); focusTree(current()); }
 });
 $('tree-sheet').addEventListener('click', (event) => {
   const page = event.target.closest('[data-id]');
-  if (page) activate(page.dataset.id);
+  if (event.target.closest('[data-fold]')?.dataset.fold) post({ t: 'workbench', id: page.dataset.id });
+  else if (page) activate(page.dataset.id);
+});
+$('tree-filter').addEventListener('input', () => post({ t: 'workbench', query: $('tree-filter').value }));
+$('tree-waiting').addEventListener('click', () => post({ t: 'workbench', waiting: !S.frame.treeView.waitingOnly }));
+$('tree-board').addEventListener('wheel', (event) => {
+  if (event.ctrlKey || !event.shiftKey || event.deltaX || !event.deltaY) return;
+  event.preventDefault();
+  $('tree-board').scrollLeft += event.deltaY;
+}, { passive: false });
+function focusTree(id) {
+  for (const el of $('tree-sheet').querySelectorAll('.keyboard-focus')) el.classList.remove('keyboard-focus');
+  const body = $(S.treeSide === 'tree' ? 'tree-nodes' : 'tree-list');
+  const el = body.querySelector(`[data-id="${id}"]`) || body.querySelector('[data-id]');
+  (el || $('tree-filter')).focus({ preventScroll: true });
+  el?.classList.add('keyboard-focus');
+  el?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+$('tree-sheet').addEventListener('pointerdown', () => {
+  for (const el of $('tree-sheet').querySelectorAll('.keyboard-focus')) el.classList.remove('keyboard-focus');
+});
+$('tree-sheet').addEventListener('keydown', (event) => {
+  if (S.popover || event.ctrlKey || event.altKey || event.metaKey || event.isComposing) return;
+  const field = event.target === $('tree-filter');
+  const rows = S.frame.treeView.rows;
+  const id = event.target.closest('[data-id]')?.dataset.id;
+  const index = rows.findIndex((r) => r.id === id);
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    const next = field ? 0 : clamp(index + (event.key === 'ArrowDown' ? 1 : -1), 0, rows.length - 1);
+    focusTree(rows[next]?.id);
+  } else if (!field && ['ArrowLeft', 'ArrowRight'].includes(event.key)) {
+    if (rows[index]?.branch) post({ t: 'workbench', id, folded: event.key === 'ArrowLeft' });
+  } else if (!field && event.key === 'Enter' && id) activate(id);
+  else if (!field && event.key === 'Delete' && id) {
+    if (visit(id).nodeMenu.some((r) => r.kind === 'dismiss')) intent('dismiss', { id });
+  } else if (!field && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) && id) {
+    openPopover('node', event.target.closest('[data-id]'), id);
+  } else if (!field && event.key === ' ') {
+    event.preventDefault();
+    return;
+  } else if (!field && event.key.length === 1) {
+    $('tree-filter').focus();
+    $('tree-filter').value += event.key;
+    post({ t: 'workbench', query: $('tree-filter').value });
+  } else if (tabKey(event)) {
+    const controls = [...$('tree-sheet').querySelectorAll('button, input')].filter((el) => el.getClientRects().length);
+    const index = controls.indexOf(document.activeElement);
+    controls[(index + (event.shiftKey ? controls.length - 1 : 1)) % controls.length]?.focus();
+  } else return;
+  event.preventDefault();
 });
 $('tree-sheet').querySelector('.scrim').addEventListener('mousedown', closeOverlay);
 $('zoom-pin').innerHTML = icon('expand') + icon('collapse');
-$('zoom-pin').addEventListener('click', () => toggleOverlay('tree'));
+$('zoom-pin').addEventListener('click', (event) => {
+  toggleOverlay('tree');
+  if (event.detail && S.overlay === 'tree') rememberFocus('overlay', document.body);
+});
 
 // ---------- surfaces ----------
 
@@ -1064,12 +1325,21 @@ const OVERLAYS = {
   tree: {
     el: 'tree-sheet', button: 'zoom-pin', leavesStart: true,
     available: () => !!S.frame?.treeView,
-    show(reveal) { renderSheet(reveal); },
+    show(reveal) {
+      renderSheet(false);
+      if (reveal) requestAnimationFrame(() => {
+        if (S.overlay !== 'tree') return;
+        const view = S.frame.treeView;
+        setTreeSide(view.overflows ? 'list' : S.treePreference, true);
+        post({ t: 'focus', target: 'chrome' });
+        focusTree(current());
+      });
+    },
   },
   forest: {
     el: 'forest', button: 'forest-button',
     available: () => !!S.frame,
-    show(reveal) { renderForest(); if (reveal) fitForest(false); },
+    show(reveal) { renderForest(); if (reveal) { fitForest(false); post({ t: 'focus', target: 'chrome' }); $('forest-titles').focus(); } },
   },
 };
 const restingLayer = () => (S.palette || S.overlay || S.surface !== 'reading') ? 'palette' : 'none';
@@ -1079,7 +1349,7 @@ function setSurface(surface) {
   if (S.surface === surface) return;
   S.surface = surface;
   post({ t: 'surface', start: surface === 'start' });
-  if (surface === 'start') focusStart();
+  if (surface === 'start') { if (S.frame) S.frame.start = null; S.startPaint = null; $('start-content').replaceChildren(); focusStart(); }
   renderPlaceholder();
   $('start').hidden = surface !== 'start';
   setLayer(restingLayer());
@@ -1089,31 +1359,51 @@ function setSurface(surface) {
 function setOverlay(kind) {
   if (S.overlay === kind) return;
   const previous = OVERLAYS[S.overlay];
+  if (S.overlay === 'tree') post({ t: 'workbench', query: '', waiting: false });
   if (previous) {
     $(previous.el).hidden = true;
-    $(previous.button).classList.remove('on');
     $(previous.button).setAttribute('aria-pressed', 'false');
   }
+  if (kind && !S.overlay) rememberFocus('overlay');
+  const forestChanged = (S.overlay === 'forest') !== (kind === 'forest');
   S.overlay = kind;
+
   document.body.dataset.overlay = kind ?? '';
   const overlay = OVERLAYS[kind];
   if (overlay) {
     if (overlay.leavesStart) setSurface('reading');
-    hideCard();
+    hideList();
     closePopover(false);
-    $(overlay.el).hidden = false;
-    $(overlay.button).classList.add('on');
+    $(overlay.el).hidden = kind === 'forest';
     $(overlay.button).setAttribute('aria-pressed', 'true');
-    overlay.show(true);
+    if (kind !== 'forest') overlay.show(true);
   }
   setLayer(restingLayer());
   syncLayer();
+  if (forestChanged) {
+    if (kind === 'forest') requestForest();
+    else post({ t: 'forest', open: false });
+  }
+}
+
+function requestForest() {
+  if (S.overlay === 'forest' && $('forest').hidden && window.innerHeight >= S.windowHeight - 1) {
+    post({ t: 'forest', open: true, revision: S.forestRevision });
+  }
+}
+window.addEventListener('resize', requestForest);
+
+function canFocus(el) {
+  if (!el?.isConnected || el.disabled || el.tabIndex < 0 || el.closest('[hidden], [inert]')) return false;
+  const style = getComputedStyle(el), rect = el.getBoundingClientRect();
+  return style.visibility === 'visible' && style.display !== 'none' && style.opacity !== '0'
+    && rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.right > 0
+    && rect.top < window.innerHeight && rect.left < window.innerWidth;
 }
 
 function closeOverlay() {
   setOverlay(null);
-  if (pageShows()) post({ t: 'focus', target: 'page' });
-  else if (S.surface === 'start') focusStart();
+  returnFocus('overlay');
 }
 
 function toggleOverlay(kind) {
@@ -1128,7 +1418,7 @@ function uncover() {
   closeReader(false);
   closePalette(false);
   closePopover(false);
-  hideCard();
+  hideList();
   setOverlay(null);
   setSurface('reading');
 }
@@ -1151,7 +1441,7 @@ function miniHtml(mini) {
   const edges = mini.edges.map((e) => `<path class="${e.wait ? 'wait' : ''}" d="M ${e.c[0]} C ${e.c[1]} ${e.c[2]} ${e.c[3]}"/>`).join('');
   const stub = mini.cut ? `<path class="wait" d="M -6 ${mini.s / 2} H 0"/>` : '';
   return `<span class="mt" style="width:${mini.w}px;height:${mini.h}px"><svg width="${mini.w}" height="${mini.h}">${edges}${stub}</svg>`
-    + mini.nodes.map((n) => `<span class="mt-node${n.last ? ' last' : ''}${n.waiting ? ' waiting' : ''}" style="left:${n.x}px;top:${n.y}px">${fav(visit(n.id).url, !n.waiting, mini.s)}</span>`).join('') + '</span>';
+    + mini.nodes.map((n) => `<span class="mt-node${n.last ? ' last' : ''}${n.waiting ? ' waiting' : ''}" style="left:${n.x}px;top:${n.y}px">${fav(n.url ?? visit(n.id)?.url ?? '', !n.waiting, mini.s)}</span>`).join('') + '</span>';
 }
 
 function pinnedBand(start) {
@@ -1207,38 +1497,39 @@ const START = {
 };
 
 function renderStart() {
-  if (!S.frame) return;
-  const paint = JSON.stringify([S.frame.start, S.rev]);
+  if (!S.frame?.start || S.surface !== 'start') return;
+  const paint = JSON.stringify(S.frame.start);
   if (S.startPaint === paint) return;
   S.startPaint = paint;
   const focused = document.activeElement?.closest('[data-start]');
   const anchor = S.popover?.anchor.closest('[data-start]');
   const find = (el) => el && [...$('start-content').querySelectorAll('[data-start]')].find((n) => n.dataset.start === el.dataset.start && n.dataset.id === el.dataset.id);
   $('start-content').innerHTML = BANDS.map((band) => band(S.frame.start)).join('');
-  find(focused)?.focus();
+  if (focused) { const next = find(focused); if (next) next.focus(); else focusStart(); }
   if (anchor) {
     const next = find(anchor);
-    if (next) S.popover.anchor = next;
-    else closePopover(false);
+    if (next) {
+      S.popover.anchor = next;
+      setTooltip(next, next.getAttribute('title'));
+    } else closePopover(false);
   }
 }
 
 // ---------- forest view ----------
 
 function forestLayout() {
-  return S.frame?.forest[S.forestLabels ? 'labels' : 'icons'];
+  return S.frame?.forest?.[S.forestLabels ? 'labels' : 'icons'];
 }
 
 function renderForest() {
   if (S.overlay !== 'forest' || !S.frame) {
-    S.forestDirty = true;
     return;
   }
-  S.forestDirty = false;
   const frame = S.frame;
   const layout = forestLayout();
+  if (!layout) return;
   $('forest-count').textContent = frame.forest.count;
-  $('forest-titles').classList.toggle('on', S.forestLabels);
+  $('forest-titles').setAttribute('aria-pressed', String(S.forestLabels));
   const path = new Set();
   for (let id = current(); id; id = visit(id)?.parent) path.add(id);
   const positions = new Map(layout.nodes.map((n) => [n.id, n]));
@@ -1249,10 +1540,10 @@ function renderForest() {
     maxX = Math.max(maxX, n.x + n.w / 2);
     maxY = Math.max(maxY, n.y + n.s / 2);
     const cls = `forest-node${n.settled ? ' settled' : ''}${S.forestLabels ? '' : ' icon-only'}${path.has(n.id) ? ' path' : ''}${markClass(v)}`;
-    return `<button class="${cls}" data-id="${n.id}" title="${esc(v.label + (v.live ? ' · Open in memory' : ''))}" style="left:${n.x - n.w / 2}px;top:${n.y - n.s / 2}px;width:${n.w}px;height:${n.s}px">`
+    return `<button class="${cls}" data-key="node-${n.id}" data-id="${n.id}" aria-current="${n.id === current() ? 'page' : 'false'}" aria-label="${esc(v.name)}" title="${esc(v.label + (v.live ? ' · Open in memory' : ''))}" style="left:${n.x - n.w / 2}px;top:${n.y - n.s / 2}px;width:${n.w}px;height:${n.s}px">`
       + markedFav(v, 16, false) + (v.live ? '<i class="live-dot"></i>' : '') + (S.forestLabels ? `<span>${esc(v.label)}</span>` : '') + '</button>';
   }).join('');
-  const heads = layout.heads.map((h) => `<button class="forest-head${h.settled ? ' settled' : ''}" data-id="${h.id}" style="top:${h.y}px"><b>${esc(h.title)}</b><span>${esc(h.detail)}</span></button>`).join('');
+  const heads = layout.heads.map((h) => `<button class="forest-head${h.settled ? ' settled' : ''}" data-key="head-${h.id}" data-id="${h.id}" style="top:${h.y}px"><b>${esc(h.title)}</b><span>${esc(h.detail)}</span></button>`).join('');
   const edges = layout.nodes.map((b) => {
     const v = visit(b.id);
     const a = v?.parent && positions.get(v.parent);
@@ -1266,11 +1557,11 @@ function renderForest() {
   svg.setAttribute('height', maxY + 40);
   svg.innerHTML = edges;
   const d = layout.divider;
-  const divider = d ? `<div class="forest-divider" style="top:${d.y}px"><b>${esc(d.title)}</b><span>${esc(d.detail)}</span></div>` : '';
+  const divider = d ? `<div class="forest-divider" data-key="divider" style="top:${d.y}px"><b>${esc(d.title)}</b><span>${esc(d.detail)}</span></div>` : '';
   const content = heads + divider + nodes;
   const layer = $('forest-nodes');
   if (layer.__content !== content) {
-    layer.innerHTML = content;
+    patchChildren(layer, content);
     layer.__content = content;
   }
   applyCamera();
@@ -1288,7 +1579,7 @@ function fitForest(animate) {
   const canvas = $('forest-canvas');
   const to = { x: 0, y: 0, zoom: clamp((canvas.clientWidth - 20) / Math.max(layout.width, 1), 0.3, 1) };
   cancelAnimationFrame(cameraTween);
-  if (!animate) {
+  if (!animate || reducedMotion.matches) {
     S.camera = to;
     applyCamera();
     return;
@@ -1296,7 +1587,7 @@ function fitForest(animate) {
   const from = { ...S.camera };
   const start = performance.now();
   const frame = (now) => {
-    const t = (now - start) / 220;
+    const t = reducedMotion.matches ? 1 : (now - start) / 220;
     const k = ease(t);
     S.camera = { x: mix(from.x, to.x, k), y: mix(from.y, to.y, k), zoom: mix(from.zoom, to.zoom, k) };
     applyCamera();
@@ -1363,23 +1654,26 @@ $('forest').querySelector('.scrim').addEventListener('mousedown', closeOverlay);
 // ---------- reader ----------
 
 function showReader(html, list) {
+  if (!S.reader) rememberFocus('reader');
   closePalette(false);
   closePopover(false);
-  hideCard();
+  hideList();
   const box = $('reader-box');
   box.className = `reader-box${list ? ' list' : ''}`;
   box.innerHTML = html + `<button class="icon-button reader-close" aria-label="Close">${icon('close')}</button>`;
   box.querySelector('.reader-close').addEventListener('click', closeReader);
   S.reader = true;
   $('reader').hidden = false;
+  post({ t: 'focus', target: 'chrome' });
+  box.querySelector('.reader-close').focus();
   syncLayer();
 }
 
-function closeReader(returnFocus = true) {
+function closeReader(restoreFocus = true) {
   if (!S.reader) return;
   S.reader = null;
   $('reader').hidden = true;
-  if (returnFocus && pageShows()) post({ t: 'focus', target: 'page' });
+  if (restoreFocus) returnFocus('reader');
   syncLayer();
 }
 $('reader').querySelector('.scrim').addEventListener('mousedown', closeReader);
@@ -1389,17 +1683,32 @@ const when = (at) => new Date(at).toLocaleString(undefined, { day: '2-digit', mo
 // ---------- Rust's side ----------
 
 window.canopy = {
-  viewport(height) { S.windowHeight = height; },
-  start(value) { if (!S.frame) return; S.frame.start = value; renderStart(); },
+  viewport(height) { S.windowHeight = height; document.documentElement.style.setProperty('--window-height', `${height}px`); positionList(); syncLayer(); },
+  start(value, initial = false) {
+    if (!S.frame || S.surface !== 'start') return;
+    S.frame.start = value.start;
+    renderStart();
+    if (initial) requestAnimationFrame(() => requestAnimationFrame(() => { if (S.surface === 'start') post({ t: 'suggestions' }); }));
+  },
+  forest(value, revision) {
+    if (value) { S.forestFrame = value; S.forestRevision = revision; }
+    value = S.forestFrame;
+    if (!value || !S.frame || S.overlay !== 'forest') return;
+    Object.assign(S.frame.visits, value.visits);
+    S.frame.forest = value.forest;
+    $('forest').hidden = false;
+    OVERLAYS.forest.show(true);
+  },
   present(frame) {
     const previous = current();
     const previousTree = S.frame?.tabs.find((tab) => tab.active)?.id;
-    S.frame = frame;
+    S.frame = { ...frame, start: frame.start ?? S.frame?.start };
     applyStrip(frame.strip);
     renderWaitingPin();
     applyTheme();
     if (frame.current !== previous) {
-      setOverlay(null);
+      hideList();
+      if (S.overlay !== 'tree') setOverlay(null);
       const sameTree = previousTree && previousTree === frame.tabs.find((tab) => tab.active)?.id;
       if (S.surface !== 'reading' && !(S.surface === 'start' && sameTree)) setSurface('reading');
     }
@@ -1411,13 +1720,28 @@ window.canopy = {
     renderPlaceholder();
     renderForest();
     renderSheet(false);
-    if (S.card) {
-      if (!visit(S.card)) hideCard();
-      else showCard(S.card);
-    }
+    if (S.list) { renderList(); requestListPreview(); }
     if (S.popover) refreshPopover();
     renderPaletteContext();
     syncLayer();
+  },
+  tabsFit(layout) {
+    if (S.frame) S.frame.tabFit = layout;
+    for (const item of layout.items) {
+      const tab = [...$('tab-row').children].find((el) => el.dataset.id === item.id);
+      if (!tab) continue;
+      tab.hidden = item.mode === 'hidden';
+      tab.classList.toggle('icon-only', item.mode === 'icon');
+      tab.classList.toggle('short', item.short);
+      tab.style.width = `${item.width}px`;
+    }
+    $('tab-overflow').hidden = !layout.overflow;
+    const tabs = [...$('tab-row').children];
+    if (!tabs.some((tab) => !tab.hidden && tab.tabIndex === 0)) {
+      const stop = tabs.find((tab) => !tab.hidden && tab.getAttribute('aria-selected') === 'true') ?? tabs.find((tab) => !tab.hidden);
+      for (const tab of tabs) tab.tabIndex = tab === stop ? 0 : -1;
+    }
+    if (S.popover?.kind === 'trees') refreshPopover();
   },
   strip(layouts) {
     applyStrip(layouts);
@@ -1425,16 +1749,14 @@ window.canopy = {
     animateStrip(0);
     fitTabs();
   },
-  icons(revision) {
-    S.rev = revision;
-    renderPaletteContext();
-    if (!S.frame) return;
-    renderTabs();
-    renderWaitingPin();
-    if (S.popover?.kind === 'waiting') refreshPopover();
-    buildStrip(strip.target ?? targetLayout());
-    renderStart();
-    renderForest();
+  icons(url, revision) {
+    S.revisions.set(iconSite(url), revision);
+    for (const img of document.querySelectorAll('.fav img')) {
+      const src = new URL(img.src);
+      if (iconSite(src.searchParams.get('u')) !== iconSite(url)) continue;
+      src.searchParams.set('r', revision);
+      img.src = src.href;
+    }
   },
   logins(offer) {
     S.logins = offer.names.length ? offer : null;
@@ -1452,32 +1774,56 @@ window.canopy = {
   nextWaiting() { openNextWaiting(); },
   openPalette(options) { openPalette(options); },
   newTree() {
+    cancel('toast');
+    $('toast').hidden = true;
     intent('cancel');
     closePalette(false);
     setOverlay(null);
     setSurface('start');
     focusStart();
+    syncLayer();
   },
-  toggleForest() { toggleOverlay('forest'); },
-  toggleTree() { toggleOverlay('tree'); },
+  toggleForest(fromChrome = true) { toggleOverlay('forest'); if (!fromChrome && S.overlay === 'forest') rememberFocus('overlay', document.body); },
+  workbench(view) {
+    if (!S.frame) return;
+    const id = document.activeElement?.closest('[data-id]')?.dataset.id;
+    S.frame.treeView = view;
+    renderSheet(false);
+    if (id && !document.activeElement?.closest('[data-id]')) focusTree(id);
+  },
+  tabSelected() { closePopover(false); setOverlay(null); },
+  toggleTree(fromChrome = true) { toggleOverlay('tree'); if (!fromChrome && S.overlay === 'tree') rememberFocus('overlay', document.body); },
   toast(kind, text) {
     if (kind === 'error') {
       S.errors.unshift(text);
       S.errors.length = Math.min(S.errors.length, 5);
     }
     const toast = $('toast');
+    $('toast-status').textContent = kind === 'error' ? '' : text + (kind === 'settled' ? ' · Undo (Ctrl+Shift+T)' : '');
+    $('toast-alert').textContent = kind === 'error' ? text : '';
     toast.textContent = text;
+    if (kind === 'settled') {
+      const button = document.createElement('button');
+      button.textContent = 'Undo';
+      toast.appendChild(document.createTextNode(' · '));
+      button.onclick = () => { toast.hidden = true; syncLayer(); intent('undo-settle'); };
+      toast.appendChild(button);
+      toast.appendChild(document.createTextNode(' (Ctrl+Shift+T)'));
+    }
     toast.className = kind;
     toast.hidden = false;
+    syncLayer();
     clearTimeout(timers.toast);
     timers.toast = setTimeout(() => {
       toast.classList.add('leaving');
-      timers.toast = setTimeout(() => { toast.hidden = true; }, 200);
-    }, kind === 'error' ? 5000 : 2600);
+      timers.toast = setTimeout(() => { toast.hidden = true; syncLayer(); }, 200);
+    }, kind === 'settled' ? 6000 : kind === 'error' ? 5000 : 2600);
   },
   toggleFocus() {
+    inputOrigin = 'keyboard';
     const active = document.activeElement;
-    if (document.hasFocus() && active?.classList.contains('node')) {
+    if (document.hasFocus() && active?.closest('#tabs, #strip, #strip-list, #pins')) {
+      hideList();
       post({ t: 'focus', target: 'page' });
       return;
     }
@@ -1496,6 +1842,7 @@ window.canopy = {
   },
   /// Closes the topmost thing Escape owns.
   formReturn(open) {
+    if (open && !S.formReturn) rememberFocus('formReturn');
     S.formReturn = open;
     $('form-return').hidden = !open;
     syncLayer();
@@ -1506,13 +1853,14 @@ window.canopy = {
     else if (S.reader) closeReader();
     else if (S.palette) closePalette();
     else if (S.popover) closePopover();
-    else if (S.card) hideCard();
-    else if (S.overlay) closeOverlay();
+    else if (S.list) { const key = S.list.key; strip.elements.get(key)?.focus(); hideList(); }
+    else if (S.overlay === 'tree' && (S.frame.treeView.query || S.frame.treeView.waitingOnly)) {
+      $('tree-filter').value = '';
+      post({ t: 'workbench', query: '', waiting: false });
+    } else if (S.overlay) closeOverlay();
     else if (S.surface !== 'reading' && current()) {
       setSurface(S.frame?.tabs.length ? 'reading' : 'start');
       post({ t: 'focus', target: 'page' });
-    } else if (S.open) {
-      setOpen(false);
     }
   },
   paletteResults(seq, { rows, first }) {
@@ -1522,7 +1870,7 @@ window.canopy = {
     renderPalette();
   },
   previewResult(seq, preview) {
-    if (seq === previewSeq) renderCard(preview);
+    if (seq === previewSeq && S.list && listItem()?.page === preview.id) { S.list.preview = preview; renderList(); }
   },
   reader(c) {
     const source = c.source ? `<div class="reader-source" id="capture-source">${esc(`From ${c.source.url}\n${c.source.linkText}\n${c.source.excerpt}`.trim())}</div>` : '';
@@ -1558,7 +1906,7 @@ window.canopy = {
   state() {
     return {
       buttons: refresh.buttons, start: S.frame?.start, deferred: [...refresh.pending.keys()],
-      surface: S.surface, overlay: S.overlay, treeSide: S.treeSide, open: S.open, animating: !!strip.anim, card: S.card, layer: S.layer, palette: !!S.palette,
+      surface: S.surface, overlay: S.overlay, treeSide: S.treeSide, animating: !!strip.anim, list: S.list?.key ?? null, layer: S.layer, palette: !!S.palette,
       reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported, logins: loginNames(), save: S.save, locked: S.locked,
       dark: document.documentElement.classList.contains('dark'),
       nodes: [...strip.elements.keys()], rows: S.palette?.rows ?? [],
@@ -1571,8 +1919,9 @@ window.canopy = {
 const refresh = { buttons: 0, pending: new Map(), release: null };
 function rebuild(kind, apply, args) {
   if (!refresh.buttons) { apply(...args); return; }
-  refresh.pending.delete(kind);
-  refresh.pending.set(kind, { apply, args });
+  const key = kind === 'icons' ? `icons:${args[0]}` : kind;
+  refresh.pending.delete(key);
+  refresh.pending.set(key, { apply, args });
 }
 function releaseRefresh() {
   clearTimeout(refresh.release);
@@ -1583,7 +1932,7 @@ function releaseRefresh() {
     for (const { apply, args } of pending) apply(...args);
   });
 }
-for (const kind of ['present', 'strip', 'icons', 'start', 'logins', 'loginsLocked', 'saveLogin', 'paletteResults', 'previewResult', 'reader', 'readerList']) {
+for (const kind of ['present', 'strip', 'icons', 'start', 'forest', 'logins', 'loginsLocked', 'saveLogin', 'paletteResults', 'previewResult', 'reader', 'readerList']) {
   const apply = window.canopy[kind].bind(window.canopy);
   window.canopy[kind] = (...args) => rebuild(kind, apply, args);
 }
@@ -1595,7 +1944,12 @@ for (const type of ['mousedown', 'mouseup', 'mousemove', 'mouseover']) {
     } else if (refresh.buttons) releaseRefresh();
   }, true);
 }
-window.addEventListener('blur', releaseRefresh);
+window.addEventListener('blur', () => { releaseRefresh(); hideList(); });
+document.addEventListener('focusout', (event) => {
+  if (!S.list || S.popover) return;
+  const next = event.relatedTarget;
+  if (!next || (!next.closest('#strip-list') && next.closest('.node')?.dataset.id !== S.list.key)) hideList();
+});
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) releaseRefresh();
 });
@@ -1628,19 +1982,46 @@ document.addEventListener('keydown', (event) => {
 });
 
 $('new-tree').innerHTML = icon('plus');
-$('agent').innerHTML = icon('spark');
 $('forest-button').innerHTML = icon('forest') + '<span>Forest</span>';
 $('settings-button').innerHTML = icon('settings');
 $('tab-overflow').innerHTML = icon('chevron');
 $('search-pill').insertAdjacentHTML('afterbegin', icon('search'));
 
+let settlePress = null;
+window.addEventListener('mousedown', (event) => {
+  settlePress = null;
+  const cross = event.target.closest('#tab-row [data-settle]');
+  if (event.button !== 0 || !cross || event.detail > 1) return;
+  const r = cross.getBoundingClientRect();
+  if (getComputedStyle(cross).visibility === 'visible' && Number(getComputedStyle(cross).opacity) > 0
+      && event.clientX >= r.left && event.clientX < r.right && event.clientY >= r.top && event.clientY < r.bottom) {
+    settlePress = cross;
+  }
+}, true);
 $('tab-row').addEventListener('click', (event) => {
+  const pressed = settlePress;
+  settlePress = null;
   const close = event.target.closest('[data-settle]');
-  if (close) { intent('settle-tree', { id: close.dataset.settle }); return; }
+  if (close) {
+    if (close === pressed && event.detail <= 1) intent('settle-tree', { id: close.dataset.settle });
+    return;
+  }
   const tab = event.target.closest('[data-id]');
   if (!tab) return;
   uncover();
   intent('select-tree', { id: tab.dataset.id });
+});
+$('tab-row').addEventListener('focusin', (event) => {
+  for (const tab of $('tab-row').children) tab.tabIndex = tab === event.target ? 0 : -1;
+});
+$('tab-row').addEventListener('keydown', (event) => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  const tabs = [...$('tab-row').children].filter((tab) => !tab.hidden);
+  const index = tabs.indexOf(document.activeElement);
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length;
+  for (const tab of tabs) tab.tabIndex = tab === tabs[next] ? 0 : -1;
+  tabs[next]?.focus();
+  event.preventDefault();
 });
 $('tab-row').addEventListener('mousedown', (event) => {
   if (event.button === 1 && event.target.closest('[data-id]')) event.preventDefault();
@@ -1682,25 +2063,11 @@ $('memory-dot').addEventListener('click', (event) => {
   else openPopover('memory', $('memory-dot'));
 });
 
-const stripEl = $('strip');
-stripEl.addEventListener('mouseenter', enterStrip);
-stripEl.addEventListener('mouseleave', leaveStrip);
-stripEl.addEventListener('wheel', (event) => {
-  const layout = strip.target;
-  if (!layout) return;
-  event.preventDefault();
-  const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-  const min = Math.min(stripRoom() - layout.width, 0);
-  S.manualPan = clamp((S.manualPan ?? strip.shown.pan) - delta, min, 0);
-  strip.shown.pan = S.manualPan;
-  drawStrip();
-}, { passive: false });
-
-const cardEl = $('card');
-cardEl.addEventListener('mouseenter', () => { cancel('hideCard'); cancel('close'); });
-cardEl.addEventListener('mouseleave', () => {
-  if (S.card) schedule('hideCard', 120, hideCard);
-  if (S.open) schedule('close', 380, closeStrip);
+const listEl = $('strip-list');
+listEl.addEventListener('mouseenter', () => { cancel('hideList'); cancel('showList'); });
+listEl.addEventListener('mouseleave', (event) => {
+  if (event.relatedTarget?.closest('#strip-nodes')) return;
+  schedule('hideList', 220, () => { if (!listHasKeyboardFocus()) hideList(); });
 });
 
 // A press outside an open popover closes it.
@@ -1709,11 +2076,10 @@ document.addEventListener('mousedown', (event) => {
 });
 
 // Over the transparent part of the window, the view only stays while something is open;
-// a press there closes the open strip and card.
+// a press there closes the attached list.
 document.addEventListener('mousedown', (event) => {
   if (event.target === document.documentElement || event.target === document.body) {
-    hideCard();
-    if (S.open) setOpen(false);
+    hideList();
   }
 });
 
@@ -1727,7 +2093,7 @@ function answerFormReturn(proceed, focusPage = true) {
   const question = S.formReturn;
   canopy.formReturn(null);
   post({ t: 'form-return', question, proceed });
-  if (focusPage) post({ t: 'focus', target: 'page' });
+  if (focusPage) { if (proceed) post({ t: 'focus', target: 'page' }); else returnFocus('formReturn'); }
 }
 $('form-return-cancel').addEventListener('click', () => answerFormReturn(false));
 $('form-return-continue').addEventListener('click', () => answerFormReturn(true));
@@ -1738,7 +2104,7 @@ document.addEventListener('mousedown', (event) => {
   }
 }, true);
 document.addEventListener('keydown', (event) => {
-  if (!S.formReturn || !['Tab', 'ISO_Left_Tab'].includes(event.key)) return;
+  if (!S.formReturn || !tabKey(event)) return;
   event.preventDefault();
   const cancel = $('form-return-cancel');
   const proceed = $('form-return-continue');
@@ -1750,3 +2116,63 @@ document.addEventListener('focusin', (event) => {
     $('form-return-cancel').focus();
   }
 }, true);
+
+const NODE_TARGETS = '#strip-nodes [data-page], #strip-list [data-id], #strip-list [data-page], #tree-nodes [data-id], #tree-list [data-id], #popover.waiting [data-id], #forest-nodes [data-id]';
+document.addEventListener('keydown', (event) => {
+  if (event.defaultPrevented || S.popover || !(event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) return;
+  const el = event.target.closest(NODE_TARGETS);
+  const id = el?.dataset.page || el?.dataset.id;
+  if (!id || !visit(id)) return;
+  event.preventDefault();
+  openPopover('node', el, id);
+});
+
+document.addEventListener('contextmenu', (event) => {
+  const field = event.target.closest('input, textarea, [contenteditable="true"]');
+  if (field || (event.target.closest('#capture-text') && !getSelection().isCollapsed)) return;
+  if (event.defaultPrevented) return;
+  event.preventDefault();
+  const el = event.target.closest(NODE_TARGETS);
+  const id = el?.dataset.page || el?.dataset.id;
+  if (!id || !visit(id)) return;
+  openPopover('node', el, id);
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.defaultPrevented) return;
+  if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
+    if (event.target.closest('input, textarea, [contenteditable]')) return;
+    event.preventDefault();
+    event.target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    return;
+  }
+  if (S.list && !S.popover && event.target.closest('#strip-list') && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+    const rows = controlsIn($('strip-list'));
+    const index = rows.indexOf(document.activeElement);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length;
+    rows[next]?.focus();
+    event.preventDefault();
+    return;
+  }
+  const root = S.popover ? $('popover') : S.reader ? $('reader') : S.palette ? $('palette') : S.overlay === 'forest' ? $('forest') : null;
+  if (!root) return;
+  const rows = controlsIn(root);
+  let index = rows.indexOf(document.activeElement);
+  if (tabKey(event)) index += event.shiftKey ? rows.length - 1 : 1;
+  else if (S.popover && !event.target.matches('input') && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+    index = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : index + (event.key === 'ArrowDown' ? 1 : rows.length - 1);
+  } else return;
+  rows[index % rows.length]?.focus();
+  event.preventDefault();
+});
+$('waiting-pin').addEventListener('keydown', (event) => {
+  if (event.key !== 'ArrowDown') return;
+  event.preventDefault();
+  openPopover('waiting', $('waiting-pin'));
+});
+
+window.addEventListener('focus', () => {
+  if (pageShows() && document.activeElement === document.body) {
+    controlsIn(document.body).at(-1)?.focus();
+  }
+});

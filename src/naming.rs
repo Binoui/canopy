@@ -166,6 +166,8 @@ mod tests {
 
     fn visit(address: &str, title: &str) -> Visit {
         Visit {
+            dismissed_at: None,
+            branch_settled_at: None,
             id: ulid::Ulid::new().to_string().parse().unwrap(),
             parent: None,
             url: url(address),

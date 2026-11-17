@@ -3,6 +3,12 @@
 # Needs Xvfb, xdotool and ffmpeg. Writes docs/assets/shots/.
 set -eu
 cd "$(dirname "$0")/.."
+mkdir -p .cache/tmp "$HOME/.cache/canopy-test-rt"
+export TMPDIR="$PWD/.cache/tmp"
+XDG_RUNTIME_DIR=$(mktemp -d -p "$HOME/.cache/canopy-test-rt" XXXXXX)
+chmod 700 "$XDG_RUNTIME_DIR"
+export XDG_RUNTIME_DIR
+trap 'rm -rf "$XDG_RUNTIME_DIR"' EXIT
 raw=.cache/readme-shots/raw
 out=docs/assets/shots
 rm -rf "$raw"
@@ -11,16 +17,16 @@ CANOPY_README_SHOTS="$PWD/$raw" env -u WAYLAND_DISPLAY GDK_BACKEND=x11 \
   xvfb-run -a -s '-screen 0 1440x1000x24' \
   cargo test --locked --features gui-smoke --test readme_shots
 
-# Each picture keeps the 640 by 500 part of the window that shows its subject.
+# Chrome pictures keep the full tab row and the complete open menu.
 crop() {
   for theme in dark light; do
     ffmpeg -hide_banner -loglevel error -y -i "$raw/$1-$theme.png" \
-      -vf "crop=640:500:$2:$3" -c:v libwebp -lossless 1 "$out/$1-$theme.webp"
+      -vf "crop=${4:-640}:${5:-500}:$2:$3" -c:v libwebp -lossless 1 "$out/$1-$theme.webp"
   done
 }
-crop card 0 0
-crop files 0 0
-crop tree 0 0
+crop card 0 0 1240 700
+crop files 0 0 1240 700
+crop tree 0 0 1240 700
 crop forest 44 64
 crop palette 300 50
 crop start 300 100

@@ -75,7 +75,7 @@ fn main() -> Result<()> {
     let posts = server.hits("POST /post");
     let visits = ui.snapshot()?.visits.len();
     let can_back = ui.pages.selected_page().native.can_go_back();
-    let displayed = chrome(&ui, "[document.getElementById('search-pill').innerText, current(), document.querySelector('.node.current')?.dataset.id]")?;
+    let displayed = chrome(&ui, "[document.getElementById('search-pill').innerText, current(), document.querySelector('.node.pill')?.dataset.id]")?;
     let window_title = ui.window.title();
     ui.pages.go(Go::Parent)?;
     question(&ui)?;
@@ -93,7 +93,7 @@ fn main() -> Result<()> {
             &format!("{}/.tmp/form-return-light.png", env!("CARGO_MANIFEST_DIR")),
         )?;
     }
-    assert_eq!(chrome(&ui, "[document.getElementById('search-pill').innerText, current(), document.querySelector('.node.current')?.dataset.id]")?, displayed);
+    assert_eq!(chrome(&ui, "[document.getElementById('search-pill').innerText, current(), document.querySelector('.node.pill')?.dataset.id]")?, displayed);
     assert_eq!(ui.window.title(), window_title);
     assert_eq!(server.hits("POST /post"), posts);
     assert_eq!(ui.snapshot()?.current, Some(next));
@@ -151,10 +151,17 @@ fn main() -> Result<()> {
     question(&ui)?;
     // The chrome remains actionable above the scrim.
     assert_eq!(ui.snapshot()?.current, Some(root));
-    click_chrome(&ui, &format!(".node[data-id='{next}']"))?;
-    wait("chrome navigation closes question", || {
+    click_chrome(&ui, ".node.after")?;
+    wait("chrome input closes question", || {
         !visible(&ui, "#form-return")
     })?;
+    wait("named continuation list", || {
+        visible(&ui, "#strip-list .more")
+    })?;
+    click_chrome(&ui, "#strip-list .more")?;
+    wait("continuation tree", || visible(&ui, "#tree-sheet"))?;
+    click_chrome(&ui, "[data-side=list]")?;
+    click_chrome(&ui, &format!(".tree-row[data-id='{next}']"))?;
     assert_eq!(arrived(&ui, "/next")?, next);
     assert_eq!(server.hits("POST /post"), posts);
     println!("PASS a link in the chrome cancels the held decision and navigates");

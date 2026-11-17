@@ -45,7 +45,7 @@ The pictures and the short film in the README come from the real window, browsin
 scripts/readme-shots.sh
 ```
 
-It writes `docs/assets/shots/`. `tests/readme_shots.rs` holds the browsing session and the list of pictures. Run without `CANOPY_README_SHOTS`, that test does nothing.
+It uses a private runtime folder, keeps temporary build files in `.cache/tmp`, and writes `docs/assets/shots/`. `tests/readme_shots.rs` holds the browsing session and the list of pictures. Run without `CANOPY_README_SHOTS`, that test does nothing.
 
 ## Where things live
 

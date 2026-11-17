@@ -5,7 +5,7 @@ use url::Url;
 use super::{ChromeIntent, PaletteScope};
 use crate::{
     address::{destination, web_search, Destination},
-    browser::{Bookmark, ImportedPage, NavigationTarget, SearchHit, VisitId, VisitState},
+    browser::{Bookmark, ImportedPage, NavigationTarget, SearchHit, VisitId},
     forest::ForestProjection,
 };
 
@@ -45,7 +45,7 @@ impl Group {
     pub(crate) fn title(self) -> &'static str {
         match self {
             Group::Suggested => "Suggested",
-            Group::Pending => "Pending in this tree",
+            Group::Pending => "Waiting in this tree",
             Group::Forest => "In your forest",
             Group::Bookmarks => "Bookmarks",
             Group::Saved => "Saved text",
@@ -71,10 +71,7 @@ pub(crate) fn results(
         let tree = forest.current().and_then(|id| forest.tree_of(id));
         let mut stack: Vec<_> = tree.map(|tree| tree.root()).into_iter().collect();
         while let Some(id) = stack.pop() {
-            if forest
-                .visit(id)
-                .is_some_and(|v| v.state == VisitState::Queued)
-            {
+            if forest.is_waiting(id) {
                 items.push((Group::Pending, PaletteItem::Page(id)));
             }
             stack.extend(forest.children(id).iter().rev());
@@ -193,12 +190,14 @@ pub(crate) fn intent(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browser::{Snapshot, TreeId, TreeState, Visit};
+    use crate::browser::{Snapshot, TreeId, TreeState, Visit, VisitState};
 
     fn forest() -> (ForestProjection, VisitId, VisitId) {
         let id = || -> VisitId { ulid::Ulid::new().to_string().parse().unwrap() };
         let (root, queued) = (id(), id());
         let visit = |id, parent, state: VisitState, at| Visit {
+            dismissed_at: None,
+            branch_settled_at: None,
             id,
             parent,
             url: Url::parse("https://example.org/page").unwrap(),
