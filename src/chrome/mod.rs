@@ -580,7 +580,9 @@ impl Inner {
                             let folded = message["folded"]
                                 .as_bool()
                                 .unwrap_or(!state.folded(&frame.forest, id));
-                            state.folds.insert(id, folded);
+                            let settled_at =
+                                frame.forest.visit(id).and_then(|v| v.branch_settled_at);
+                            state.folds.insert((id, settled_at), folded);
                         }
                     }
                     self.call(

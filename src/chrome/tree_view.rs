@@ -40,18 +40,18 @@ pub(crate) struct ListRow {
 
 #[derive(Default)]
 pub(crate) struct Workbench {
-    pub folds: HashMap<VisitId, bool>,
+    pub folds: HashMap<(VisitId, Option<i64>), bool>,
     pub query: String,
     pub waiting_only: bool,
 }
 
 impl Workbench {
     pub fn folded(&self, forest: &ForestProjection, id: VisitId) -> bool {
-        self.folds.get(&id).copied().unwrap_or_else(|| {
-            forest
-                .visit(id)
-                .is_some_and(|v| v.branch_settled_at.is_some())
-        })
+        let settled_at = forest.visit(id).and_then(|v| v.branch_settled_at);
+        self.folds
+            .get(&(id, settled_at))
+            .copied()
+            .unwrap_or(settled_at.is_some())
     }
 }
 
@@ -421,10 +421,49 @@ mod tests {
     }
 
     #[test]
+    fn a_new_settlement_starts_folded_after_an_earlier_unfold() {
+        let (forest, ids) = fixture(&[None, Some(0), Some(1)], 0);
+        let mut state = Workbench::default();
+        state.folds.insert((ids[1], None), false);
+        let settled = |stamp| {
+            let visits = ids
+                .iter()
+                .map(|&id| {
+                    let mut v = forest.visit(id).unwrap().clone();
+                    if id == ids[1] {
+                        v.branch_settled_at = Some(stamp);
+                    }
+                    v
+                })
+                .collect();
+            ForestProjection::from_snapshot(
+                Snapshot {
+                    visits,
+                    current: Some(ids[0]),
+                },
+                vec![TreeState {
+                    root: TreeId(ids[0]),
+                    last_visit: ids[0],
+                    lifecycle: Lifecycle::Open,
+                    name: None,
+                    pin: None,
+                    last_event_at: None,
+                }],
+            )
+            .unwrap()
+        };
+        let first = settled(10);
+        assert!(state.folded(&first, ids[1]));
+        state.folds.insert((ids[1], Some(10)), false);
+        assert!(!state.folded(&first, ids[1]));
+        assert!(state.folded(&settled(20), ids[1]));
+    }
+
+    #[test]
     fn folds_hide_descendants_and_filters_reveal_matching_pages_with_ancestors() {
         let (forest, ids) = fixture(&[None, Some(0), Some(1), Some(0)], 1);
         let mut state = Workbench::default();
-        state.folds.insert(ids[0], true);
+        state.folds.insert((ids[0], None), true);
         assert_eq!(workbench(&forest, &state).unwrap().rows.len(), 1);
         state.query = "page 2".into();
         assert_eq!(
