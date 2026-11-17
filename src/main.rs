@@ -27,19 +27,25 @@ NAME is a password manager's helper, a program called canopy-login-NAME next to
 Canopy or on your PATH, or the path of one. \"vault\" goes back to the vault on this
 computer.
 
-Ctrl+K    Search your forest or go to an address
-Ctrl+L    Same, starting from the current address
-Ctrl+E    Forest view
-Ctrl+T    New tree
-Ctrl+1…9  Switch to a tree
-F6        Move between the page and the tree strip
-Alt+←     Back to the parent page
-Alt+→     Forward to the last opened child
-Alt+↑/↓   Previous or next sibling
-Ctrl+R    Reload the page
-Ctrl+S    Remember the selection
-Ctrl+Shift+L  Fill the saved login for the page
-Ctrl+Q    Quit
+Ctrl+K          Search your forest or go to an address
+Ctrl+L          Same, starting from the current address
+Ctrl+E          Forest view
+Ctrl+Shift+E    Current-tree workbench
+Ctrl+T          New tree
+Ctrl+W          Settle the tree, or close the open overlay
+Ctrl+Shift+T    Reopen the most recently settled tree or branch
+Ctrl+1…9        Switch to a tree
+Ctrl+Shift+Tab  Switch to the previously shown open tree
+Ctrl+Tab        Open the next waiting page
+F6              Move between the page and the tree strip
+Alt+←           Back to the parent page
+Alt+→           Forward to the last opened child
+Alt+↑/↓         Previous or next sibling
+Ctrl+R          Reload the page
+Ctrl+D          Toggle the page bookmark
+Ctrl+S          Remember the selection
+Ctrl+Shift+L    Fill the saved login for the page
+Ctrl+Q          Quit
 
 Your profile and browsing are kept in XDG_DATA_HOME/canopy.";
 
@@ -326,6 +332,28 @@ mod tests {
             }
         );
         assert_eq!(parse(&[]).unwrap().command, urls(&[]));
+    }
+
+    #[test]
+    fn shortcut_help_descriptions_align() {
+        let columns: Vec<_> = HELP
+            .lines()
+            .filter(|line| {
+                line.starts_with("Ctrl+") || line.starts_with("Alt+") || line.starts_with("F6 ")
+            })
+            .map(|line| {
+                line.chars().position(|c| c == ' ').unwrap()
+                    + line
+                        .chars()
+                        .skip_while(|c| *c != ' ')
+                        .take_while(|c| *c == ' ')
+                        .count()
+            })
+            .collect();
+        assert!(
+            columns.iter().all(|column| *column == 16),
+            "shortcut description columns: {columns:?}"
+        );
     }
 
     #[test]

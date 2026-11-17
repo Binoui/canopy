@@ -11,6 +11,7 @@ mod common;
 use common::*;
 
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
     start(directory.path())?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
@@ -101,7 +102,6 @@ fn forest_open(ui: &Ui) -> Result<()> {
     key("ctrl+e")?;
     wait("forest overlay", || visible(ui, "#forest"))?;
     assert_eq!(chrome(ui, "canopy.state().overlay")?, "forest");
-    assert!(visible(ui, "#forest-button.on"));
     assert_eq!(
         chrome(
             ui,
@@ -116,7 +116,6 @@ fn forest_closed(ui: &Ui, surface: &str) -> Result<()> {
     wait("forest dismissed", || !visible(ui, "#forest"))?;
     assert!(chrome(ui, "canopy.state().overlay")?.is_null());
     assert_eq!(chrome(ui, "canopy.state().surface")?, surface);
-    assert!(!visible(ui, "#forest-button.on"));
     assert_eq!(
         chrome(
             ui,

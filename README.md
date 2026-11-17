@@ -19,11 +19,11 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/shots/fork.webp" width="880" alt="A wiki page about repotting is open. A link to a forum thread is followed, three links in the thread are middle-clicked and appear in the strip as dashed waiting pages, a fourth link is followed, then the pointer rests on the strip and it opens to show the whole tree and a card for the forum thread">
+  <img src="docs/assets/shots/fork.webp" width="880" alt="A repotting tree grows through a forum thread. Three links are left waiting, another is followed, then an attached list names the thread and its other branches">
 </p>
 
 <p align="center">
-  <sub>One tree growing: a link followed, three left waiting for later, another followed, then the strip opened over the page.</sub>
+  <sub>One tree growing: a link followed, three left waiting for later, another followed, then a named list opened under the parent.</sub>
 </p>
 
 <p align="center">
@@ -74,9 +74,9 @@ Good to know:
 
 ## What it is
 
-A tab bar is a flat list. It forgets which page led to which, and going back to try another link throws away where you had been. Canopy keeps that shape. Each visit records its parent, each search or typed address starts a new tree, and the tabs at the top are whole trees, not single pages.
+A tab bar is a flat list. It forgets which page led to which, and going back to try another link throws away where you had been. Canopy keeps that shape. Each visit records its parent, and the tabs at the top are whole trees. An address or search in the current page's palette grows a child. **Ctrl+T** or **Alt+Enter** in the palette starts a new tree.
 
-Under the tabs, a strip draws the tree you are in: the path to the current page, with small buds for the other branches. Rest the pointer on it and it opens over the page with every branch. Click any page to return to it.
+Under the tabs, a fixed-height strip shows the path to the current page. Same-site runs fold into counted capsules, the parent keeps its name, and counts mark other branches. Rest the pointer on an item, or focus it with the keyboard, to open its named list. Click a row to return to that page.
 
 A tree is also a place to keep things. Links you open with a middle click wait in the tree until you read them. Files you download hang as leaves on the page they came from. The text of the pages you read is saved, so a few remembered words find the page again, along with the comment that linked to it.
 
@@ -92,30 +92,30 @@ Every picture here is the real window, taken by the test suite while it browses 
     <td width="50%" align="center">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/assets/shots/card-dark.webp">
-        <img src="docs/assets/shots/card-light.webp" width="418" alt="The strip opened over a page, showing the whole tree as small icons. A card under one of them gives the page's title, site, the text around the link that led to it, and the buttons Open and New branch here">
+        <img src="docs/assets/shots/card-light.webp" width="418" alt="The strip shows a folded run, a named parent and the current page. An attached list names the parent and its other branches beneath the tab row">
       </picture>
-      <br><sub><b>The strip.</b> Every branch of the tree, one hover away. A card tells you what each page was.</sub>
+      <br><sub><b>The strip.</b> Folded runs and a named parent keep the path readable. One attached list names the other branches.</sub>
     </td>
     <td width="50%" align="center">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/assets/shots/tree-dark.webp">
-        <img src="docs/assets/shots/tree-light.webp" width="418" alt="The current tree in a larger view: nine pages with their titles, three of them dashed because they are waiting to be read">
+        <img src="docs/assets/shots/tree-light.webp" width="418" alt="The current tree on the List side of the workbench, with path highlighting, waiting pages, folding controls and a page menu">
       </picture>
-      <br><sub><b>Waiting pages.</b> Middle-click links to keep them in the tree, drawn dashed until you read them.</sub>
+      <br><sub><b>The workbench.</b> Fold, filter and act on a page or branch from the List or Tree side.</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/assets/shots/forest-dark.webp">
-        <img src="docs/assets/shots/forest-light.webp" width="418" alt="The forest view: three trees listed with their names and page counts, the first drawn in full with titled pages">
+        <img src="docs/assets/shots/forest-light.webp" width="418" alt="A part of the forest canvas, with tree names, page counts and titled pages connected by their branches">
       </picture>
       <br><sub><b>The forest.</b> Every tree on one canvas. Pan, zoom, and click a page to return to it.</sub>
     </td>
     <td width="50%" align="center">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/assets/shots/start-dark.webp">
-        <img src="docs/assets/shots/start-light.webp" width="418" alt="The new-tree page: a search field, three pinned trees drawn as small trees, twelve bookmarks, and two pages suggested from history with the reason under each">
+        <img src="docs/assets/shots/start-light.webp" width="418" alt="The new-tree page: a search field, three pinned trees drawn as small trees, twelve bookmarks, and suggestions from history with the reason under each">
       </picture>
       <br><sub><b>A new tree.</b> Pinned trees reopen where you left them, above bookmarks and suggestions from your habits.</sub>
     </td>
@@ -124,7 +124,7 @@ Every picture here is the real window, taken by the test suite while it browses 
     <td width="50%" align="center">
       <picture>
         <source media="(prefers-color-scheme: dark)" srcset="docs/assets/shots/palette-dark.webp">
-        <img src="docs/assets/shots/palette-light.webp" width="418" alt="The palette searching for akadama: four results from saved text, each with the passage that matched, and a web search below">
+        <img src="docs/assets/shots/palette-light.webp" width="418" alt="The palette searching for akadama: results from saved text, each with the passage that matched, and a web search below">
       </picture>
       <br><sub><b>Search what you read.</b> The palette finds words inside pages you visited, not only titles.</sub>
     </td>
@@ -145,10 +145,11 @@ Each heading links to its part of the [guide](docs/guide.md).
 ### [Trees instead of tabs](docs/guide.md#find-your-way-around)
 
 - One tab per tree, named after what you searched for or after its first page. Right-click to rename it.
-- The strip shows the path to the current page and opens on hover to show every branch.
-- A card on each page gives its title, site and where it was found, with **New branch here** to start from that page without loading it.
+- The strip folds same-site runs and names the parent. Hover or focus an item to list its pages and other branches.
+- **New branch here** starts from the page named in the list without loading it. Right-click a page, or press **Shift+F10** to open its page and branch actions.
+- **Ctrl+Shift+E** opens the current-tree workbench, with folding, a name filter and **Waiting only**.
 - **Ctrl+E** opens the forest, with every tree on one canvas.
-- **Ctrl+W** settles a tree: it leaves the tabs, keeps every page, and comes back when you open one of them. Pinned trees stay on the new-tree page.
+- **Ctrl+W** settles a tree. It leaves the tabs and keeps every page. **Undo** or **Ctrl+Shift+T** reopens it. Pinned trees stay on the new-tree page.
 
 ### [Read now, read later](docs/guide.md#resume-reading)
 
@@ -199,9 +200,13 @@ Each heading links to its part of the [guide](docs/guide.md).
 | **Ctrl+W** | Settle the current tree. |
 | **Ctrl+E** | The forest: every tree. |
 | **Ctrl+Shift+E** | The current tree in a larger view. |
-| **Alt+Left** | Back to the parent page. |
+| **Alt+Left**, **Alt+Right** | Back to the parent, or forward to the child shown most recently. |
+| **Alt+Up**, **Alt+Down** | Previous or next sibling. |
+| **Ctrl+Shift+Tab** | Switch to the previously shown open tree. |
+| **Ctrl+Shift+T** | Reopen the most recently settled tree or branch. |
 | **Ctrl+Tab** | Next waiting page of this tree. |
-| **F6** | Move the keyboard between the page and the strip. **Left** and **Right** walk the path. |
+| **F6** | Move the keyboard between the page and the strip. **Left** and **Right** walk the path. **Down** or **Enter** opens its list. |
+| **Shift+F10**, **Menu** | Open the focused page, tab, pinned-card or bookmark menu. |
 | **Ctrl+D** | Bookmark the page, or remove its bookmark. |
 | **Ctrl+S** | Remember the selected passage. |
 | **Ctrl+Shift+L** | Fill the saved login. |
@@ -244,7 +249,7 @@ The GUI suites drive the real window with pointer and keyboard input under Xvfb,
 
 ## How it is built
 
-Canopy is one Rust program. WebKitGTK shows the pages, one live web view per branch you keep open. The chrome (tabs, strip, palette, cards, forest) is HTML drawn by a transparent web view over the page. SQLite holds the forest, and one module is its only writer.
+Canopy is one Rust program. WebKitGTK shows the pages, one live web view per branch you keep open. The chrome (tabs, strip, palette, lists, forest) is HTML drawn by a transparent web view over the page. SQLite holds the forest, and one module is its only writer.
 
 The design notes explain the choices and what was rejected:
 

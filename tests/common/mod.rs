@@ -360,3 +360,20 @@ pub fn save_window(ui: &Ui, path: &str) -> Result<()> {
     }
     Ok(())
 }
+
+/// Keep WebKit's leaked sandbox directories out of the login session's runtime.
+pub fn private_runtime() -> Result<Option<tempfile::TempDir>> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let uid = std::fs::metadata("/proc/self")?.uid();
+    if std::env::var_os("XDG_RUNTIME_DIR")
+        .is_some_and(|path| path != std::ffi::OsString::from(format!("/run/user/{uid}")))
+    {
+        return Ok(None);
+    }
+    let directory = tempfile::Builder::new()
+        .prefix("canopy-rt-")
+        .tempdir_in("/tmp")?;
+    std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))?;
+    std::env::set_var("XDG_RUNTIME_DIR", directory.path());
+    Ok(Some(directory))
+}

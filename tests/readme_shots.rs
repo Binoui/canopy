@@ -23,6 +23,7 @@ mod readme_site;
 use common::*;
 
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let Ok(folder) = std::env::var("CANOPY_README_SHOTS") else {
         println!("SKIP set CANOPY_README_SHOTS to a folder to take the README's screenshots.");
         return Ok(());
@@ -69,6 +70,7 @@ fn main() -> Result<()> {
         )?;
         wait("card", || visible(&ui, "#strip-list"))?;
         pump(900);
+        assert_eq!(chrome(&ui, "!!document.querySelector('#strip-nodes .run') && !!document.querySelector('#strip-nodes .parent .item-label') && document.querySelectorAll('#tab-row [role=tab]').length === 3")?, true);
         shot("card")?;
         rest(&ui)?;
         wait("card gone", || !visible(&ui, "#strip-list"))?;
@@ -84,9 +86,14 @@ fn main() -> Result<()> {
         rest(&ui)?;
         key("ctrl+shift+e")?;
         wait("tree view", || visible(&ui, "#tree-sheet"))?;
-        chrome(&ui, "(setTreeSide('tree'), true)")?;
+        chrome(&ui, "(setTreeSide('list'), true)")?;
+        let row = format!("#tree-list [data-id='{thread}']");
+        hover_chrome(&ui, &row)?;
+        xdo(&["click", "3"])?;
+        wait("node menu", || visible(&ui, "#popover [data-node-action]"))?;
         pump(400);
         shot("tree")?;
+        key("Escape")?;
         key("Escape")?;
         key("ctrl+e")?;
         wait("forest", || visible(&ui, "#forest"))?;
@@ -206,12 +213,15 @@ fn build(ui: &Ui, film: &Film) -> Result<()> {
         "http://koen-nursery.example/soil/akadama-14l",
         Some(akadama),
     )?;
-    back_to(ui, root)?;
-    go(ui, "http://bonsaiwiki.example/wiki/Juniper", Some(root))?;
-    back_to(ui, root)?;
+    back_to(ui, akadama)?;
+    go(ui, "http://bonsaiwiki.example/wiki/Juniper", Some(akadama))?;
+    let juniper = current(ui)?;
+    go(
+        ui,
+        "http://bonsaiwiki.example/wiki/Root_pruning",
+        Some(juniper),
+    )?;
     name_tree(ui, root, "Repotting the juniper", true)?;
-    // Filmed: a link is followed, three more are left waiting, another is followed, and the
-    // strip shows what the tree has become.
     rest(ui)?;
     film.hold(ui, 900)?;
     film.click(ui, "thread", "1")?;
@@ -238,7 +248,14 @@ fn build(ui: &Ui, film: &Film) -> Result<()> {
     let (x, y) = page_point(ui, (left + width / 2.) as i32, 68)?;
     film.glide(ui, x, y)?;
     film.hold(ui, 1300)?;
-    let (x, y) = chrome_point(ui, &node(thread))?;
+    let item = chrome(
+        ui,
+        &format!("S.strip.nodes.find(n=>n.ids.includes('{thread}')).id"),
+    )?;
+    let (x, y) = chrome_point(
+        ui,
+        &format!("#strip-nodes [data-id='{}']", item.as_str().unwrap()),
+    )?;
     film.glide(ui, x, y)?;
     film.hold(ui, 2600)?;
     rest(ui)?;

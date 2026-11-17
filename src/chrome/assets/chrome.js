@@ -47,7 +47,7 @@ const S = {
   save: null,
   locked: null,
   strip: null,
-  rev: 0,
+  revisions: new Map(),
   systemDark: null,
   surface: 'reading',
   overlay: null,
@@ -63,9 +63,37 @@ const S = {
   errors: [],
   forestLabels: true,
   camera: { x: 0, y: 0, zoom: 1 },
-  forestDirty: true,
   reported: '',
 };
+
+let inputOrigin = 'keyboard';
+document.addEventListener('mousedown', () => {
+  inputOrigin = 'pointer';
+  if (S.list) S.list.origin = 'pointer';
+}, true);
+document.addEventListener('keydown', () => {
+  inputOrigin = 'keyboard';
+  if (S.list) S.list.origin = 'keyboard';
+}, true);
+const focusReturns = new Map();
+function rememberFocus(kind, trigger = document.hasFocus() ? document.activeElement : document.body) {
+  focusReturns.set(kind, { trigger, id: trigger?.id, data: trigger?.dataset.id, start: trigger?.dataset.start });
+}
+function returnFocus(kind) {
+  const saved = focusReturns.get(kind);
+  focusReturns.delete(kind);
+  const trigger = saved?.trigger?.isConnected ? saved.trigger
+    : saved?.id ? $(saved.id)
+    : saved?.data ? [...document.querySelectorAll('[data-id]')].find((el) => el.dataset.id === saved.data && el.dataset.start === saved.start && el.getClientRects().length) : null;
+  if (canFocus(trigger)) {
+    post({ t: 'focus', target: 'chrome' });
+    trigger.focus();
+  } else if (pageShows()) post({ t: 'focus', target: 'page' });
+  else if (S.surface === 'start') focusStart();
+}
+// WebKitGTK reports reverse Tab as Unidentified on X11.
+const tabKey = (event) => ['Tab', 'ISO_Left_Tab'].includes(event.key) || event.code === 'Tab' || event.keyCode === 9;
+const controlsIn = (root) => [...root.querySelectorAll('button:not(:disabled), input, [tabindex="0"]')].filter((el) => el.tabIndex >= 0 && el.getClientRects().length);
 
 const visit = (id) => S.frame?.visits[id];
 const current = () => S.frame?.current ?? null;
@@ -73,6 +101,10 @@ const current = () => S.frame?.current ?? null;
 const filesOf = (id) => S.frame?.files?.[id] ?? [];
 
 // ---------- favicons ----------
+
+function iconSite(url) {
+  try { return new URL(url).hostname; } catch { return url; }
+}
 
 function hostOf(url) {
   try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return '?'; }
@@ -86,10 +118,10 @@ function fav(url, opened, size) {
   for (let i = 0; i < host.length; i++) hash = Math.imul(hash ^ (host.charCodeAt(i) & 255), 16777619) >>> 0;
   const color = MONOGRAM[hash % MONOGRAM.length];
   const letter = esc((host[0] || '?').toUpperCase());
-  const src = `icon?u=${encodeURIComponent(url)}&o=${opened ? 1 : 0}&r=${S.rev}`;
+  const src = `icon?u=${encodeURIComponent(url)}&o=${opened ? 1 : 0}&r=${S.revisions.get(iconSite(url)) ?? 0}`;
   return `<span class="fav" style="width:${size}px;height:${size}px;background:${color};border-radius:${Math.min(3, size / 4)}px">`
-    + `<b style="font-size:${Math.round(size * 0.62)}px">${letter}</b>`
-    + `<img src="${src}" alt="" onload="this.parentNode.style.background='none';this.previousSibling.style.visibility='hidden'" onerror="this.remove()"></span>`;
+    + `<b aria-hidden="true" style="font-size:${Math.round(size * 0.62)}px">${letter}</b>`
+    + `<img src="${src}" alt="" onload="this.style.visibility='';this.parentNode.style.background='none';this.previousSibling.style.visibility='hidden'" onerror="this.style.visibility='hidden'"></span>`;
 }
 const waitState = (v) => v.queued ? (v.loaded ? 'loaded' : 'unloaded') : null;
 const markClass = (v) => v.dismissed ? ' dismissed' : waitState(v) === 'loaded' ? ' pending loaded' : waitState(v) ? ' pending' : '';
@@ -114,17 +146,21 @@ function enterNode(key) {
   if (S.layer !== 'none' || S.overlay) return;
   S.hovered = key;
   cancel('hideList');
-  schedule('showList', 250, () => { if (S.hovered === key) showList(key); });
+  schedule('showList', 250, () => { if (S.hovered === key) showList(key, 'pointer'); });
+}
+function listHasKeyboardFocus() {
+  return S.list?.origin === 'keyboard' && ($('strip-list').contains(document.activeElement)
+    || strip.elements.get(S.list.key) === document.activeElement);
 }
 function leaveNode(event) {
   S.hovered = null;
   cancel('showList');
   if (event.relatedTarget?.closest('#strip-list')) return;
-  if (S.list) schedule('hideList', 220, hideList);
+  if (S.list) schedule('hideList', 220, () => { if (!listHasKeyboardFocus()) hideList(); });
 }
 function setLayer(layer) {
   S.layer = layer;
-  if (layer !== 'none') hideList();
+  if (layer !== 'none' && !S.popover?.anchor.closest('#strip-list')) hideList();
   syncLayer();
 }
 
@@ -164,51 +200,70 @@ function applyTheme() {
 
 // ---------- tab row ----------
 
+function patchChildren(container, html) {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const kept = new Map([...container.children].map((el) => [el.dataset.key || el.dataset.id, el]));
+  let cursor = container.firstElementChild;
+  for (const fresh of [...template.content.children]) {
+    const el = kept.get(fresh.dataset.key || fresh.dataset.id) || fresh;
+    kept.delete(fresh.dataset.key || fresh.dataset.id);
+    if (el !== fresh) {
+      for (const attr of fresh.attributes) if (el.getAttribute(attr.name) !== attr.value) el.setAttribute(attr.name, attr.value);
+      if (el.innerHTML !== fresh.innerHTML) el.innerHTML = fresh.innerHTML;
+    }
+    if (el !== cursor) container.insertBefore(el, cursor);
+    cursor = el.nextElementSibling;
+  }
+  for (const el of kept.values()) el.remove();
+}
+
 function renderTabs() {
   const row = $('tab-row');
   const trees = S.frame?.tabs ?? [];
-  row.innerHTML = trees.map((tree, index) => {
+  const kept = new Map([...row.children].map((tab) => [tab.dataset.id, tab]));
+  const nodes = trees.map((tree, index) => {
     const root = visit(tree.id);
     const pages = `${tree.pages} page${tree.pages === 1 ? '' : 's'}`;
-    const pending = tree.pending ? `, ${tree.pending} pending` : '';
+    const pending = tree.pending ? `, ${tree.pending} waiting` : '';
+    const pinned = tree.pinned ? ', pinned' : '';
     const key = index < 9 ? ` · Ctrl+${index + 1}` : '';
-    return `<button class="tab${tree.active ? ' on' : ''}" data-id="${tree.id}" title="${esc(`${tree.title} · ${pages}${pending}${key}`)}" aria-label="${esc(`${tree.title}, ${pages}${pending}`)}">`
+    const html = `<button class="tab" role="tab" tabindex="${tree.active ? 0 : -1}" aria-selected="${tree.active}" data-id="${tree.id}" title="${esc(`${tree.title} · ${pages}${pending}${pinned}${key}`)}" aria-label="${esc(tree.name)}">`
       + (root ? `<span class="mk">${visitFav(root, 14)}${tree.live ? '<i class="live-dot"></i>' : ''}</span>` : '')
       + `<span class="tab-title">${esc(tree.title)}</span>`
       + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Pinned">${icon('pinned')}</span>` : '')
       + (tree.pending ? `<span class="count">${tree.pending}</span>` : '')
       + `<span class="tab-settle" data-settle="${tree.id}" title="Settle${tree.active ? ' · Ctrl+W' : ''}" aria-hidden="true">${icon('close')}</span>`
       + '</button>';
-  }).join('');
+    const template = document.createElement('template');
+    template.innerHTML = html;
+    const fresh = template.content.firstChild;
+    const tab = kept.get(tree.id) ?? fresh;
+    if (tab !== fresh) {
+      tab.setAttribute('aria-selected', String(tree.active));
+      setTooltip(tab, fresh.title);
+      tab.setAttribute('aria-label', fresh.getAttribute('aria-label'));
+      const settle = tab.querySelector('[data-settle]');
+      const freshSettle = fresh.querySelector('[data-settle]');
+      settle.title = freshSettle.title;
+      freshSettle.replaceWith(settle);
+      tab.replaceChildren(...fresh.childNodes);
+    }
+    return tab;
+  });
+  [...row.children].filter((tab) => !nodes.includes(tab)).forEach((tab) => tab.remove());
+  nodes.forEach((tab, index) => { if (row.children[index] !== tab) row.insertBefore(tab, row.children[index] ?? null); });
+  if (S.frame?.tabFit) window.canopy.tabsFit(S.frame.tabFit);
   fitTabs();
+  const focused = row.contains(document.activeElement) && !document.activeElement.hidden ? document.activeElement : row.querySelector('[aria-selected="true"]') ?? row.querySelector('.tab:not([hidden])');
+  for (const tab of row.children) tab.tabIndex = tab === focused ? 0 : -1;
 }
 
-/// Hides the trees that do not fit behind the overflow arrow, keeping creation order and
-/// the active tree visible.
 function fitTabs() {
-  const row = $('tab-row');
-  const tabs = [...row.children];
-  tabs.forEach((tab) => { tab.hidden = false; });
-  const overflow = $('tab-overflow');
-  overflow.hidden = true;
   const header = $('tabs');
-  const fixed = [...header.children].filter((el) => el !== row && !el.classList.contains('spacer'))
-    .reduce((sum, el) => sum + (el.hidden ? 0 : el.offsetWidth + 4), 0);
-  const room = header.clientWidth - 14 - fixed - 36;
-  const widths = tabs.map((tab) => tab.offsetWidth + 2);
-  if (widths.reduce((a, b) => a + b, 0) <= room + 36) return;
-  const shown = [];
-  let used = 0;
-  tabs.forEach((tab, i) => {
-    if (used + widths[i] <= room) { shown.push(i); used += widths[i]; }
-  });
-  const active = tabs.findIndex((tab) => tab.classList.contains('on'));
-  if (active >= 0 && !shown.includes(active)) {
-    while (shown.length && used + widths[active] > room) used -= widths[shown.pop()];
-    shown.push(active);
-  }
-  tabs.forEach((tab, i) => { tab.hidden = !shown.includes(i); });
-  overflow.hidden = false;
+  const fixed = [...header.children].filter((el) => !['tab-row', 'tab-overflow'].includes(el.id) && !el.classList.contains('spacer'))
+    .reduce((sum, el) => sum + (el.hidden ? 0 : el.getBoundingClientRect().width + parseFloat(getComputedStyle(el).marginLeft || 0) + parseFloat(getComputedStyle(el).marginRight || 0) + 2), 0);
+  post({ t: 'tab-room', room: Math.max(0, header.clientWidth - 14 - fixed - 4) });
 }
 
 // ---------- strip ----------
@@ -218,6 +273,7 @@ const strip = {
   from: null,
   target: null,
   anim: null,
+  awakeUntil: 0,
   elements: new Map(),
   badges: new Map(),
   leaves: new Map(),
@@ -225,12 +281,32 @@ const strip = {
 
 const targetLayout = () => S.strip ?? null;
 
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+// WebKit can leave CSS media styles stale after a desktop preference change.
+const applyMotionPreference = () => document.documentElement.classList.toggle('reduced-motion', reducedMotion.matches);
+reducedMotion.addEventListener('change', applyMotionPreference);
+applyMotionPreference();
+
 function animateStrip(duration) {
+  if (reducedMotion.matches) duration = 0;
   const layout = targetLayout();
   if (!layout) return;
+  const changed = buildStrip(layout);
+  const geometry = JSON.stringify([layout.nodes.map(({id, x, y, w, s}) => [id, x, y, w, s]), layout.edges, layout.pan]);
+  // Keep WebKit's rendering clock warm without repainting unchanged geometry.
+  // Letting it sleep delays the next visible update.
+  strip.awakeUntil = performance.now() + duration;
+  if (strip.geometry === geometry) {
+    strip.target = layout;
+    if (changed && !strip.anim) drawStrip();
+    if (duration && !strip.raf) strip.raf = requestAnimationFrame(tick);
+    return;
+  }
   strip.from = strip.shown;
   strip.target = layout;
-  buildStrip(layout);
+  strip.geometry = geometry;
+  cancelAnimationFrame(strip.raf);
+  strip.raf = null;
   if (!duration) {
     strip.anim = null;
     step(performance.now(), 1);
@@ -240,20 +316,21 @@ function animateStrip(duration) {
   }
   strip.anim = { start: performance.now(), duration };
   syncLayer();
-  requestAnimationFrame(tick);
+  strip.raf = requestAnimationFrame(tick);
 }
 
 function tick(now) {
-  if (!strip.anim) return;
-  const t = (now - strip.anim.start) / strip.anim.duration;
-  step(now, t);
-  if (t < 1) {
-    requestAnimationFrame(tick);
-  } else {
-    strip.anim = null;
-    pruneStrip();
-    syncLayer();
+  strip.raf = null;
+  if (strip.anim) {
+    const t = reducedMotion.matches ? 1 : (now - strip.anim.start) / strip.anim.duration;
+    step(now, t);
+    if (t >= 1) {
+      strip.anim = null;
+      pruneStrip();
+      syncLayer();
+    }
   }
+  if (strip.anim || now < strip.awakeUntil) strip.raf = requestAnimationFrame(tick);
 }
 
 function pruneStrip() {
@@ -271,6 +348,10 @@ function pruneStrip() {
 
 /// One element per node, kept across frames so hovers and transitions survive a re-layout.
 function buildStrip(layout) {
+  let changed = false;
+  $('strip').style.height = `${layout.height}px`;
+  $('strip-clip').style.height = `${layout.height}px`;
+  $('strip-bg').style.height = `${layout.height}px`;
   for (const [key, value] of Object.entries(layout.metrics ?? {})) {
     const name = key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
     document.documentElement.style.setProperty(`--${key.endsWith('Gap') ? name : `item-${name}`}`, `${value}px`);
@@ -281,6 +362,9 @@ function buildStrip(layout) {
     const v = visit(n.page);
     if (!v) continue;
     let el = strip.elements.get(n.id);
+    const paint = JSON.stringify([n, v, n.ids.map(filesOf), S.list?.key === n.id]);
+    if (el?.dataset.paint === paint) continue;
+    changed = true;
     if (!el) {
       el = document.createElement('button');
       el.className = 'node';
@@ -297,10 +381,17 @@ function buildStrip(layout) {
       nodes.appendChild(el);
       strip.elements.set(n.id, el);
     }
+    el.dataset.paint = paint;
+    el.style.width = `${n.w}px`;
+    el.style.height = `${n.s}px`;
+    el.style.transformOrigin = '0 0';
     if (!['run', 'earlier', 'after'].includes(n.kind)) el.dataset.page = n.page;
     else delete el.dataset.page;
     el.className = `node ${n.kind}` + (n.named ? ' named' : '') + markClass(v);
-    el.setAttribute('aria-label', `${n.title}, ${n.branches.pages} branch pages, ${n.branches.waiting} waiting`);
+    el.setAttribute('aria-label', n.name);
+    el.setAttribute('aria-current', n.kind === 'pill' ? 'page' : 'false');
+    el.setAttribute('aria-controls', 'strip-list');
+    el.setAttribute('aria-expanded', String(S.list?.key === n.id));
     el.removeAttribute('title');
     const html = n.kind === 'after'
       ? (n.read ? `<span class="read-count">${n.read}</span>` : '') + (n.waiting ? `<span class="count wait-count"><i></i>${n.waiting}</span>` : '')
@@ -350,7 +441,9 @@ function buildStrip(layout) {
         leaves.dataset.html = html;
       }
       const label = files.length === 1 ? `Downloaded here: ${files[0].name}` : `${files.length} files downloaded here`;
-      leaves.title = label;
+      setTooltip(leaves, label);
+      leaves.setAttribute('aria-haspopup', 'menu');
+      leaves.setAttribute('aria-expanded', String(S.popover?.anchor === leaves));
       leaves.setAttribute('aria-label', `${label}, from ${v.label}`);
     } else if (leaves) {
       leaves.remove();
@@ -358,8 +451,11 @@ function buildStrip(layout) {
     }
   }
   const dot = $('memory-dot');
+  const pill = strip.elements.get(layout.nodes.find((node) => node.kind === 'pill')?.id);
+  if (pill && pill.nextElementSibling !== dot) pill.after(dot);
   dot.classList.toggle('on', !!S.frame?.captureEnabled);
-  dot.title = S.frame?.captureEnabled ? 'Memory · Remembering pages' : 'Memory · Not remembering pages';
+  setTooltip(dot, S.frame?.captureEnabled ? 'Memory · Remembering pages' : 'Memory · Not remembering pages');
+  return changed;
 }
 
 function step(now, t) {
@@ -387,31 +483,25 @@ function step(now, t) {
 
 function drawStrip() {
   const shown = strip.shown;
-  $('strip').style.height = `${shown.height}px`;
-  $('strip-clip').style.height = `${shown.height}px`;
-  const bg = $('strip-bg');
-  bg.style.height = `${shown.height}px`;
   $('strip-canvas').style.transform = `translateX(${shown.pan}px)`;
   for (const [id, r] of shown.nodes) {
     const el = strip.elements.get(id);
     if (!el) continue;
-    el.style.left = `${r.x - r.w / 2}px`;
-    el.style.top = `${r.y - r.s / 2}px`;
-    el.style.width = `${r.w}px`;
-    el.style.height = `${r.s}px`;
+    const target = strip.target.nodes.find((n) => n.id === id);
+    const width = target?.w ?? r.w;
+    const height = target?.s ?? r.s;
+    el.style.transform = `translate(${r.x - r.w / 2}px,${r.y - r.s / 2}px) scale(${width ? r.w / width : 0},${height ? r.s / height : 0})`;
     el.style.opacity = r.o;
     el.style.visibility = r.w < 1 ? 'hidden' : '';
     const badge = strip.badges.get(id);
     if (badge) {
-      badge.style.left = `${r.x + r.w / 2 + 7 - badge.offsetWidth}px`;
-      badge.style.top = `${r.y + r.s / 2 + 6 - 14}px`;
+      badge.style.transform = `translate(${r.x + r.w / 2 + 7}px,${r.y + r.s / 2 - 8}px) translateX(-100%)`;
       badge.style.opacity = r.o;
     }
     const leaves = strip.leaves.get(id);
     if (leaves) {
       // Leaves stand on the node's top edge, clear of its rounded corner.
-      leaves.style.left = `${r.x - r.w / 2 + (leaves.classList.contains('on-pill') ? 5 : 0)}px`;
-      leaves.style.top = `${r.y - r.s / 2 + 1 - leaves.offsetHeight}px`;
+      leaves.style.transform = `translate(${r.x - r.w / 2 + (leaves.classList.contains('on-pill') ? 5 : 0)}px,${r.y - r.s / 2 + 1}px) translateY(-100%)`;
       leaves.style.opacity = r.o;
       leaves.style.visibility = r.w < 1 ? 'hidden' : '';
     }
@@ -422,18 +512,24 @@ function drawStrip() {
   const glow = $('glow');
   dot.hidden = glow.hidden = !r;
   if (r) {
-    dot.style.left = `${r.x + r.w / 2 - ACCESSORY}px`;
-    dot.style.top = `${r.y - 9}px`;
+    dot.style.transform = `translate(${r.x + r.w / 2 - ACCESSORY}px,${r.y - 9}px)`;
     const reach = 40;
     const x = r.x - r.w / 2 + 16;
-    Object.assign(glow.style, { left: `${x - reach}px`, top: `${TRUNK_Y - reach}px`, width: `${2 * reach}px`, height: `${2 * reach}px` });
+    glow.style.transform = `translate(${x - reach}px,${TRUNK_Y - reach}px)`;
   }
   const opacity = new Map([...shown.nodes].map(([id, n]) => [id, n.o]));
-  $('strip-edges').innerHTML = [...shown.edges.values()].map((e) => {
+  const svg = $('strip-edges');
+  const kept = new Set();
+  for (const [key, e] of shown.edges) {
+    kept.add(key);
+    let path = [...svg.children].find((p) => p.dataset.key === key);
+    if (!path) { path = document.createElementNS('http://www.w3.org/2000/svg', 'path'); path.dataset.key = key; svg.appendChild(path); }
     const [p0, p1, p2, p3] = e.c;
-    const o = e.kind === 'path' ? 1 : (opacity.get(e.to) ?? 1);
-    return `<path class="${e.kind}" style="opacity:${o}" d="M${p0} C${p1} ${p2} ${p3}"/>`;
-  }).join('');
+    path.setAttribute('class', e.kind);
+    path.style.opacity = e.kind === 'path' ? 1 : (opacity.get(e.to) ?? 1);
+    path.setAttribute('d', `M${p0} C${p1} ${p2} ${p3}`);
+  }
+  for (const path of [...svg.children]) if (!kept.has(path.dataset.key)) path.remove();
   positionList();
 
 }
@@ -446,6 +542,12 @@ function activate(id) {
 
 /// Left and Right walk the trunk while a node has the keyboard.
 function walkTrunk(event) {
+  if (event.key === 'ArrowDown' || event.key === 'Enter') {
+    event.preventDefault();
+    showList(event.currentTarget.dataset.id);
+    $('strip-list').querySelector('button')?.focus();
+    return;
+  }
   if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
   const trunk = strip.target?.trunk ?? [];
   const index = trunk.indexOf(event.currentTarget.dataset.id);
@@ -460,14 +562,15 @@ function walkTrunk(event) {
 let previewSeq = 0;
 const listItem = () => strip.target?.nodes.find((n) => n.id === S.list?.key);
 
-function showList(key) {
+function showList(key, origin = inputOrigin) {
   if (S.layer !== 'none' || S.overlay || S.surface !== 'reading') return;
   cancel('hideList');
   cancel('showList');
   const item = strip.target?.nodes.find((n) => n.id === key);
   if (!item) return;
+  for (const [id, el] of strip.elements) el.setAttribute('aria-expanded', String(id === key));
   const previous = S.list;
-  S.list = { key, preview: previous?.key === key ? previous.preview : null };
+  S.list = { key, origin: previous?.key === key ? previous.origin : origin, preview: previous?.key === key ? previous.preview : null };
   renderList();
   requestListPreview();
 }
@@ -483,6 +586,7 @@ function hideList() {
   cancel('showList');
   cancel('hideList');
   S.list = null;
+  for (const el of strip.elements.values()) el.setAttribute('aria-expanded', 'false');
   $('strip-list').hidden = true;
   syncLayer();
 }
@@ -510,15 +614,15 @@ function renderList() {
   const source = page && item.page === current() && v.source;
   const preview = S.list.preview;
   const parts = [
-    ['head', `<div class="bl-head"${page ? ` tabindex="0" data-page="${item.page}"` : ''}>${item.kind === 'earlier' ? '<span class="bl-glyph">···</span>' : markedFav(v, 16)}<div><b>${esc(item.title)}</b><span>${esc(item.meta)}${v.live ? ' · Open in memory' : ''}</span></div></div>`],
+    ['head', `<div class="bl-head"${page ? ` role="group" aria-label="${esc(item.name)}" tabindex="0" data-page="${item.page}"` : ''}>${item.kind === 'earlier' ? '<span class="bl-glyph">···</span>' : markedFav(v, 16)}<div><b>${esc(item.title)}</b><span>${esc(item.meta)}${v.live ? ' · Open in memory' : ''}</span></div></div>`],
     ['snippet', page && preview?.snippet ? `<div class="bl-snippet">${esc(preview.snippet)}</div>` : ''],
     ['source', source ? `<div class="card-source"><div class="card-meta">${esc(source.text)}</div></div>` : ''],
     ['heading', item.heading ? `<div class="menu-heading">${esc(item.heading)}</div>` : ''],
     ...item.rows.map((row) => {
       const v = visit(row.id);
       const files = filesOf(row.id);
-      const leaf = files.length ? `<button class="leaves" data-files="${row.id}" aria-label="${esc(`Files from ${v.label}`)}"><i class="leaf${files.every((f) => f.missing) ? ' missing' : ''}"></i></button>` : '';
-      return [`row-${row.id}`, v ? `<div class="list-entry"><button class="menu-row${markClass(v)}" data-id="${row.id}" title="${esc(v.label)}" aria-label="${esc(v.label)}">${markedFav(v, 16)}<span class="grow">${esc(row.label)}</span><span class="menu-detail">${esc(row.detail)}</span></button>${leaf}</div>` : ''];
+      const leaf = files.length ? `<button class="leaves" aria-haspopup="menu" aria-expanded="false" data-files="${row.id}" aria-label="${esc(`Files from ${v.label}`)}"><i class="leaf${files.every((f) => f.missing) ? ' missing' : ''}"></i></button>` : '';
+      return [`row-${row.id}`, v ? `<div class="list-entry"><button class="menu-row${markClass(v)}" data-id="${row.id}" title="${esc(v.label)}" aria-current="${row.id === current() ? 'page' : 'false'}" aria-label="${esc(row.name)}">${markedFav(v, 16)}<span class="grow">${esc(row.label)}</span><span class="menu-detail">${esc(row.detail)}</span></button>${leaf}</div>` : ''];
     }),
     ['more', item.more ? `<button class="menu-row more" data-act="more">${icon('expand')}<span class="grow">${esc(item.more)}</span><kbd>Ctrl Shift E</kbd></button>` : ''],
     ...item.actions.map((action) => [`action-${action.kind}`, `<button class="action bl-action" data-act="${action.kind}">${esc(action.label)}</button>`]),
@@ -546,6 +650,7 @@ function renderList() {
         row.className = newRow.className;
         row.title = newRow.title;
         row.setAttribute('aria-label', newRow.getAttribute('aria-label'));
+        row.setAttribute('aria-current', newRow.getAttribute('aria-current'));
         const leaves = el.querySelector('.leaves');
         const newLeaves = fresh.querySelector('.leaves');
         if (leaves && newLeaves) leaves.innerHTML = newLeaves.innerHTML;
@@ -556,8 +661,8 @@ function renderList() {
       el.dataset.html = html;
     }
     if (key === 'head') {
-      if (page) { el.dataset.page = item.page; el.tabIndex = 0; }
-      else { delete el.dataset.page; el.removeAttribute('tabindex'); }
+      if (page) { el.dataset.page = item.page; el.tabIndex = 0; el.setAttribute('role', 'group'); el.setAttribute('aria-label', item.name); }
+      else { delete el.dataset.page; el.removeAttribute('tabindex'); el.removeAttribute('role'); el.removeAttribute('aria-label'); }
     }
     if (el !== cursor) list.insertBefore(el, cursor);
     cursor = el.nextElementSibling;
@@ -614,10 +719,13 @@ function renderWaitingPin() {
   const ids = S.frame?.waiting.ids ?? [];
   const next = visit(ids[0]);
   $('waiting-pin').innerHTML = next ? markedFav(next, 16) + `<span class="count">${ids.length}</span>` : '';
-  $('waiting-pin').title = next ? `Next waiting page: ${next.label} · Ctrl+Tab` : '';
+  $('waiting-pin').setAttribute('aria-label', S.frame?.waiting.name ?? 'No waiting pages');
+  setTooltip($('waiting-pin'), next ? `Next waiting page: ${next.label} · Ctrl+Tab` : '');
 }
 
 function openNextWaiting(id = S.frame?.waiting.ids[0]) {
+  cancel('waitingOpen');
+  cancel('waitingClose');
   if (!id) { canopy.toast('info', 'No waiting pages in this tree'); return; }
   closeReader();
   closePalette(false);
@@ -638,7 +746,7 @@ function leaveWaitingPin() {
   cancel('waitingOpen');
   const popover = S.popover;
   if (popover?.kind === 'waiting') schedule('waitingClose', 220, () => {
-    if (S.popover === popover) closePopover(false);
+    if (S.popover === popover) closePopover();
   });
 }
 
@@ -650,14 +758,25 @@ $('popover').addEventListener('mouseleave', leaveWaitingPin);
 
 // ---------- popovers: Memory menu, trees that do not fit, a tree's name ----------
 
+function setTooltip(anchor, title) {
+  if (S.popover?.anchor === anchor) {
+    S.popover.title = title;
+    anchor.removeAttribute('title');
+  } else if (title == null) anchor.removeAttribute('title');
+  else anchor.title = title;
+}
+
 /// Opens a menu under `anchor`, or under `below` when the anchor sits on top of something
 /// the menu should not cover.
 function openPopover(kind, anchor, data, below = anchor) {
   const popover = $('popover');
   const a = anchor.getBoundingClientRect();
   const b = below.getBoundingClientRect();
-  const previous = kind === 'node' && S.popover?.kind === 'waiting' ? S.popover : null;
-  S.popover = { kind, anchor, data, previous, listKey: kind === 'node' ? S.list?.key : null };
+  const parent = anchor.closest('#popover') ? S.popover : null;
+  rememberFocus('popover', anchor);
+  S.popover = { kind, anchor, data, parent, listKey: kind === 'node' ? S.list?.key : null };
+  anchor.setAttribute('aria-expanded', 'true');
+  setTooltip(anchor, anchor.getAttribute('title'));
   renderPopover();
   popover.hidden = false;
   const width = popover.offsetWidth;
@@ -668,49 +787,34 @@ function openPopover(kind, anchor, data, below = anchor) {
   const above = belowRoom < 200 && a.top > belowRoom;
   popover.style.maxHeight = `${Math.max(40, above ? a.top - 20 : belowRoom - 14)}px`;
   popover.style.top = `${above ? Math.max(8, a.top - popover.offsetHeight - 6) : b.bottom + 6}px`;
-  if (kind === 'node') {
-    post({ t: 'focus', target: 'chrome' });
-    popover.querySelector('button')?.focus({ preventScroll: true });
-  }
+  post({ t: 'focus', target: 'chrome' });
+  controlsIn(popover)[0]?.focus();
   if (S.layer !== 'palette') setLayer('menu');
   syncLayer();
 }
 
-function closePopover(returnFocus = true) {
+function closePopover(restoreFocus = true) {
   if (!S.popover) return;
-  const { kind, anchor, previous, data, listKey } = S.popover;
+  const { anchor, title, parent, listKey } = S.popover;
+  anchor.setAttribute('aria-expanded', 'false');
   S.popover = null;
-  if (previous && returnFocus) {
-    openPopover(previous.kind, previous.anchor, previous.data);
-    $('popover').querySelector(`[data-id="${data}"]`)?.focus();
-    return;
-  }
+  setTooltip(anchor, title);
   $('popover').hidden = true;
-  if (listKey && returnFocus) {
+  if (listKey && restoreFocus) {
     setLayer(restingLayer());
     showList(listKey);
   }
-  if (((kind === 'node' && returnFocus) || S.overlay === 'tree') && canFocus(anchor)) {
+  if (!restoreFocus && S.overlay === 'tree' && canFocus(anchor)) {
     anchor.focus({ preventScroll: true });
-    returnFocus = false;
   }
   if (S.layer === 'menu') setLayer(restingLayer());
-  if (returnFocus && pageShows() && !S.palette && !S.reader) post({ t: 'focus', target: 'page' });
+  if (restoreFocus && parent) {
+    openPopover(parent.kind, parent.anchor, parent.data);
+    const row = [...$('popover').querySelectorAll('[data-id]')].find((el) => el.dataset.id === anchor.dataset.id && el.dataset.start === anchor.dataset.start);
+    row?.focus();
+  } else if (restoreFocus) returnFocus('popover');
   syncLayer();
 }
-
-$('popover').addEventListener('keydown', (event) => {
-  if (S.popover?.kind !== 'node') return;
-  const rows = [...$('popover').querySelectorAll('[data-node-action]')];
-  let index = rows.indexOf(document.activeElement);
-  if (event.key === 'ArrowDown') index = (index + 1) % rows.length;
-  else if (event.key === 'ArrowUp') index = (index + rows.length - 1) % rows.length;
-  else if (event.key === 'Home') index = 0;
-  else if (event.key === 'End') index = rows.length - 1;
-  else return;
-  event.preventDefault();
-  rows[index]?.focus();
-});
 
 // ---------- saved logins for the page's sign-in fields ----------
 
@@ -723,17 +827,17 @@ function renderLoginChip() {
   const chip = $('login-chip');
   const names = loginNames();
   chip.hidden = !S.save && !names.length && !S.locked;
-  chip.classList.toggle('on', !!S.save);
+  chip.dataset.offer = String(!!S.save);
   if (S.save) {
     chip.innerHTML = `${icon('key')}<span>${S.save.update ? 'Update password?' : 'Save login?'}</span>`;
-    chip.title = `${S.save.update ? 'Update the saved password' : 'Save the login'} for ${loginLabel(S.save.username)} on ${S.save.site}`;
+    setTooltip(chip, `${S.save.update ? 'Update the saved password' : 'Save the login'} for ${loginLabel(S.save.username)} on ${S.save.site}`);
   } else if (S.locked && !names.length) {
     chip.innerHTML = `${icon('key')}<span>${esc(`Unlock ${S.locked}`)}</span>`;
-    chip.title = `Unlock ${S.locked} to fill a saved login · Ctrl+Shift+L`;
+    setTooltip(chip, `Unlock ${S.locked} to fill a saved login · Ctrl+Shift+L`);
   } else if (names.length) {
     const one = names.length === 1;
     chip.innerHTML = `${icon('key')}<span>${esc(one ? loginLabel(names[0]) : `${names.length} logins`)}</span>`;
-    chip.title = `${one ? `Fill the saved login for ${loginLabel(names[0])}` : 'Choose a saved login to fill'} · Ctrl+Shift+L`;
+    setTooltip(chip, `${one ? `Fill the saved login for ${loginLabel(names[0])}` : 'Choose a saved login to fill'} · Ctrl+Shift+L`);
   }
   if (S.popover?.kind === 'save-login' && !S.save) closePopover(false);
   if (S.popover?.kind === 'logins') {
@@ -766,7 +870,7 @@ function pickLogin(index) {
 }
 
 function visitRow(v) {
-  const detail = v.queued ? 'pending' : v.site.split(' · ').slice(1).join(' · ');
+  const detail = v.queued ? 'waiting' : v.site.split(' · ').slice(1).join(' · ');
   return `<button class="menu-row" data-id="${v.id}">${visitFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(detail)}</span></button>`;
 }
 
@@ -780,19 +884,21 @@ function refreshPopover() {
 function renderPopover() {
   const popover = $('popover');
   const { kind, data } = S.popover;
+  popover.setAttribute('role', ['node', 'tab', 'unpin', 'bookmark'].includes(kind) ? 'menu' : 'dialog');
+  popover.setAttribute('aria-label', kind === 'node' ? 'Page actions' : kind === 'tab' ? 'Tree actions' : kind.replaceAll('-', ' '));
   popover.classList.toggle('waiting', kind === 'waiting');
   if (kind !== 'node') delete popover.dataset.nodeHtml;
   if (kind === 'node') {
     const v = visit(data);
     if (!v) { closePopover(false); return; }
-    const html = `<div class="node-menu-title">${visitFav(v, 16)}<span>${esc(v.shortName)}</span></div>` + v.nodeMenu.map((r) => `<button class="menu-row" data-node-action="${r.kind}">${esc(r.label)}</button>`).join('');
+    const html = `<div class="node-menu-title">${visitFav(v, 16)}<span>${esc(v.shortName)}</span></div>` + v.nodeMenu.map((r) => `<button class="menu-row" role="menuitem" data-node-action="${r.kind}">${esc(r.label)}</button>`).join('');
     if (popover.dataset.nodeHtml !== html || popover.dataset.nodeId !== data) {
       popover.innerHTML = html;
       popover.dataset.nodeHtml = html;
       popover.dataset.nodeId = data;
       for (const button of popover.querySelectorAll('[data-node-action]')) button.onclick = () => {
         const action = button.dataset.nodeAction;
-        closePopover(false);
+        closePopover();
         if (action === 'open') activate(data);
         else if (action === 'new-tree') { uncover(); intent('open-page-in-tree', { id: data }); }
         else if (action === 'branch') openPalette({ scope: data, text: '' });
@@ -804,21 +910,21 @@ function renderPopover() {
     const tab = S.frame.tabs.find((t) => t.id === data);
     const menu = kind === 'unpin' ? { label: 'Unpin tree', pinned: false } : tab?.pinMenu;
     if (!menu) { closePopover(false); return; }
-    popover.innerHTML = (kind === 'tab' ? '<button class="menu-row" data-tab-action="rename">Rename</button>' : '')
-      + `<button class="menu-row" data-tab-action="pin">${esc(menu.label)}</button>`
-      + (kind === 'tab' ? '<button class="menu-row" data-tab-action="settle">Settle tree</button>' : '');
+    popover.innerHTML = (kind === 'tab' ? '<button class="menu-row" role="menuitem" data-tab-action="rename">Rename</button>' : '')
+      + `<button class="menu-row" role="menuitem" data-tab-action="pin">${esc(menu.label)}</button>`
+      + (kind === 'tab' ? '<button class="menu-row" role="menuitem" data-tab-action="settle">Settle tree</button>' : '');
     popover.querySelectorAll('[data-tab-action]').forEach((row) => row.addEventListener('click', () => {
       const anchor = S.popover.anchor;
       const action = row.dataset.tabAction;
-      closePopover(false);
+      closePopover();
       if (action === 'rename') {
         openPopover('rename', anchor, data);
         S.popover.field.focus(); S.popover.field.select();
       } else intent(action === 'pin' ? 'pin-tree' : 'settle-tree', { id: data, pinned: menu.pinned });
     }));
   } else if (kind === 'bookmark') {
-    popover.innerHTML = '<button class="menu-row" data-remove-bookmark>Remove bookmark</button>';
-    popover.querySelector('button').addEventListener('click', () => { closePopover(false); intent('remove-bookmark', { id: Number(data) }); });
+    popover.innerHTML = '<button class="menu-row" role="menuitem" data-remove-bookmark>Remove bookmark</button>';
+    popover.querySelector('button').addEventListener('click', () => { closePopover(); intent('remove-bookmark', { id: Number(data) }); });
   } else if (kind === 'folder') {
     const b = S.frame.start.bookmarks;
     if (data.hidden) {
@@ -834,7 +940,7 @@ function renderPopover() {
     popover.innerHTML = `<div class="pop-head"><span class="menu-heading grow">Waiting in this tree · ${ids.length}</span><span class="menu-detail">${esc(order)}</span></div>`
       + ids.map((id, i) => {
         const v = visit(id);
-        return `<button class="menu-row${i === 0 ? ' next' : ''}" data-id="${id}">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.when)}</span>${i === 0 ? '<kbd>Ctrl Tab</kbd>' : ''}</button>`;
+        return `<button class="menu-row${i === 0 ? ' next' : ''}" data-id="${id}" aria-current="${id === current() ? 'page' : 'false'}" aria-label="${esc(v.name)}">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.detail)}</span>${i === 0 ? '<kbd>Ctrl Tab</kbd>' : ''}</button>`;
       }).join('');
     popover.querySelectorAll('[data-id]').forEach((row) => row.addEventListener('click', () => openNextWaiting(row.dataset.id)));
   } else if (kind === 'save-login') {
@@ -855,16 +961,40 @@ function renderPopover() {
     }));
   } else if (kind === 'trees') {
     const hidden = [...$('tab-row').children].filter((tab) => tab.hidden).map((tab) => tab.dataset.id);
-    popover.innerHTML = (S.frame?.tabs ?? []).filter((tree) => hidden.includes(tree.id)).map((tree) => {
+    const rows = (S.frame?.tabs ?? []).filter((tree) => hidden.includes(tree.id));
+    const kept = new Map([...popover.children].map((row) => [row.dataset.tree, row]));
+    const nodes = rows.map((tree) => {
       const root = visit(tree.id);
-      return `<button class="menu-row" data-id="${tree.id}">${root ? visitFav(root, 16) : ''}<span class="grow">${esc(tree.title)}</span>`
-        + (tree.pending ? `<span class="count">${tree.pending}</span>` : '') + '</button>';
-    }).join('');
-    popover.querySelectorAll('[data-id]').forEach((row) => row.addEventListener('click', () => {
-      closePopover();
-      uncover();
-      intent('select-tree', { id: row.dataset.id });
-    }));
+      const row = kept.get(tree.id) ?? document.createElement('div');
+      row.className = 'overflow-tree';
+      row.dataset.tree = tree.id;
+      const html = `<button class="menu-row" data-id="${tree.id}">${root ? visitFav(root, 16) : ''}<span class="grow">${esc(tree.title)}</span>`
+        + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Pinned">${icon('pinned')}</span>` : '')
+        + (tree.pending ? `<span class="count" aria-label="${tree.pending} waiting">${tree.pending}</span>` : '') + '</button>'
+        + `<button class="overflow-settle" data-settle="${tree.id}" title="Settle tree" aria-label="Settle ${esc(tree.title)}">${icon('close')}</button>`;
+      if (row.dataset.html !== html) {
+        row.dataset.html = html;
+        const select = row.querySelector('[data-id]');
+        const settle = row.querySelector('[data-settle]');
+        row.innerHTML = html;
+        if (select) {
+          select.innerHTML = row.querySelector('[data-id]').innerHTML;
+          row.querySelector('[data-id]').replaceWith(select);
+        }
+        if (settle) row.querySelector('[data-settle]').replaceWith(settle);
+        row.querySelector('[data-id]').onclick = () => {
+          closePopover();
+          uncover();
+          intent('select-tree', { id: tree.id });
+        };
+        row.querySelector('[data-settle]').onclick = () => {
+          intent('settle-tree', { id: tree.id });
+        };
+      }
+      return row;
+    });
+    [...popover.children].filter((row) => !nodes.includes(row)).forEach((row) => row.remove());
+    nodes.forEach((row, index) => { if (popover.children[index] !== row) popover.insertBefore(row, popover.children[index] ?? null); });
   } else if (kind === 'rename') {
     // A frame that arrives while a name is being typed must not reset the field.
     if (S.popover.field) return;
@@ -875,6 +1005,7 @@ function renderPopover() {
     const field = S.popover.field = $('tree-name');
     field.addEventListener('keydown', (event) => {
       if (event.key !== 'Enter') return;
+      event.preventDefault();
       // Enter on the name as it was changes nothing: it stays automatic if it was.
       if (field.value.trim() !== title) intent('rename-tree', { id: data, name: field.value });
       closePopover();
@@ -914,7 +1045,7 @@ function renderPopover() {
     const theme = S.frame?.theme ?? 'dark';
     popover.innerHTML = '<div class="menu-heading">Settings</div>'
       + '<div class="menu-heading">Theme</div><div class="segmented" id="theme-mode">'
-      + ['dark', 'light', 'system'].map((mode) => `<button data-mode="${mode}" class="${mode === theme ? 'on' : ''}">${mode[0].toUpperCase()}${mode.slice(1)}</button>`).join('')
+      + ['dark', 'light', 'system'].map((mode) => `<button data-mode="${mode}" aria-pressed="${mode === theme}">${mode[0].toUpperCase()}${mode.slice(1)}</button>`).join('')
       + '</div><div class="menu-separator"></div>'
       + captureRow();
     wireCaptureRow();
@@ -922,14 +1053,14 @@ function renderPopover() {
       S.frame.theme = button.dataset.mode;
       applyTheme();
       intent('theme', { mode: button.dataset.mode });
-      renderPopover();
+      refreshPopover();
     }));
   }
 }
 
 function captureRow() {
   const on = !!S.frame?.captureEnabled;
-  return `<button class="menu-row" id="automatic-capture" title="Keep the text of opened pages on this computer. Form fields are never kept."><span class="grow">Remember pages</span><span class="switch${on ? ' on' : ''}"></span></button>`;
+  return `<button class="menu-row" role="switch" aria-checked="${on}" id="automatic-capture" title="Keep the text of opened pages on this computer. Form fields are never kept."><span class="grow">Remember pages</span><span class="switch" aria-hidden="true"></span></button>`;
 }
 
 function wireCaptureRow() {
@@ -937,7 +1068,7 @@ function wireCaptureRow() {
     const on = !!S.frame?.captureEnabled;
     S.frame.captureEnabled = !on;
     intent('capture', { on: !on });
-    renderPopover();
+    refreshPopover();
     buildStrip(strip.target ?? targetLayout());
   });
 }
@@ -946,10 +1077,12 @@ function wireCaptureRow() {
 
 let paletteSeq = 0, paletteTimer = 0;
 
-function openPalette({ scope, text, typed = false }) {
+function openPalette({ scope, text, typed = false, fromChrome = true }) {
   intent('cancel');
   if (S.surface === 'start') scope = null;
   closePopover(false);
+  rememberFocus('palette', fromChrome ? document.activeElement : document.body);
+  post({ t: 'paletteScope', id: scope });
   S.palette = { scope, rows: [], selected: 0, seq: 0 };
   setLayer('palette');
   renderPaletteContext();
@@ -980,14 +1113,16 @@ function renderPaletteContext() {
   }
 }
 
-function closePalette(returnFocus = true) {
+function closePalette(restoreFocus = true) {
   if (!S.palette) return;
   clearTimeout(paletteTimer);
   S.palette = null;
+  post({ t: 'paletteScope', id: null });
   $('palette').hidden = true;
   $('palette-results').innerHTML = '';
+  $('palette-input').removeAttribute('aria-activedescendant');
   setLayer(restingLayer());
-  if (returnFocus && pageShows()) post({ t: 'focus', target: 'page' });
+  if (restoreFocus) returnFocus('palette');
   syncLayer();
 }
 
@@ -1005,11 +1140,14 @@ function renderPalette() {
     const heading = row.group !== group ? `<div class="palette-group">${esc(row.group)}</div>` : '';
     group = row.group;
     const glyph = typeof row.icon === 'string' ? icon(row.icon) : fav(row.icon.url, row.icon.opened, 16);
-    return heading + `<button class="palette-item${i === selected ? ' selected' : ''}" data-row="${i}" data-kind="${row.kind}">${glyph}`
+    return heading + `<button class="palette-item" role="option" id="palette-option-${i}" aria-selected="${i === selected}" tabindex="-1" data-row="${i}" data-kind="${row.kind}">${glyph}`
       + `<span class="palette-title">${esc(row.title)}</span>`
       + (row.detail ? `<span class="palette-detail">${esc(row.detail)}</span>` : '') + '</button>';
   }).join('');
-  $('palette-results').querySelector('.selected')?.scrollIntoView({ block: 'nearest' });
+  const active = $('palette-results').querySelector('[aria-selected="true"]');
+  if (active) $('palette-input').setAttribute('aria-activedescendant', active.id);
+  else $('palette-input').removeAttribute('aria-activedescendant');
+  active?.scrollIntoView({ block: 'nearest' });
 }
 
 function runPalette(index, newTree) {
@@ -1073,16 +1211,18 @@ function renderSheet(reveal) {
       const el = kept.get(item.id) || document.createElement('button');
       kept.delete(item.id);
       el.dataset.id = item.id;
-      el.className = `${tile ? 'tree-tile' : 'tree-row'}${r.path ? ' path' : ''}${item.id === current() ? ' current' : ''}${markClass(v)}`;
+      el.className = `${tile ? 'tree-tile' : 'tree-row'}${r.path ? ' path' : ''}${markClass(v)}`;
       el.title = v.label;
       el.setAttribute('aria-current', item.id === current() ? 'page' : 'false');
-      el.setAttribute('aria-level', r.depth + 1);
+      el.setAttribute('role', 'treeitem');
+      el.setAttribute('aria-label', `${v.name}${r.summary ? ', ' + r.summary : ''}`);
+      el.setAttribute('aria-level', r.level);
       if (r.branch) el.setAttribute('aria-expanded', String(!r.folded));
       else el.removeAttribute('aria-expanded');
       el.style.cssText = tile
         ? `left:${item.x-item.w/2}px;top:${item.y-item.s/2}px;width:${item.w}px;height:${item.s}px`
         : `padding-left:${8+r.depth*22}px`;
-      const html = `<span data-fold="${r.branch ? item.id : ''}" class="tree-fold">${r.branch ? (r.folded ? '▸' : '▾') : ''}</span>${markedFav(v, 16)}<span class="${tile ? 't' : 'grow'}">${esc(tile ? r.tileTitle : r.title)}${r.summary ? `<small>${esc(r.summary)}</small>` : ''}</span>${!tile ? `<span class="menu-detail">${esc(v.when)}${v.live ? ' · Open in memory' : ''}</span>` : ''}`;
+      const html = `<span data-fold="${r.branch ? item.id : ''}" class="tree-fold">${r.branch ? (r.folded ? '▸' : '▾') : ''}</span>${markedFav(v, 16)}<span class="${tile ? 't' : 'grow'}">${esc(tile ? r.tileTitle : r.title)}${r.summary ? `<small>${esc(r.summary)}</small>` : ''}</span>${!tile ? `<span class="menu-detail">${esc(v.queued ? v.detail : v.when)}${v.live ? ' · Open in memory' : ''}</span>` : ''}`;
       if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
       if (el !== cursor) container.insertBefore(el, cursor);
       cursor = el.nextElementSibling;
@@ -1102,7 +1242,6 @@ function setTreeSide(side, reveal = true, target = current()) {
   $('tree-list').hidden = side !== 'list';
   for (const button of $('tree-side').children) {
     const selected = button.dataset.side === side;
-    button.classList.toggle('on', selected);
     button.setAttribute('aria-pressed', String(selected));
   }
   if (reveal) {
@@ -1166,7 +1305,7 @@ $('tree-sheet').addEventListener('keydown', (event) => {
     $('tree-filter').focus();
     $('tree-filter').value += event.key;
     post({ t: 'workbench', query: $('tree-filter').value });
-  } else if (event.key === 'Tab') {
+  } else if (tabKey(event)) {
     const controls = [...$('tree-sheet').querySelectorAll('button, input')].filter((el) => el.getClientRects().length);
     const index = controls.indexOf(document.activeElement);
     controls[(index + (event.shiftKey ? controls.length - 1 : 1)) % controls.length]?.focus();
@@ -1177,7 +1316,7 @@ $('tree-sheet').querySelector('.scrim').addEventListener('mousedown', closeOverl
 $('zoom-pin').innerHTML = icon('expand') + icon('collapse');
 $('zoom-pin').addEventListener('click', (event) => {
   toggleOverlay('tree');
-  if (event.detail && S.overlay === 'tree') S.treeReturn = null;
+  if (event.detail && S.overlay === 'tree') rememberFocus('overlay', document.body);
 });
 
 // ---------- surfaces ----------
@@ -1200,7 +1339,7 @@ const OVERLAYS = {
   forest: {
     el: 'forest', button: 'forest-button',
     available: () => !!S.frame,
-    show(reveal) { renderForest(); if (reveal) fitForest(false); },
+    show(reveal) { renderForest(); if (reveal) { fitForest(false); post({ t: 'focus', target: 'chrome' }); $('forest-titles').focus(); } },
   },
 };
 const restingLayer = () => (S.palette || S.overlay || S.surface !== 'reading') ? 'palette' : 'none';
@@ -1210,7 +1349,7 @@ function setSurface(surface) {
   if (S.surface === surface) return;
   S.surface = surface;
   post({ t: 'surface', start: surface === 'start' });
-  if (surface === 'start') focusStart();
+  if (surface === 'start') { if (S.frame) S.frame.start = null; S.startPaint = null; $('start-content').replaceChildren(); focusStart(); }
   renderPlaceholder();
   $('start').hidden = surface !== 'start';
   setLayer(restingLayer());
@@ -1223,25 +1362,36 @@ function setOverlay(kind) {
   if (S.overlay === 'tree') post({ t: 'workbench', query: '', waiting: false });
   if (previous) {
     $(previous.el).hidden = true;
-    $(previous.button).classList.remove('on');
     $(previous.button).setAttribute('aria-pressed', 'false');
   }
-  if (kind === 'tree') S.treeReturn = document.activeElement;
+  if (kind && !S.overlay) rememberFocus('overlay');
+  const forestChanged = (S.overlay === 'forest') !== (kind === 'forest');
   S.overlay = kind;
+
   document.body.dataset.overlay = kind ?? '';
   const overlay = OVERLAYS[kind];
   if (overlay) {
     if (overlay.leavesStart) setSurface('reading');
     hideList();
     closePopover(false);
-    $(overlay.el).hidden = false;
-    $(overlay.button).classList.add('on');
+    $(overlay.el).hidden = kind === 'forest';
     $(overlay.button).setAttribute('aria-pressed', 'true');
-    overlay.show(true);
+    if (kind !== 'forest') overlay.show(true);
   }
   setLayer(restingLayer());
   syncLayer();
+  if (forestChanged) {
+    if (kind === 'forest') requestForest();
+    else post({ t: 'forest', open: false });
+  }
 }
+
+function requestForest() {
+  if (S.overlay === 'forest' && $('forest').hidden && window.innerHeight >= S.windowHeight - 1) {
+    post({ t: 'forest', open: true, revision: S.forestRevision });
+  }
+}
+window.addEventListener('resize', requestForest);
 
 function canFocus(el) {
   if (!el?.isConnected || el.disabled || el.tabIndex < 0 || el.closest('[hidden], [inert]')) return false;
@@ -1252,14 +1402,8 @@ function canFocus(el) {
 }
 
 function closeOverlay() {
-  const trigger = S.overlay === 'tree' ? S.treeReturn : null;
   setOverlay(null);
-  if (canFocus(trigger)) {
-    trigger.focus();
-    return;
-  }
-  if (pageShows()) post({ t: 'focus', target: 'page' });
-  else if (S.surface === 'start') focusStart();
+  returnFocus('overlay');
 }
 
 function toggleOverlay(kind) {
@@ -1297,7 +1441,7 @@ function miniHtml(mini) {
   const edges = mini.edges.map((e) => `<path class="${e.wait ? 'wait' : ''}" d="M ${e.c[0]} C ${e.c[1]} ${e.c[2]} ${e.c[3]}"/>`).join('');
   const stub = mini.cut ? `<path class="wait" d="M -6 ${mini.s / 2} H 0"/>` : '';
   return `<span class="mt" style="width:${mini.w}px;height:${mini.h}px"><svg width="${mini.w}" height="${mini.h}">${edges}${stub}</svg>`
-    + mini.nodes.map((n) => `<span class="mt-node${n.last ? ' last' : ''}${n.waiting ? ' waiting' : ''}" style="left:${n.x}px;top:${n.y}px">${fav(visit(n.id).url, !n.waiting, mini.s)}</span>`).join('') + '</span>';
+    + mini.nodes.map((n) => `<span class="mt-node${n.last ? ' last' : ''}${n.waiting ? ' waiting' : ''}" style="left:${n.x}px;top:${n.y}px">${fav(n.url ?? visit(n.id)?.url ?? '', !n.waiting, mini.s)}</span>`).join('') + '</span>';
 }
 
 function pinnedBand(start) {
@@ -1353,38 +1497,39 @@ const START = {
 };
 
 function renderStart() {
-  if (!S.frame) return;
-  const paint = JSON.stringify([S.frame.start, S.rev]);
+  if (!S.frame?.start || S.surface !== 'start') return;
+  const paint = JSON.stringify(S.frame.start);
   if (S.startPaint === paint) return;
   S.startPaint = paint;
   const focused = document.activeElement?.closest('[data-start]');
   const anchor = S.popover?.anchor.closest('[data-start]');
   const find = (el) => el && [...$('start-content').querySelectorAll('[data-start]')].find((n) => n.dataset.start === el.dataset.start && n.dataset.id === el.dataset.id);
   $('start-content').innerHTML = BANDS.map((band) => band(S.frame.start)).join('');
-  find(focused)?.focus();
+  if (focused) { const next = find(focused); if (next) next.focus(); else focusStart(); }
   if (anchor) {
     const next = find(anchor);
-    if (next) S.popover.anchor = next;
-    else closePopover(false);
+    if (next) {
+      S.popover.anchor = next;
+      setTooltip(next, next.getAttribute('title'));
+    } else closePopover(false);
   }
 }
 
 // ---------- forest view ----------
 
 function forestLayout() {
-  return S.frame?.forest[S.forestLabels ? 'labels' : 'icons'];
+  return S.frame?.forest?.[S.forestLabels ? 'labels' : 'icons'];
 }
 
 function renderForest() {
   if (S.overlay !== 'forest' || !S.frame) {
-    S.forestDirty = true;
     return;
   }
-  S.forestDirty = false;
   const frame = S.frame;
   const layout = forestLayout();
+  if (!layout) return;
   $('forest-count').textContent = frame.forest.count;
-  $('forest-titles').classList.toggle('on', S.forestLabels);
+  $('forest-titles').setAttribute('aria-pressed', String(S.forestLabels));
   const path = new Set();
   for (let id = current(); id; id = visit(id)?.parent) path.add(id);
   const positions = new Map(layout.nodes.map((n) => [n.id, n]));
@@ -1395,10 +1540,10 @@ function renderForest() {
     maxX = Math.max(maxX, n.x + n.w / 2);
     maxY = Math.max(maxY, n.y + n.s / 2);
     const cls = `forest-node${n.settled ? ' settled' : ''}${S.forestLabels ? '' : ' icon-only'}${path.has(n.id) ? ' path' : ''}${markClass(v)}`;
-    return `<button class="${cls}" data-id="${n.id}" title="${esc(v.label + (v.live ? ' · Open in memory' : ''))}" style="left:${n.x - n.w / 2}px;top:${n.y - n.s / 2}px;width:${n.w}px;height:${n.s}px">`
+    return `<button class="${cls}" data-key="node-${n.id}" data-id="${n.id}" aria-current="${n.id === current() ? 'page' : 'false'}" aria-label="${esc(v.name)}" title="${esc(v.label + (v.live ? ' · Open in memory' : ''))}" style="left:${n.x - n.w / 2}px;top:${n.y - n.s / 2}px;width:${n.w}px;height:${n.s}px">`
       + markedFav(v, 16, false) + (v.live ? '<i class="live-dot"></i>' : '') + (S.forestLabels ? `<span>${esc(v.label)}</span>` : '') + '</button>';
   }).join('');
-  const heads = layout.heads.map((h) => `<button class="forest-head${h.settled ? ' settled' : ''}" data-id="${h.id}" style="top:${h.y}px"><b>${esc(h.title)}</b><span>${esc(h.detail)}</span></button>`).join('');
+  const heads = layout.heads.map((h) => `<button class="forest-head${h.settled ? ' settled' : ''}" data-key="head-${h.id}" data-id="${h.id}" style="top:${h.y}px"><b>${esc(h.title)}</b><span>${esc(h.detail)}</span></button>`).join('');
   const edges = layout.nodes.map((b) => {
     const v = visit(b.id);
     const a = v?.parent && positions.get(v.parent);
@@ -1412,11 +1557,11 @@ function renderForest() {
   svg.setAttribute('height', maxY + 40);
   svg.innerHTML = edges;
   const d = layout.divider;
-  const divider = d ? `<div class="forest-divider" style="top:${d.y}px"><b>${esc(d.title)}</b><span>${esc(d.detail)}</span></div>` : '';
+  const divider = d ? `<div class="forest-divider" data-key="divider" style="top:${d.y}px"><b>${esc(d.title)}</b><span>${esc(d.detail)}</span></div>` : '';
   const content = heads + divider + nodes;
   const layer = $('forest-nodes');
   if (layer.__content !== content) {
-    layer.innerHTML = content;
+    patchChildren(layer, content);
     layer.__content = content;
   }
   applyCamera();
@@ -1434,7 +1579,7 @@ function fitForest(animate) {
   const canvas = $('forest-canvas');
   const to = { x: 0, y: 0, zoom: clamp((canvas.clientWidth - 20) / Math.max(layout.width, 1), 0.3, 1) };
   cancelAnimationFrame(cameraTween);
-  if (!animate) {
+  if (!animate || reducedMotion.matches) {
     S.camera = to;
     applyCamera();
     return;
@@ -1442,7 +1587,7 @@ function fitForest(animate) {
   const from = { ...S.camera };
   const start = performance.now();
   const frame = (now) => {
-    const t = (now - start) / 220;
+    const t = reducedMotion.matches ? 1 : (now - start) / 220;
     const k = ease(t);
     S.camera = { x: mix(from.x, to.x, k), y: mix(from.y, to.y, k), zoom: mix(from.zoom, to.zoom, k) };
     applyCamera();
@@ -1509,6 +1654,7 @@ $('forest').querySelector('.scrim').addEventListener('mousedown', closeOverlay);
 // ---------- reader ----------
 
 function showReader(html, list) {
+  if (!S.reader) rememberFocus('reader');
   closePalette(false);
   closePopover(false);
   hideList();
@@ -1518,14 +1664,16 @@ function showReader(html, list) {
   box.querySelector('.reader-close').addEventListener('click', closeReader);
   S.reader = true;
   $('reader').hidden = false;
+  post({ t: 'focus', target: 'chrome' });
+  box.querySelector('.reader-close').focus();
   syncLayer();
 }
 
-function closeReader(returnFocus = true) {
+function closeReader(restoreFocus = true) {
   if (!S.reader) return;
   S.reader = null;
   $('reader').hidden = true;
-  if (returnFocus && pageShows()) post({ t: 'focus', target: 'page' });
+  if (restoreFocus) returnFocus('reader');
   syncLayer();
 }
 $('reader').querySelector('.scrim').addEventListener('mousedown', closeReader);
@@ -1536,17 +1684,33 @@ const when = (at) => new Date(at).toLocaleString(undefined, { day: '2-digit', mo
 
 window.canopy = {
   viewport(height) { S.windowHeight = height; document.documentElement.style.setProperty('--window-height', `${height}px`); positionList(); syncLayer(); },
-  start(value) { if (!S.frame) return; S.frame.start = value; renderStart(); },
+  start(value, initial = false) {
+    if (!S.frame || S.surface !== 'start') return;
+    S.frame.start = value.start;
+    renderStart();
+    if (initial) requestAnimationFrame(() => requestAnimationFrame(() => { if (S.surface === 'start') post({ t: 'suggestions' }); }));
+  },
+  forest(value, revision) {
+    if (value) { S.forestFrame = value; S.forestRevision = revision; }
+    value = S.forestFrame;
+    if (!value || !S.frame || S.overlay !== 'forest') return;
+    Object.assign(S.frame.visits, value.visits);
+    S.frame.forest = value.forest;
+    $('forest').hidden = false;
+    OVERLAYS.forest.show(true);
+  },
   present(frame) {
     const previous = current();
-    S.frame = frame;
+    const previousTree = S.frame?.tabs.find((tab) => tab.active)?.id;
+    S.frame = { ...frame, start: frame.start ?? S.frame?.start };
     applyStrip(frame.strip);
     renderWaitingPin();
     applyTheme();
     if (frame.current !== previous) {
       hideList();
       if (S.overlay !== 'tree') setOverlay(null);
-      if (S.surface !== 'reading') setSurface('reading');
+      const sameTree = previousTree && previousTree === frame.tabs.find((tab) => tab.active)?.id;
+      if (S.surface !== 'reading' && !(S.surface === 'start' && sameTree)) setSurface('reading');
     }
     if (!frame.tabs.length && S.surface === 'reading') setSurface('start');
     if (S.popover?.kind === 'rename' && !frame.tabs.some((tree) => tree.id === S.popover.data)) closePopover();
@@ -1561,22 +1725,38 @@ window.canopy = {
     renderPaletteContext();
     syncLayer();
   },
+  tabsFit(layout) {
+    if (S.frame) S.frame.tabFit = layout;
+    for (const item of layout.items) {
+      const tab = [...$('tab-row').children].find((el) => el.dataset.id === item.id);
+      if (!tab) continue;
+      tab.hidden = item.mode === 'hidden';
+      tab.classList.toggle('icon-only', item.mode === 'icon');
+      tab.classList.toggle('short', item.short);
+      tab.style.width = `${item.width}px`;
+    }
+    $('tab-overflow').hidden = !layout.overflow;
+    const tabs = [...$('tab-row').children];
+    if (!tabs.some((tab) => !tab.hidden && tab.tabIndex === 0)) {
+      const stop = tabs.find((tab) => !tab.hidden && tab.getAttribute('aria-selected') === 'true') ?? tabs.find((tab) => !tab.hidden);
+      for (const tab of tabs) tab.tabIndex = tab === stop ? 0 : -1;
+    }
+    if (S.popover?.kind === 'trees') refreshPopover();
+  },
   strip(layouts) {
     applyStrip(layouts);
     renderWaitingPin();
     animateStrip(0);
     fitTabs();
   },
-  icons(revision) {
-    S.rev = revision;
-    renderPaletteContext();
-    if (!S.frame) return;
-    renderTabs();
-    renderWaitingPin();
-    if (S.popover?.kind === 'waiting' || S.popover?.kind === 'node') refreshPopover();
-    buildStrip(strip.target ?? targetLayout());
-    renderStart();
-    renderForest();
+  icons(url, revision) {
+    S.revisions.set(iconSite(url), revision);
+    for (const img of document.querySelectorAll('.fav img')) {
+      const src = new URL(img.src);
+      if (iconSite(src.searchParams.get('u')) !== iconSite(url)) continue;
+      src.searchParams.set('r', revision);
+      img.src = src.href;
+    }
   },
   logins(offer) {
     S.logins = offer.names.length ? offer : null;
@@ -1594,13 +1774,16 @@ window.canopy = {
   nextWaiting() { openNextWaiting(); },
   openPalette(options) { openPalette(options); },
   newTree() {
+    cancel('toast');
+    $('toast').hidden = true;
     intent('cancel');
     closePalette(false);
     setOverlay(null);
     setSurface('start');
     focusStart();
+    syncLayer();
   },
-  toggleForest() { toggleOverlay('forest'); },
+  toggleForest(fromChrome = true) { toggleOverlay('forest'); if (!fromChrome && S.overlay === 'forest') rememberFocus('overlay', document.body); },
   workbench(view) {
     if (!S.frame) return;
     const id = document.activeElement?.closest('[data-id]')?.dataset.id;
@@ -1609,20 +1792,23 @@ window.canopy = {
     if (id && !document.activeElement?.closest('[data-id]')) focusTree(id);
   },
   tabSelected() { closePopover(false); setOverlay(null); },
-  toggleTree(fromChrome = true) { toggleOverlay('tree'); if (!fromChrome && S.overlay === 'tree') S.treeReturn = null; },
+  toggleTree(fromChrome = true) { toggleOverlay('tree'); if (!fromChrome && S.overlay === 'tree') rememberFocus('overlay', document.body); },
   toast(kind, text) {
     if (kind === 'error') {
       S.errors.unshift(text);
       S.errors.length = Math.min(S.errors.length, 5);
     }
     const toast = $('toast');
+    $('toast-status').textContent = kind === 'error' ? '' : text + (kind === 'settled' ? ' · Undo (Ctrl+Shift+T)' : '');
+    $('toast-alert').textContent = kind === 'error' ? text : '';
     toast.textContent = text;
-    toast.setAttribute('role', kind === 'error' ? 'alert' : 'status');
     if (kind === 'settled') {
       const button = document.createElement('button');
       button.textContent = 'Undo';
+      toast.appendChild(document.createTextNode(' · '));
       button.onclick = () => { toast.hidden = true; syncLayer(); intent('undo-settle'); };
       toast.appendChild(button);
+      toast.appendChild(document.createTextNode(' (Ctrl+Shift+T)'));
     }
     toast.className = kind;
     toast.hidden = false;
@@ -1634,8 +1820,9 @@ window.canopy = {
     }, kind === 'settled' ? 6000 : kind === 'error' ? 5000 : 2600);
   },
   toggleFocus() {
+    inputOrigin = 'keyboard';
     const active = document.activeElement;
-    if (document.hasFocus() && active?.classList.contains('node')) {
+    if (document.hasFocus() && active?.closest('#tabs, #strip, #strip-list, #pins')) {
       hideList();
       post({ t: 'focus', target: 'page' });
       return;
@@ -1655,6 +1842,7 @@ window.canopy = {
   },
   /// Closes the topmost thing Escape owns.
   formReturn(open) {
+    if (open && !S.formReturn) rememberFocus('formReturn');
     S.formReturn = open;
     $('form-return').hidden = !open;
     syncLayer();
@@ -1665,7 +1853,7 @@ window.canopy = {
     else if (S.reader) closeReader();
     else if (S.palette) closePalette();
     else if (S.popover) closePopover();
-    else if (S.list) hideList();
+    else if (S.list) { const key = S.list.key; strip.elements.get(key)?.focus(); hideList(); }
     else if (S.overlay === 'tree' && (S.frame.treeView.query || S.frame.treeView.waitingOnly)) {
       $('tree-filter').value = '';
       post({ t: 'workbench', query: '', waiting: false });
@@ -1717,7 +1905,7 @@ window.canopy = {
   /// calls held back while a button is down.
   state() {
     return {
-      start: S.frame?.start, deferred: [...refresh.pending.keys()],
+      buttons: refresh.buttons, start: S.frame?.start, deferred: [...refresh.pending.keys()],
       surface: S.surface, overlay: S.overlay, treeSide: S.treeSide, animating: !!strip.anim, list: S.list?.key ?? null, layer: S.layer, palette: !!S.palette,
       reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported, logins: loginNames(), save: S.save, locked: S.locked,
       dark: document.documentElement.classList.contains('dark'),
@@ -1731,8 +1919,9 @@ window.canopy = {
 const refresh = { buttons: 0, pending: new Map(), release: null };
 function rebuild(kind, apply, args) {
   if (!refresh.buttons) { apply(...args); return; }
-  refresh.pending.delete(kind);
-  refresh.pending.set(kind, { apply, args });
+  const key = kind === 'icons' ? `icons:${args[0]}` : kind;
+  refresh.pending.delete(key);
+  refresh.pending.set(key, { apply, args });
 }
 function releaseRefresh() {
   clearTimeout(refresh.release);
@@ -1743,7 +1932,7 @@ function releaseRefresh() {
     for (const { apply, args } of pending) apply(...args);
   });
 }
-for (const kind of ['present', 'strip', 'icons', 'start', 'logins', 'loginsLocked', 'saveLogin', 'paletteResults', 'previewResult', 'reader', 'readerList']) {
+for (const kind of ['present', 'strip', 'icons', 'start', 'forest', 'logins', 'loginsLocked', 'saveLogin', 'paletteResults', 'previewResult', 'reader', 'readerList']) {
   const apply = window.canopy[kind].bind(window.canopy);
   window.canopy[kind] = (...args) => rebuild(kind, apply, args);
 }
@@ -1757,7 +1946,7 @@ for (const type of ['mousedown', 'mouseup', 'mousemove', 'mouseover']) {
 }
 window.addEventListener('blur', () => { releaseRefresh(); hideList(); });
 document.addEventListener('focusout', (event) => {
-  if (!S.list) return;
+  if (!S.list || S.popover) return;
   const next = event.relatedTarget;
   if (!next || (!next.closest('#strip-list') && next.closest('.node')?.dataset.id !== S.list.key)) hideList();
 });
@@ -1793,19 +1982,46 @@ document.addEventListener('keydown', (event) => {
 });
 
 $('new-tree').innerHTML = icon('plus');
-$('agent').innerHTML = icon('spark');
 $('forest-button').innerHTML = icon('forest') + '<span>Forest</span>';
 $('settings-button').innerHTML = icon('settings');
 $('tab-overflow').innerHTML = icon('chevron');
 $('search-pill').insertAdjacentHTML('afterbegin', icon('search'));
 
+let settlePress = null;
+window.addEventListener('mousedown', (event) => {
+  settlePress = null;
+  const cross = event.target.closest('#tab-row [data-settle]');
+  if (event.button !== 0 || !cross || event.detail > 1) return;
+  const r = cross.getBoundingClientRect();
+  if (getComputedStyle(cross).visibility === 'visible' && Number(getComputedStyle(cross).opacity) > 0
+      && event.clientX >= r.left && event.clientX < r.right && event.clientY >= r.top && event.clientY < r.bottom) {
+    settlePress = cross;
+  }
+}, true);
 $('tab-row').addEventListener('click', (event) => {
+  const pressed = settlePress;
+  settlePress = null;
   const close = event.target.closest('[data-settle]');
-  if (close) { intent('settle-tree', { id: close.dataset.settle }); return; }
+  if (close) {
+    if (close === pressed && event.detail <= 1) intent('settle-tree', { id: close.dataset.settle });
+    return;
+  }
   const tab = event.target.closest('[data-id]');
   if (!tab) return;
   uncover();
   intent('select-tree', { id: tab.dataset.id });
+});
+$('tab-row').addEventListener('focusin', (event) => {
+  for (const tab of $('tab-row').children) tab.tabIndex = tab === event.target ? 0 : -1;
+});
+$('tab-row').addEventListener('keydown', (event) => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  const tabs = [...$('tab-row').children].filter((tab) => !tab.hidden);
+  const index = tabs.indexOf(document.activeElement);
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length;
+  for (const tab of tabs) tab.tabIndex = tab === tabs[next] ? 0 : -1;
+  tabs[next]?.focus();
+  event.preventDefault();
 });
 $('tab-row').addEventListener('mousedown', (event) => {
   if (event.button === 1 && event.target.closest('[data-id]')) event.preventDefault();
@@ -1851,7 +2067,7 @@ const listEl = $('strip-list');
 listEl.addEventListener('mouseenter', () => { cancel('hideList'); cancel('showList'); });
 listEl.addEventListener('mouseleave', (event) => {
   if (event.relatedTarget?.closest('#strip-nodes')) return;
-  schedule('hideList', 220, hideList);
+  schedule('hideList', 220, () => { if (!listHasKeyboardFocus()) hideList(); });
 });
 
 // A press outside an open popover closes it.
@@ -1877,7 +2093,7 @@ function answerFormReturn(proceed, focusPage = true) {
   const question = S.formReturn;
   canopy.formReturn(null);
   post({ t: 'form-return', question, proceed });
-  if (focusPage) post({ t: 'focus', target: 'page' });
+  if (focusPage) { if (proceed) post({ t: 'focus', target: 'page' }); else returnFocus('formReturn'); }
 }
 $('form-return-cancel').addEventListener('click', () => answerFormReturn(false));
 $('form-return-continue').addEventListener('click', () => answerFormReturn(true));
@@ -1888,7 +2104,7 @@ document.addEventListener('mousedown', (event) => {
   }
 }, true);
 document.addEventListener('keydown', (event) => {
-  if (!S.formReturn || !['Tab', 'ISO_Left_Tab'].includes(event.key)) return;
+  if (!S.formReturn || !tabKey(event)) return;
   event.preventDefault();
   const cancel = $('form-return-cancel');
   const proceed = $('form-return-continue');
@@ -1913,12 +2129,50 @@ document.addEventListener('keydown', (event) => {
 
 document.addEventListener('contextmenu', (event) => {
   const field = event.target.closest('input, textarea, [contenteditable="true"]');
-  if (field) return;
+  if (field || (event.target.closest('#capture-text') && !getSelection().isCollapsed)) return;
   if (event.defaultPrevented) return;
   event.preventDefault();
   const el = event.target.closest(NODE_TARGETS);
   const id = el?.dataset.page || el?.dataset.id;
   if (!id || !visit(id)) return;
   openPopover('node', el, id);
-  hideList();
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.defaultPrevented) return;
+  if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
+    if (event.target.closest('input, textarea, [contenteditable]')) return;
+    event.preventDefault();
+    event.target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    return;
+  }
+  if (S.list && !S.popover && event.target.closest('#strip-list') && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+    const rows = controlsIn($('strip-list'));
+    const index = rows.indexOf(document.activeElement);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length;
+    rows[next]?.focus();
+    event.preventDefault();
+    return;
+  }
+  const root = S.popover ? $('popover') : S.reader ? $('reader') : S.palette ? $('palette') : S.overlay === 'forest' ? $('forest') : null;
+  if (!root) return;
+  const rows = controlsIn(root);
+  let index = rows.indexOf(document.activeElement);
+  if (tabKey(event)) index += event.shiftKey ? rows.length - 1 : 1;
+  else if (S.popover && !event.target.matches('input') && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+    index = event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : index + (event.key === 'ArrowDown' ? 1 : rows.length - 1);
+  } else return;
+  rows[index % rows.length]?.focus();
+  event.preventDefault();
+});
+$('waiting-pin').addEventListener('keydown', (event) => {
+  if (event.key !== 'ArrowDown') return;
+  event.preventDefault();
+  openPopover('waiting', $('waiting-pin'));
+});
+
+window.addEventListener('focus', () => {
+  if (pageShows() && document.activeElement === document.body) {
+    controlsIn(document.body).at(-1)?.focus();
+  }
 });
