@@ -1,3 +1,4 @@
+mod common;
 #[path = "common/http.rs"]
 mod http;
 use anyhow::{bail, Result};
@@ -943,6 +944,7 @@ fn alias_only() -> Result<()> {
     Ok(())
 }
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let environment = tempfile::tempdir()?;
     let home = environment.path().join("home");
     let config = environment.path().join("config");

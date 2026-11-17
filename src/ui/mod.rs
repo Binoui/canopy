@@ -378,7 +378,10 @@ impl Ui {
             Shortcut::Forest => self.chrome.toggle_forest(),
             Shortcut::ZoomTree => self.chrome.toggle_tree(),
             Shortcut::NextWaiting => self.chrome.next_waiting(),
-            Shortcut::Reload => self.report(self.pages.reload()),
+            Shortcut::Reload => {
+                self.chrome.uncover();
+                self.report(self.pages.reload());
+            }
             Shortcut::RememberSelection => self.report(self.pages.remember_selection()),
             Shortcut::FillLogin => self.chrome.fill_login(),
             Shortcut::Quit => self.window.close(),
@@ -388,7 +391,10 @@ impl Ui {
                     self.dispatch(ChromeIntent::SelectTree(tree));
                 }
             }
-            Shortcut::Back => self.report(self.pages.go(Go::Parent)),
+            Shortcut::Back => {
+                self.chrome.uncover();
+                self.report(self.pages.go(Go::Parent));
+            }
             Shortcut::ToggleFocus => self.chrome.toggle_focus(),
             Shortcut::Escape if self.chrome.escape() => {}
             Shortcut::Escape => return glib::Propagation::Proceed,
@@ -537,6 +543,15 @@ impl ChromeHost for Ui {
             return;
         }
         self.pages.cancel_continuation();
+        if matches!(
+            intent,
+            ChromeIntent::Restore(_)
+                | ChromeIntent::SelectTree(_)
+                | ChromeIntent::OpenCitation(_)
+                | ChromeIntent::OpenSaved(_)
+        ) {
+            self.chrome.uncover();
+        }
         let result = match intent {
             ChromeIntent::AnswerFormReturn { .. } => unreachable!(),
             ChromeIntent::CancelContinuation => Ok(()),

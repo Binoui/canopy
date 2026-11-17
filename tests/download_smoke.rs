@@ -24,6 +24,7 @@ mod common;
 use common::*;
 
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
     let home = directory.path().join("home");
     let config = directory.path().join("config");

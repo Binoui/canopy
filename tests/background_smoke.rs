@@ -655,6 +655,7 @@ fn resources() -> Result<()> {
     Ok(())
 }
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
     std::fs::write(
         directory.path().join("user-dirs.dirs"),

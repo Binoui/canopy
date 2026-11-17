@@ -1353,6 +1353,7 @@ fn layout_stays_in_slot() -> Result<()> {
 
 /// Opens a new tree, then 300 ms after it shows, clicks the first tree's tab, ten times.
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let environment = tempfile::tempdir()?;
     let home = environment.path().join("home");
     let config = environment.path().join("config");

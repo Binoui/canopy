@@ -329,6 +329,7 @@ fn a_small_budget_removes_the_mark_when_the_page_is_dropped() -> Result<()> {
     Ok(())
 }
 fn main() -> Result<()> {
+    let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
     common::start(directory.path())?;
     if std::env::args().nth(1).as_deref() == Some("pictures") {
