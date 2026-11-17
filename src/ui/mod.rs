@@ -19,7 +19,7 @@ use crate::{
     },
     forest::ForestProjection,
     logins::{Login, LoginProvider, SavedLogin},
-    pages::{DownloadEvent, Go, PageEvent, Pages},
+    pages::{DownloadEvent, Go, PageEvent, PageScaleAction, Pages},
 };
 
 pub struct Ui {
@@ -137,6 +137,7 @@ impl Ui {
             ui.chrome.raise();
             match event {
                 PageEvent::FormReturn(open) => ui.chrome.form_return(open),
+                PageEvent::PageScale(value) => ui.chrome.page_scale(value),
                 PageEvent::Selected => ui.refresh(),
                 PageEvent::Changed | PageEvent::Loading(false) => ui.schedule_refresh(),
                 PageEvent::Loading(true) => {}
@@ -385,6 +386,7 @@ impl Ui {
                 Err(error) => self.report(Err(error)),
             },
             Shortcut::NextWaiting => self.chrome.next_waiting(),
+            Shortcut::PageScale(action) => self.report(self.pages.page_scale(action)),
             Shortcut::Reload => {
                 self.chrome.uncover();
                 self.report(self.pages.reload());
@@ -428,6 +430,7 @@ enum Shortcut {
     ZoomTree,
     NextWaiting,
     PreviousTree,
+    PageScale(PageScaleAction),
     Reload,
     RememberSelection,
     FillLogin,
@@ -477,6 +480,61 @@ impl Shortcut {
         use gdk::keys::constants as key;
         let keyval = keyval.to_lower();
         let bindings = [
+            (
+                Modifiers::CONTROL,
+                key::equal,
+                Self::PageScale(PageScaleAction::Increase),
+            ),
+            (
+                Modifiers::CONTROL,
+                key::plus,
+                Self::PageScale(PageScaleAction::Increase),
+            ),
+            (
+                Modifiers::CONTROL_SHIFT,
+                key::plus,
+                Self::PageScale(PageScaleAction::Increase),
+            ),
+            (
+                Modifiers::CONTROL_SHIFT,
+                key::equal,
+                Self::PageScale(PageScaleAction::Increase),
+            ),
+            (
+                Modifiers::CONTROL,
+                key::KP_Equal,
+                Self::PageScale(PageScaleAction::Increase),
+            ),
+            (
+                Modifiers::CONTROL,
+                key::KP_Add,
+                Self::PageScale(PageScaleAction::Increase),
+            ),
+            (
+                Modifiers::CONTROL_SHIFT,
+                key::KP_Add,
+                Self::PageScale(PageScaleAction::Increase),
+            ),
+            (
+                Modifiers::CONTROL,
+                key::minus,
+                Self::PageScale(PageScaleAction::Decrease),
+            ),
+            (
+                Modifiers::CONTROL,
+                key::KP_Subtract,
+                Self::PageScale(PageScaleAction::Decrease),
+            ),
+            (
+                Modifiers::CONTROL,
+                key::_0,
+                Self::PageScale(PageScaleAction::Reset),
+            ),
+            (
+                Modifiers::CONTROL,
+                key::KP_0,
+                Self::PageScale(PageScaleAction::Reset),
+            ),
             (
                 Modifiers::CONTROL,
                 key::k,
@@ -627,6 +685,7 @@ impl ChromeHost for Ui {
             ChromeIntent::SettleTree(tree) => self.pages.settle_tree(tree),
             ChromeIntent::SelectTree(tree) => self.pages.go(Go::Tree(tree)),
             ChromeIntent::Restore(visit) => self.pages.go(Go::Visit(visit)),
+            ChromeIntent::PageScale(action) => self.pages.page_scale(action),
             ChromeIntent::Reload => self.pages.reload(),
             ChromeIntent::BranchFromQueued(visit) => self.pages.branch_from_queued(visit),
             ChromeIntent::OpenCitation(child) => self.pages.go(Go::Citation(child)),
@@ -762,6 +821,61 @@ mod shortcut_tests {
     fn window_shortcuts_require_exact_modifiers() {
         let bindings = [
             (
+                key::equal,
+                Modifiers::CONTROL,
+                Shortcut::PageScale(PageScaleAction::Increase),
+            ),
+            (
+                key::plus,
+                Modifiers::CONTROL,
+                Shortcut::PageScale(PageScaleAction::Increase),
+            ),
+            (
+                key::plus,
+                Modifiers::CONTROL_SHIFT,
+                Shortcut::PageScale(PageScaleAction::Increase),
+            ),
+            (
+                key::equal,
+                Modifiers::CONTROL_SHIFT,
+                Shortcut::PageScale(PageScaleAction::Increase),
+            ),
+            (
+                key::KP_Equal,
+                Modifiers::CONTROL,
+                Shortcut::PageScale(PageScaleAction::Increase),
+            ),
+            (
+                key::KP_Add,
+                Modifiers::CONTROL,
+                Shortcut::PageScale(PageScaleAction::Increase),
+            ),
+            (
+                key::KP_Add,
+                Modifiers::CONTROL_SHIFT,
+                Shortcut::PageScale(PageScaleAction::Increase),
+            ),
+            (
+                key::minus,
+                Modifiers::CONTROL,
+                Shortcut::PageScale(PageScaleAction::Decrease),
+            ),
+            (
+                key::KP_Subtract,
+                Modifiers::CONTROL,
+                Shortcut::PageScale(PageScaleAction::Decrease),
+            ),
+            (
+                key::_0,
+                Modifiers::CONTROL,
+                Shortcut::PageScale(PageScaleAction::Reset),
+            ),
+            (
+                key::KP_0,
+                Modifiers::CONTROL,
+                Shortcut::PageScale(PageScaleAction::Reset),
+            ),
+            (
                 key::k,
                 Modifiers::CONTROL,
                 Shortcut::Palette(PaletteSeed::Empty),
@@ -874,13 +988,11 @@ mod shortcut_tests {
             }
         }
         for key in [
-            key::_0,
             key::ampersand,
             key::eacute,
             key::quotedbl,
             key::apostrophe,
             key::parenleft,
-            key::minus,
             key::egrave,
             key::underscore,
             key::ccedilla,

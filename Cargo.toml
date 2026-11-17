@@ -243,3 +243,9 @@ name = "tabs_smoke"
 path = "tests/tabs_smoke.rs"
 harness = false
 required-features = ["gui-smoke"]
+
+[[test]]
+name = "page_scale_smoke"
+path = "tests/page_scale_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]

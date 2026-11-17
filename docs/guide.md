@@ -46,6 +46,14 @@ Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not aff
 - **Ctrl+Shift+L** fills the saved login for the page.
 - **Ctrl+Q** quits Canopy.
 
+## Change page size
+
+Press **Ctrl+=** or **Ctrl+plus** to make the page larger, and **Ctrl+-** to make it smaller. Shifted plus works too. The keypad's Add and Subtract keys do the same. Hold **Ctrl** and turn the wheel over the page to change its size one step at a time, from 25% to 500%.
+
+A percentage button appears in the top row when the size is not 100%. Click it, or press **Ctrl+0** or **Ctrl+keypad 0**, to reset to 100%.
+
+Canopy remembers the size for each site, including after a restart. Pages on the same scheme, host and port share it across trees and waiting pages. Different paths share a size; a different scheme or port has its own. The tabs, strip and forest keep their usual size.
+
 ## Act on a page or branch
 
 Press **Menu** or **Shift+F10** on a focused page in the strip, an attached list, the zoomed tree, the forest or the waiting list. A right-click opens the same menu. The keys also open menus on pinned cards and bookmarks. Its heading shows the page icon and short name. Up and Down move between menu rows, Home and End select the first and last rows, Enter runs the focused row, and Escape returns to the trigger. The same menu offers **Open**, **Open in a new tree**, **New branch here**, and **Copy address**. The remaining rows appear when they apply.

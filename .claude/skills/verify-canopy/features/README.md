@@ -25,3 +25,4 @@ Each feature file opens with an H1 and one paragraph of user-visible behavior, t
 - [Waiting pages](./waiting-pages.md) covers middle-clicked links that wait in the tree, the counter, and Ctrl+Tab.
 - [Settle and the forest](./settle-and-forest.md) covers settling a tree, undo, and finding it again in the forest view.
 - [Back and forward](./back-and-forward.md) covers parent and child navigation by keyboard and mouse, cold restores, and closing overlays.
+- [Page size](./page-scale.md) covers keyboard and wheel scaling, the reset badge, per-site policy and restart persistence.

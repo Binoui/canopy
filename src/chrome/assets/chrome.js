@@ -43,6 +43,7 @@ const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 
 const S = {
   frame: null,
+  pageScale: null,
   logins: null,
   save: null,
   locked: null,
@@ -1682,7 +1683,18 @@ const when = (at) => new Date(at).toLocaleString(undefined, { day: '2-digit', mo
 
 // ---------- Rust's side ----------
 
+function renderPageScale() {
+  const badge = $('page-scale');
+  const value = S.pageScale;
+  const shown = value && value.page === S.frame?.current && value.percent !== 100;
+  const changed = badge.hidden === !!shown;
+  badge.hidden = !shown;
+  if (shown) badge.textContent = `${value.percent}%`;
+  if (changed) fitTabs();
+}
+
 window.canopy = {
+  pageScale(value) { S.pageScale = value; renderPageScale(); },
   viewport(height) { S.windowHeight = height; document.documentElement.style.setProperty('--window-height', `${height}px`); positionList(); syncLayer(); },
   start(value, initial = false) {
     if (!S.frame || S.surface !== 'start') return;
@@ -1715,6 +1727,7 @@ window.canopy = {
     if (!frame.tabs.length && S.surface === 'reading') setSurface('start');
     if (S.popover?.kind === 'rename' && !frame.tabs.some((tree) => tree.id === S.popover.data)) closePopover();
     renderTabs();
+    renderPageScale();
     animateStrip(previous === null && strip.shown.nodes.size === 0 ? 0 : MOVE);
     renderStart();
     renderPlaceholder();
@@ -1907,6 +1920,7 @@ window.canopy = {
     return {
       buttons: refresh.buttons, start: S.frame?.start, deferred: [...refresh.pending.keys()],
       surface: S.surface, overlay: S.overlay, treeSide: S.treeSide, animating: !!strip.anim, list: S.list?.key ?? null, layer: S.layer, palette: !!S.palette,
+      pageScale: S.pageScale,
       reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported, logins: loginNames(), save: S.save, locked: S.locked,
       dark: document.documentElement.classList.contains('dark'),
       nodes: [...strip.elements.keys()], rows: S.palette?.rows ?? [],
@@ -2176,3 +2190,5 @@ window.addEventListener('focus', () => {
     controlsIn(document.body).at(-1)?.focus();
   }
 });
+
+$('page-scale').addEventListener('click', () => intent('page-scale', { action: 'reset' }));

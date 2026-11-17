@@ -12,6 +12,7 @@ use crate::{
 };
 use anyhow::Result;
 use gtk::prelude::*;
+pub use live::page_scale::{PageScaleAction, PageScaleReadout};
 use live::LivePage;
 pub use native::{CookieApplyError, DownloadEvent};
 use std::{
@@ -34,6 +35,7 @@ pub enum Go {
 }
 
 pub enum PageEvent {
+    PageScale(PageScaleReadout),
     FormReturn(Option<u64>),
     Selected,
     Settled(String),
@@ -272,6 +274,7 @@ pub struct Pages {
     container: gtk::Fixed,
     viewport: Cell<(i32, i32)>,
     views: RefCell<Vec<glib::WeakRef<webkit2gtk::WebView>>>,
+    scale_views: live::page_scale::Views,
     hold: RefCell<Option<Hold>>,
     chrome: RefCell<Option<glib::WeakRef<webkit2gtk::WebView>>>,
     commands: RefCell<std::collections::VecDeque<Command>>,
@@ -320,6 +323,7 @@ impl Pages {
             container: container.clone(),
             viewport: Cell::new((container.allocated_width(), container.allocated_height())),
             views: RefCell::new(Vec::new()),
+            scale_views: live::page_scale::Views::default(),
             hold: RefCell::new(None),
             chrome: RefCell::new(None),
             commands: RefCell::new(std::collections::VecDeque::new()),
@@ -463,6 +467,7 @@ impl Pages {
         if let Some(observer) = observer {
             observer(PageEvent::Selected);
         }
+        self.publish_page_scale();
     }
 
     fn advance_continuation(&self, event: ContinuationEvent) -> Option<LoadTicket> {
