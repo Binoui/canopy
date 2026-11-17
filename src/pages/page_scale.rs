@@ -80,7 +80,10 @@ impl Pages {
                 Some(PageScaleReadout::Page { visit, level })
             })
             .unwrap_or(PageScaleReadout::NoPage);
-        self.receive(PageEvent::PageScale(value));
+        let observer = self.observer.borrow().clone();
+        if let Some(observer) = observer {
+            observer(PageEvent::PageScale(value));
+        }
     }
 }
 
