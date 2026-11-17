@@ -1,22 +1,12 @@
-use std::collections::{HashMap, HashSet};
-
 use crate::{
     browser::{VisitId, VisitState},
     forest::ForestProjection,
 };
 
 pub(crate) const REST_HEIGHT: f64 = 52.;
-pub(crate) const OPEN_HEIGHT: f64 = REST_HEIGHT / 2. + 94.;
 pub(crate) const TRUNK_Y: f64 = REST_HEIGHT / 2.;
-const PAD: f64 = 22.;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum NodeKind {
-    Pill,
-    Tile,
-    Raw,
-    Bud,
-}
+const GAP: f64 = 22.;
+const PAD: f64 = 14.;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Rect {
@@ -24,15 +14,6 @@ pub(crate) struct Rect {
     pub y: f64,
     pub s: f64,
     pub w: f64,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct PlacedNode {
-    pub id: VisitId,
-    pub rect: Rect,
-    pub kind: NodeKind,
-    pub on_path: bool,
-    pub hidden: Vec<VisitId>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,289 +31,271 @@ pub(crate) struct Edge {
     pub from_bottom: bool,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct StripLayout {
-    pub nodes: Vec<PlacedNode>,
-    pub edges: Vec<Edge>,
-    pub width: f64,
-    pub height: f64,
-    pub focus: f64,
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum StripItem {
+    Root(VisitId),
+    Page(VisitId),
+    Parent(VisitId),
+    Run {
+        ids: Vec<VisitId>,
+        host: String,
+    },
+    Earlier {
+        ids: Vec<VisitId>,
+    },
+    Current(VisitId),
+    After {
+        waiting: Vec<VisitId>,
+        read: Vec<VisitId>,
+    },
 }
 
-impl StripLayout {
-    pub fn node(&self, id: VisitId) -> Option<&PlacedNode> {
-        self.nodes.iter().find(|node| node.id == id)
+impl StripItem {
+    pub fn ids(&self) -> &[VisitId] {
+        match self {
+            Self::Root(id) | Self::Page(id) | Self::Parent(id) | Self::Current(id) => {
+                std::slice::from_ref(id)
+            }
+            Self::Run { ids, .. } | Self::Earlier { ids } => ids,
+            Self::After { .. } => &[],
+        }
     }
+}
 
-    /// The trunk in reading order: ancestors, the current page, then its continuation.
-    pub fn trunk(&self) -> Vec<VisitId> {
-        let mut trunk: Vec<_> = self
-            .nodes
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct BranchCounts {
+    pub pages: usize,
+    pub waiting: usize,
+}
+
+pub(crate) struct StripNode {
+    pub item: StripItem,
+    pub rect: Rect,
+    pub branches: BranchCounts,
+    pub rows: Vec<VisitId>,
+    pub total_rows: usize,
+}
+
+pub(crate) fn branch_heads(
+    forest: &ForestProjection,
+    ids: &[VisitId],
+    path: &[VisitId],
+) -> Vec<VisitId> {
+    let path: std::collections::HashSet<_> = path.iter().copied().collect();
+    let mut heads: Vec<_> = ids
+        .iter()
+        .flat_map(|id| forest.children(*id))
+        .copied()
+        .filter(|id| !path.contains(id))
+        .collect();
+    heads.sort_by_key(|id| {
+        std::cmp::Reverse((forest.visit(*id).unwrap().created_at, id.to_string()))
+    });
+    heads
+}
+
+pub(crate) fn branch_counts(forest: &ForestProjection, heads: &[VisitId]) -> BranchCounts {
+    let mut counts = BranchCounts::default();
+    let mut stack = heads.to_vec();
+    while let Some(id) = stack.pop() {
+        counts.pages += 1;
+        counts.waiting += usize::from(
+            forest
+                .visit(id)
+                .is_some_and(|v| v.state == VisitState::Queued),
+        );
+        stack.extend(forest.children(id));
+    }
+    counts
+}
+
+pub(crate) fn strip_items(forest: &ForestProjection, current: VisitId) -> Vec<StripItem> {
+    let path = forest.path(current);
+    let mut items = Vec::new();
+    if path.len() > 1 {
+        items.push(StripItem::Root(path[0]));
+    }
+    let mut i = 1;
+    while i + 2 < path.len() {
+        let start = i;
+        let host = forest
+            .visit(path[i])
+            .unwrap()
+            .url
+            .host_str()
+            .unwrap_or_default();
+        i += 1;
+        while i + 2 < path.len() && forest.visit(path[i]).unwrap().url.host_str() == Some(host) {
+            i += 1;
+        }
+        items.push(if i - start > 1 {
+            StripItem::Run {
+                ids: path[start..i].to_vec(),
+                host: host.into(),
+            }
+        } else {
+            StripItem::Page(path[start])
+        });
+    }
+    if path.len() > 2 {
+        items.push(StripItem::Parent(path[path.len() - 2]));
+    }
+    items.push(StripItem::Current(current));
+    let (mut waiting, mut read): (Vec<_>, Vec<_>) = forest
+        .children(current)
+        .iter()
+        .copied()
+        .partition(|id| forest.visit(*id).unwrap().state == VisitState::Queued);
+    waiting.sort_by_key(|id| (forest.visit(*id).unwrap().created_at, id.to_string()));
+    read.sort_by_key(|id| {
+        std::cmp::Reverse((forest.visit(*id).unwrap().created_at, id.to_string()))
+    });
+    items.push(StripItem::After { waiting, read });
+    items
+}
+
+pub(crate) fn short_name(forest: &ForestProjection, id: VisitId) -> String {
+    let v = forest.visit(id).unwrap();
+    let name = crate::naming::page_name(&v.title, &v.url);
+    let Some(parent) = v.parent.and_then(|id| forest.visit(id)) else {
+        return name;
+    };
+    let parent_name = crate::naming::page_name(&parent.title, &parent.url);
+    for sep in [" · ", " - ", " | ", " — ", " – ", " : "] {
+        let pieces: Vec<_> = name.split(sep).collect();
+        let parent_pieces: Vec<_> = parent_name.split(sep).collect();
+        let unique: Vec<_> = pieces
             .iter()
-            .filter(|node| (node.rect.y - TRUNK_Y).abs() < 0.01)
+            .filter(|p| !parent_pieces.contains(p))
+            .copied()
             .collect();
-        trunk.sort_by(|a, b| a.rect.x.total_cmp(&b.rect.x));
-        trunk.into_iter().map(|node| node.id).collect()
+        if !unique.is_empty() && unique.len() < pieces.len() {
+            return unique.join(sep);
+        }
+    }
+    name
+}
+
+fn item_width(forest: &ForestProjection, item: &StripItem, pill: f64, current: VisitId) -> f64 {
+    match item {
+        StripItem::Root(id) if forest.visit(current).unwrap().parent == Some(*id) => {
+            (34. + super::view::text_width(&short_name(forest, *id), 12.5, 0.56)).min(160.)
+        }
+        StripItem::Root(_) | StripItem::Page(_) => 28.,
+        StripItem::Parent(id) => {
+            (34. + super::view::text_width(&short_name(forest, *id), 12.5, 0.56)).min(160.)
+        }
+        StripItem::Run { ids, .. } => 34. + ids.len().to_string().len() as f64 * 7.,
+        StripItem::Earlier { ids } => 76. + ids.len().to_string().len() as f64 * 7.,
+        StripItem::Current(_) => pill,
+        StripItem::After { waiting, read } => [waiting, read]
+            .into_iter()
+            .filter(|ids| !ids.is_empty())
+            .map(|ids| 22. + ids.len().to_string().len() as f64 * 7.)
+            .sum(),
     }
 }
 
-/// Port of the prototype's `layoutB(F, W, {pill: true, down: true, rest: 52})`.
-/// The trunk keeps identical x coordinates at rest and open, so hovering never shifts it.
 pub(crate) fn strip_layout(
     forest: &ForestProjection,
     current: VisitId,
-    width: f64,
-    open: bool,
-    pill_width: f64,
-) -> StripLayout {
-    let path = forest.path(current);
-    let Some(k) = path.len().checked_sub(1) else {
-        return StripLayout::default();
-    };
-    let extra = pill_width - 32.;
-    let half = ((width - 2. * PAD - 40. - extra) / (2 * k + 10) as f64).clamp(23., 36.);
-    let x = |u: usize| PAD + 16. + u as f64 * half + if u > 2 * k { extra } else { 0. };
-    let offsets: &[f64] = if open {
-        &[0., 27., 46., 65., 84.]
-    } else {
-        &[0., REST_HEIGHT * 0.27, REST_HEIGHT * 0.42]
-    };
-    let bands = if open { 4 } else { 2 };
-    let mut layout = Placement::default();
-    for (i, &id) in path.iter().enumerate() {
-        let rect = if i == k {
-            Rect {
-                x: x(2 * k) + extra / 2.,
-                y: TRUNK_Y,
-                s: if open { 32. } else { 30. },
-                w: pill_width,
-            }
-        } else {
-            square(x(2 * i), TRUNK_Y, if open { 28. } else { 26. })
-        };
-        let kind = if i == k {
-            NodeKind::Pill
-        } else {
-            NodeKind::Tile
-        };
-        layout.place(id, rect, kind, true);
-        if i > 0 {
-            layout.edge(path[i - 1], id, EdgeKind::Path, false);
-        }
-    }
-
-    let mut taken: HashSet<(usize, isize)> = HashSet::new();
-    let take = |taken: &mut HashSet<(usize, isize)>, band: usize, u: usize| {
-        taken.insert((band, u as isize - 1));
-        taken.insert((band, u as isize));
-    };
-    let mut forward = forest.children(current).to_vec();
-    forward.sort_by(|a, b| {
-        let (a, b) = (forest.visit(*a).unwrap(), forest.visit(*b).unwrap());
-        (a.state == VisitState::Queued)
-            .cmp(&(b.state == VisitState::Queued))
-            .then(b.created_at.cmp(&a.created_at))
-    });
-    let mut overflow: HashMap<VisitId, Vec<VisitId>> = HashMap::new();
-    for (band, &child) in forward.iter().enumerate() {
-        if band > bands {
-            if open {
-                overflow
-                    .entry(current)
-                    .or_default()
-                    .extend(subtree(forest, child));
-            }
-            continue;
-        }
-        let mut chain = vec![child];
-        while chain.len() < 4 {
-            match forest.children(*chain.last().unwrap()).last() {
-                Some(&next) => chain.push(next),
-                None => break,
-            }
-        }
-        for (r, &id) in chain.iter().enumerate() {
-            let u = 2 * k + 2 + 2 * r;
-            take(&mut taken, band, u);
-            let (size, kind) = match (open, r) {
-                (true, 0) => (22., NodeKind::Tile),
-                (true, _) => (14., NodeKind::Raw),
-                (false, _) if band == 0 && r == 0 => (10., NodeKind::Bud),
-                (false, _) => (7., NodeKind::Bud),
-            };
-            layout.place(id, square(x(u), TRUNK_Y + offsets[band], size), kind, false);
-            let from = if r == 0 { current } else { chain[r - 1] };
-            layout.edge(from, id, edge_kind(forest, id), false);
-        }
-        if open {
-            let shown: HashSet<_> = chain.iter().copied().collect();
-            let hidden: Vec<_> = subtree(forest, child)
-                .into_iter()
-                .filter(|id| !shown.contains(id))
-                .collect();
-            if !hidden.is_empty() {
-                overflow.insert(*chain.last().unwrap(), hidden);
-            }
-        }
-    }
-
-    for i in (0..k).rev() {
-        let mut alternatives: Vec<_> = forest
-            .children(path[i])
+    room: f64,
+    pill: f64,
+) -> Vec<StripNode> {
+    let mut items = strip_items(forest, current);
+    let width = |items: &[StripItem]| -> f64 {
+        let widths: Vec<_> = items
             .iter()
-            .copied()
-            .filter(|&child| child != path[i + 1])
+            .map(|item| item_width(forest, item, pill, current))
+            .filter(|w| *w > 0.)
             .collect();
-        alternatives.sort_by_key(|id| std::cmp::Reverse(forest.visit(*id).unwrap().created_at));
-        let u0 = 2 * i + 1;
-        for branch in alternatives {
-            let rows = rows(forest, branch);
-            let mut best: Option<(isize, Vec<PlannedRow>)> = None;
-            for band in 1..=bands {
-                for row_count in (1..=rows.len().min(bands - band + 1)).rev() {
-                    let mut plan: Vec<PlannedRow> = vec![];
-                    let mut fits = true;
-                    for (r, row) in rows.iter().enumerate().take(row_count) {
-                        let row_band = band + r;
-                        let parent_shown = plan.iter().any(|planned| {
-                            row.parent.is_some_and(|p| {
-                                rows[planned.row].ids[..planned.shown].contains(&p)
-                            })
-                        });
-                        if r > 0 && !parent_shown {
-                            break;
-                        }
-                        let mut n = 0;
-                        while n < row.ids.len() {
-                            let u = (u0 + 2 * (row.column + n)) as isize;
-                            if taken.contains(&(row_band, u - 1)) || taken.contains(&(row_band, u))
-                            {
-                                break;
-                            }
-                            n += 1;
-                        }
-                        if n == 0 {
-                            fits = r > 0;
-                            break;
-                        }
-                        plan.push(PlannedRow {
-                            row: r,
-                            band: row_band,
-                            shown: n,
-                        });
-                    }
-                    if !fits || plan.is_empty() {
-                        continue;
-                    }
-                    let score =
-                        plan.iter().map(|p| p.shown as isize).sum::<isize>() * 10 - band as isize;
-                    if best.as_ref().is_none_or(|(best, _)| score > *best) {
-                        best = Some((score, plan));
-                    }
-                }
+        PAD * 2. + widths.iter().sum::<f64>() + GAP * widths.len().saturating_sub(1) as f64
+    };
+    while width(&items) > room && items.len() > 4 {
+        if !matches!(items[2], StripItem::Page(_) | StripItem::Run { .. }) {
+            break;
+        }
+        if !matches!(items[1], StripItem::Earlier { .. }) {
+            if !matches!(items[1], StripItem::Page(_) | StripItem::Run { .. }) {
+                break;
             }
-            let Some((_, plan)) = best else {
-                if open {
-                    overflow
-                        .entry(path[i])
-                        .or_default()
-                        .extend(subtree(forest, branch));
-                }
-                continue;
-            };
-            let mut shown = HashSet::new();
-            for PlannedRow {
-                row,
-                band,
-                shown: n,
-            } in plan
-            {
-                let row = &rows[row];
-                for (m, &id) in row.ids[..n].iter().enumerate() {
-                    let column = row.column + m;
-                    let u = u0 + 2 * column;
-                    take(&mut taken, band, u);
-                    let (size, kind) = match (open, column) {
-                        (true, 0) => (20., NodeKind::Tile),
-                        (true, _) => (14., NodeKind::Raw),
-                        (false, 0) => (8., NodeKind::Bud),
-                        (false, _) => (6., NodeKind::Bud),
-                    };
-                    layout.place(id, square(x(u), TRUNK_Y + offsets[band], size), kind, false);
-                    let from_trunk = m == 0 && row.parent.is_none();
-                    let from = if m > 0 {
-                        row.ids[m - 1]
-                    } else {
-                        row.parent.unwrap_or(path[i])
-                    };
-                    layout.edge(from, id, edge_kind(forest, id), from_trunk);
-                    shown.insert(id);
-                }
-            }
-            if open {
-                let hidden: Vec<_> = subtree(forest, branch)
-                    .into_iter()
-                    .filter(|id| !shown.contains(id))
-                    .collect();
-                if !hidden.is_empty() {
-                    overflow.insert(branch, hidden);
-                }
-            }
+            let ids = items.remove(1).ids().to_vec();
+            items.insert(1, StripItem::Earlier { ids });
+        }
+        let next = items.remove(2).ids().to_vec();
+        if let StripItem::Earlier { ids } = &mut items[1] {
+            ids.extend(next);
         }
     }
-
-    for (id, hidden) in overflow {
-        if let Some(&index) = layout.index.get(&id) {
-            layout.nodes[index].hidden.extend(hidden);
-        }
-    }
-    let width = layout
-        .nodes
+    let widths: Vec<_> = items
         .iter()
-        .map(|node| node.rect.x)
-        .fold(f64::MIN, f64::max)
-        + PAD
-        + 20.;
-    StripLayout {
-        nodes: layout.nodes,
-        edges: layout.edges,
-        width,
-        height: if open { OPEN_HEIGHT } else { REST_HEIGHT },
-        focus: x(2 * k),
-    }
-}
-
-#[derive(Default)]
-struct Placement {
-    nodes: Vec<PlacedNode>,
-    edges: Vec<Edge>,
-    index: HashMap<VisitId, usize>,
-}
-
-impl Placement {
-    fn place(&mut self, id: VisitId, rect: Rect, kind: NodeKind, on_path: bool) {
-        self.index.insert(id, self.nodes.len());
-        self.nodes.push(PlacedNode {
-            id,
-            rect,
-            kind,
-            on_path,
-            hidden: Vec::new(),
-        });
-    }
-
-    fn edge(&mut self, from: VisitId, to: VisitId, kind: EdgeKind, from_bottom: bool) {
-        self.edges.push(Edge {
-            from,
-            to,
-            kind,
-            from_bottom,
-        });
-    }
-}
-
-fn square(x: f64, y: f64, s: f64) -> Rect {
-    Rect { x, y, s, w: s }
+        .map(|item| item_width(forest, item, pill, current))
+        .collect();
+    let is_parent = |item: &StripItem| {
+        matches!(item, StripItem::Parent(_))
+            || matches!(item, StripItem::Root(id) if forest.visit(current).unwrap().parent == Some(*id))
+    };
+    let fixed: f64 = items
+        .iter()
+        .zip(&widths)
+        .filter(|(item, _)| !is_parent(item) && !matches!(item, StripItem::Current(_)))
+        .map(|(_, w)| *w)
+        .sum();
+    let gaps = GAP * widths.iter().filter(|w| **w > 0.).count().saturating_sub(1) as f64;
+    let flexible = (room - PAD * 2. - fixed - gaps).max(0.);
+    let parent_width = items
+        .iter()
+        .zip(&widths)
+        .find(|(item, _)| is_parent(item))
+        .map_or(0., |(_, w)| *w);
+    let parent_width = parent_width.min((flexible * 0.38).max(0.));
+    let current_width = pill.min((flexible - parent_width).max(0.));
+    let path = forest.path(current);
+    let mut left = PAD;
+    items
+        .into_iter()
+        .zip(widths)
+        .filter_map(|(item, w)| {
+            let w = if is_parent(&item) {
+                parent_width
+            } else if matches!(item, StripItem::Current(_)) {
+                current_width
+            } else {
+                w
+            };
+            if w == 0. {
+                return None;
+            }
+            let heads = branch_heads(forest, item.ids(), &path);
+            let branches = branch_counts(forest, &heads);
+            let rows = match &item {
+                StripItem::Run { ids, .. } => ids.clone(),
+                StripItem::Earlier { ids } => ids.iter().rev().copied().collect(),
+                StripItem::After { waiting, .. } => waiting.clone(),
+                _ => heads,
+            };
+            let total_rows = rows.len();
+            let s = match item {
+                StripItem::Current(_) => 32.,
+                StripItem::Root(_) | StripItem::Page(_) => 28.,
+                _ => 24.,
+            };
+            let rect = Rect {
+                x: left + w / 2.,
+                y: TRUNK_Y,
+                w,
+                s,
+            };
+            left += w + GAP;
+            Some(StripNode {
+                item,
+                rect,
+                branches,
+                rows: rows.into_iter().take(6).collect(),
+                total_rows,
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn edge_kind(forest: &ForestProjection, id: VisitId) -> EdgeKind {
@@ -342,62 +305,6 @@ pub(crate) fn edge_kind(forest: &ForestProjection, id: VisitId) -> EdgeKind {
     }
 }
 
-fn subtree(forest: &ForestProjection, root: VisitId) -> Vec<VisitId> {
-    let mut out = Vec::new();
-    let mut stack = vec![root];
-    while let Some(id) = stack.pop() {
-        out.push(id);
-        stack.extend(forest.children(id).iter().rev());
-    }
-    out
-}
-
-/// How many nodes of row `row` of a side branch go into band `band`.
-struct PlannedRow {
-    row: usize,
-    band: usize,
-    shown: usize,
-}
-
-struct Row {
-    ids: Vec<VisitId>,
-    column: usize,
-    parent: Option<VisitId>,
-}
-
-/// Port of the prototype's `rowsOf`: the newest child continues its parent's row,
-/// older children start rows of their own. Iterative so deep histories cannot overflow.
-fn rows(forest: &ForestProjection, root: VisitId) -> Vec<Row> {
-    let mut out = vec![Row {
-        ids: vec![],
-        column: 0,
-        parent: None,
-    }];
-    let mut stack = vec![(root, 0, Some(0), None)];
-    while let Some((id, column, row, parent)) = stack.pop() {
-        let row = row.unwrap_or_else(|| {
-            out.push(Row {
-                ids: vec![],
-                column,
-                parent,
-            });
-            out.len() - 1
-        });
-        out[row].ids.push(id);
-        let mut children = forest.children(id).to_vec();
-        children.sort_by_key(|id| std::cmp::Reverse(forest.visit(*id).unwrap().created_at));
-        for (j, child) in children.into_iter().enumerate().rev() {
-            if j == 0 {
-                stack.push((child, column + 1, Some(row), None));
-            } else {
-                stack.push((child, column + 1, None, Some(id)));
-            }
-        }
-    }
-    out
-}
-
-/// The prototype's `edgeD`, as cubic Bézier control points.
 pub(crate) fn edge_curve(edge: &Edge, a: Rect, b: Rect) -> [(f64, f64); 4] {
     let (ex, ey) = (b.x - b.w / 2., b.y);
     if edge.from_bottom {
@@ -409,232 +316,178 @@ pub(crate) fn edge_curve(edge: &Edge, a: Rect, b: Rect) -> [(f64, f64); 4] {
     [(sx, sy), (sx + dx, sy), (ex - dx, ey), (ex, ey)]
 }
 
-/// Horizontal pan that keeps the current page at two thirds of the strip, as the prototype does.
-pub(crate) fn pan(layout: &StripLayout, strip_width: f64) -> f64 {
-    if layout.width <= strip_width {
-        return 0.;
-    }
-    (strip_width * 0.66 - layout.focus)
-        .min(0.)
-        .max(strip_width - layout.width)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browser::{Snapshot, TreeState, Visit};
-    use javascriptcore::{ContextExt, ValueExt};
-    use serde_json::Value;
-    use url::Url;
+    use crate::browser::{Lifecycle, Snapshot, TreeId, TreeState, Visit};
 
-    fn fixture() -> (ForestProjection, Vec<VisitId>, Value) {
-        let json: Value =
-            serde_json::from_str(include_str!("testdata/strip-fixture.json")).unwrap();
-        let entries = json.as_array().unwrap();
-        let ids: Vec<VisitId> = entries
+    fn fixture(
+        parents: &[Option<usize>],
+        hosts: &[&str],
+        queued: &[usize],
+        current: usize,
+    ) -> (ForestProjection, Vec<VisitId>) {
+        let ids: Vec<VisitId> = parents
             .iter()
             .map(|_| ulid::Ulid::new().to_string().parse().unwrap())
             .collect();
-        let index = |key: &Value| entries.iter().position(|e| &e["id"] == key);
-        let visits: Vec<Visit> = entries
+        let visits = parents
             .iter()
             .enumerate()
-            .map(|(i, e)| {
-                let created_at = (e["at"].as_f64().unwrap() * 60_000.) as i64;
-                let pending = e["pending"].as_bool().unwrap();
-                Visit {
-                    id: ids[i],
-                    parent: index(&e["parent"]).map(|p| ids[p]),
-                    url: Url::parse(&format!("https://{}/{i}", e["host"].as_str().unwrap()))
-                        .unwrap(),
-                    title: e["title"].as_str().unwrap().into(),
-                    created_at,
-                    opened_at: (!pending).then_some(created_at),
-                    state: if pending {
-                        VisitState::Queued
-                    } else {
-                        VisitState::Opened
-                    },
-                    source: None,
-                }
-            })
-            .collect();
-        let states = visits
-            .iter()
-            .filter(|v| v.parent.is_none())
-            .map(|v| TreeState {
-                pin: None,
-                last_event_at: None,
-                lifecycle: crate::browser::Lifecycle::Open,
-                root: crate::browser::TreeId(v.id),
-                last_visit: v.id,
-                name: None,
-            })
-            .collect();
-        let forest = ForestProjection::from_snapshot(
-            Snapshot {
-                visits,
-                current: None,
-            },
-            states,
-        )
-        .unwrap();
-        (forest, ids, json)
-    }
-
-    #[test]
-    fn layout_matches_the_prototype_for_every_current_page() {
-        let (forest, ids, json) = fixture();
-        let script = include_str!("testdata/layout-b.js");
-        let mut cases = 0;
-        for width in [800., 1240.] {
-            for open in [false, true] {
-                for (current, &id) in ids.iter().enumerate() {
-                    if forest.visit(id).unwrap().state == VisitState::Queued {
-                        continue;
-                    }
-                    let rust = strip_layout(&forest, id, width, open, 250.);
-                    let reference = format!(
-                        r#"const ns={json}; ns.forEach(n=>{{n.state=n.pending?"pending":"opened";n.by="me";}});
-                        const current={current}; const SITE={{}},PF='Inter'; const tw=()=>203;
-                        const mk=(F,id,x,y,s,o={{}})=>({{key:id,x,y,s,w:o.w||s,cls:o.cls||[],...o}}); const ecls=()=>'';
-                        const get=id=>ns.find(n=>n.id===id); const kids=id=>ns.filter(n=>n.parent===id);
-                        const count=id=>kids(id).reduce((s,n)=>s+1+count(n.id),0);
-                        const F={{get,dkids:kids,count,path:()=>{{let p=[ns[current].id];while(get(p[0]).parent)p.unshift(get(p[0]).parent);return p;}}}};
-                        {script}
-                        JSON.stringify(layoutB(F,{width},{{open:{open},pill:true,down:true,rest:52}}))"#
-                    );
-                    let context = javascriptcore::Context::new();
-                    let value = context.evaluate(&reference).expect("prototype layout runs");
-                    let expected: Value = serde_json::from_str(&value.to_str()).unwrap();
-                    let expected_nodes: Vec<_> = expected["nodes"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .filter(|n| n["key"] != "glow")
-                        .collect();
-                    assert_eq!(rust.nodes.len(), expected_nodes.len(), "count {current}");
-                    for node in &expected_nodes {
-                        let index = json
-                            .as_array()
-                            .unwrap()
-                            .iter()
-                            .position(|e| e["id"] == node["key"])
-                            .unwrap();
-                        let placed = rust.node(ids[index]).expect("node is visible in Rust");
-                        for (key, value) in [
-                            ("x", placed.rect.x),
-                            ("y", placed.rect.y),
-                            ("s", placed.rect.s),
-                            ("w", placed.rect.w),
-                        ] {
-                            assert!(
-                                (value - node[key].as_f64().unwrap()).abs() < 1e-4,
-                                "{key} of node {index} with current {current}, open {open}, width {width}"
-                            );
-                        }
-                        let badge = node["badge"]
-                            .as_str()
-                            .map(|b| b[1..].parse::<usize>().unwrap())
-                            .unwrap_or(0);
-                        assert_eq!(placed.hidden.len(), badge, "badge of node {index}");
-                    }
-                    assert!((rust.width - expected["width"].as_f64().unwrap()).abs() < 1e-4);
-                    assert_eq!(
-                        rust.edges.len(),
-                        expected["edges"].as_array().unwrap().len()
-                    );
-                    cases += 1;
-                }
-            }
-        }
-        assert!(cases > 100);
-    }
-
-    #[test]
-    fn trunk_keeps_its_coordinates_between_rest_and_open() {
-        let (forest, ids, _) = fixture();
-        for &id in &ids {
-            if forest.visit(id).unwrap().state == VisitState::Queued {
-                continue;
-            }
-            let rest = strip_layout(&forest, id, 1240., false, 180.);
-            let open = strip_layout(&forest, id, 1240., true, 180.);
-            for trunk in forest.path(id) {
-                let (a, b) = (rest.node(trunk).unwrap(), open.node(trunk).unwrap());
-                assert_eq!((a.rect.x, a.rect.y), (b.rect.x, b.rect.y));
-            }
-            assert!(rest.nodes.iter().all(|n| n.hidden.is_empty()));
-        }
-    }
-
-    #[test]
-    fn badges_name_every_hidden_page_once() {
-        let (forest, ids, _) = fixture();
-        for &id in &ids {
-            if forest.visit(id).unwrap().state == VisitState::Queued {
-                continue;
-            }
-            let open = strip_layout(&forest, id, 800., true, 250.);
-            let shown: HashSet<_> = open.nodes.iter().map(|n| n.id).collect();
-            let mut hidden = HashSet::new();
-            for node in &open.nodes {
-                for h in &node.hidden {
-                    assert!(!shown.contains(h));
-                    assert!(hidden.insert(*h), "hidden twice");
-                }
-            }
-            let tree = forest.tree_of(id).unwrap().root();
-            let total = forest.descendant_count(tree).unwrap() + 1;
-            assert_eq!(shown.len() + hidden.len(), total);
-            for edge in &open.edges {
-                assert!(shown.contains(&edge.from) && shown.contains(&edge.to));
-            }
-        }
-    }
-
-    #[test]
-    fn a_deep_history_lays_out_without_recursion() {
-        let mut visits = Vec::new();
-        let mut parent = None;
-        for i in 0..20_000 {
-            let id: VisitId = ulid::Ulid::new().to_string().parse().unwrap();
-            visits.push(Visit {
-                id,
-                parent,
-                url: Url::parse("https://example.org/").unwrap(),
-                title: String::new(),
-                created_at: i,
-                opened_at: Some(i),
-                state: VisitState::Opened,
+            .map(|(i, p)| Visit {
+                id: ids[i],
+                parent: p.map(|p| ids[p]),
+                url: format!("https://{}/{i}", hosts[i % hosts.len()])
+                    .parse()
+                    .unwrap(),
+                title: format!("Tutorial · Step {i} - Docs"),
+                created_at: i as i64,
+                opened_at: (!queued.contains(&i)).then_some(i as i64),
+                state: if queued.contains(&i) {
+                    VisitState::Queued
+                } else {
+                    VisitState::Opened
+                },
                 source: None,
-            });
-            parent = Some(id);
-        }
-        let root = visits[0].id;
-        let leaf = parent.unwrap();
+            })
+            .collect();
         let forest = ForestProjection::from_snapshot(
             Snapshot {
                 visits,
-                current: Some(leaf),
+                current: Some(ids[current]),
             },
             vec![TreeState {
+                root: TreeId(ids[0]),
+                last_visit: ids[current],
                 pin: None,
-                last_event_at: None,
-                lifecycle: crate::browser::Lifecycle::Open,
-                root: crate::browser::TreeId(root),
-                last_visit: leaf,
                 name: None,
+                last_event_at: None,
+                lifecycle: Lifecycle::Open,
             }],
         )
         .unwrap();
-        let layout = strip_layout(&forest, root, 1240., true, 120.);
-        assert_eq!(layout.trunk().len(), 5);
-        assert_eq!(
-            layout.node(layout.trunk()[4]).unwrap().hidden.len(),
-            20_000 - 5
+        (forest, ids)
+    }
+    fn chain(n: usize, hosts: &[&str]) -> (ForestProjection, Vec<VisitId>) {
+        fixture(
+            &(0..n).map(|i| i.checked_sub(1)).collect::<Vec<_>>(),
+            hosts,
+            &[],
+            n - 1,
+        )
+    }
+    fn assert_fits(nodes: &[StripNode], room: f64) {
+        assert!(nodes
+            .iter()
+            .all(|n| n.rect.x - n.rect.w / 2. >= 0. && n.rect.x + n.rect.w / 2. <= room));
+        assert!(nodes
+            .windows(2)
+            .all(|n| n[0].rect.x + n[0].rect.w / 2. < n[1].rect.x - n[1].rect.w / 2.));
+    }
+    #[test]
+    fn same_site_chain_keeps_root_named_parent_and_full_current() {
+        let (f, ids) = chain(8, &["docs.rs"]);
+        let nodes = strip_layout(&f, ids[7], 712., 200.);
+        assert!(matches!(nodes[0].item, StripItem::Root(id) if id == ids[0]));
+        assert!(
+            matches!(&nodes[1].item, StripItem::Run { ids: run, host } if run == &ids[1..6] && host == "docs.rs")
         );
-        let leaf_layout = strip_layout(&forest, leaf, 1240., false, 120.);
-        assert_eq!(leaf_layout.trunk().len(), 20_000);
+        assert!(matches!(nodes[2].item, StripItem::Parent(id) if id == ids[6]));
+        assert!(matches!(nodes[3].item, StripItem::Current(id) if id == ids[7]));
+        assert_eq!(nodes[1].rows, ids[1..6]);
+        assert_eq!(short_name(&f, ids[6]), "Step 6");
+        assert_fits(&nodes, 712.);
+    }
+    #[test]
+    fn fan_out_counts_entire_branches_and_lists_recent_heads() {
+        let mut parents = vec![None, Some(0), Some(1)];
+        parents.extend((0..12).map(|_| Some(0)));
+        parents.push(Some(3));
+        let (f, ids) = fixture(&parents, &["docs.rs"], &[4, 15], 2);
+        let nodes = strip_layout(&f, ids[2], 712., 200.);
+        assert_eq!(
+            nodes[0].branches,
+            BranchCounts {
+                pages: 13,
+                waiting: 2
+            }
+        );
+        assert_eq!(nodes[0].total_rows, 12);
+        assert_eq!(
+            nodes[0].rows,
+            ids[9..15].iter().rev().copied().collect::<Vec<_>>()
+        );
+    }
+    #[test]
+    fn deep_trail_merges_oldest_items_and_preserves_every_page() {
+        let (f, ids) = chain(34, &["a.test", "b.test", "c.test"]);
+        for room in [280., 390., 712., 1240.] {
+            let nodes = strip_layout(&f, ids[33], room, 250.);
+            assert_fits(&nodes, room);
+            assert_eq!(
+                nodes
+                    .iter()
+                    .flat_map(|n| n.item.ids())
+                    .copied()
+                    .collect::<Vec<_>>(),
+                ids
+            );
+            let earlier = nodes
+                .iter()
+                .find(|n| matches!(n.item, StripItem::Earlier { .. }))
+                .unwrap();
+            assert!(matches!(&earlier.item, StripItem::Earlier { ids: old } if old[0] == ids[1]));
+            assert_eq!(earlier.rows[0], *earlier.item.ids().last().unwrap());
+            assert_eq!(earlier.rows.len(), 6);
+        }
+    }
+    #[test]
+    fn thread_after_counts_read_and_waiting_and_keeps_queue_order() {
+        let mut parents = vec![None];
+        parents.extend((0..18).map(|_| Some(0)));
+        let queued: Vec<_> = (1..15).collect();
+        let (f, ids) = fixture(&parents, &["news.test"], &queued, 0);
+        let items = strip_items(&f, ids[0]);
+        assert!(
+            matches!(&items[1], StripItem::After { waiting, read } if waiting == &ids[1..15] && read.len() == 4)
+        );
+        let nodes = strip_layout(&f, ids[0], 712., 250.);
+        assert_eq!(nodes[1].rows, ids[1..7]);
+        assert_eq!(nodes[1].total_rows, 14);
+        assert_fits(&nodes, 712.);
+    }
+    #[test]
+    fn short_mixed_path_stays_unfolded_and_singletons_stay_tiles() {
+        let (f, ids) = chain(5, &["a.test", "b.test"]);
+        let nodes = strip_layout(&f, ids[4], 1240., 200.);
+        assert!(matches!(nodes[1].item, StripItem::Page(id) if id == ids[1]));
+        assert!(matches!(nodes[2].item, StripItem::Page(id) if id == ids[2]));
+        assert!(!nodes
+            .iter()
+            .any(|n| matches!(n.item, StripItem::Run { .. } | StripItem::Earlier { .. })));
+        assert_fits(&nodes, 1240.);
+    }
+    #[test]
+    fn root_as_parent_is_named_once_and_narrow_runs_stay_runs() {
+        let (f, ids) = chain(2, &["docs.rs"]);
+        let nodes = strip_layout(&f, ids[1], 390., 250.);
+        assert_eq!(nodes.len(), 2);
+        assert!(nodes[0].rect.w > 28.);
+        assert!(matches!(nodes[0].item, StripItem::Root(id) if id == ids[0]));
+        assert_fits(&nodes, 390.);
+        let (f, ids) = chain(8, &["docs.rs"]);
+        let nodes = strip_layout(&f, ids[7], 280., 250.);
+        assert!(matches!(nodes[1].item, StripItem::Run { .. }));
+        assert_fits(&nodes, 280.);
+    }
+
+    #[test]
+    fn a_deep_same_site_history_has_a_bounded_list_without_recursion() {
+        let (f, ids) = chain(20_000, &["docs.rs"]);
+        let nodes = strip_layout(&f, ids[19_999], 1240., 250.);
+        assert_eq!(nodes.len(), 4);
+        assert_eq!(nodes[1].total_rows, 19_997);
+        assert_eq!(nodes[1].rows.len(), 6);
+        assert_fits(&nodes, 1240.);
     }
 }

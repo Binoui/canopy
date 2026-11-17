@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 use super::{
     forest_layout,
-    graph::{self, EdgeKind, NodeKind, StripLayout},
+    graph::{self, EdgeKind, StripItem},
     palette::{Group, PaletteItem},
     pins, tree_view,
     waiting::{self, WaitState, WaitingOrder},
@@ -109,94 +109,90 @@ fn tree_view_value(forest: &ForestProjection) -> Value {
     })
 }
 
-/// The current tree's strip at rest and open, for a window `width` wide.
+/// The current path folded to fit the room left by the pinned controls.
 pub(crate) fn strip(forest: &ForestProjection, width: f64) -> Value {
     let pins = pins::pins(forest, width);
-    let room = pins.room;
     let placed: Vec<_> = pins
         .placed
         .iter()
         .map(|(pin, r)| json!({ "kind": pin.kind(), "x": r.x, "y": r.y, "w": r.w, "s": r.s }))
         .collect();
     let Some(current) = forest.current() else {
-        return json!({
-            "room": room, "pins": placed,
-            "rest": empty_strip(graph::REST_HEIGHT),
-            "open": empty_strip(graph::OPEN_HEIGHT),
-        });
+        return json!({ "room": pins.room, "pins": placed, "height": graph::REST_HEIGHT, "nodes": [], "edges": [], "trunk": [], "width": 0, "pan": 0 });
     };
-    let pill = forest.visit(current).map_or(120., pill_width);
-    let layout = |open| {
-        let layout = graph::strip_layout(forest, current, room, open, pill);
-        strip_value(&layout, room)
-    };
-    json!({ "rest": layout(false), "open": layout(true), "room": room, "pins": placed })
-}
-
-fn empty_strip(height: f64) -> Value {
-    json!({ "height": height, "width": 0, "pan": 0, "nodes": [], "edges": [] })
-}
-
-fn strip_value(layout: &StripLayout, room: f64) -> Value {
-    let width = layout
-        .nodes
-        .iter()
-        .map(|n| n.rect.x + n.rect.w / 2. + 22.)
-        .fold(layout.width, f64::max);
-    let mut pan = graph::pan(layout, room).clamp((room - width).min(0.), 0.);
-    if let Some(pill) = layout.nodes.iter().find(|n| n.kind == NodeKind::Pill) {
-        let left = pill.rect.x - pill.rect.w / 2.;
-        let right = pill.rect.x + pill.rect.w / 2.;
-        let lower = (-left).max((room - width).min(0.));
-        let upper = (room - right).min(0.);
-        if lower <= upper {
-            pan = pan.clamp(lower, upper);
+    let layout = graph::strip_layout(
+        forest,
+        current,
+        pins.room,
+        forest.visit(current).map_or(120., pill_width),
+    );
+    let path = forest.path(current);
+    let nodes: Vec<_> = layout.iter().map(|node| {
+        let ids = node.item.ids();
+        let id = ids.last().copied().unwrap_or(current);
+        let v = forest.visit(id).unwrap();
+        let heads = graph::branch_heads(forest, ids, &path);
+        let (kind, label, title, meta, heading, more) = match &node.item {
+            StripItem::Root(_) | StripItem::Page(_) | StripItem::Parent(_) | StripItem::Current(_) => {
+                let kind = match node.item { StripItem::Root(_) => "root", StripItem::Page(_) => "page", StripItem::Parent(_) => "parent", _ => "pill" };
+                (kind, graph::short_name(forest, id), v.label().to_owned(), format!("{} · {} after", site_line(v), plural(forest.descendant_count(id).unwrap_or(0), "page")),
+                    if heads.is_empty() { String::new() } else { format!("Other branches from here · {}", heads.len()) },
+                    if node.total_rows > node.rows.len() { format!("{} more", node.total_rows - node.rows.len()) } else { String::new() })
+            }
+            StripItem::Run { ids, host } => {
+                let first = forest.visit(ids[0]).unwrap();
+                let before = first.parent.and_then(|id| forest.visit(id)).map_or("Root", Visit::label);
+                let after = path.iter().position(|id| Some(id) == ids.last()).and_then(|i| path.get(i+1)).and_then(|id| forest.visit(*id)).map_or("Current page", Visit::label);
+                ("run", ids.len().to_string(), format!("{} on {host}", plural(ids.len(), "page")), format!("Between {before} and {after}"), String::new(),
+                    if node.total_rows > node.rows.len() { format!("{} more, in the tree view", node.total_rows - node.rows.len()) } else { String::new() })
+            }
+            StripItem::Earlier { ids } => ("earlier", format!("··· {} earlier", ids.len()), format!("{} earlier pages", ids.len()),
+                format!("From {} to {}", forest.visit(ids[0]).unwrap().label(), v.label()), "Most recent first".into(),
+                if node.total_rows > node.rows.len() { format!("{} more, in the tree view", node.total_rows - node.rows.len()) } else { String::new() }),
+            StripItem::After { waiting, read } => ("after", String::new(), v.label().to_owned(), site_line(v),
+                format!("Waiting from this page · {}", waiting.len()), format!("{} more waiting · {} read", waiting.len().saturating_sub(node.rows.len()), read.len())),
+        };
+        let rows: Vec<_> = node.rows.iter().map(|id| {
+            let counts = if matches!(node.item, StripItem::Run { .. } | StripItem::Earlier { .. }) {
+                graph::branch_counts(forest, &graph::branch_heads(forest, &[*id], &path))
+            } else { graph::branch_counts(forest, &[*id]) };
+            json!({ "id": id.to_string(), "pages": counts.pages, "waiting": counts.waiting,
+                "detail": if matches!(node.item, StripItem::Run { .. } | StripItem::Earlier { .. }) && counts.pages == 0 {
+                    ago(forest.visit(*id).unwrap().opened_at.unwrap_or(forest.visit(*id).unwrap().created_at))
+                } else { format!("{} · {} waiting", plural(counts.pages, "page"), counts.waiting) } })
+        }).collect();
+        let (waiting, read) = match &node.item { StripItem::After { waiting, read } => (waiting.len(), read.len()), _ => (0, 0) };
+        let page_head = matches!(node.item, StripItem::Root(_) | StripItem::Page(_) | StripItem::Parent(_) | StripItem::Current(_));
+        let mut actions = Vec::new();
+        if page_head {
+            actions.push(json!({ "kind": if id == current { "reload" } else { "open" }, "label": if id == current { "Reload" } else { "Open" } }));
+            actions.push(json!({ "kind": "branch", "label": "New branch here" }));
+            if id == current {
+                if let Some(source) = &v.source {
+                    if v.parent.is_some() { actions.push(json!({ "kind": "source", "label": "Back to source" })); }
+                    if source.citation_url.is_some() { actions.push(json!({ "kind": "comment", "label": "Open comment" })); }
+                }
+            }
         }
-    }
-
-    let nodes: Vec<Value> = layout
-        .nodes
-        .iter()
-        .map(|node| {
-            json!({
-                "id": node.id.to_string(),
-                "x": node.rect.x, "y": node.rect.y, "w": node.rect.w, "s": node.rect.s,
-                "kind": match node.kind {
-                    NodeKind::Pill => "pill",
-                    NodeKind::Tile => "tile",
-                    NodeKind::Raw => "raw",
-                    NodeKind::Bud => "bud",
-                },
-                "path": node.on_path,
-                "hidden": node.hidden.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            })
+        json!({
+            "preview": page_head, "actions": actions,
+            "id": if kind == "after" { format!("after-{current}") } else { id.to_string() },
+            "page": id.to_string(), "ids": ids.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "named": kind == "root" && forest.visit(current).unwrap().parent == Some(id),
+            "kind": kind, "label": label, "title": title, "meta": meta, "heading": heading, "more": more, "rows": rows,
+            "branches": { "pages": node.branches.pages, "waiting": node.branches.waiting },
+            "waiting": waiting, "read": read,
+            "x": node.rect.x, "y": node.rect.y, "w": node.rect.w, "s": node.rect.s,
         })
-        .collect();
-    let edges: Vec<Value> = layout
-        .edges
-        .iter()
-        .filter_map(|edge| {
-            let (a, b) = (layout.node(edge.from)?, layout.node(edge.to)?);
-            Some(json!({
-                "from": edge.from.to_string(),
-                "to": edge.to.to_string(),
-                "kind": match edge.kind {
-                    EdgeKind::Path => "path",
-                    EdgeKind::Pending => "pending",
-                    EdgeKind::Plain => "plain",
-                },
-                "c": graph::edge_curve(edge, a.rect, b.rect),
-            }))
-        })
-        .collect();
-    json!({
-        "height": layout.height,
-        "width": width,
-        "pan": pan,
-        "trunk": layout.trunk().iter().map(ToString::to_string).collect::<Vec<_>>(),
-        "nodes": nodes,
-        "edges": edges,
-    })
+    }).collect();
+    let edges: Vec<_> = nodes.windows(2).zip(layout.windows(2)).map(|(nodes, rects)| {
+        let a = rects[0].rect; let b = rects[1].rect;
+        let x = a.x+a.w/2.; let end = b.x-b.w/2.;
+        json!({"from": nodes[0]["id"], "to": nodes[1]["id"], "kind": if nodes[1]["kind"] == "after" { "pending" } else { "path" },
+            "c": [[x,a.y], [x+5.,a.y], [end-5.,b.y], [end,b.y]]})
+    }).collect();
+    json!({ "room": pins.room, "pins": placed, "height": graph::REST_HEIGHT, "width": pins.room, "pan": 0,
+        "trunk": nodes.iter().filter(|n| n["kind"] != "after").map(|n| n["id"].clone()).collect::<Vec<_>>(), "nodes": nodes, "edges": edges })
 }
 
 /// Downloaded files by the page they hang off, oldest first.
@@ -437,7 +433,7 @@ pub(super) fn text_width(text: &str, size: f64, em: f64) -> f64 {
 pub(crate) fn site_line(visit: &Visit) -> String {
     let host = short_host(&visit.url);
     match visit.state {
-        VisitState::Queued => format!("{host} · pending"),
+        VisitState::Queued => format!("{host} · waiting"),
         VisitState::Opened => format!(
             "{host} · {}",
             ago(visit.opened_at.unwrap_or(visit.created_at))
@@ -543,24 +539,22 @@ mod tests {
     }
 
     #[test]
-    fn current_pill_fits_reserved_room_at_rest_and_open() {
+    fn current_pill_fits_reserved_room() {
         let (forest, _) = chain_length(Lifecycle::Open, 40);
         for width in [390., 800., 1240., 1440.] {
             let strip = super::strip(&forest, width);
             let room = strip["room"].as_f64().unwrap();
             assert!(room < width);
-            for mode in ["rest", "open"] {
-                let layout = &strip[mode];
-                let pill = layout["nodes"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|n| n["kind"] == "pill")
-                    .unwrap();
-                let x = pill["x"].as_f64().unwrap() + layout["pan"].as_f64().unwrap();
-                let half = pill["w"].as_f64().unwrap() / 2.;
-                assert!(x - half >= -0.001 && x + half <= room + 0.001);
-            }
+            let layout = &strip;
+            let pill = layout["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|n| n["kind"] == "pill")
+                .unwrap();
+            let x = pill["x"].as_f64().unwrap() + layout["pan"].as_f64().unwrap();
+            let half = pill["w"].as_f64().unwrap() / 2.;
+            assert!(x - half >= -0.001 && x + half <= room + 0.001);
         }
         let empty = ForestProjection::from_snapshot(
             Snapshot {
@@ -669,7 +663,7 @@ mod tests {
         assert_eq!(value["forest"]["labels"]["divider"]["detail"], "1 tree");
     }
     #[test]
-    fn the_frame_carries_every_visit_and_both_strip_states() {
+    fn the_frame_carries_every_visit_and_the_folded_strip() {
         let (forest, ids) = chain();
         let frame = ChromeFrame {
             loaded: HashSet::new(),
@@ -690,9 +684,8 @@ mod tests {
             format!("example.org · {}", ago(0))
         );
         assert_eq!(value["tabs"][0]["pending"], 1);
-        assert_eq!(value["strip"]["rest"]["height"], graph::REST_HEIGHT);
-        assert_eq!(value["strip"]["open"]["height"], graph::OPEN_HEIGHT);
-        let pill = value["strip"]["rest"]["nodes"]
+        assert_eq!(value["strip"]["height"], graph::REST_HEIGHT);
+        let pill = value["strip"]["nodes"]
             .as_array()
             .unwrap()
             .iter()
@@ -779,7 +772,7 @@ mod tests {
     fn edges_carry_four_control_points() {
         let (forest, _) = chain();
         let strip = strip(&forest, 1240.);
-        let edge = &strip["open"]["edges"][0];
+        let edge = &strip["edges"][0];
         assert_eq!(edge["c"].as_array().unwrap().len(), 4);
         assert_eq!(edge["c"][0].as_array().unwrap().len(), 2);
     }

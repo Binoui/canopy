@@ -3,8 +3,8 @@
 // palette results and intents all come from Rust.
 'use strict';
 
-const HEADER = 42, REST = 52, OPEN = 120, TRUNK_Y = 26, CARD_WIDTH = 304, ACCESSORY = 22;
-const MOVE = 300, RESIZE = 220;
+const HEADER = 42, REST = 52, TRUNK_Y = 26, ACCESSORY = 22;
+const MOVE = 300;
 /// A page with more files than this shows one leaf and their count.
 const LEAVES = 3;
 const MONOGRAM = ['#d95c42', '#3b7ad6', '#2e9e5e', '#9c6bde', '#d9962e', '#3b99ad', '#d1547a', '#6b7380'];
@@ -30,7 +30,7 @@ const $ = (id) => document.getElementById(id);
 const post = (message) => window.ipc.postMessage(JSON.stringify(message));
 /// Intents that load a page also give the keyboard back to it, as the GTK buttons that
 /// never took focus did.
-const NAVIGATES = new Set(['restore', 'select-tree', 'settle-tree', 'settle-current', 'open-suggestion', 'open-bookmark', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
+const NAVIGATES = new Set(['reload', 'restore', 'select-tree', 'settle-tree', 'settle-current', 'open-suggestion', 'open-bookmark', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
 const intent = (kind, extra = {}) => {
   post({ t: 'intent', kind, ...extra });
   if (NAVIGATES.has(kind)) post({ t: 'focus', target: 'page' });
@@ -53,15 +53,13 @@ const S = {
   overlay: null,
   formReturn: false,
   treeSide: 'tree',
-  open: false,
   layer: 'none',
   hovered: null,
-  card: null,
+  list: null,
   popover: null,
   palette: null,
   reader: null,
   errors: [],
-  manualPan: null,
   forestLabels: true,
   camera: { x: 0, y: 0, zoom: 1 },
   forestDirty: true,
@@ -111,67 +109,36 @@ function cancel(name) {
   delete timers[name];
 }
 
-function enterStrip() {
-  if (S.layer === 'palette') return;
-  cancel('close');
-  if (!S.open) schedule('open', 110, () => { if (!S.open && S.layer === 'none') setOpen(true); });
+function enterNode(key) {
+  if (S.layer !== 'none' || S.overlay) return;
+  S.hovered = key;
+  cancel('hideList');
+  schedule('showList', 250, () => { if (S.hovered === key) showList(key); });
 }
-function leaveStrip() {
-  cancel('open');
-  if (S.open) schedule('close', 380, closeStrip);
-}
-function closeStrip() {
-  if (S.open && S.layer !== 'menu') {
-    setOpen(false);
-    hideCard();
-  }
-}
-function enterNode(id) {
-  if (S.layer !== 'none') return;
-  S.hovered = id;
-  cancel('hideCard');
-  schedule('showCard', S.card ? 40 : 260, () => {
-    if (S.open && S.layer === 'none' && S.hovered && S.card !== S.hovered) showCard(S.hovered);
-  });
-}
-function leaveNode() {
+function leaveNode(event) {
   S.hovered = null;
-  cancel('showCard');
-  if (S.card) schedule('hideCard', 160, hideCard);
+  cancel('showList');
+  if (event.relatedTarget?.closest('#strip-list')) return;
+  if (S.list) schedule('hideList', 220, hideList);
 }
 function setLayer(layer) {
-  const previous = S.layer;
   S.layer = layer;
-  if (layer === 'palette') {
-    cancel('open');
-    cancel('close');
-    if (S.open) setOpen(false);
-    hideCard();
-  } else if (layer === 'menu') {
-    cancel('close');
-    hideCard();
-  } else if (previous === 'menu' && S.open) {
-    schedule('close', 380, closeStrip);
-  }
+  if (layer !== 'none') hideList();
   syncLayer();
 }
 
 /// Tells Rust how far down the view must reach (null for the whole window), and whether
 /// Escape is ours. Below that, the page gets the pointer.
 function syncLayer() {
-  const modal = !!(S.formReturn || S.reader || S.palette || S.popover || S.card || S.open || S.overlay
+  const modal = !!(S.formReturn || S.reader || S.palette || S.popover || S.list || S.overlay
     || (S.surface !== 'reading' && current()));
   let height = HEADER + REST;
   if (S.formReturn || S.palette || S.reader || S.overlay || S.surface !== 'reading') {
     height = null;
   } else {
-    if (S.open || strip.anim) {
-      const strips = [strip.shown.height, strip.target?.height ?? REST, strip.anim ? strip.from.height : REST];
-      height = Math.max(height, HEADER + Math.max(...strips) + 24);
-    }
-    for (const el of [S.card && $('card'), S.popover && $('popover')]) {
+    for (const el of [S.list && $('strip-list'), S.popover && $('popover')]) {
       if (!el) continue;
-      const bottom = el.hidden ? HEADER + OPEN + 260 : el.getBoundingClientRect().bottom;
+      const bottom = el.hidden ? HEADER + REST + 420 : el.getBoundingClientRect().bottom;
       height = Math.max(height, bottom + 30);
     }
     height = Math.ceil(height);
@@ -248,19 +215,11 @@ const strip = {
   target: null,
   anim: null,
   elements: new Map(),
-  dots: new Map(),
   badges: new Map(),
   leaves: new Map(),
 };
 
-const targetLayout = () => S.strip?.[S.open ? 'open' : 'rest'] ?? null;
-
-function setOpen(open) {
-  S.open = open;
-  S.manualPan = null;
-  syncLayer();
-  animateStrip(RESIZE);
-}
+const targetLayout = () => S.strip ?? null;
 
 function animateStrip(duration) {
   const layout = targetLayout();
@@ -271,6 +230,7 @@ function animateStrip(duration) {
   if (!duration) {
     strip.anim = null;
     step(performance.now(), 1);
+    pruneStrip();
     syncLayer();
     return;
   }
@@ -287,29 +247,22 @@ function tick(now) {
     requestAnimationFrame(tick);
   } else {
     strip.anim = null;
-    for (const [id, el] of strip.elements) {
-      if (!strip.target.nodes.some((n) => n.id === id)) {
-        el.remove();
-        strip.elements.delete(id);
-        strip.dots.get(id)?.remove();
-        strip.dots.delete(id);
-        strip.badges.get(id)?.remove();
-        strip.badges.delete(id);
-        strip.leaves.get(id)?.remove();
-        strip.leaves.delete(id);
-      }
-    }
+    pruneStrip();
     syncLayer();
   }
 }
 
-function iconSize(kind, size) {
-  if (kind === 'pill') return 16;
-  if (size <= 14) return Math.round(size);
-  if (size >= 30) return 18;
-  if (size >= 24) return 16;
-  if (size >= 20) return 13;
-  return 12;
+function pruneStrip() {
+  for (const [id, el] of strip.elements) {
+    if (!strip.target.nodes.some((n) => n.id === id)) {
+      el.remove();
+      strip.elements.delete(id);
+      strip.badges.get(id)?.remove();
+      strip.badges.delete(id);
+      strip.leaves.get(id)?.remove();
+      strip.leaves.delete(id);
+    }
+  }
 }
 
 /// One element per node, kept across frames so hovers and transitions survive a re-layout.
@@ -317,7 +270,7 @@ function buildStrip(layout) {
   const nodes = $('strip-nodes');
   const canvas = $('strip-canvas');
   for (const n of layout.nodes) {
-    const v = visit(n.id);
+    const v = visit(n.page);
     if (!v) continue;
     let el = strip.elements.get(n.id);
     if (!el) {
@@ -326,56 +279,42 @@ function buildStrip(layout) {
       el.dataset.id = n.id;
       el.addEventListener('mouseenter', () => enterNode(el.dataset.id));
       el.addEventListener('mouseleave', leaveNode);
-      el.addEventListener('click', () => activate(el.dataset.id));
+      el.addEventListener('focus', () => showList(el.dataset.id));
+      el.addEventListener('click', () => {
+        const item = strip.target.nodes.find((n) => n.id === el.dataset.id);
+        if (['run', 'earlier', 'after'].includes(item.kind)) showList(item.id);
+        else activate(item.page);
+      });
       el.addEventListener('keydown', walkTrunk);
       nodes.appendChild(el);
       strip.elements.set(n.id, el);
     }
-    el.className = `node ${n.kind}` + (n.kind === 'tile' && n.s < 24 ? ' sm' : '') + markClass(v);
-    el.setAttribute('aria-label', `${v.label}, ${v.site}`);
-    const html = (n.kind === 'bud' ? ''
-      : n.kind === 'pill'
-        ? visitFav(v, 16) + `<span class="pill-text"><span class="pill-title">${esc(v.label)}</span><span class="pill-site">${esc(v.site)}</span></span>`
-        : visitFav(v, iconSize(n.kind, n.s)))
-      + (v.live && n.kind !== 'bud' ? `<i class="live-dot${filesOf(n.id).length ? ' above-leaves' : ''}"></i>` : '');
+    el.className = `node ${n.kind}` + (n.named ? ' named' : '') + markClass(v);
+    el.setAttribute('aria-label', `${n.title}, ${n.branches.pages} branch pages, ${n.branches.waiting} waiting`);
+    el.title = n.kind === 'run' || n.kind === 'earlier' ? n.title : '';
+    const html = n.kind === 'after'
+      ? (n.read ? `<span class="read-count">${n.read}</span>` : '') + (n.waiting ? `<span class="count wait-count"><i></i>${n.waiting}</span>` : '')
+      : n.kind === 'earlier' ? `<span>${esc(n.label)}</span>`
+      : n.kind === 'pill' ? visitFav(v, 16) + `<span class="pill-text"><span class="pill-title">${esc(v.label)}</span><span class="pill-site">${esc(v.site)}</span></span>` + (v.live ? '<i class="live-dot"></i>' : '')
+      : visitFav(v, n.kind === 'root' || n.kind === 'page' ? 16 : 14) + (n.kind === 'parent' || n.kind === 'run' || n.named ? `<span class="item-label">${esc(n.label)}</span>` : '')
+        + (v.live && n.kind !== 'run' ? `<i class="live-dot${filesOf(n.page).length ? ' above-leaves' : ''}"></i>` : '');
     if (el.dataset.html !== html) {
       el.innerHTML = html;
       el.dataset.html = html;
     }
-    let dot = strip.dots.get(n.id);
-    if (v.queued && n.kind !== 'bud') {
-      if (!dot) {
-        dot = document.createElement('div');
-        dot.className = 'pending-dot';
-        canvas.appendChild(dot);
-        strip.dots.set(n.id, dot);
-      }
-    } else if (dot) {
-      dot.remove();
-      strip.dots.delete(n.id);
-    }
-    if (dot) dot.classList.toggle('loaded', waitState(v) === 'loaded');
     let badge = strip.badges.get(n.id);
-    if (n.hidden.length) {
+    if (n.branches.pages && n.kind !== 'pill') {
       if (!badge) {
-        badge = document.createElement('button');
-        badge.className = 'badge';
-        badge.addEventListener('click', (event) => {
-          event.stopPropagation();
-          openPopover('hidden', badge, JSON.parse(badge.dataset.hidden));
-        });
+        badge = document.createElement('i');
         canvas.appendChild(badge);
         strip.badges.set(n.id, badge);
       }
-      badge.textContent = `+${n.hidden.length}`;
-      badge.dataset.hidden = JSON.stringify(n.hidden);
-      badge.setAttribute('aria-label', `${n.hidden.length} more pages`);
+      badge.className = `branch-count${n.branches.waiting ? ' waiting' : ''}`;
+      badge.textContent = n.branches.pages;
     } else if (badge) {
-      badge.remove();
-      strip.badges.delete(n.id);
+      badge.remove(); strip.badges.delete(n.id);
     }
-    // A bud is too small to carry leaves; they show once the strip opens.
-    const files = n.kind === 'bud' ? [] : filesOf(n.id);
+    const files = n.ids.flatMap(filesOf);
     let leaves = strip.leaves.get(n.id);
     if (files.length) {
       if (!leaves) {
@@ -384,12 +323,13 @@ function buildStrip(layout) {
         leaves.addEventListener('click', (event) => {
           event.stopPropagation();
           const id = leaves.dataset.id;
-          if (S.popover?.kind === 'files' && S.popover.data === id) closePopover();
-          else openPopover('files', leaves, id, strip.elements.get(id));
+          if (S.popover?.kind === 'files' && S.popover.anchor === leaves) closePopover();
+          else openPopover('files', leaves, JSON.parse(leaves.dataset.ids), strip.elements.get(id));
         });
         canvas.appendChild(leaves);
         strip.leaves.set(n.id, leaves);
       }
+      leaves.dataset.ids = JSON.stringify(n.ids);
       leaves.className = `leaves${n.kind === 'pill' ? ' on-pill' : ''}`;
       const few = files.length <= LEAVES;
       const html = few
@@ -430,23 +370,17 @@ function step(now, t) {
     const a = from.edges.get(key)?.c || e.c;
     edges.set(key, { kind: e.kind, to: e.to, c: e.c.map((p, i) => [mix(a[i][0], p[0], k), mix(a[i][1], p[1], k)]) });
   }
-  const pan = S.manualPan ?? mix(from.pan, to.pan, k);
+  const pan = mix(from.pan, to.pan, k);
   strip.shown = { height: mix(from.height, to.height, k), pan, nodes, edges, width: to.width };
   drawStrip();
 }
 
 function drawStrip() {
   const shown = strip.shown;
-  const width = stripRoom();
-  const openness = clamp((shown.height - REST) / (OPEN - REST), 0, 1);
   $('strip').style.height = `${shown.height}px`;
   $('strip-clip').style.height = `${shown.height}px`;
   const bg = $('strip-bg');
   bg.style.height = `${shown.height}px`;
-  bg.style.background = `color-mix(in srgb, var(--chrome) ${Math.round(openness * 100)}%, var(--bg))`;
-  bg.style.borderRadius = `0 0 ${12 * openness}px ${12 * openness}px`;
-  bg.style.boxShadow = openness > 0 ? `0 ${10 * openness}px ${24 * openness}px var(--shadow)` : 'none';
-  bg.style.setProperty('--rest-line', String(1 - openness));
   $('strip-canvas').style.transform = `translateX(${shown.pan}px)`;
   for (const [id, r] of shown.nodes) {
     const el = strip.elements.get(id);
@@ -457,15 +391,6 @@ function drawStrip() {
     el.style.height = `${r.s}px`;
     el.style.opacity = r.o;
     el.style.visibility = r.w < 1 ? 'hidden' : '';
-    const dot = strip.dots.get(id);
-    if (dot) {
-      const raw = el.classList.contains('raw');
-      const size = raw ? 6 : 9, inset = raw ? 2 : 4;
-      dot.style.width = dot.style.height = `${size}px`;
-      dot.style.left = `${r.x + r.w / 2 + inset - size}px`;
-      dot.style.top = `${r.y - r.s / 2 - inset}px`;
-      dot.style.opacity = r.o;
-    }
     const badge = strip.badges.get(id);
     if (badge) {
       badge.style.left = `${r.x + r.w / 2 + 7 - badge.offsetWidth}px`;
@@ -489,7 +414,7 @@ function drawStrip() {
   if (r) {
     dot.style.left = `${r.x + r.w / 2 - ACCESSORY}px`;
     dot.style.top = `${r.y - 9}px`;
-    const reach = 40 + 12 * openness;
+    const reach = 40;
     const x = r.x - r.w / 2 + 16;
     Object.assign(glow.style, { left: `${x - reach}px`, top: `${TRUNK_Y - reach}px`, width: `${2 * reach}px`, height: `${2 * reach}px` });
   }
@@ -499,15 +424,8 @@ function drawStrip() {
     const o = e.kind === 'path' ? 1 : (opacity.get(e.to) ?? 1);
     return `<path class="${e.kind}" style="opacity:${o}" d="M${p0} C${p1} ${p2} ${p3}"/>`;
   }).join('');
-  const fill = openness > 0.5 ? 'var(--chrome)' : 'var(--bg)';
-  const left = $('fade-left'), right = $('fade-right');
-  left.hidden = shown.pan >= -1;
-  right.hidden = !(shown.width + shown.pan > width + 1);
-  for (const [el, side] of [[left, 'left'], [right, 'right']]) {
-    el.style.height = `${shown.height - 2}px`;
-    el.style[side] = '0';
-    el.style.background = `linear-gradient(to ${side === 'left' ? 'right' : 'left'}, ${fill}, transparent)`;
-  }
+  positionList();
+
 }
 
 function activate(id) {
@@ -527,75 +445,139 @@ function walkTrunk(event) {
   event.preventDefault();
 }
 
-// ---------- card ----------
+// ---------- attached strip list ----------
 
 let previewSeq = 0;
-function showCard(id) {
-  S.card = id;
+const listItem = () => strip.target?.nodes.find((n) => n.id === S.list?.key);
+
+function showList(key) {
+  if (S.layer !== 'none' || S.overlay || S.surface !== 'reading') return;
+  cancel('hideList');
+  cancel('showList');
+  const item = strip.target?.nodes.find((n) => n.id === key);
+  if (!item) return;
+  const previous = S.list;
+  S.list = { key, preview: previous?.key === key ? previous.preview : null };
+  renderList();
+  requestListPreview();
+}
+
+function requestListPreview() {
+  const item = listItem();
+  if (!item?.preview) return;
   previewSeq += 1;
-  post({ t: 'preview', id, seq: previewSeq });
+  post({ t: 'preview', id: item.page, seq: previewSeq });
+}
+
+function hideList() {
+  cancel('showList');
+  cancel('hideList');
+  S.list = null;
+  $('strip-list').hidden = true;
   syncLayer();
 }
 
-function hideCard() {
-  cancel('showCard');
-  cancel('hideCard');
-  if (!S.card) return;
-  S.card = null;
-  $('card').hidden = true;
-  syncLayer();
+function positionList() {
+  const item = listItem();
+  const r = item && strip.shown.nodes.get(item.id);
+  if (!r) return;
+  const list = $('strip-list');
+  const width = Math.min(350, window.innerWidth - 16);
+  list.style.width = `${width}px`;
+  const x = r.x - r.w / 2 + strip.shown.pan;
+  list.style.left = `${clamp(x - 2, 8, window.innerWidth - width - 8)}px`;
+  list.style.top = `${HEADER + REST - 6}px`;
+  list.style.maxHeight = `${Math.max(0, (S.windowHeight ?? 800) - HEADER - REST - 2)}px`;
 }
 
-function renderCard(preview) {
-  const id = preview.id;
-  const v = visit(id);
-  const r = strip.shown.nodes.get(id);
-  if (!v || !r || S.card !== id) return;
-  const isCurrent = id === current();
-  const tags = [isCurrent && 'Current page', v.queued && 'Pending'].filter(Boolean);
-  const source = isCurrent && v.source;
-  const card = $('card');
-  card.innerHTML = `<div class="card-head">${visitFav(v, 16)}<div class="card-title">${esc(preview.title)}</div></div>`
-    + '<div class="card-body">'
-    + `<div class="card-meta">${esc(preview.meta)}${v.live ? ' · Open in memory' : ''}</div>`
-    + (tags.length ? `<div class="card-tags">${tags.map((t) => `<span class="tag">${t}</span>`).join('')}</div>` : '')
-    + (preview.snippet ? `<div class="card-snippet">${esc(preview.snippet)}</div>` : '')
-    + (source ? `<div class="card-source"><div class="card-meta">${esc(source.text)}</div><div class="card-actions">`
-      + `<button class="action" data-act="source"${v.parent ? '' : ' disabled'}>Back to source</button>`
-      + `<button class="action" data-act="comment"${source.citation ? '' : ' disabled'}>Open comment</button></div></div>` : '')
-    + '<div class="card-actions">'
-    + `<button class="action" data-act="open">${isCurrent ? 'Reload' : 'Open'}</button>`
-    + '<button class="action" data-act="branch">New branch here</button>'
-    + '</div></div>';
-  const x = r.x + strip.shown.pan;
-  card.style.left = `${clamp(x - CARD_WIDTH / 2, 8, window.innerWidth - CARD_WIDTH - 8)}px`;
-  card.style.top = `${HEADER + OPEN + 8}px`;
-  card.hidden = false;
-  syncLayer();
-  card.querySelectorAll('[data-act]').forEach((button) => button.addEventListener('click', () => {
-    const act = button.dataset.act;
-    hideCard();
-    if (act === 'open') {
-      if (isCurrent) { uncover(); intent('restore', { id }); }
-      else activate(id);
-    } else if (act === 'branch') {
-      if (v.queued) intent('branch-queued', { id });
-      else openPalette({ scope: id, text: '' });
-    } else if (act === 'source') {
-      activate(v.parent);
-    } else if (act === 'comment') {
-      intent('open-citation', { id });
+function renderList() {
+  const item = listItem();
+  if (!item) { hideList(); return; }
+  const v = visit(item.page);
+  if (!v) { hideList(); return; }
+  const list = $('strip-list');
+  const page = item.preview;
+  const source = page && item.page === current() && v.source;
+  const preview = S.list.preview;
+  const parts = [
+    ['head', `<div class="bl-head">${item.kind === 'earlier' ? '<span class="bl-glyph">···</span>' : markedFav(v, 16)}<div><b>${esc(item.title)}</b><span>${esc(item.meta)}${v.live ? ' · Open in memory' : ''}</span></div></div>`],
+    ['snippet', page && preview?.snippet ? `<div class="bl-snippet">${esc(preview.snippet)}</div>` : ''],
+    ['source', source ? `<div class="card-source"><div class="card-meta">${esc(source.text)}</div></div>` : ''],
+    ['heading', item.heading ? `<div class="menu-heading">${esc(item.heading)}</div>` : ''],
+    ...item.rows.map((row) => {
+      const v = visit(row.id);
+      const files = filesOf(row.id);
+      const leaf = files.length ? `<button class="leaves" data-files="${row.id}" aria-label="${esc(`Files from ${v.label}`)}"><i class="leaf${files.every((f) => f.missing) ? ' missing' : ''}"></i></button>` : '';
+      return [`row-${row.id}`, v ? `<div class="list-entry"><button class="menu-row${markClass(v)}" data-id="${row.id}">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(row.detail)}</span></button>${leaf}</div>` : ''];
+    }),
+    ['more', item.more ? `<button class="menu-row more" data-act="more">${icon('expand')}<span class="grow">${esc(item.more)}</span><kbd>Ctrl Shift E</kbd></button>` : ''],
+    ...item.actions.map((action) => [`action-${action.kind}`, `<button class="action bl-action" data-act="${action.kind}">${esc(action.label)}</button>`]),
+  ];
+  const kept = new Set();
+  let cursor = list.firstElementChild;
+  for (const [key, html] of parts) {
+    if (!html) continue;
+    kept.add(key);
+    let el = [...list.children].find((el) => el.dataset.key === key);
+    if (!el) {
+      const template = document.createElement('template');
+      template.innerHTML = html;
+      el = template.content.firstElementChild;
+      el.dataset.key = key;
+      el.dataset.html = html;
+    } else if (el.dataset.html !== html) {
+      const template = document.createElement('template');
+      template.innerHTML = html;
+      const fresh = template.content.firstElementChild;
+      const row = el.querySelector('.menu-row[data-id]');
+      const newRow = fresh.querySelector('.menu-row[data-id]');
+      if (row && newRow) {
+        row.innerHTML = newRow.innerHTML;
+        row.className = newRow.className;
+        const leaves = el.querySelector('.leaves');
+        const newLeaves = fresh.querySelector('.leaves');
+        if (leaves && newLeaves) leaves.innerHTML = newLeaves.innerHTML;
+        else if (newLeaves) el.appendChild(newLeaves);
+        else leaves?.remove();
+      } else el.innerHTML = fresh.innerHTML;
+      el.className = fresh.className;
+      el.dataset.html = html;
     }
-  }));
+    if (el !== cursor) list.insertBefore(el, cursor);
+    cursor = el.nextElementSibling;
+  }
+  for (const el of [...list.children]) if (!kept.has(el.dataset.key)) el.remove();
+  list.dataset.item = item.id;
+  list.hidden = false;
+  positionList();
+  syncLayer();
 }
+
+$('strip-list').addEventListener('click', (event) => {
+  const file = event.target.closest('[data-files]');
+  if (file) { openPopover('files', file, file.dataset.files); return; }
+  const row = event.target.closest('[data-id]');
+  const action = event.target.closest('[data-act]')?.dataset.act;
+  const item = listItem();
+  if (!item) return;
+  const v = visit(item.page);
+  if (row) { activate(row.dataset.id); return; }
+  if (!action) return;
+  hideList();
+  if (action === 'more') canopy.toggleTree();
+  else if (action === 'reload') { uncover(); intent('reload'); }
+  else if (action === 'open') { uncover(); intent('restore', { id: item.page }); }
+  else if (action === 'branch') {
+    if (v.queued) intent('branch-queued', { id: item.page });
+    else openPalette({ scope: item.page, text: '' });
+  } else if (action === 'source') activate(v.parent);
+  else if (action === 'comment') intent('open-citation', { id: item.page });
+});
 
 // ---------- waiting pages and pinned controls ----------
 
-const stripRoom = () => S.strip?.room ?? 0;
-
 function applyStrip(layouts) {
   S.strip = layouts;
-  S.manualPan = null;
   $('strip-clip').style.width = `${layouts.room}px`;
   placePins();
 }
@@ -629,8 +611,6 @@ function enterWaitingPin() {
   if (S.layer !== 'none' || S.popover) return;
   schedule('waitingOpen', 120, () => {
     if (S.layer !== 'none' || S.popover || !S.frame?.waiting.ids.length) return;
-    cancel('open');
-    if (S.open) setOpen(false);
     openPopover('waiting', $('waiting-pin'), null);
   });
 }
@@ -649,7 +629,7 @@ $('waiting-pin').addEventListener('mouseleave', leaveWaitingPin);
 $('popover').addEventListener('mouseenter', () => cancel('waitingClose'));
 $('popover').addEventListener('mouseleave', leaveWaitingPin);
 
-// ---------- popovers: Memory menu, hidden pages, trees that do not fit, a tree's name ----------
+// ---------- popovers: Memory menu, trees that do not fit, a tree's name ----------
 
 /// Opens a menu under `anchor`, or under `below` when the anchor sits on top of something
 /// the menu should not cover.
@@ -801,12 +781,6 @@ function renderPopover() {
       closePopover(false);
       pickLogin(index);
     }));
-  } else if (kind === 'hidden') {
-    popover.innerHTML = data.map(visit).filter(Boolean).map(visitRow).join('');
-    popover.querySelectorAll('[data-id]').forEach((row) => row.addEventListener('click', () => {
-      closePopover();
-      activate(row.dataset.id);
-    }));
   } else if (kind === 'trees') {
     const hidden = [...$('tab-row').children].filter((tab) => tab.hidden).map((tab) => tab.dataset.id);
     popover.innerHTML = (S.frame?.tabs ?? []).filter((tree) => hidden.includes(tree.id)).map((tree) => {
@@ -834,7 +808,7 @@ function renderPopover() {
       closePopover();
     });
   } else if (kind === 'files') {
-    const files = filesOf(data);
+    const files = (Array.isArray(data) ? data : [data]).flatMap(filesOf);
     if (!files.length) {
       closePopover(false);
       return;
@@ -1099,7 +1073,7 @@ function setOverlay(kind) {
   const overlay = OVERLAYS[kind];
   if (overlay) {
     if (overlay.leavesStart) setSurface('reading');
-    hideCard();
+    hideList();
     closePopover(false);
     $(overlay.el).hidden = false;
     $(overlay.button).classList.add('on');
@@ -1128,7 +1102,7 @@ function uncover() {
   closeReader(false);
   closePalette(false);
   closePopover(false);
-  hideCard();
+  hideList();
   setOverlay(null);
   setSurface('reading');
 }
@@ -1365,7 +1339,7 @@ $('forest').querySelector('.scrim').addEventListener('mousedown', closeOverlay);
 function showReader(html, list) {
   closePalette(false);
   closePopover(false);
-  hideCard();
+  hideList();
   const box = $('reader-box');
   box.className = `reader-box${list ? ' list' : ''}`;
   box.innerHTML = html + `<button class="icon-button reader-close" aria-label="Close">${icon('close')}</button>`;
@@ -1389,7 +1363,7 @@ const when = (at) => new Date(at).toLocaleString(undefined, { day: '2-digit', mo
 // ---------- Rust's side ----------
 
 window.canopy = {
-  viewport(height) { S.windowHeight = height; },
+  viewport(height) { S.windowHeight = height; positionList(); syncLayer(); },
   start(value) { if (!S.frame) return; S.frame.start = value; renderStart(); },
   present(frame) {
     const previous = current();
@@ -1398,6 +1372,7 @@ window.canopy = {
     renderWaitingPin();
     applyTheme();
     if (frame.current !== previous) {
+      hideList();
       setOverlay(null);
       if (S.surface !== 'reading') setSurface('reading');
     }
@@ -1409,10 +1384,7 @@ window.canopy = {
     renderPlaceholder();
     renderForest();
     renderSheet(false);
-    if (S.card) {
-      if (!visit(S.card)) hideCard();
-      else showCard(S.card);
-    }
+    if (S.list) { renderList(); requestListPreview(); }
     if (S.popover) refreshPopover();
     renderPaletteContext();
     syncLayer();
@@ -1476,6 +1448,7 @@ window.canopy = {
   toggleFocus() {
     const active = document.activeElement;
     if (document.hasFocus() && active?.classList.contains('node')) {
+      hideList();
       post({ t: 'focus', target: 'page' });
       return;
     }
@@ -1504,13 +1477,11 @@ window.canopy = {
     else if (S.reader) closeReader();
     else if (S.palette) closePalette();
     else if (S.popover) closePopover();
-    else if (S.card) hideCard();
+    else if (S.list) hideList();
     else if (S.overlay) closeOverlay();
     else if (S.surface !== 'reading' && current()) {
       setSurface(S.frame?.tabs.length ? 'reading' : 'start');
       post({ t: 'focus', target: 'page' });
-    } else if (S.open) {
-      setOpen(false);
     }
   },
   paletteResults(seq, { rows, first }) {
@@ -1520,7 +1491,7 @@ window.canopy = {
     renderPalette();
   },
   previewResult(seq, preview) {
-    if (seq === previewSeq) renderCard(preview);
+    if (seq === previewSeq && S.list && listItem()?.page === preview.id) { S.list.preview = preview; renderList(); }
   },
   reader(c) {
     const source = c.source ? `<div class="reader-source" id="capture-source">${esc(`From ${c.source.url}\n${c.source.linkText}\n${c.source.excerpt}`.trim())}</div>` : '';
@@ -1556,7 +1527,7 @@ window.canopy = {
   state() {
     return {
       start: S.frame?.start, deferred: [...refresh.pending.keys()],
-      surface: S.surface, overlay: S.overlay, treeSide: S.treeSide, open: S.open, animating: !!strip.anim, card: S.card, layer: S.layer, palette: !!S.palette,
+      surface: S.surface, overlay: S.overlay, treeSide: S.treeSide, animating: !!strip.anim, list: S.list?.key ?? null, layer: S.layer, palette: !!S.palette,
       reader: !!S.reader, popover: S.popover?.kind ?? null, reported: S.reported, logins: loginNames(), save: S.save, locked: S.locked,
       dark: document.documentElement.classList.contains('dark'),
       nodes: [...strip.elements.keys()], rows: S.palette?.rows ?? [],
@@ -1680,25 +1651,11 @@ $('memory-dot').addEventListener('click', (event) => {
   else openPopover('memory', $('memory-dot'));
 });
 
-const stripEl = $('strip');
-stripEl.addEventListener('mouseenter', enterStrip);
-stripEl.addEventListener('mouseleave', leaveStrip);
-stripEl.addEventListener('wheel', (event) => {
-  const layout = strip.target;
-  if (!layout) return;
-  event.preventDefault();
-  const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
-  const min = Math.min(stripRoom() - layout.width, 0);
-  S.manualPan = clamp((S.manualPan ?? strip.shown.pan) - delta, min, 0);
-  strip.shown.pan = S.manualPan;
-  drawStrip();
-}, { passive: false });
-
-const cardEl = $('card');
-cardEl.addEventListener('mouseenter', () => { cancel('hideCard'); cancel('close'); });
-cardEl.addEventListener('mouseleave', () => {
-  if (S.card) schedule('hideCard', 120, hideCard);
-  if (S.open) schedule('close', 380, closeStrip);
+const listEl = $('strip-list');
+listEl.addEventListener('mouseenter', () => { cancel('hideList'); cancel('showList'); });
+listEl.addEventListener('mouseleave', (event) => {
+  if (event.relatedTarget?.closest('#strip-nodes')) return;
+  schedule('hideList', 220, hideList);
 });
 
 // A press outside an open popover closes it.
@@ -1707,11 +1664,10 @@ document.addEventListener('mousedown', (event) => {
 });
 
 // Over the transparent part of the window, the view only stays while something is open;
-// a press there closes the open strip and card.
+// a press there closes the attached list.
 document.addEventListener('mousedown', (event) => {
   if (event.target === document.documentElement || event.target === document.body) {
-    hideCard();
-    if (S.open) setOpen(false);
+    hideList();
   }
 });
 

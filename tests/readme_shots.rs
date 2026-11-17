@@ -57,14 +57,21 @@ fn main() -> Result<()> {
         pump(300);
         let shot = |name: &str| save_window(&ui, &format!("{folder}/{name}-{theme}.png"));
         rest(&ui)?;
-        open_strip(&ui)?;
+        open_list(&ui)?;
         let thread = visit(&ui, "/t/4821")?;
-        hover_chrome(&ui, &node(thread))?;
-        wait("card", || visible(&ui, "#card"))?;
+        let item = chrome(
+            &ui,
+            &format!("S.strip.nodes.find(n=>n.ids.includes('{thread}')).id"),
+        )?;
+        item_list(
+            &ui,
+            &format!("#strip-nodes [data-id='{}']", item.as_str().unwrap()),
+        )?;
+        wait("card", || visible(&ui, "#strip-list"))?;
         pump(900);
         shot("card")?;
         rest(&ui)?;
-        wait("card gone", || !visible(&ui, "#card"))?;
+        wait("card gone", || !visible(&ui, "#strip-list"))?;
         pump(400);
         let current = ui.snapshot()?.current.context("current page")?;
         click_chrome(&ui, &format!(".leaves[data-id='{current}']"))?;

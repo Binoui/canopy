@@ -12,11 +12,13 @@ This guide covers everything Canopy does today, feature by feature. For installi
 
 Clicking an older visit reloads its URL. Resuming does not restore the scroll position or forms.
 
-On a page's card, **New branch here** opens the palette from that page without loading it, so the next address you type becomes its child. A tree's tab reopens the page you were last reading in that tree.
+On a page's attached list, **New branch here** opens the palette from that page without loading it, so the next address you type becomes its child. A tree's tab reopens the page you were last reading in that tree.
 
 ## Find your way around
 
-The top row has one tab per open tree, in the order you started them. Trees that do not fit wait behind the arrow at the end of the row. A tree is named after what you searched for, or after its first page. Right-click a tab to give the tree a name of your own; an empty name goes back to the automatic one. Under the tabs, a strip shows the current tree: the path to the current page, with small buds for the other branches. Rest the pointer on the strip and it opens over the page with every branch. Rest it on a page in the strip to see a card with its title, site and a preview.
+The top row has one tab per open tree, in the order you started them. Trees that do not fit wait behind the arrow at the end of the row. A tree is named after what you searched for, or after its first page. Right-click a tab to give the tree a name of your own; an empty name goes back to the automatic one. Under the tabs, a 52 px strip shows the path to the current page. The root keeps its tile, the parent has a short name, and the current page keeps its full title. Consecutive pages on one site fold into a capsule with their count. When the path still does not fit, its oldest items after the root merge into **Earlier**. A count below an item includes all pages on its other branches. A green outline means some are waiting. Grey and green counts after the current page show its read and waiting children.
+
+Rest the pointer on an item for a quarter of a second, or focus it, to open one named list attached directly below it. The strip stays the same height. The list stays open as you move into it. Page lists show the full title, site, time, saved-text preview, and other branch heads, newest first. A capsule lists its pages in order. **Earlier** lists its pages newest first. The count after the current page lists waiting children in the order they were queued. Lists show up to six rows. **More** opens the zoomed tree. Click a row to open its page. **Open**, **Reload**, and **New branch here** act on the page named in the list head.
 
 The Bookmarks band shows up to sixteen top-level tiles, with folder chips to the right of its heading. Overflow tiles and chips open lists. Right-click a tile or list row to remove its bookmark.
 
@@ -46,7 +48,7 @@ Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not aff
 4. Close the browser, then start it again with the same data folder.
 5. Search a few words of the saved text with **Ctrl+K**. Open a **Saved text** result to read the passage offline, or go back to the source to find the links that are still waiting.
 
-Results cover titles, URLs, saved text and source context. Saved text carries its date. Reading saved text and loading the live page are two separate actions. On the current page's card, **Back to source** and **Open comment** lead back to where the page was found.
+Results cover titles, URLs, saved text and source context. Saved text carries its date. Reading saved text and loading the live page are two separate actions. On the current page's attached list, **Back to source** and **Open comment** lead back to where the page was found.
 
 Turn off **Remember pages** in the Memory menu to stop automatic capture. Remembering a selection stays available. **Read saved text** shows the text saved for the current page. The Memory menu also lists recent errors, which otherwise appear briefly under the tab row.
 
@@ -66,7 +68,7 @@ Canopy keeps only the last part of the name the site suggests, so a file always 
 
 A message under the tab row says when a download starts, when it is saved, with its file name, and when it fails, with the reason. A failed download leaves no partial file behind. A download adds no page to your forest and keeps the page you are reading.
 
-A saved file stays attached to the page it was downloaded from. In the tree strip it shows as a small green leaf on top of that page's node. A page with up to three files shows one leaf for each. A page with more shows one leaf and their count. At rest only the current page and its ancestors carry leaves. Hover the strip to see them on side branches too.
+A saved file stays attached to the page it was downloaded from. In the tree strip it shows as a small green leaf on top of that page's node. A page with up to three files shows one leaf for each. A page with more shows one leaf and their count. The current page and its ancestors carry leaves. A folded capsule carries a leaf for files on any page inside it. Side-branch files are available beside their named rows in the attached list.
 
 Click a leaf to list that page's files, with their size and when they were saved. Click a file to open it with your desktop's app for that kind of file. The folder button beside it opens the folder it was saved in.
 

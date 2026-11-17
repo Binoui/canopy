@@ -122,22 +122,26 @@ fn main() -> Result<()> {
         !ui.search_hits("mossy lantern delayed").unwrap().is_empty()
     })?;
     println!("PASS a bounded follow-up captures article text arriving after Finished.");
-    open_strip(&ui)?;
+    open_list(&ui)?;
     hover_chrome(&ui, &node(article))?;
-    wait("source context on the current page's card", || {
-        visible(&ui, "#card [data-act=source]")
+    wait("source context on the current page's list", || {
+        visible(&ui, "#strip-list [data-act=source]")
     })?;
-    assert!(text(&ui, "#card").contains("source comment"));
+    assert!(text(&ui, "#strip-list").contains("source comment"));
+    wait("source preview in attached list", || {
+        visible(&ui, "#strip-list .bl-snippet")
+    })?;
+    assert!(text(&ui, "#strip-list .bl-snippet").contains("source comment"));
     pump(150);
-    click_chrome(&ui, "#card [data-act=source]")?;
-    wait("Back to source from the card", || {
+    click_chrome(&ui, "#strip-list [data-act=source]")?;
+    wait("Back to source from the list", || {
         ui.snapshot().unwrap().current == Some(source_id)
             && !ui.pages.selected_page().native.is_loading()
     })?;
     assert_eq!(queued(&ui), 2);
     ui.pages.selected_page().restore(article)?;
     loaded(&ui, "/article-a")?;
-    println!("PASS the current page's card shows its source excerpt and Back to source restores the parent.");
+    println!("PASS the current page's list shows its source excerpt and Back to source restores the parent.");
     save_window(&ui, "/tmp/canopy-chrome-reading.png")?;
 
     search_saved_text(&ui, "amber otter cache")?;
@@ -149,6 +153,7 @@ fn main() -> Result<()> {
     loaded(&ui, "/discussion")?;
     assert!(!visible(&ui, "#palette"));
     assert_eq!(queued(&ui), 2);
+    item_list(&ui, "#strip-nodes .after")?;
     for sibling in ui
         .snapshot()?
         .visits

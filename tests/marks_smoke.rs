@@ -151,7 +151,12 @@ fn marked(f: &Fixture, id: canopy::browser::VisitId) -> bool {
         .is_ok_and(|v| v == true)
 }
 fn strip_marked(f: &Fixture, id: canopy::browser::VisitId) -> bool {
-    common::visible(&f.ui, &format!(".node[data-id='{id}'] .live-dot"))
+    common::visible(
+        &f.ui,
+        &format!(
+            ".node[data-id='{id}'] .live-dot, #strip-list .menu-row[data-id='{id}'] .live-dot"
+        ),
+    )
 }
 fn switching_marks_only_the_page_left_behind() -> Result<()> {
     let f = Fixture::new()?;
@@ -171,7 +176,7 @@ fn switching_marks_only_the_page_left_behind() -> Result<()> {
     common::wait("hidden page marked", || marked(&f, a))?;
     assert!(!marked(&f, b));
     f.select(a)?;
-    common::open_strip(&f.ui)?;
+    common::open_list(&f.ui)?;
     common::wait("strip marks outgoing page", || strip_marked(&f, b))?;
     assert!(!strip_marked(&f, a));
     Ok(())
@@ -241,7 +246,7 @@ fn never_seen_pages_keep_the_loaded_dot_until_opened_and_left() -> Result<()> {
     assert!(!marked(&f, queued));
     f.select(queued)?;
     f.select(a)?;
-    common::open_strip(&f.ui)?;
+    common::open_list(&f.ui)?;
     common::wait("seen page live in strip", || strip_marked(&f, queued))?;
     assert!(common::chrome(&f.ui,&format!("!document.querySelector('.node[data-id=\"{queued}\"] .pending-dot') && !S.frame.visits['{queued}'].queued"))? == true);
     Ok(())
@@ -255,7 +260,7 @@ fn marks_share_surfaces_without_moving_nodes() -> Result<()> {
     f.root("/meadow")?;
     f.root("/river")?;
     f.select(branch)?;
-    common::open_strip(&f.ui)?;
+    common::open_list(&f.ui)?;
     common::wait("root marked", || strip_marked(&f, root))?;
     let selector = format!(".node[data-id='{root}']");
     let before = common::rect(&f.ui, &selector)?;

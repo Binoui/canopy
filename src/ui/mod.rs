@@ -580,6 +580,7 @@ impl ChromeHost for Ui {
             ChromeIntent::SettleTree(tree) => self.pages.settle_tree(tree),
             ChromeIntent::SelectTree(tree) => self.pages.go(Go::Tree(tree)),
             ChromeIntent::Restore(visit) => self.pages.go(Go::Visit(visit)),
+            ChromeIntent::Reload => self.pages.reload(),
             ChromeIntent::BranchFromQueued(visit) => self.pages.branch_from_queued(visit),
             ChromeIntent::OpenCitation(child) => self.pages.go(Go::Citation(child)),
             ChromeIntent::Navigate { url, target } => self.pages.go(Go::Address { url, target }),

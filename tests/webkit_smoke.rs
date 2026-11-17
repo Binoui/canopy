@@ -126,7 +126,7 @@ fn main() -> Result<()> {
     })?;
     println!("PASS WebKit's favicon database feeds the strip node of an opened page.");
 
-    open_strip(&ui)?;
+    open_list(&ui)?;
     click_chrome(&ui, &node(a))?;
     loaded(&ui, "/a", 2)?;
     link(&ui, "c")?;
@@ -146,12 +146,13 @@ fn main() -> Result<()> {
         ui.pages.selected_page().native.has_focus()
     })?;
     println!(
-        "PASS hovering opens the strip, clicking node A restores it and gives the page the keyboard, and C becomes B's sibling."
+        "PASS the attached list opens, clicking node A restores it and gives the page the keyboard, and C becomes B's sibling."
     );
 
     leave_strip(&ui)?;
     key("F6")?;
     wait("current node focus", || chrome_focused(&ui, &node(c)))?;
+    wait("focus opens attached list", || visible(&ui, "#strip-list"))?;
     key("Left")?;
     wait("parent node focus", || chrome_focused(&ui, &node(a)))?;
     key("Return")?;
@@ -208,74 +209,48 @@ fn main() -> Result<()> {
             .as_i64()
             .unwrap()
     };
-    open_strip(&ui)?;
-    let (x, y) = page_point(&ui, 900, 42 + 120 + 40)?;
+    open_list(&ui)?;
+    hover_chrome(&ui, "#strip-list .bl-head")?;
+    pump(500);
+    assert!(
+        visible(&ui, "#strip-list") && strip_height(&ui) == 52,
+        "the list stays open under the pointer"
+    );
+    let (list_x, list_y, list_w, list_h) = rect(&ui, "#strip-list")?;
+    let (_, item_y, _, item_h) = rect(&ui, &node(c))?;
+    assert!(
+        (0. ..=8.).contains(&(list_y - item_y - item_h)),
+        "continuous hover bridge below the item"
+    );
+    let (x, y) = screen_point(
+        &ui,
+        &ui.chrome.native(),
+        (list_x + list_w + 180.) as i32,
+        (list_y + list_h / 2.) as i32,
+    )?;
+    move_to(x, y)?;
+    wait("list closed and page uncovered", || {
+        !visible(&ui, "#strip-list") && cover(&ui) == Some(94)
+    })?;
     click_at(x, y)?;
     assert_eq!(
         clicks(&ui),
         1,
-        "a click below the open strip reaches the page"
+        "a click beside the closed list reaches the page"
     );
-    open_strip(&ui)?;
-    hover_chrome(&ui, &node(c))?;
-    wait("hover card", || visible(&ui, "#card"))?;
-    pump(150);
-    hover_chrome(&ui, "#card")?;
-    pump(500);
-    assert!(
-        visible(&ui, "#card") && strip_height(&ui) == 120,
-        "the card holds the strip open"
-    );
-    let (card_x, card_y, card_w, card_h) = rect(&ui, "#card")?;
-    let beside = screen_point(
-        &ui,
-        &ui.chrome.native(),
-        (card_x + card_w + 180.) as i32,
-        (card_y + card_h / 2.) as i32,
-    )?;
-    move_to(beside.0, beside.1)?;
-    wait("card and strip closed", || {
-        !visible(&ui, "#card") && strip_height(&ui) == 52 && cover(&ui) == Some(94)
-    })?;
-    click_at(beside.0, beside.1)?;
-    assert_eq!(
-        clicks(&ui),
-        2,
-        "beside the card, the page gets clicks once the card has closed"
-    );
-    let (x, y) = page_point(&ui, 900, 42 + 120 + 300)?;
+    open_list(&ui)?;
+    let (x, y) = page_point(&ui, 900, (list_y + list_h + 50.) as i32)?;
     click_at(x, y)?;
-    assert_eq!(
-        clicks(&ui),
-        3,
-        "a click under the card's band reaches the page"
-    );
-    open_strip(&ui)?;
-    let (away_x, away_y) = page_point(&ui, 900, 600)?;
-    move_to(away_x, away_y)?;
-    pump(430);
-    assert_eq!(
-        cover(&ui),
-        Some(42 + 120 + 24),
-        "the closing strip keeps its open band"
-    );
+    assert_eq!(clicks(&ui), 2, "a click below the list reaches the page");
+    leave_strip(&ui)?;
     let (x, y) = page_point(&ui, 900, 140)?;
     click_at(x, y)?;
     assert_eq!(
         clicks(&ui),
         3,
-        "the closing band swallows a click during the close"
+        "the former open band immediately belongs to the page"
     );
-    move_to(away_x, away_y)?;
-    pump(900);
-    assert_eq!(strip_height(&ui), 52);
-    click_at(x, y)?;
-    assert_eq!(
-        clicks(&ui),
-        4,
-        "the same point reaches the page once the strip is closed"
-    );
-    println!("PASS page clicks pass below the open strip and under the card; beside the card and in the closing band they wait for the chrome to close, then reach the page.");
+    println!("PASS the strip stays 52 px, its list has no gap, pointer travel keeps it open, and page clicks pass beside and below it after closing.");
 
     save_window(&ui, "/tmp/canopy-chrome-webkit.png")?;
 
@@ -330,15 +305,12 @@ fn main() -> Result<()> {
         .context("queued target=_blank")?;
     assert_eq!(pending.parent, Some(a));
     assert_eq!(ui.snapshot()?.current, Some(a));
-    open_strip(&ui)?;
-    hover_chrome(&ui, &node(pending.id))?;
-    wait("card of the queued page", || {
-        visible(&ui, "#card [data-act=branch]")
-    })?;
-    pump(150);
-    click_chrome(&ui, "#card [data-act=branch]")?;
+    item_list(&ui, "#strip-nodes .after")?;
+    click_chrome(&ui, &node(pending.id))?;
     loaded(&ui, "/d", 6)?;
     assert_eq!(ui.snapshot()?.current, Some(pending.id));
+    open_list(&ui)?;
+    click_chrome(&ui, "#strip-list [data-act=branch]")?;
     wait("palette anchored after the commit", || {
         visible(&ui, "#palette") && chrome_focused(&ui, "#palette-input")
     })?;

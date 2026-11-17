@@ -1,9 +1,9 @@
-//! The chrome: tabs, the tree strip, the palette, cards, menus, the new-tree page, the forest
-//! view and the saved-text reader, drawn in HTML by a transparent web view over the page.
+//! Tabs, the tree strip, the palette, attached lists, menus, the new-tree page, the forest
+//! and the saved-text reader, drawn in HTML by a transparent web view over the page.
 //!
 //! Rust owns the state and every decision: layouts, palette results, intents. The view paints
 //! what `view` serializes and reports input over IPC. At rest the view covers only the top
-//! 94 px. It grows down to whatever is open over the page (the open strip, a card, a menu)
+//! 94 px. It grows down to whatever is open over the page (an attached list or a menu)
 //! and covers the window only for the palette, the reader and the full-page surfaces, so the
 //! page keeps its clicks everywhere else.
 
@@ -118,6 +118,7 @@ pub enum ChromeIntent {
     SetTheme(ThemeMode),
     CancelContinuation,
     Restore(VisitId),
+    Reload,
     /// Activate a queued page, then open a palette anchored on it once it commits.
     BranchFromQueued(VisitId),
     Navigate {
@@ -681,6 +682,7 @@ impl Inner {
                 ChromeIntent::RenameTree(TreeId(id("id")?), message["name"].as_str()?.to_owned())
             }
             "restore" => ChromeIntent::Restore(id("id")?),
+            "reload" => ChromeIntent::Reload,
             "branch-queued" => ChromeIntent::BranchFromQueued(id("id")?),
             "open-citation" => ChromeIntent::OpenCitation(id("id")?),
             "read-captures" => ChromeIntent::ReadCaptures(id("id")?),

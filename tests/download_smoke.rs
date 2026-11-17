@@ -344,30 +344,24 @@ fn main() -> Result<()> {
     leave_strip(&ui)?;
     ui.pages.selected_page().restore(origin)?;
     loaded(&ui, "/page")?;
-    wait("the side branch drawn as a bud", || {
-        chrome(
-            &ui,
-            &format!(
-                "document.querySelector({:?})?.classList.contains('bud')",
-                node(after)
-            ),
-        )
-        .is_ok_and(|bud| bud == true)
+    wait("side branch leaves the resting strip", || {
+        leaves(&ui, after) == Value::Null
     })?;
-    assert_eq!(leaves(&ui, after), Value::Null, "a bud carries no leaf");
     assert_eq!(leaves(&ui, origin), json!([1, 0, "7"]));
     shot(&ui, "branch-rest")?;
-    open_strip(&ui)?;
-    assert_eq!(leaves(&ui, after), json!([1, 1, null]));
-    let (leaf_x, leaf_y, _, leaf_height) = rect(&ui, &leaf_button(after))?;
-    let (node_x, node_y, _, _) = rect(&ui, &node(after))?;
-    assert!(
-        (leaf_x - node_x).abs() <= 1. && (leaf_y + leaf_height - node_y).abs() <= 2.,
-        "the leaf follows its node into the open strip"
-    );
-    shot(&ui, "branch-open")?;
+    open_list(&ui)?;
+    assert!(visible(&ui, &node(after)));
+    assert!(visible(
+        &ui,
+        &format!("#strip-list [data-files='{after}'] .leaf.missing")
+    ));
+    click_chrome(&ui, &format!("#strip-list [data-files='{after}']"))?;
+    wait("side branch files", || visible(&ui, "#popover [data-file]"))?;
+    assert!(text(&ui, "#popover").contains("Moved or deleted"));
+    shot(&ui, "branch-list")?;
+    key("Escape")?;
     leave_strip(&ui)?;
-    println!("PASS at rest only the trunk carries leaves; opening the strip shows them on side branches too.");
+    println!("PASS at rest the trunk carries leaves; the attached list keeps side branch files reachable.");
     Ok(())
 }
 

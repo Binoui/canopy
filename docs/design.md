@@ -84,9 +84,13 @@ Back uses an entry still present in WebKit's history only when its visit belongs
 
 ## The chrome is an HTML view above the page
 
-The tabs, the tree strip, the palette, the cards, the menus, the "New tree" page, the forest view and the reader are drawn in HTML. A second, transparent webview, served by the `canopy://` scheme, sits above the page. Rust keeps the state and every decision: the layouts, the palette results and the intents. The view receives JSON and sends clicks and keys back over IPC.
+The tabs, the tree strip, the palette, the attached lists, the menus, the "New tree" page, the forest view and the reader are drawn in HTML. A second, transparent webview, served by the `canopy://` scheme, sits above the page. Rust keeps the state and every decision: the layouts, the palette results and the intents. The view receives JSON and sends clicks and keys back over IPC.
 
-At rest, the view covers only the top 94 px. It grows to cover whatever is open (open strip, card, menu) and covers the whole window only for the palette, the reader and full-page surfaces. The page therefore gets clicks everywhere else. During the 220 ms the strip takes to close, the open area keeps the clicks.
+At rest, the view covers only the top 94 px. The tree strip stays 52 px high. `graph.rs` builds `StripItem` values for the root, path pages, named parent, same-host runs, Earlier pages, current page, and read or waiting children. Runs exclude the root and parent. The oldest items after the root merge into Earlier until the path fits the room reserved by `pins.rs`. Rust sends positions, branch subtree counts, list headings, and at most six named rows per item. Parent names reuse `naming.rs` to remove the site and omit title segments shared with the parent. The current pill keeps its full title.
+
+A 250 ms rest or keyboard focus opens one list below the item, joined by a continuous hover area. Entering the list cancels dismissal. Its keyed rows and action buttons survive frame updates and refresh deferral between a press and release. Preview requests populate the list head with saved text. Run rows follow path order, Earlier rows reverse it, branch heads are newest first, and waiting children keep queue order. More opens the existing zoomed tree. Download leaves and live marks stay on page tiles, and folded items aggregate files. Branch rows retain access to their files.
+
+The view grows to the bottom of the attached list or menu and covers the whole window only for the palette, the reader, and full-page surfaces. Below that region, the page gets clicks.
 
 This choice replaces the GTK and cairo chrome. It costs a second WebKit process, measured at about 124 MB of PSS. In exchange, a single interface runs on Linux, macOS and Windows. On Linux, GTK remains the invisible host of both webviews, as in Tauri. The page engine and the host window stay tied to WebKitGTK until the port to macOS and Windows.
 

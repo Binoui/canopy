@@ -115,7 +115,7 @@ fn main() -> Result<()> {
         visible(&ui, "#waiting-pin .pending-dot.loaded")
     })?;
     assert!(chrome(&ui, "document.querySelector('#waiting-pin img').getAttribute('src').includes(encodeURIComponent(S.frame.visits[canopy.state().waiting[0]].url))")? == true);
-    assert!(chrome(&ui, "[...S.strip.open.nodes].some(n => n.hidden.some(id => canopy.state().waiting.includes(id)))")? == true);
+    assert!(chrome(&ui, "S.strip.nodes.some(n => n.kind === 'after' && n.waiting === 24 && n.rows.length === 6 && n.more.includes('18 more waiting'))")? == true);
     println!(
         "PASS counter, next icon, state dot, tab count, newest order and hidden waiting pages."
     );
@@ -124,14 +124,14 @@ fn main() -> Result<()> {
         pump(400);
         settle(&ui)?;
         room_check(&ui)?;
-        open_strip(&ui)?;
+        open_list(&ui)?;
         room_check(&ui)?;
         leave_strip(&ui)?;
     }
     ui.window.resize(800, 800);
     pump(400);
     settle(&ui)?;
-    open_strip(&ui)?;
+    open_list(&ui)?;
     let pin = rect(&ui, "#waiting-pin")?;
     let before = chrome(
         &ui,
@@ -141,7 +141,7 @@ fn main() -> Result<()> {
     move_to(x, y)?;
     xdo(&["click", "4"])?;
     pump(80);
-    assert_ne!(
+    assert_eq!(
         chrome(
             &ui,
             "document.getElementById('strip-canvas').style.transform"
@@ -150,7 +150,7 @@ fn main() -> Result<()> {
     );
     assert_eq!(rect(&ui, "#waiting-pin")?, pin);
     leave_strip(&ui)?;
-    println!("PASS pinned counter stays still while the strip pans; current pill fits reserved room at three widths.");
+    println!("PASS pinned counter and fitted strip stay still while scrolling; current pill fits reserved room at three widths.");
     ui.window.resize(1240, 800);
     pump(400);
     prove_tree_sheet(&ui)?;
@@ -183,7 +183,12 @@ fn main() -> Result<()> {
         assert!(visible(&ui, "#popover.waiting"));
         chrome(&ui, "(() => { window.unloadedFrame = structuredClone(S.frame); const v=S.frame.visits[S.frame.waiting.ids[0]]; v.loaded=true; v.when='loaded'; const u=S.frame.visits[S.frame.waiting.ids[1]]; u.loaded=false; u.when='not loaded'; canopy.present(S.frame); return true; })()")?;
         assert!(visible(&ui, "#waiting-pin .pending-dot.loaded"));
-        assert!(chrome(&ui, "getComputedStyle(document.querySelector('.node.bud.pending.loaded')).borderTopStyle === 'none'")? == true);
+        assert!(
+            chrome(
+                &ui,
+                "!!document.querySelector('#popover .mk .pending-dot.loaded')"
+            )? == true
+        );
         chrome(&ui, "(canopy.toggleForest(), true)")?;
         assert!(chrome(&ui, "getComputedStyle(document.querySelector('.forest-node.pending.loaded')).borderTopStyle === 'solid'")? == true);
         assert!(chrome(&ui, "getComputedStyle(document.querySelector('.forest-node.pending:not(.loaded)')).borderTopStyle === 'dashed'")? == true);
@@ -424,7 +429,8 @@ fn prove_tree_sheet(ui: &Ui) -> Result<()> {
     hover_chrome(ui, ".sheet-head")?;
     pump(400);
     assert_eq!(strip_height(ui), 52);
-    assert!(chrome(ui, "canopy.state().open")? == false);
+    assert!(chrome(ui, "canopy.state().list")?.is_null());
+    assert!(!visible(ui, "#strip-list"));
     for theme in ["dark", "light"] {
         chrome(ui, &format!("(intent('theme', {{mode:'{theme}'}}), true)"))?;
         wait("sheet theme", || {
