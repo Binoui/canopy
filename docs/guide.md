@@ -10,7 +10,7 @@ This guide covers everything Canopy does today, feature by feature. For installi
 4. Follow another link. Both visits appear under the first page.
 5. Close the browser, then start it again with the same data folder. The tree and the current page are kept.
 
-Clicking an older visit reloads its URL. Resuming does not restore the scroll position or forms.
+Returning to a page still open in memory preserves its forms, scripts and scroll position. Released pages reload when reopened. A restart restores the recorded scroll position, but not forms or scripts.
 
 On a page's attached list, **New branch here** opens the palette from that page without loading it, so the next address you type becomes its child. A tree's tab reopens the page you were last reading in that tree.
 
@@ -28,7 +28,7 @@ Chrome menus take focus when opened. Arrow keys walk menu actions, Home and End 
 
 Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not affect them.
 
-- **Ctrl+K** or the **Search or go…** pill opens the palette. Type to search your forest and your saved text, or to go to an address. **Enter** opens the selected result. **Alt+Enter** opens it in a new tree. **Escape** closes the palette and returns focus to the control that opened it, or to the page.
+- **Ctrl+K** or the **Search or go…** pill opens the palette. Type to search your forest and your saved text, or to go to an address. An address or web search grows a child of the page where you opened the palette. From the new-tree page it starts a new tree. **Enter** opens the selected result. **Alt+Enter** opens it in a new tree. **Escape** closes the palette and returns focus to the control that opened it, or to the page.
 - **Ctrl+D** bookmarks the current page or removes its bookmark, including while the new-tree page shows over it.
 - **Ctrl+L** opens the same palette with the current address selected.
 - **Ctrl+E** or the forest button opens every tree. Drag or scroll to pan, Ctrl+scroll to zoom, and use **Titles** to switch between pills and icons. Click a page to restore it.
@@ -60,7 +60,7 @@ Settling a tree or branch shows **Settled ‘name’ · N waiting kept**. The to
 
 ## Resume reading
 
-1. From a comment or an article, open several links with **Ctrl+click**, a **middle click** or a link meant for a new window. The destinations wait in the tree, drawn dashed. The source page stays open and the destinations are not downloaded.
+1. From a comment or an article, open several links with **Ctrl+click**, a **middle click** or a link meant for a new window. The destinations wait in the tree. The source page stays open. Waiting pages may load silently in the background when memory allows. They stay waiting until you open them. A hollow green ring means not loaded; a filled green dot means loaded and waiting. A small grey dot marks a read page still open in memory.
 2. Click a waiting page to read it. The visit keeps its parent and the link's context when it is available.
 3. Let **Remember pages** save the text of the open page, or select a passage and press **Ctrl+S**. These live in the **Memory** menu, behind the dot at the end of the current page in the strip. **Remember selection** in that menu does the same as Ctrl+S.
 4. Close the browser, then start it again with the same data folder.

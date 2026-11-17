@@ -14,7 +14,7 @@ The alternative brought two things to the chosen design. The navigation intent s
 
 Schema 12 adds nullable `dismissed_at` and `branch_settled_at` marks to visits. The migration runs in a transaction and preserves version-11 rows. Selection clears dismissal on the selected visit and settlement on every ancestor in the same transaction as the arrival log and cursor. The forest projection excludes dismissed links and settled subtrees from waiting counts. Strip branch counts omit settled subtrees, while the zoomed tree and attached lists retain a branch stub.
 
-Moving a branch changes only its head's parent and the two tree targets, in one transaction. The new root can still be waiting, so its `tree_state` target is the most recently opened page inside the subtree, ordered by arrival log. The old target moves to the most recently opened page left in the original tree. Native history bindings keep their visit IDs. The existing history guard resolves tree membership against SQLite, so Back cannot cross the detached root.
+Moving a branch changes only its head's parent and the two tree targets, in one transaction. Moving clears the new root's settled mark and preserves marks below it. Its `tree_state` target is the most recently opened page inside the subtree, ordered by arrival log. The old target moves to the most recently opened page left in the original tree. Native history bindings keep their visit IDs. The existing history guard resolves tree membership against SQLite, so Back cannot cross the detached root.
 
 ## An intent comes before a visit
 
@@ -91,8 +91,7 @@ Back uses an entry still present in WebKit's history only when its visit belongs
 The tabs, the tree strip, the palette, the attached lists, the menus, the "New tree" page, the forest view and the reader are drawn in HTML. A second, transparent webview, served by the `canopy://` scheme, sits above the page. Rust keeps the state and every decision: the layouts, the palette results and the intents. The view receives JSON and sends clicks and keys back over IPC.
 
 Chrome frames carry the current tree, open-tab summaries, waiting pages and the
-open palette's scope page. The
-start page requests its pinned and suggested miniature data when shown. The
+open palette's scope page. The start page requests its pinned and suggested miniature data when shown. The
 forest requests both layouts on open; Rust rebuilds them when the forest changes
 while open. Closing the forest stops sending its history. Unchanged strip items
 and list rows keep their DOM nodes. After a refresh, the strip keeps WebKit's
@@ -123,10 +122,10 @@ With the desktop reduced-motion preference, strip moves and the forest camera fi
 
 The zoomed tree sizes its body from the window height sent by Rust, before measuring and centring the current tile. It never uses the temporary native view height. The chrome suppresses WebKit navigation context menus outside editable fields and selected text. GTK tooltip queries are refused while a chrome layer is open, so cached tooltips cannot cover menus even with a stationary pointer. Tooltips work again after the layer closes.
 
-Rust sizes the active tab first from its title width, icon, padding and settle cross, between 110 and 200 px, capped at the room left after the overflow arrow. Other tabs share the remaining room as titles, down to about six characters with their cross overlaid on hover. Tabs become icons one at a time, farthest from the active tree first, then hide behind the arrow. Icon tabs keep a small green waiting count. The active waiting count sits at the icon corner too, preserving title room. Short titles keep the pin in the tooltip and overflow row; wider titled tabs retain the inline pin, whose width Rust includes. A settle click requires the cross to have been visible under the pointer at press time and a click count of one. The cross draws a 16 px hover shape inside its 24 px hit area. The overflow list includes waiting counts, pins and a settle button. Rust remembers the room measured by the view and sends a new tab fit in every frame. The view applies that fit in the same presentation call as the active class, without another round trip. Ctrl+Shift+Tab uses the visit log in descending event order to find the most recently shown other open tree.
+Rust sizes the active tab first from its title width, icon, padding and settle cross, between 110 and 200 px, capped at the room left after the overflow arrow. Other tabs share the remaining room as titles, down to about six characters with their cross overlaid on hover. Tabs become icons one at a time, farthest from the active tree first, then hide behind the arrow. Icon tabs keep a small green waiting count. The active waiting count sits at the icon corner too, preserving title room. Short titles keep the pin in the tooltip and overflow row; wider titled tabs retain the inline pin, whose width Rust includes. A settle click requires the cross to have been visible under the pointer at press time and a click count of one. The cross draws a 16 px hover shape inside its 24 px hit area. The overflow list includes waiting counts, pins and a settle button. Rust remembers the room measured by the view and sends a new tab fit in every frame. The view applies that fit in the same presentation call as the active aria-selected state, without another round trip. Ctrl+Shift+Tab uses the visit log in descending event order to find the most recently shown other open tree.
 
 
-This choice replaces the GTK and cairo chrome. It costs a second WebKit process, measured at about 124 MB of PSS. In exchange, a single interface runs on Linux, macOS and Windows. On Linux, GTK remains the invisible host of both webviews, as in Tauri. The page engine and the host window stay tied to WebKitGTK until the port to macOS and Windows.
+This choice replaces the GTK and cairo chrome. It costs a second WebKit process, measured at about 124 MB of PSS. The HTML chrome can be reused for a future macOS or Windows port. On Linux, GTK remains the invisible host of both webviews, as in Tauri. The page engine and the host window stay tied to WebKitGTK until the port to macOS and Windows.
 
 ## Saved logins are filled on request
 
@@ -177,7 +176,7 @@ own command-line tool.
 
 The first milestone checks navigation, forks and resuming after a restart.
 
-The minimap, the graph layout, page extraction, summaries and the agent wait for a later milestone. The live page has no generic trait. Moving to Servo or CEF will mean revisiting the rendering and profile integration.
+The forest and current-tree layouts and saved-text extraction are built. Summaries and the agent wait for a later milestone. The live page has no generic trait. Moving to Servo or CEF will mean revisiting the rendering and profile integration.
 
 In-app changes inside web applications remain a separate case. The MVP does not promise to turn every JavaScript state change into a visit.
 
@@ -190,7 +189,8 @@ compares URLs. Routing checks a candidate's pending Restore, the selected docume
 and history, then hidden live and dormant histories in MRU order. A tree-tab return
 uses the most recently shown branch's current document, including hidden redirects;
 a specific visit-node selection still requests that historical visit. A view follows
-links and forks in place; queued visits still wait until first selection to load.
+links and forks in place. Queued visits can load in the background under the memory
+budget, but become read only on first selection.
 
 Returning to the current document in a hidden live branch selects its existing
 Document in Browser's selection transaction, with no load or request. Forms,

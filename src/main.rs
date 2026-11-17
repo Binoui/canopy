@@ -30,15 +30,19 @@ computer.
 Ctrl+K          Search your forest or go to an address
 Ctrl+L          Same, starting from the current address
 Ctrl+E          Forest view
+Ctrl+Shift+E    Current-tree workbench
 Ctrl+T          New tree
+Ctrl+W          Settle the tree, or close the open overlay
 Ctrl+Shift+T    Reopen the most recently settled tree or branch
 Ctrl+1…9        Switch to a tree
 Ctrl+Shift+Tab  Switch to the previously shown open tree
+Ctrl+Tab        Open the next waiting page
 F6              Move between the page and the tree strip
 Alt+←           Back to the parent page
 Alt+→           Forward to the last opened child
 Alt+↑/↓         Previous or next sibling
 Ctrl+R          Reload the page
+Ctrl+D          Toggle the page bookmark
 Ctrl+S          Remember the selection
 Ctrl+Shift+L    Fill the saved login for the page
 Ctrl+Q          Quit
