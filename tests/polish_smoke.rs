@@ -223,6 +223,11 @@ fn main() -> Result<()> {
         chrome(&ui, "reducedMotion.matches").is_ok_and(|v| v == true)
     })?;
     assert!(chrome(&ui, "(animateStrip(300), !strip.anim)")? == true);
+    chrome(&ui, "canopy.waiting('Waiting quietly')")?;
+    assert_eq!(
+        chrome(&ui, "document.querySelectorAll('.waiting-pulse').length")?,
+        0
+    );
     chrome(
         &ui,
         "(canopy.toggleForest(), S.camera.zoom=.5, fitForest(true), true)",

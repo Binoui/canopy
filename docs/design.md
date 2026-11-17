@@ -482,3 +482,5 @@ Forest layouts survive closing and reopening until the projection changes. The
 view requests a forest frame after its full-window allocation, and retains that
 payload by revision. A projection, live-page or loaded-page change invalidates the
 payload; an unchanged reopen reuses it without resending all visits.
+
+The new-tree page shows a How trees work card until Got it updates session.trees_help. Settings and F1 persistently restore the card and open the start surface. Rust supplies its lines and legend; the view reuses the page marks and miniature drawing. A successful queued-link context callback emits Waiting once. HtmlChrome groups feedback from the same current parent within 2.6 seconds. The After item and waiting counter glow once for 320 ms, with no animation under reduced motion.

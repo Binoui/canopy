@@ -525,3 +525,20 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 #load-progress.waiting i { animation: load-wait 1.2s ease-in-out infinite; }
 @keyframes load-wait { from { transform: translateX(-100%); } to { transform: translateX(500%); } }
 @media (prefers-reduced-motion: reduce) { #load-progress i { transition: none; } #load-progress.waiting i { animation: none; } }
+
+/* ---------- how trees work ---------- */
+#trees-help { padding: 14px 16px; border: 1px solid var(--tile-border); border-radius: 12px; background: var(--tile); }
+.help-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.help-head h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.help-head button { min-height: 28px; flex: none; }
+#trees-help ol { list-style: none; padding: 0; margin: 12px 0; display: grid; gap: 12px; }
+#trees-help li { display: flex; align-items: center; gap: 12px; font-size: 12.5px; line-height: 1.5; }
+.help-drawing { flex: 0 0 62px; display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.help-drawing > .icon { width: 18px; height: 18px; }
+.help-legend { display: flex; flex-wrap: wrap; gap: 14px 18px; border-top: 1px solid var(--border); padding-top: 12px; font-size: 11px; color: var(--muted); line-height: 20px; }
+.help-legend > span { display: inline-flex; align-items: center; gap: 9px; }
+.help-legend > span > i { display: inline-flex; align-items: center; justify-content: center; width: 22px; font-style: normal; }
+.help-count { position: static; pointer-events: none; }
+@keyframes waiting-pulse { 50% { box-shadow: 0 0 0 4px var(--green-soft); } }
+.waiting-pulse { animation: waiting-pulse 320ms ease-out; }
+@media (prefers-reduced-motion: reduce) { .waiting-pulse { animation: none; } }

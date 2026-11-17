@@ -390,7 +390,7 @@ function buildStrip(layout) {
     el.style.transformOrigin = '0 0';
     if (!['run', 'earlier', 'after'].includes(n.kind)) el.dataset.page = n.page;
     else delete el.dataset.page;
-    el.className = `node ${n.kind}` + (n.named ? ' named' : '') + markClass(v);
+    el.className = `node ${n.kind}` + (n.named ? ' named' : '') + markClass(v) + (el.classList.contains('waiting-pulse') ? ' waiting-pulse' : '');
     el.setAttribute('aria-label', n.name);
     el.setAttribute('aria-current', n.kind === 'pill' ? 'page' : 'false');
     el.setAttribute('aria-controls', 'strip-list');
@@ -1130,7 +1130,9 @@ function renderPopover() {
       + '<div class="menu-heading">Theme</div><div class="segmented" id="theme-mode">'
       + ['dark', 'light', 'system'].map((mode) => `<button data-mode="${mode}" aria-pressed="${mode === theme}">${mode[0].toUpperCase()}${mode.slice(1)}</button>`).join('')
       + '</div><div class="menu-separator"></div>'
-      + captureRow();
+      + captureRow()
+      + '<div class="menu-separator"></div><button class="menu-row" id="show-trees-help"><span class="grow">How trees work</span><kbd>F1</kbd></button>';
+    $('show-trees-help').onclick = () => { closePopover(false); intent('trees-help', { show: true }); };
     wireCaptureRow();
     popover.querySelectorAll('[data-mode]').forEach((button) => button.addEventListener('click', () => {
       S.frame.theme = button.dataset.mode;
@@ -1580,7 +1582,33 @@ const START = {
   decline: { open: (key) => intent('decline-suggestion', { key }) },
 };
 
+function helpDrawing(kind) {
+  const page = { url: 'canopy://page', live: false, queued: false };
+  if (kind === 'waiting') return markedFav({ ...page, queued: true }, 16);
+  if (kind === 'unread') return markedFav({ ...page, queued: true, loaded: true }, 16);
+  if (kind === 'live') return markedFav({ ...page, live: true }, 16);
+  if (kind === 'leaf') return '<span class="leaf"></span>';
+  if (kind === 'branches') return '<span class="branch-count waiting help-count">3</span>';
+  if (kind === 'settle') return icon('close');
+  return miniHtml({ w: 62, h: 22, s: 14, cut: false,
+    nodes: [{ x: 0, y: 4, url: page.url }, { x: 40, y: 4, url: page.url, last: true }],
+    edges: [{ c: ['14 11', '25 11', '25 11', '40 11'] }] });
+}
+
+function renderHelp() {
+  const box = $('trees-help');
+  box.hidden = !S.frame?.treesHelp;
+  const help = S.frame?.help;
+  if (!help || box.__paint === help.title) return;
+  box.__paint = help.title;
+  box.innerHTML = `<div class="help-head"><h2 id="trees-help-title">${esc(help.title)}</h2><button id="trees-help-dismiss" class="action">Got it</button></div>`
+    + '<ol>' + help.lines.map((line) => `<li><span class="help-drawing" aria-hidden="true">${helpDrawing(line.mark)}</span><span>${esc(line.text)}</span></li>`).join('') + '</ol>'
+    + '<div class="help-legend" aria-label="Page marks">' + help.legend.map((item) => `<span><i aria-hidden="true">${helpDrawing(item.mark)}</i>${esc(item.text)}</span>`).join('') + '</div>';
+  $('trees-help-dismiss').onclick = () => { intent('trees-help', { show: false }); focusStart(); };
+}
+
 function renderStart() {
+  renderHelp();
   if (!S.frame?.start || S.surface !== 'start') return;
   const paint = JSON.stringify(S.frame.start);
   if (S.startPaint === paint) return;
@@ -1899,6 +1927,7 @@ window.canopy = {
   fillLogin() { fillLogin(); },
   nextWaiting() { openNextWaiting(); },
   openPalette(options) { openPalette(options); },
+  showTreesHelp() { closeReader(false); closePopover(false); hideList(); this.newTree(); renderHelp(); },
   newTree() {
     cancel('toast');
     $('toast').hidden = true;
@@ -1919,6 +1948,16 @@ window.canopy = {
   },
   tabSelected() { closePopover(false); setOverlay(null); },
   toggleTree(fromChrome = true) { toggleOverlay('tree'); if (!fromChrome && S.overlay === 'tree') rememberFocus('overlay', document.body); },
+  waiting(text) {
+    this.toast('info', text);
+    if (reducedMotion.matches) return;
+    for (const el of [$('waiting-pin'), ...document.querySelectorAll('.node.after')]) {
+      el.classList.remove('waiting-pulse');
+      void el.offsetWidth;
+      el.classList.add('waiting-pulse');
+      el.onanimationend = () => el.classList.remove('waiting-pulse');
+    }
+  },
   toast(kind, text) {
     if (kind === 'error') {
       S.errors.unshift(text);

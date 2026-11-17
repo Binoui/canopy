@@ -75,6 +75,7 @@ pub struct ChromeFrame {
     /// Current documents retained in hidden, previously shown pages.
     pub live: std::collections::HashSet<VisitId>,
     pub capture_enabled: bool,
+    pub trees_help: bool,
     pub theme: ThemeMode,
     pub declined: std::collections::HashSet<crate::suggest::SuggestionKey>,
     /// The files downloaded from the current tree's pages, oldest first.
@@ -128,6 +129,7 @@ pub enum ChromeIntent {
     },
     Decline(crate::suggest::SuggestionKey),
     SetTheme(ThemeMode),
+    ShowTreesHelp(bool),
     CancelContinuation,
     Restore(VisitId),
     Reload,
@@ -215,6 +217,7 @@ struct Inner {
     /// How far down the view reaches, or `None` to cover the window.
     cover: Cell<Option<f64>>,
     toast_rect: Cell<Option<[i32; 4]>>,
+    waiting: RefCell<Option<(VisitId, std::time::Instant, usize)>>,
     /// Something is open that Escape closes.
     modal: Cell<bool>,
     /// The find session the bar shows. Escape closes it even before the view reports.
@@ -273,6 +276,7 @@ impl HtmlChrome {
             size: Cell::new((1., 1.)),
             cover: Cell::new(Some(CHROME_HEIGHT)),
             toast_rect: Cell::new(None),
+            waiting: RefCell::new(None),
             modal: Cell::new(false),
             find: Cell::new(None),
             frame: RefCell::new(None),
@@ -479,6 +483,33 @@ impl HtmlChrome {
         self.inner.call("fillLogin", &[]);
     }
 
+    pub fn waiting(&self, parent: VisitId, label: &str) {
+        if self
+            .inner
+            .frame
+            .borrow()
+            .as_ref()
+            .and_then(|f| f.forest.current())
+            != Some(parent)
+        {
+            return;
+        }
+        let now = std::time::Instant::now();
+        let mut waiting = self.inner.waiting.borrow_mut();
+        let count = waiting
+            .as_ref()
+            .filter(|(id, at, _)| *id == parent && now.duration_since(*at).as_millis() < 2600)
+            .map_or(1, |(_, _, count)| count + 1);
+        *waiting = Some((parent, now, count));
+        let text = if count == 1 {
+            format!("Waiting · {label}")
+        } else {
+            format!("{count} waiting from this page")
+        };
+        drop(waiting);
+        self.inner.call("waiting", &[json!(text)]);
+    }
+
     pub fn settled(&self, text: &str) {
         self.inner.call("toast", &[json!("settled"), json!(text)]);
     }
@@ -492,6 +523,10 @@ impl HtmlChrome {
     }
 
     /// F6 moves keyboard focus between the page and the current node.
+    pub fn show_trees_help(&self) {
+        self.inner.call("showTreesHelp", &[]);
+    }
+
     pub fn toggle_focus(&self) {
         self.inner.call("toggleFocus", &[]);
     }
@@ -979,6 +1014,7 @@ impl Inner {
                 "dark" => ThemeMode::Dark,
                 _ => ThemeMode::System,
             }),
+            "trees-help" => ChromeIntent::ShowTreesHelp(message["show"].as_bool()?),
             "capture" => ChromeIntent::SetCaptureEnabled(message["on"].as_bool()?),
             "remember" => ChromeIntent::RememberSelection,
             "open-file" => ChromeIntent::OpenFile(message["file"].as_i64()?),

@@ -37,6 +37,7 @@ Ctrl+Shift+T    Reopen the most recently settled tree or branch
 Ctrl+1…9        Switch to a tree
 Ctrl+Shift+Tab  Switch to the previously shown open tree
 Ctrl+Tab        Open the next waiting page
+F1              How trees work
 F6              Move between the page and the tree strip
 Alt+←           Back to the parent page
 Alt+→           Forward to the last opened child
@@ -339,7 +340,10 @@ mod tests {
         let columns: Vec<_> = HELP
             .lines()
             .filter(|line| {
-                line.starts_with("Ctrl+") || line.starts_with("Alt+") || line.starts_with("F6 ")
+                line.starts_with("Ctrl+")
+                    || line.starts_with("Alt+")
+                    || line.starts_with("F6 ")
+                    || line.starts_with("F1 ")
             })
             .map(|line| {
                 line.chars().position(|c| c == ' ').unwrap()

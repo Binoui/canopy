@@ -159,6 +159,10 @@ impl Ui {
                 PageEvent::Changed | PageEvent::Loading(false) => ui.schedule_refresh(),
                 PageEvent::Loading(true) => {}
                 PageEvent::LoadState(value) => ui.chrome.loading(value),
+                PageEvent::Waiting { parent, label } => {
+                    ui.refresh();
+                    ui.chrome.waiting(parent, &label);
+                }
                 PageEvent::Settled(message) => ui.chrome.settled(&message),
                 PageEvent::Error(message) => ui.chrome.toast(Toast::Error(message)),
                 PageEvent::Remembered(_) => ui
@@ -307,6 +311,7 @@ impl Ui {
                 live: self.pages.hidden_visits(),
                 forest,
                 capture_enabled: browser.capture_enabled()?,
+                trees_help: browser.trees_help()?,
                 theme: browser.theme_mode()?,
                 declined: browser.declined()?,
                 bookmarks: browser.bookmarks()?,
@@ -443,6 +448,7 @@ impl Ui {
                 self.chrome.uncover();
                 self.report(self.pages.go(Go::Parent));
             }
+            Shortcut::TreesHelp => self.dispatch(ChromeIntent::ShowTreesHelp(true)),
             Shortcut::ToggleFocus => self.chrome.toggle_focus(),
             Shortcut::Find => self.pages.find(FindTarget::Selected, FindAction::Open),
             Shortcut::FindNext => self.pages.find(FindTarget::Selected, FindAction::Next),
@@ -481,6 +487,7 @@ enum Shortcut {
     Find,
     FindNext,
     FindPrevious,
+    TreesHelp,
     Escape,
 }
 
@@ -619,6 +626,7 @@ impl Shortcut {
             (Modifiers::ALT, key::Right, Self::Forward),
             (Modifiers::ALT, key::Up, Self::PreviousSibling),
             (Modifiers::ALT, key::Down, Self::NextSibling),
+            (Modifiers::NONE, key::F1, Self::TreesHelp),
             (Modifiers::NONE, key::F6, Self::ToggleFocus),
             (Modifiers::CONTROL, key::f, Self::Find),
             (Modifiers::CONTROL, key::g, Self::FindNext),
@@ -710,6 +718,14 @@ impl ChromeHost for Ui {
             ChromeIntent::Decline(key) => {
                 let result = self.pages.decline(&key);
                 self.schedule_refresh();
+                result
+            }
+            ChromeIntent::ShowTreesHelp(show) => {
+                let result = self.pages.set_trees_help(show);
+                self.schedule_refresh();
+                if show {
+                    self.chrome.show_trees_help();
+                }
                 result
             }
             ChromeIntent::SetTheme(mode) => {
@@ -986,6 +1002,7 @@ mod shortcut_tests {
             (key::Right, Modifiers::ALT, Shortcut::Forward),
             (key::Up, Modifiers::ALT, Shortcut::PreviousSibling),
             (key::Down, Modifiers::ALT, Shortcut::NextSibling),
+            (key::F1, Modifiers::NONE, Shortcut::TreesHelp),
             (key::F6, Modifiers::NONE, Shortcut::ToggleFocus),
             (key::f, Modifiers::CONTROL, Shortcut::Find),
             (key::g, Modifiers::CONTROL, Shortcut::FindNext),

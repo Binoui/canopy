@@ -2127,6 +2127,7 @@ impl NativeState {
                 Ok(child) => {
                     self.owner().queue_background(child);
                     self.emit(PageEvent::Changed);
+                    let queued_url = url.clone();
                     self.context(&url, move |state, context| {
                         if !state.valid(&ticket) {
                             return;
@@ -2138,13 +2139,28 @@ impl NativeState {
                                 &state.navigation.borrow(),
                                 &ticket,
                                 child,
-                                source,
+                                source.clone(),
                             );
                             match result {
-                                Ok(true) => state.emit(PageEvent::Changed),
+                                Ok(true) => {
+                                    state.emit(PageEvent::Changed);
+                                    state.emit(PageEvent::Waiting {
+                                        parent: ticket.visit,
+                                        label: if source.link_text.trim().is_empty() {
+                                            queued_url.to_string()
+                                        } else {
+                                            source.link_text
+                                        },
+                                    });
+                                }
                                 Ok(false) => {}
                                 Err(error) => state.emit(PageEvent::Error(error.to_string())),
                             }
+                        } else {
+                            state.emit(PageEvent::Waiting {
+                                parent: ticket.visit,
+                                label: queued_url.to_string(),
+                            });
                         }
                     });
                 }

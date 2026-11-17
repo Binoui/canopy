@@ -77,7 +77,31 @@ fn main() -> Result<()> {
     assert!(!visible(&ui, "#waiting-pin"));
     for i in 0..3 {
         queue(&ui, &format!("link{i}"))?;
+        if i == 0 {
+            assert_eq!(
+                chrome(&ui, "getComputedStyle($('waiting-pin')).animationDuration")?,
+                "0.32s"
+            );
+            assert_eq!(
+                chrome(
+                    &ui,
+                    "getComputedStyle(document.querySelector('.node.after')).animationDuration"
+                )?,
+                "0.32s"
+            );
+        }
+        let expected = if i == 0 {
+            "Waiting · Waiting article 0".to_owned()
+        } else {
+            format!("{} waiting from this page", i + 1)
+        };
+        wait("queued link feedback", || {
+            toast_text(&ui).as_deref() == Some(&expected)
+        })?;
+        assert_eq!(chrome(&ui, "$('toast-status').textContent")?, expected);
+        assert!(text(&ui, ".node.after").contains(&(i + 1).to_string()));
     }
+    println!("PASS middle-click announces link text, batches three waiting links and updates the After count.");
     let branch = ui
         .snapshot()?
         .visits
