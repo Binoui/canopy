@@ -267,6 +267,10 @@ function pruneStrip() {
 
 /// One element per node, kept across frames so hovers and transitions survive a re-layout.
 function buildStrip(layout) {
+  for (const [key, value] of Object.entries(layout.metrics ?? {})) {
+    const name = key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+    document.documentElement.style.setProperty(`--${key.endsWith('Gap') ? name : `item-${name}`}`, `${value}px`);
+  }
   const nodes = $('strip-nodes');
   const canvas = $('strip-canvas');
   for (const n of layout.nodes) {
@@ -291,7 +295,7 @@ function buildStrip(layout) {
     }
     el.className = `node ${n.kind}` + (n.named ? ' named' : '') + markClass(v);
     el.setAttribute('aria-label', `${n.title}, ${n.branches.pages} branch pages, ${n.branches.waiting} waiting`);
-    el.title = n.kind === 'run' || n.kind === 'earlier' ? n.title : '';
+    el.removeAttribute('title');
     const html = n.kind === 'after'
       ? (n.read ? `<span class="read-count">${n.read}</span>` : '') + (n.waiting ? `<span class="count wait-count"><i></i>${n.waiting}</span>` : '')
       : n.kind === 'earlier' ? `<span>${esc(n.label)}</span>`
@@ -508,7 +512,7 @@ function renderList() {
       const v = visit(row.id);
       const files = filesOf(row.id);
       const leaf = files.length ? `<button class="leaves" data-files="${row.id}" aria-label="${esc(`Files from ${v.label}`)}"><i class="leaf${files.every((f) => f.missing) ? ' missing' : ''}"></i></button>` : '';
-      return [`row-${row.id}`, v ? `<div class="list-entry"><button class="menu-row${markClass(v)}" data-id="${row.id}">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(row.detail)}</span></button>${leaf}</div>` : ''];
+      return [`row-${row.id}`, v ? `<div class="list-entry"><button class="menu-row${markClass(v)}" data-id="${row.id}" title="${esc(v.label)}" aria-label="${esc(v.label)}">${markedFav(v, 16)}<span class="grow">${esc(row.label)}</span><span class="menu-detail">${esc(row.detail)}</span></button>${leaf}</div>` : ''];
     }),
     ['more', item.more ? `<button class="menu-row more" data-act="more">${icon('expand')}<span class="grow">${esc(item.more)}</span><kbd>Ctrl Shift E</kbd></button>` : ''],
     ...item.actions.map((action) => [`action-${action.kind}`, `<button class="action bl-action" data-act="${action.kind}">${esc(action.label)}</button>`]),
@@ -534,6 +538,8 @@ function renderList() {
       if (row && newRow) {
         row.innerHTML = newRow.innerHTML;
         row.className = newRow.className;
+        row.title = newRow.title;
+        row.setAttribute('aria-label', newRow.getAttribute('aria-label'));
         const leaves = el.querySelector('.leaves');
         const newLeaves = fresh.querySelector('.leaves');
         if (leaves && newLeaves) leaves.innerHTML = newLeaves.innerHTML;
@@ -564,7 +570,10 @@ $('strip-list').addEventListener('click', (event) => {
   if (row) { activate(row.dataset.id); return; }
   if (!action) return;
   hideList();
-  if (action === 'more') canopy.toggleTree();
+  if (action === 'more') {
+    canopy.toggleTree();
+    requestAnimationFrame(() => setTreeSide(S.treeSide, true, item.moreTarget));
+  }
   else if (action === 'reload') { uncover(); intent('reload'); }
   else if (action === 'open') { uncover(); intent('restore', { id: item.page }); }
   else if (action === 'branch') {
@@ -808,12 +817,13 @@ function renderPopover() {
       closePopover();
     });
   } else if (kind === 'files') {
-    const files = (Array.isArray(data) ? data : [data]).flatMap(filesOf);
+    const pages = (Array.isArray(data) ? data : [data]).filter((id) => filesOf(id).length);
+    const files = pages.flatMap(filesOf);
     if (!files.length) {
       closePopover(false);
       return;
     }
-    popover.innerHTML = `<div class="menu-heading">${files.length === 1 ? 'Downloaded from this page' : `${files.length} files downloaded from this page`}</div>`
+    popover.innerHTML = `<div class="menu-heading">${pages.length > 1 ? `${files.length} files from ${pages.length} pages` : files.length === 1 ? 'Downloaded from this page' : `${files.length} files downloaded from this page`}</div>`
       + files.map((f) => `<div class="file-row${f.missing ? ' missing' : ''}">`
         + `<button class="menu-row" data-file="${f.id}" title="${esc(f.missing ? `${f.name} was moved or deleted` : `Open ${f.name}`)}">`
         + `${icon('file')}<span class="grow">${esc(f.name)}</span><span class="menu-detail">${esc(f.detail)}</span></button>`
@@ -1000,7 +1010,7 @@ function renderSheet(reveal) {
   setTreeSide(S.treeSide, reveal);
 }
 
-function setTreeSide(side, reveal = true) {
+function setTreeSide(side, reveal = true, target = current()) {
   S.treeSide = side;
   $('tree-board').hidden = side !== 'tree';
   $('tree-list').hidden = side !== 'list';
@@ -1011,7 +1021,7 @@ function setTreeSide(side, reveal = true) {
   }
   if (reveal) {
     const body = $(side === 'tree' ? 'tree-board' : 'tree-list');
-    const selected = body.querySelector('.current');
+    const selected = body.querySelector(`[data-id="${target}"]`);
     if (selected) {
       const a = selected.getBoundingClientRect(), b = body.getBoundingClientRect();
       body.scrollLeft += a.left - b.left - (b.width-a.width)/2;
@@ -1363,7 +1373,7 @@ const when = (at) => new Date(at).toLocaleString(undefined, { day: '2-digit', mo
 // ---------- Rust's side ----------
 
 window.canopy = {
-  viewport(height) { S.windowHeight = height; positionList(); syncLayer(); },
+  viewport(height) { S.windowHeight = height; document.documentElement.style.setProperty('--window-height', `${height}px`); positionList(); syncLayer(); },
   start(value) { if (!S.frame) return; S.frame.start = value; renderStart(); },
   present(frame) {
     const previous = current();
@@ -1564,7 +1574,12 @@ for (const type of ['mousedown', 'mouseup', 'mousemove', 'mouseover']) {
     } else if (refresh.buttons) releaseRefresh();
   }, true);
 }
-window.addEventListener('blur', releaseRefresh);
+window.addEventListener('blur', () => { releaseRefresh(); hideList(); });
+document.addEventListener('focusout', (event) => {
+  if (!S.list) return;
+  const next = event.relatedTarget;
+  if (next && !next.closest('#strip-list') && next.closest('.node')?.dataset.id !== S.list.key) hideList();
+});
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) releaseRefresh();
 });

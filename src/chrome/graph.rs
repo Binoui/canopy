@@ -7,6 +7,23 @@ pub(crate) const REST_HEIGHT: f64 = 52.;
 pub(crate) const TRUNK_Y: f64 = REST_HEIGHT / 2.;
 const GAP: f64 = 22.;
 const PAD: f64 = 14.;
+pub(crate) const ITEM_LEFT: f64 = 6.;
+pub(crate) const ITEM_RIGHT: f64 = 9.;
+pub(crate) const ITEM_BORDER: f64 = 1.;
+pub(crate) const ITEM_ICON: f64 = 14.;
+pub(crate) const PARENT_GAP: f64 = 6.;
+pub(crate) const RUN_GAP: f64 = 5.;
+const PARENT_MAX: f64 = 240.;
+const PATH_ITEMS: usize = 3;
+
+fn label_width(label: &str, gap: f64, size: f64) -> f64 {
+    ITEM_LEFT
+        + ITEM_RIGHT
+        + 2. * ITEM_BORDER
+        + ITEM_ICON
+        + gap
+        + super::view::text_width(label, size, 0.65).ceil()
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Rect {
@@ -157,13 +174,16 @@ pub(crate) fn strip_items(forest: &ForestProjection, current: VisitId) -> Vec<St
 pub(crate) fn short_name(forest: &ForestProjection, id: VisitId) -> String {
     let v = forest.visit(id).unwrap();
     let name = crate::naming::page_name(&v.title, &v.url);
-    let Some(parent) = v.parent.and_then(|id| forest.visit(id)) else {
-        return name;
-    };
-    let parent_name = crate::naming::page_name(&parent.title, &parent.url);
+    v.parent.and_then(|id| forest.visit(id)).map_or_else(
+        || name.clone(),
+        |parent| distinct_name(&name, &crate::naming::page_name(&parent.title, &parent.url)),
+    )
+}
+
+fn distinct_name(name: &str, related: &str) -> String {
     for sep in [" · ", " - ", " | ", " — ", " – ", " : "] {
         let pieces: Vec<_> = name.split(sep).collect();
-        let parent_pieces: Vec<_> = parent_name.split(sep).collect();
+        let parent_pieces: Vec<_> = related.split(sep).collect();
         let unique: Vec<_> = pieces
             .iter()
             .filter(|p| !parent_pieces.contains(p))
@@ -173,19 +193,48 @@ pub(crate) fn short_name(forest: &ForestProjection, id: VisitId) -> String {
             return unique.join(sep);
         }
     }
-    name
+    name.to_owned()
+}
+
+pub(crate) fn parent_name(forest: &ForestProjection, id: VisitId, current: VisitId) -> String {
+    let name = short_name(forest, id);
+    let v = forest.visit(current).unwrap();
+    let related = crate::naming::page_name(&v.title, &v.url);
+    let name = distinct_name(&name, &related);
+    let parent = forest.visit(id).unwrap();
+    let related = distinct_name(
+        &related,
+        &crate::naming::page_name(&parent.title, &parent.url),
+    );
+    if name == related {
+        return name;
+    }
+    let common_end = name
+        .char_indices()
+        .zip(related.chars())
+        .take_while(|((_, a), b)| *a == *b)
+        .filter(|((_, c), _)| c.is_whitespace())
+        .map(|((i, c), _)| i + c.len_utf8())
+        .last()
+        .unwrap_or(0);
+    let suffix = name[common_end..].trim();
+    if suffix.is_empty() {
+        name
+    } else {
+        suffix.to_owned()
+    }
 }
 
 fn item_width(forest: &ForestProjection, item: &StripItem, pill: f64, current: VisitId) -> f64 {
     match item {
         StripItem::Root(id) if forest.visit(current).unwrap().parent == Some(*id) => {
-            (34. + super::view::text_width(&short_name(forest, *id), 12.5, 0.56)).min(160.)
+            label_width(&parent_name(forest, *id, current), PARENT_GAP, 12.5).min(PARENT_MAX)
         }
         StripItem::Root(_) | StripItem::Page(_) => 28.,
         StripItem::Parent(id) => {
-            (34. + super::view::text_width(&short_name(forest, *id), 12.5, 0.56)).min(160.)
+            label_width(&parent_name(forest, *id, current), PARENT_GAP, 12.5).min(PARENT_MAX)
         }
-        StripItem::Run { ids, .. } => 34. + ids.len().to_string().len() as f64 * 7.,
+        StripItem::Run { ids, .. } => label_width(&ids.len().to_string(), RUN_GAP, 11.5),
         StripItem::Earlier { ids } => 76. + ids.len().to_string().len() as f64 * 7.,
         StripItem::Current(_) => pill,
         StripItem::After { waiting, read } => [waiting, read]
@@ -211,7 +260,22 @@ pub(crate) fn strip_layout(
             .collect();
         PAD * 2. + widths.iter().sum::<f64>() + GAP * widths.len().saturating_sub(1) as f64
     };
-    while width(&items) > room && items.len() > 4 {
+    let middle_count = |items: &[StripItem]| {
+        items
+            .iter()
+            .filter(|item| matches!(item, StripItem::Page(_) | StripItem::Run { .. }))
+            .count()
+    };
+    let parent_saving = |items: &[StripItem]| {
+        items
+            .iter()
+            .filter(|item| matches!(item, StripItem::Parent(_)))
+            .map(|item| (item_width(forest, item, pill, current) - 60.).max(0.))
+            .sum::<f64>()
+    };
+    while (middle_count(&items) > PATH_ITEMS || width(&items) - parent_saving(&items) > room)
+        && items.len() > 4
+    {
         if !matches!(items[2], StripItem::Page(_) | StripItem::Run { .. }) {
             break;
         }
@@ -221,6 +285,7 @@ pub(crate) fn strip_layout(
             }
             let ids = items.remove(1).ids().to_vec();
             items.insert(1, StripItem::Earlier { ids });
+            continue;
         }
         let next = items.remove(2).ids().to_vec();
         if let StripItem::Earlier { ids } = &mut items[1] {
@@ -248,7 +313,7 @@ pub(crate) fn strip_layout(
         .zip(&widths)
         .find(|(item, _)| is_parent(item))
         .map_or(0., |(_, w)| *w);
-    let parent_width = parent_width.min((flexible * 0.38).max(0.));
+    let parent_width = parent_width.min((flexible - pill).max(60.).min(flexible));
     let current_width = pill.min((flexible - parent_width).max(0.));
     let path = forest.path(current);
     let mut left = PAD;
@@ -272,6 +337,10 @@ pub(crate) fn strip_layout(
                 StripItem::Run { ids, .. } => ids.clone(),
                 StripItem::Earlier { ids } => ids.iter().rev().copied().collect(),
                 StripItem::After { waiting, .. } => waiting.clone(),
+                StripItem::Current(_) => heads
+                    .into_iter()
+                    .filter(|id| forest.visit(*id).unwrap().state != VisitState::Queued)
+                    .collect(),
                 _ => heads,
             };
             let total_rows = rows.len();
@@ -452,6 +521,11 @@ mod tests {
             matches!(&items[1], StripItem::After { waiting, read } if waiting == &ids[1..15] && read.len() == 4)
         );
         let nodes = strip_layout(&f, ids[0], 712., 250.);
+        assert_eq!(
+            nodes[0].rows,
+            ids[15..19].iter().rev().copied().collect::<Vec<_>>()
+        );
+        assert_eq!(nodes[0].total_rows, 4);
         assert_eq!(nodes[1].rows, ids[1..7]);
         assert_eq!(nodes[1].total_rows, 14);
         assert_fits(&nodes, 712.);
@@ -479,6 +553,39 @@ mod tests {
         let nodes = strip_layout(&f, ids[7], 280., 250.);
         assert!(matches!(nodes[1].item, StripItem::Run { .. }));
         assert_fits(&nodes, 280.);
+    }
+
+    #[test]
+    fn roomy_trail_keeps_exactly_three_nearest_middle_items() {
+        let (f, ids) = chain(34, &["a.test", "b.test", "c.test"]);
+        for room in [820., 1240., 2000.] {
+            let nodes = strip_layout(&f, ids[33], room, 250.);
+            assert!(
+                matches!(&nodes[1].item, StripItem::Earlier { ids: old } if old == &ids[1..29])
+            );
+            assert_eq!(
+                nodes[2..5]
+                    .iter()
+                    .flat_map(|n| n.item.ids())
+                    .copied()
+                    .collect::<Vec<_>>(),
+                ids[29..32]
+            );
+        }
+    }
+
+    #[test]
+    fn parent_and_rows_keep_distinguishing_title_segments() {
+        let (f, ids) = chain(4, &["docs.rs"]);
+        assert_eq!(parent_name(&f, ids[2], ids[3]), "2");
+        assert_eq!(
+            distinct_name(
+                "Ask HN · What are you building this month?",
+                "Ask HN · What are you building next month?"
+            ),
+            "What are you building this month?"
+        );
+        assert_eq!(distinct_name("Same name", "Same name"), "Same name");
     }
 
     #[test]

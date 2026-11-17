@@ -131,12 +131,11 @@ pub(crate) fn strip(forest: &ForestProjection, width: f64) -> Value {
         let ids = node.item.ids();
         let id = ids.last().copied().unwrap_or(current);
         let v = forest.visit(id).unwrap();
-        let heads = graph::branch_heads(forest, ids, &path);
         let (kind, label, title, meta, heading, more) = match &node.item {
             StripItem::Root(_) | StripItem::Page(_) | StripItem::Parent(_) | StripItem::Current(_) => {
                 let kind = match node.item { StripItem::Root(_) => "root", StripItem::Page(_) => "page", StripItem::Parent(_) => "parent", _ => "pill" };
-                (kind, graph::short_name(forest, id), v.label().to_owned(), format!("{} · {} after", site_line(v), plural(forest.descendant_count(id).unwrap_or(0), "page")),
-                    if heads.is_empty() { String::new() } else { format!("Other branches from here · {}", heads.len()) },
+                (kind, if v.id != current && forest.visit(current).unwrap().parent == Some(id) { graph::parent_name(forest, id, current) } else { graph::short_name(forest, id) }, v.label().to_owned(), format!("{} · {} after", site_line(v), plural(forest.descendant_count(id).unwrap_or(0), "page")),
+                    if node.total_rows == 0 { String::new() } else { format!("Other branches from here · {}", node.total_rows) },
                     if node.total_rows > node.rows.len() { format!("{} more", node.total_rows - node.rows.len()) } else { String::new() })
             }
             StripItem::Run { ids, host } => {
@@ -150,16 +149,16 @@ pub(crate) fn strip(forest: &ForestProjection, width: f64) -> Value {
                 format!("From {} to {}", forest.visit(ids[0]).unwrap().label(), v.label()), "Most recent first".into(),
                 if node.total_rows > node.rows.len() { format!("{} more, in the tree view", node.total_rows - node.rows.len()) } else { String::new() }),
             StripItem::After { waiting, read } => ("after", String::new(), v.label().to_owned(), site_line(v),
-                format!("Waiting from this page · {}", waiting.len()), format!("{} more waiting · {} read", waiting.len().saturating_sub(node.rows.len()), read.len())),
+                if waiting.is_empty() { String::new() } else { format!("Waiting from this page · {}", waiting.len()) }, nonzero_parts(&[(waiting.len().saturating_sub(node.rows.len()), "more waiting"), (read.len(), "read")])),
         };
         let rows: Vec<_> = node.rows.iter().map(|id| {
             let counts = if matches!(node.item, StripItem::Run { .. } | StripItem::Earlier { .. }) {
                 graph::branch_counts(forest, &graph::branch_heads(forest, &[*id], &path))
             } else { graph::branch_counts(forest, &[*id]) };
-            json!({ "id": id.to_string(), "pages": counts.pages, "waiting": counts.waiting,
+            json!({ "id": id.to_string(), "label": graph::short_name(forest, *id), "pages": counts.pages, "waiting": counts.waiting,
                 "detail": if matches!(node.item, StripItem::Run { .. } | StripItem::Earlier { .. }) && counts.pages == 0 {
                     ago(forest.visit(*id).unwrap().opened_at.unwrap_or(forest.visit(*id).unwrap().created_at))
-                } else { format!("{} · {} waiting", plural(counts.pages, "page"), counts.waiting) } })
+                } else { nonzero_parts(&[(counts.pages, if counts.pages == 1 { "page" } else { "pages" }), (counts.waiting, "waiting")]) } })
         }).collect();
         let (waiting, read) = match &node.item { StripItem::After { waiting, read } => (waiting.len(), read.len()), _ => (0, 0) };
         let page_head = matches!(node.item, StripItem::Root(_) | StripItem::Page(_) | StripItem::Parent(_) | StripItem::Current(_));
@@ -176,6 +175,7 @@ pub(crate) fn strip(forest: &ForestProjection, width: f64) -> Value {
         }
         json!({
             "preview": page_head, "actions": actions,
+            "moreTarget": if let StripItem::Earlier { ids } = &node.item { ids.first().copied().unwrap_or(current).to_string() } else { current.to_string() },
             "id": if kind == "after" { format!("after-{current}") } else { id.to_string() },
             "page": id.to_string(), "ids": ids.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "named": kind == "root" && forest.visit(current).unwrap().parent == Some(id),
@@ -192,7 +192,17 @@ pub(crate) fn strip(forest: &ForestProjection, width: f64) -> Value {
             "c": [[x,a.y], [x+5.,a.y], [end-5.,b.y], [end,b.y]]})
     }).collect();
     json!({ "room": pins.room, "pins": placed, "height": graph::REST_HEIGHT, "width": pins.room, "pan": 0,
+        "metrics": { "left": graph::ITEM_LEFT, "right": graph::ITEM_RIGHT, "border": graph::ITEM_BORDER, "icon": graph::ITEM_ICON, "parentGap": graph::PARENT_GAP, "runGap": graph::RUN_GAP },
         "trunk": nodes.iter().filter(|n| n["kind"] != "after").map(|n| n["id"].clone()).collect::<Vec<_>>(), "nodes": nodes, "edges": edges })
+}
+
+fn nonzero_parts(parts: &[(usize, &str)]) -> String {
+    parts
+        .iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, label)| format!("{n} {label}"))
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// Downloaded files by the page they hang off, oldest first.
@@ -519,6 +529,22 @@ mod tests {
         )
         .unwrap();
         (forest, ids)
+    }
+
+    #[test]
+    fn fully_listed_waiting_children_have_no_empty_more_row() {
+        let (forest, _) = chain();
+        let value = strip(&forest, 1240.);
+        let after = value["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["kind"] == "after")
+            .unwrap();
+        assert_eq!(after["rows"].as_array().unwrap().len(), 1);
+        assert_eq!(after["more"], "");
+        assert_eq!(nonzero_parts(&[(1, "page"), (0, "waiting")]), "1 page");
+        assert_eq!(nonzero_parts(&[(0, "pages"), (2, "waiting")]), "2 waiting");
     }
 
     #[test]
