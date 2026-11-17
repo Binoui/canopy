@@ -493,6 +493,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .tab.icon-only { padding: 0; justify-content: center; }
 .tab.icon-only > :not(.mk):not(.unread-dot) { display: none; }
 .tab.icon-only > .unread-dot { position: absolute; right: 3px; top: 4px; box-shadow: 0 0 0 1.5px var(--chrome); }
+.tab[aria-selected="true"] > .unread-dot { position: absolute; right: 5px; top: 5px; width: 6px; height: 6px; box-shadow: 0 0 0 1.5px var(--bg); }
 .overflow-tree { display: flex; align-items: center; }
 .overflow-tree .menu-row { flex: 1; min-width: 0; }
 .overflow-settle { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 4px; }
