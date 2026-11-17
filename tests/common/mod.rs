@@ -276,6 +276,10 @@ pub fn toast_text(ui: &Ui) -> Option<String> {
     visible(ui, "#toast").then(|| text(ui, "#toast"))
 }
 
+pub fn error_toast_text(ui: &Ui) -> Option<String> {
+    visible(ui, "#error-toast").then(|| text(ui, "#error-toast [data-key=error-message]"))
+}
+
 /// Opens the Saved text menu from the dot on the current-page pill.
 pub fn open_saved_text_menu(ui: &Ui) -> Result<()> {
     if !visible(ui, "#popover #automatic-capture") {

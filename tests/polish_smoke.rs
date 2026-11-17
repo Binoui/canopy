@@ -195,7 +195,7 @@ fn main() -> Result<()> {
             "(closePopover(false), canopy.toast('error', 'Could not load this page'), true)",
         )?;
         shot(&ui, &format!("{theme}-error"))?;
-        chrome(&ui, "($('toast').hidden=true, true)")?;
+        chrome(&ui, "($('error-toast').hidden=true, true)")?;
     }
     assert!(chrome(&ui, "(() => {canopy.logins({offer:1,names:['First','Second']}); const a=$('login-chip');openPopover('logins',a,null); canopy.logins({offer:1,names:['Updated','Second']});return !a.hasAttribute('title');})()")? == true);
     chrome(&ui, "(closePopover(false), true)")?;

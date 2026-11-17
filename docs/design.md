@@ -484,3 +484,5 @@ payload by revision. A projection, live-page or loaded-page change invalidates t
 payload; an unchanged reopen reuses it without resending all visits.
 
 The new-tree page shows a How trees work card until Got it updates session.trees_help. Settings and F1 persistently restore the card and open the start surface. Rust supplies its lines and legend; the view reuses the page marks and miniature drawing. A successful queued-link context callback emits Waiting once. HtmlChrome groups feedback from the same current parent within 2.6 seconds. The After item and waiting counter glow once for 320 ms, with no animation under reduced motion.
+
+HtmlChrome owns a session-only error history (newest ten), its unread mark and the count behind the persistent error toast. Reading the list acknowledges the mark; dismissing a toast leaves history. Errors and transient statuses use independent containers and live regions. GTK input regions include only their buttons below the ordinary chrome cover. Keyed error controls survive replacements, and Escape with chrome focus dismisses the error and also closes the active chrome surface as usual.

@@ -297,7 +297,10 @@ fn failed_and_empty_background_loads_leave_no_loaded_page() -> Result<()> {
         })?;
         assert!(!f.ui.pages.loaded_visits().contains(&q));
         assert_eq!(f.ui.snapshot()?.current, Some(source));
-        assert!(common::toast_text(&f.ui).is_none_or(|t| t.is_empty()));
+        assert!(common::toast_text(&f.ui).is_none_or(|t| t.is_empty()
+            || t.starts_with("Waiting ·")
+            || t.ends_with("waiting from this page")));
+        assert!(common::error_toast_text(&f.ui).is_none());
     }
     Ok(())
 }
@@ -360,7 +363,7 @@ fn opening_pending_dropped_connection_reports_error_with_one_request() -> Result
     common::wait("failing request pending", || f.hits("/slow-drop") == 1)?;
     f.ui.pages.go(Go::Visit(q))?;
     common::wait("adopted failure reported", || {
-        common::toast_text(&f.ui).is_some_and(|t| t.contains("Could not load"))
+        common::error_toast_text(&f.ui).is_some_and(|t| t.contains("Could not load"))
     })?;
     assert_eq!(f.hits("/slow-drop"), 1);
     Ok(())

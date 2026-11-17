@@ -185,7 +185,7 @@ fn main() -> Result<()> {
     })?;
     fixture.release.store(true, Ordering::Relaxed);
     wait("failure toast", || {
-        toast_text(&ui).as_deref()
+        error_toast_text(&ui).as_deref()
             == Some(
                 "Could not download broken.bin. The connection closed before the whole file arrived.",
             )
@@ -193,11 +193,13 @@ fn main() -> Result<()> {
     pump(300);
     assert_eq!(files(&downloads), before, "no partial file is left behind");
     unchanged()?;
-    open_saved_text_menu(&ui)?;
+    click_chrome(&ui, "#toast-close")?;
+    click_chrome(&ui, "#settings-button")?;
+    click_chrome(&ui, "#recent-errors")?;
     assert_eq!(
         chrome(
             &ui,
-            "[...document.querySelectorAll('#popover .menu-error')].map((e) => e.innerText)"
+            "[...document.querySelectorAll('#popover .menu-error')].map((e) => e.firstChild.textContent)"
         )?,
         serde_json::json!([
             "Could not download broken.bin. The connection closed before the whole file arrived."
@@ -205,7 +207,7 @@ fn main() -> Result<()> {
         "no download is reported as a page that failed to load"
     );
     key("Escape")?;
-    wait("Saved text menu closed", || !visible(&ui, "#popover"))?;
+    wait("Recent errors closed", || !visible(&ui, "#popover"))?;
     assert_eq!(leaves(&ui, origin), json!([1, 0, "5"]));
     assert_eq!(ui.downloads()?.len(), 5);
     println!("PASS the user is told when a download starts and when it fails, a failed download leaves no partial file and no leaf, and the only error recorded is that failure.");
@@ -320,7 +322,7 @@ fn main() -> Result<()> {
     );
     click_chrome(&ui, &format!("#popover [data-file='{}']", last.id))?;
     wait("missing file toast", || {
-        toast_text(&ui).as_deref()
+        error_toast_text(&ui).as_deref()
             == Some("report (4).txt is no longer in Saved files. It was moved or deleted.")
     })?;
     wait("the leaf drawn as missing", || {

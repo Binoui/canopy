@@ -287,16 +287,94 @@ fn main() -> Result<()> {
         NavigationTarget::ChildOf(ui.snapshot()?.current.unwrap()),
     )?;
     wait("connection failure", || {
-        toast_text(&ui).is_some_and(|text| text.contains("Could not load"))
+        error_toast_text(&ui).is_some_and(|text| text.contains("Could not load"))
             && !ui.pages.selected_page().native.is_loading()
     })?;
     pump(150);
     assert_eq!(ui.snapshot()?, before_failure);
-    open_saved_text_menu(&ui)?;
+    pump(6200);
+    assert!(visible(&ui, "#error-toast"));
+    assert_eq!(
+        chrome(&ui, "$('settings-button').classList.contains('has-errors')")?,
+        true
+    );
+    assert_eq!(
+        chrome(&ui, "getComputedStyle($('error-toast')).pointerEvents")?,
+        "none"
+    );
+    ui.chrome
+        .toast(canopy::chrome::Toast::Error("Second error".into()));
+    ui.chrome
+        .toast(canopy::chrome::Toast::Error("Newest error".into()));
+    wait("multiple errors", || {
+        text(&ui, "#error-toast").contains("· 2 more")
+    })?;
+    ui.chrome
+        .toast(canopy::chrome::Toast::Info("Still available".into()));
+    wait("status beside persistent error", || {
+        text(&ui, "#toast") == "Still available"
+    })?;
+    assert!(visible(&ui, "#error-toast"));
+    click_chrome(&ui, "#toast-more")?;
+    wait("recent errors list", || visible(&ui, "#clear-errors"))?;
     assert!(text(&ui, "#popover").contains("Could not load"));
+    assert!(text(&ui, "#popover").contains("just now"));
+    assert_eq!(
+        chrome(&ui, "$('settings-button').classList.contains('has-errors')")?,
+        false
+    );
     key("Escape")?;
-    wait("Saved text menu closed", || !visible(&ui, "#popover"))?;
-    println!("PASS a network failure shows a toast, stays listed in the Saved text menu, and changes nothing.");
+    wait("error dismissed by Escape", || {
+        !visible(&ui, "#error-toast")
+    })?;
+    key("Escape")?;
+    wait("errors list closed", || !visible(&ui, "#popover"))?;
+    ui.chrome.toast(canopy::chrome::Toast::Error(
+        "Dismiss with the button".into(),
+    ));
+    wait("new error", || visible(&ui, "#toast-close"))?;
+    click_chrome(&ui, "#toast-close")?;
+    wait("button dismisses error", || !visible(&ui, "#error-toast"))?;
+    click_chrome(&ui, "#settings-button")?;
+    let (x, y) = chrome_point(&ui, "#recent-errors")?;
+    move_to(x, y)?;
+    xdo(&["mousedown", "1"])?;
+    ui.chrome
+        .toast(canopy::chrome::Toast::Error("Arrives during press".into()));
+    wait("error during Settings press", || {
+        error_toast_text(&ui).as_deref() == Some("Arrives during press")
+    })?;
+    xdo(&["mouseup", "1"])?;
+    wait("Settings press survives error refresh", || {
+        visible(&ui, "#clear-errors")
+    })?;
+    assert!(text(&ui, "#popover").contains("Dismiss with the button"));
+    click_chrome(&ui, "#clear-errors")?;
+    wait("errors cleared", || {
+        text(&ui, "#popover").contains("No recent errors")
+    })?;
+    key("Escape")?;
+    eval(&ui, "document.addEventListener('click', e => { globalThis.toastClickThrough = true; e.preventDefault(); }, {capture:true, once:true}); JSON.stringify(true)")?;
+    ui.chrome.toast(canopy::chrome::Toast::Error(
+        "A long error message stays readable while the page beneath it still takes clicks. "
+            .repeat(10),
+    ));
+    wait("long error painted", || visible(&ui, "#toast-close"))?;
+    let (left, top, width, height) = rect(&ui, "#error-toast")?;
+    assert!(top + height > 100.);
+    let (x, y) = screen_point(
+        &ui,
+        &ui.chrome.native(),
+        (left + width / 2.) as i32,
+        (top + height - 3.) as i32,
+    )?;
+    click_at(x, y)?;
+    wait("error body passes click to page", || {
+        eval(&ui, "JSON.stringify(globalThis.toastClickThrough === true)").is_ok_and(|v| v == true)
+    })?;
+    click_chrome(&ui, "#toast-close")?;
+    wait("long error dismissed", || !visible(&ui, "#error-toast"))?;
+    println!("PASS a real network error stays after six seconds; newest error has · 2 more; buttons and Escape dismiss; Settings list clears its dot and Clear empties history; status toasts still work; a long error body passes clicks through to the page.");
 
     ui.pages.selected_page().restore(a)?;
     loaded(&ui, "/a", 5)?;

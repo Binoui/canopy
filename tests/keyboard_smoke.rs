@@ -276,6 +276,10 @@ fn main() -> Result<()> {
         )?;
         capture(&shots, "settings", theme)?;
         key("End")?;
+        check(&ui, "document.activeElement.id === 'recent-errors'")?;
+        key("Up")?;
+        check(&ui, "document.activeElement.id === 'show-trees-help'")?;
+        key("Up")?;
         check(
             &ui,
             "document.activeElement.getAttribute('role') === 'switch'",
@@ -363,6 +367,10 @@ fn main() -> Result<()> {
         wait("reader takes focus", || {
             chrome(&ui, "document.activeElement.matches('#reader button')").is_ok_and(|v| v == true)
         })?;
+        check(
+            &ui,
+            "$('popover').getAttribute('aria-label') === 'Saved text'",
+        )?;
         capture(&shots, "reader", theme)?;
         key("shift+Tab")?;
         check(&ui, "document.activeElement.hasAttribute('data-capture')")?;
@@ -379,12 +387,15 @@ fn main() -> Result<()> {
             "document.getElementById('toast-status').textContent === 'Keyboard status' && document.getElementById('toast-status').getAttribute('role') === 'status' && getComputedStyle(document.getElementById('toast-status')).display !== 'none' && document.getElementById('toast-alert').textContent === ''",
         )?;
         capture(&shots, "status", theme)?;
-        chrome(&ui, "canopy.toast('error', 'Keyboard error')")?;
+        ui.chrome
+            .toast(canopy::chrome::Toast::Error("Keyboard error".into()));
         check(
             &ui,
-            "document.getElementById('toast-alert').textContent === 'Keyboard error' && document.getElementById('toast-alert').getAttribute('role') === 'alert' && getComputedStyle(document.getElementById('toast-alert')).display !== 'none' && document.getElementById('toast-status').textContent === ''",
+            "document.getElementById('toast-alert').textContent === 'Keyboard error' && document.getElementById('toast-alert').getAttribute('role') === 'alert' && getComputedStyle(document.getElementById('toast-alert')).display !== 'none' && document.getElementById('toast-status').textContent === 'Keyboard status'",
         )?;
         capture(&shots, "alert", theme)?;
+        key("Escape")?;
+        wait("error toast dismissed", || !visible(&ui, "#error-toast"))?;
         ui.pages.selected_page().focus();
         key("ctrl+w")?;
         wait("settle shortcut toast", || {

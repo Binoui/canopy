@@ -63,7 +63,7 @@ const S = {
   palette: null,
   reader: null,
   find: null,
-  errors: [],
+  errors: { recent: [], toast: null, unread: false },
   forestLabels: true,
   camera: { x: 0, y: 0, zoom: 1 },
   reported: '',
@@ -183,13 +183,15 @@ function syncLayer() {
     }
     height = Math.ceil(height);
   }
-  const settledToast = !$('toast').hidden && $('toast').classList.contains('settled');
-  const undo = settledToast ? $('toast').querySelector('button').getBoundingClientRect() : null;
-  const toastRect = undo ? [Math.floor(undo.x), Math.floor(undo.y), Math.ceil(undo.width), Math.ceil(undo.height)] : null;
-  const report = `${height}/${modal}/${JSON.stringify(toastRect)}`;
+  $('toast').style.top = !$('error-toast').hidden && !$('toast').classList.contains('settled') ? `${HEADER + 17 + $('error-toast').offsetHeight}px` : '';
+  const toastRects = $('toast').hidden && $('error-toast').hidden ? [] : [...document.querySelectorAll('#toast:not([hidden]) button, #error-toast:not([hidden]) button')].map((button) => {
+    const r = button.getBoundingClientRect();
+    return [Math.floor(r.x), Math.floor(r.y), Math.ceil(r.width), Math.ceil(r.height)];
+  });
+  const report = `${height}/${modal}/${JSON.stringify(toastRects)}`;
   if (report !== S.reported) {
     S.reported = report;
-    post({ t: 'layer', height, modal, toastRect });
+    post({ t: 'layer', height, modal, toastRects });
   }
 }
 
@@ -946,8 +948,10 @@ function refreshPopover() {
 function renderPopover() {
   const popover = $('popover');
   const { kind, data } = S.popover;
+  if (['errors', 'settings'].includes(kind) && popover.dataset.kind !== kind) popover.replaceChildren();
+  popover.dataset.kind = kind;
   popover.setAttribute('role', ['node', 'tab', 'unpin', 'bookmark'].includes(kind) ? 'menu' : 'dialog');
-  popover.setAttribute('aria-label', kind === 'node' ? 'Page actions' : kind === 'tab' ? 'Tree actions' : kind.replaceAll('-', ' '));
+  popover.setAttribute('aria-label', kind === 'node' ? 'Page actions' : kind === 'tab' ? 'Tree actions' : kind === 'memory' ? 'Saved text' : kind === 'errors' ? 'Recent errors' : kind.replaceAll('-', ' '));
   popover.classList.toggle('waiting', kind === 'waiting');
   popover.classList.toggle('mail', kind === 'mail');
   if (kind !== 'node') delete popover.dataset.nodeHtml;
@@ -1118,44 +1122,49 @@ function renderPopover() {
     popover.innerHTML = '<div class="menu-heading">Saved text</div>'
       + captureRow()
       + '<button class="menu-row" id="remember-selection"><span class="grow">Remember selection</span><kbd>Ctrl+S</kbd></button>'
-      + `<button class="menu-row" id="read-captures"${current() ? '' : ' disabled'}><span class="grow">Read saved text</span></button>`
-      + (S.errors.length ? '<div class="menu-separator"></div><div class="menu-heading">Recent errors</div>'
-        + S.errors.map((e) => `<div class="menu-error">${esc(e)}</div>`).join('') : '');
+      + `<button class="menu-row" id="read-captures"${current() ? '' : ' disabled'}><span class="grow">Read saved text</span></button>`;
     wireCaptureRow();
     $('remember-selection').addEventListener('click', () => { closePopover(); intent('remember'); });
     $('read-captures').addEventListener('click', () => { closePopover(); intent('read-captures', { id: current() }); });
+  } else if (kind === 'errors') {
+    patchChildren(popover, '<div class="errors-head" data-key="head"><b>Recent errors</b><button id="clear-errors" class="action">Clear</button></div>'
+      + (S.errors.recent.length ? S.errors.recent.map((e, i) => `<div class="menu-error" data-key="error-${i}">${esc(e.text)}<small>${esc(e.when)}</small></div>`).join('') : '<div class="menu-hint" data-key="empty">No recent errors</div>'));
+    $('clear-errors').disabled = !S.errors.recent.length;
+    $('clear-errors').onclick = () => post({ t: 'errors', action: 'clear' });
   } else if (kind === 'settings') {
     const theme = S.frame?.theme ?? 'dark';
-    popover.innerHTML = '<div class="menu-heading">Settings</div>'
-      + '<div class="menu-heading">Theme</div><div class="segmented" id="theme-mode">'
+    patchChildren(popover, '<div class="menu-heading" data-key="title">Settings</div>'
+      + '<div class="menu-heading" data-key="theme-title">Theme</div><div class="segmented" id="theme-mode" data-key="theme">'
       + ['dark', 'light', 'system'].map((mode) => `<button data-mode="${mode}" aria-pressed="${mode === theme}">${mode[0].toUpperCase()}${mode.slice(1)}</button>`).join('')
-      + '</div><div class="menu-separator"></div>'
+      + '</div><div class="menu-separator" data-key="capture-separator"></div>'
       + captureRow()
-      + '<div class="menu-separator"></div><button class="menu-row" id="show-trees-help"><span class="grow">How trees work</span><kbd>F1</kbd></button>';
+      + '<div class="menu-separator" data-key="help-separator"></div><button class="menu-row" id="show-trees-help" data-key="help"><span class="grow">How trees work</span><kbd>F1</kbd></button>'
+      + '<button class="menu-row" id="recent-errors" data-key="errors"><span class="grow">Recent errors</span>' + (S.errors.unread ? '<i class="error-dot"></i>' : '') + '</button>');
+    $('recent-errors').onclick = () => { closePopover(false); openPopover('errors', $('settings-button')); post({ t: 'errors', action: 'read' }); };
     $('show-trees-help').onclick = () => { closePopover(false); intent('trees-help', { show: true }); };
     wireCaptureRow();
-    popover.querySelectorAll('[data-mode]').forEach((button) => button.addEventListener('click', () => {
+    popover.querySelectorAll('[data-mode]').forEach((button) => button.onclick = () => {
       S.frame.theme = button.dataset.mode;
       applyTheme();
       intent('theme', { mode: button.dataset.mode });
       refreshPopover();
-    }));
+    });
   }
 }
 
 function captureRow() {
   const on = !!S.frame?.captureEnabled;
-  return `<button class="menu-row" role="switch" aria-checked="${on}" id="automatic-capture" title="Keep the text of opened pages on this computer. Form fields are never kept."><span class="grow">Remember pages</span><span class="switch" aria-hidden="true"></span></button>`;
+  return `<button class="menu-row" role="switch" aria-checked="${on}" id="automatic-capture" data-key="capture" title="Keep the text of opened pages on this computer. Form fields are never kept."><span class="grow">Remember pages</span><span class="switch" aria-hidden="true"></span></button>`;
 }
 
 function wireCaptureRow() {
-  $('automatic-capture').addEventListener('click', () => {
+  $('automatic-capture').onclick = () => {
     const on = !!S.frame?.captureEnabled;
     S.frame.captureEnabled = !on;
     intent('capture', { on: !on });
     refreshPopover();
     buildStrip(strip.target ?? targetLayout());
-  });
+  };
 }
 
 // ---------- palette ----------
@@ -1948,6 +1957,15 @@ window.canopy = {
   },
   tabSelected() { closePopover(false); setOverlay(null); },
   toggleTree(fromChrome = true) { toggleOverlay('tree'); if (!fromChrome && S.overlay === 'tree') rememberFocus('overlay', document.body); },
+  errors(value) {
+    S.errors = value;
+    $('settings-button').classList.toggle('has-errors', value.unread);
+    $('settings-button').setAttribute('aria-label', value.unread ? 'Settings · unread errors' : 'Settings');
+    if (value.toast) this.toast('error', value.toast.text);
+    else if (!$('error-toast').hidden) { $('error-toast').hidden = true; $('toast-alert').textContent = ''; syncLayer(); }
+    if (['errors', 'settings'].includes(S.popover?.kind)) refreshPopover();
+    if (S.popover?.kind === 'errors' && value.unread) post({ t: 'errors', action: 'read' });
+  },
   waiting(text) {
     this.toast('info', text);
     if (reducedMotion.matches) return;
@@ -1959,14 +1977,11 @@ window.canopy = {
     }
   },
   toast(kind, text) {
-    if (kind === 'error') {
-      S.errors.unshift(text);
-      S.errors.length = Math.min(S.errors.length, 5);
-    }
-    const toast = $('toast');
-    $('toast-status').textContent = kind === 'error' ? '' : text + (kind === 'settled' ? ' · Undo (Ctrl+Shift+T)' : '');
-    $('toast-alert').textContent = kind === 'error' ? text : '';
-    toast.textContent = text;
+    const toast = $(kind === 'error' ? 'error-toast' : 'toast');
+    if (kind === 'error') $('toast-alert').textContent = text;
+    else $('toast-status').textContent = text + (kind === 'settled' ? ' · Undo (Ctrl+Shift+T)' : '');
+    if (kind !== 'error') toast.textContent = text;
+    else patchChildren(toast, `<span data-key="error-message">${esc(text)}</span>` + (S.errors.toast?.more ? `<button data-key="more" id="toast-more">· ${S.errors.toast.more} more</button>` : '') + '<button data-key="close" id="toast-close" aria-label="Dismiss error">×</button>');
     if (kind === 'settled') {
       const button = document.createElement('button');
       button.textContent = 'Undo';
@@ -1975,14 +1990,20 @@ window.canopy = {
       toast.appendChild(button);
       toast.appendChild(document.createTextNode(' (Ctrl+Shift+T)'));
     }
+    if (kind === 'error') {
+      const more = $('toast-more');
+      if (more) more.onclick = () => { openPopover('errors', $('settings-button')); post({ t: 'errors', action: 'read' }); };
+      $('toast-close').onclick = () => post({ t: 'errors', action: 'dismiss' });
+    }
     toast.className = kind;
     toast.hidden = false;
     syncLayer();
+    if (kind === 'error') return;
     clearTimeout(timers.toast);
     timers.toast = setTimeout(() => {
       toast.classList.add('leaving');
       timers.toast = setTimeout(() => { toast.hidden = true; syncLayer(); }, 200);
-    }, kind === 'settled' ? 6000 : kind === 'error' ? 5000 : 2600);
+    }, kind === 'settled' ? 6000 : 2600);
   },
   toggleFocus() {
     inputOrigin = 'keyboard';
@@ -2014,6 +2035,7 @@ window.canopy = {
     if (open) $('form-return-cancel').focus();
   },
   escape() {
+    if (!$('error-toast').hidden) post({ t: 'errors', action: 'dismiss' });
     if (S.formReturn) answerFormReturn(false);
     else if (S.reader) closeReader();
     else if (S.palette) closePalette();

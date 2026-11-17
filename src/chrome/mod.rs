@@ -8,6 +8,7 @@
 //! page keeps its clicks everywhere else.
 
 mod favicon;
+mod feedback;
 mod find;
 mod forest_layout;
 pub(crate) mod graph;
@@ -216,7 +217,8 @@ struct Inner {
     size: Cell<(f64, f64)>,
     /// How far down the view reaches, or `None` to cover the window.
     cover: Cell<Option<f64>>,
-    toast_rect: Cell<Option<[i32; 4]>>,
+    toast_rects: RefCell<Vec<[i32; 4]>>,
+    errors: RefCell<feedback::Errors>,
     waiting: RefCell<Option<(VisitId, std::time::Instant, usize)>>,
     /// Something is open that Escape closes.
     modal: Cell<bool>,
@@ -275,7 +277,8 @@ impl HtmlChrome {
             queue: RefCell::new(Vec::new()),
             size: Cell::new((1., 1.)),
             cover: Cell::new(Some(CHROME_HEIGHT)),
-            toast_rect: Cell::new(None),
+            toast_rects: RefCell::new(Vec::new()),
+            errors: RefCell::new(feedback::Errors::default()),
             waiting: RefCell::new(None),
             modal: Cell::new(false),
             find: Cell::new(None),
@@ -519,14 +522,18 @@ impl HtmlChrome {
             Toast::Info(text) => ("info", text),
             Toast::Error(text) => ("error", text),
         };
-        self.inner.call("toast", &[json!(kind), json!(text)]);
+        if kind == "error" {
+            self.inner.report_text(&text);
+        } else {
+            self.inner.call("toast", &[json!(kind), json!(text)]);
+        }
     }
 
-    /// F6 moves keyboard focus between the page and the current node.
     pub fn show_trees_help(&self) {
         self.inner.call("showTreesHelp", &[]);
     }
 
+    /// F6 moves keyboard focus between the page and the current node.
     pub fn toggle_focus(&self) {
         self.inner.call("toggleFocus", &[]);
     }
@@ -534,7 +541,11 @@ impl HtmlChrome {
     /// Closes the topmost chrome surface. Returns false when there was none, so the page
     /// can have the key.
     pub fn escape(&self) -> bool {
-        if self.inner.modal.get() {
+        use gtk::prelude::WidgetExt;
+        use wry::WebViewExtUnix;
+        let error_focused =
+            self.inner.view.webview().has_focus() && self.inner.errors.borrow().showing();
+        if self.inner.modal.get() || error_focused {
             self.inner.call("escape", &[]);
             return true;
         }
@@ -603,7 +614,7 @@ impl Inner {
 
     fn apply_bounds(&self) {
         let (width, height) = self.size.get();
-        let height = if self.toast_rect.get().is_some() {
+        let height = if !self.toast_rects.borrow().is_empty() {
             height
         } else {
             self.cover.get().map_or(height, |cover| cover.min(height))
@@ -623,19 +634,18 @@ impl Inner {
             height.round() as i32,
         ));
         if let Some(window) = self.view.webview().window() {
-            let region = self.toast_rect.get().and_then(|r| {
-                self.cover.get().map(|cover| {
-                    let region =
-                        gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(
-                            0,
-                            0,
-                            width.ceil() as i32,
-                            cover.ceil() as i32,
-                        ));
+            let region = self.cover.get().map(|cover| {
+                let region = gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(
+                    0,
+                    0,
+                    width.ceil() as i32,
+                    cover.ceil() as i32,
+                ));
+                for r in self.toast_rects.borrow().iter() {
                     let _ = region
                         .union_rectangle(&gtk::cairo::RectangleInt::new(r[0], r[1], r[2], r[3]));
-                    region
-                })
+                }
+                region
             });
             let region = region.unwrap_or_else(|| {
                 gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(
@@ -663,8 +673,16 @@ impl Inner {
         self.host.borrow().as_ref()?.upgrade()
     }
 
+    fn report_text(&self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.errors.borrow_mut().push(text);
+        self.call("errors", &[self.errors.borrow().value()]);
+    }
+
     fn report(&self, error: anyhow::Error) {
-        self.call("toast", &[json!("error"), json!(error.to_string())]);
+        self.report_text(&error.to_string());
     }
 
     fn message(self: &Rc<Self>, body: &str) {
@@ -753,12 +771,19 @@ impl Inner {
                     }
                 }
             }
+            "errors" => {
+                self.errors
+                    .borrow_mut()
+                    .act(message["action"].as_str().unwrap_or_default());
+                self.call("errors", &[self.errors.borrow().value()]);
+            }
             "layer" => {
                 self.modal.set(message["modal"].as_bool().unwrap_or(false));
                 let cover = message["height"].as_f64().map(|h| h.max(CHROME_HEIGHT));
-                let toast_rect =
-                    serde_json::from_value::<Option<[i32; 4]>>(message["toastRect"].clone())?;
-                let changed = self.toast_rect.replace(toast_rect) != toast_rect;
+                let toast_rects =
+                    serde_json::from_value::<Vec<[i32; 4]>>(message["toastRects"].clone())?;
+                let changed = *self.toast_rects.borrow() != toast_rects;
+                *self.toast_rects.borrow_mut() = toast_rects;
                 if self.cover.replace(cover) != cover || changed {
                     self.apply_bounds();
                 }

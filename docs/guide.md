@@ -80,7 +80,7 @@ Settling a tree or branch shows **Settled ‘name’ · N waiting kept**. The to
 
 Results cover titles, URLs, saved text and source context. Saved text carries its date. Select reader text and right-click for **Copy**. Reading saved text and loading the live page are two separate actions. On the current page's attached list, **Back to source** and **Open comment** lead back to where the page was found.
 
-Turn off **Remember pages** in the Saved text menu to stop automatic capture. Remembering a selection stays available. **Read saved text** shows the text saved for the current page. The Saved text menu also lists recent errors, which otherwise appear briefly under the tab row.
+Turn off **Remember pages** in the Saved text menu to stop automatic capture. Remembering a selection stays available. **Read saved text** shows the text saved for the current page. Errors stay under the tab row until you close them with **×** or press **Escape** while the chrome has focus. A newer error replaces the message; **· N more** opens the list. **Settings → Recent errors** keeps the last ten errors, newest first, with their age and a **Clear** button. A red dot on Settings means there are errors you have not seen in that list. Opening the list clears the dot. Error history lasts until you quit.
 
 Form fields and editable areas are left out of saved text. Visible password forms block automatic capture.
 
