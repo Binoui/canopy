@@ -261,7 +261,7 @@ existing refreshes.
 
 ### Switch cancellation and page Back
 
-Tree and branch settling share one scoped command. Its membership predicate selects queued work, never-seen views, hidden live views, candidates and the selected cover. Branch settling routes the selected page to its nearest unsettled ancestor and uses the existing checkpoint, retirement and landing path. If startup finds the cursor inside a settled branch whose landing did not commit, it resumes at the nearest unsettled ancestor. A six-second undo record keeps the head and previous cursor. Undo clears that head's settle mark and returns through normal visit routing. It does not recreate released live documents.
+Tree and branch settling share one scoped command. Its membership predicate selects queued work, never-seen views, hidden live views, candidates and the selected cover. Branch settling routes the selected page to its nearest unsettled ancestor and uses the existing checkpoint, retirement and landing path. If startup finds the cursor inside a settled branch whose landing did not commit, it resumes at the nearest unsettled ancestor. A six-second undo record keeps the head and previous cursor. Undo clears that head's settle mark and returns through normal visit routing. A return to the retired current page waits for its checkpoint even after Undo clears the mark. It does not recreate released live documents.
 
 Starting a candidate fails all pending foreground work in the old view and invalidates
 its asynchronous link decisions. The old committed document remains usable. Main-frame

@@ -686,10 +686,11 @@ impl Pages {
             .borrow()
             .clone()
             .filter(|page| !page.native.is_sensitive());
-        let target_retired = if retired.is_some_and(|page| page.contains(visit)) {
+        let target_retired = if let Some(page) = retired.filter(|page| page.contains(visit)) {
             let forest =
                 self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
-            forest.is_settled(visit)
+            page.current_visit() == Some(visit)
+                || forest.is_settled(visit)
                 || forest
                     .trees()
                     .iter()

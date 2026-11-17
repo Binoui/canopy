@@ -474,6 +474,23 @@ fn main() -> Result<()> {
     println!(
         "PASS settle Undo expires after six seconds and only its button receives pointer events."
     );
+    let undo_root = f.root("/early-undo-root")?;
+    let undo_branch = f.child(undo_root, "/early-undo-branch")?;
+    let old_view = f.ui.pages.selected_page().native.clone();
+    assert!(f.ui.pages.selected_history_visits().contains(&undo_root));
+    f.ui.pages.settle_branch(undo_branch)?;
+    f.ui.pages.undo_settle()?;
+    common::wait("immediate Undo returns through retirement", || {
+        f.ui.snapshot()
+            .is_ok_and(|s| s.current == Some(undo_branch))
+            && !f.ui.pages.selected_page().native.is_loading()
+            && f.ui.pages.selected_page().native != old_view
+    })?;
+    assert!(
+        f.ui.pages.selected_history_visits().contains(&undo_root),
+        "immediate Undo keeps the retired page's checkpoint history"
+    );
+    println!("PASS immediate Undo waits for retirement and retains checkpoint history.");
     f.ui.window.close();
     common::pump(100);
     let restart = tempfile::tempdir()?;
