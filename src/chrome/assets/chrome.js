@@ -1750,15 +1750,11 @@ function fitForest(animate) {
   canvas.addEventListener('wheel', (event) => {
     event.preventDefault();
     const c = S.camera;
-    if (event.ctrlKey) {
-      const zoom = clamp(c.zoom * Math.exp(-event.deltaY * 0.0012 * (event.deltaMode ? 33 : 1)), 0.3, 1.6);
-      const box = canvas.getBoundingClientRect();
-      const px = event.clientX - box.left, py = event.clientY - box.top;
-      const ratio = zoom / c.zoom;
-      S.camera = { zoom, x: px - (px - c.x) * ratio, y: py - (py - c.y) * ratio };
-    } else {
-      S.camera = { ...c, x: c.x - event.deltaX, y: c.y - event.deltaY };
-    }
+    const zoom = clamp(c.zoom * Math.exp(-event.deltaY * 0.0012 * (event.deltaMode ? 33 : 1)), 0.3, 1.6);
+    const box = canvas.getBoundingClientRect();
+    const px = event.clientX - box.left, py = event.clientY - box.top;
+    const ratio = zoom / c.zoom;
+    S.camera = { zoom, x: px - (px - c.x) * ratio, y: py - (py - c.y) * ratio };
     applyCamera();
   }, { passive: false });
 })();
