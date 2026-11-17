@@ -301,10 +301,9 @@ fn marks_share_surfaces_without_moving_nodes() -> Result<()> {
         })?;
         shot(&f, &format!("{theme}-tree"))?;
         common::chrome(&f.ui, "(setTreeSide('list'),true)")?;
-        assert!(common::visible(
-            &f.ui,
-            &format!(".tree-row[data-id='{root}'] .live-dot")
-        ));
+        common::wait("list live mark", || {
+            common::visible(&f.ui, &format!(".tree-row[data-id='{root}'] .live-dot"))
+        })?;
         assert!(
             common::text(&f.ui, &format!(".tree-row[data-id='{root}'] .menu-detail"))
                 .contains("Open in memory")

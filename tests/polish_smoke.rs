@@ -159,6 +159,16 @@ fn main() -> Result<()> {
         assert!(text(&ui, "#strip-list").contains("Waiting"));
         assert!(!text(&ui, "#strip-list").contains("pending"));
         shot(&ui, &format!("{theme}-waiting-list"))?;
+        hover_chrome(&ui, "#strip-list .menu-row[data-id]")?;
+        xdo(&["click", "3"])?;
+        wait("page actions", || {
+            visible(&ui, "#popover [data-node-action]")
+        })?;
+        pump(1000);
+        assert!(!tooltip_query(&ui, "#strip-list .menu-row[data-id]")?);
+        assert!(text(&ui, "#popover").contains("Dismiss"));
+        shot(&ui, &format!("{theme}-waiting-menu"))?;
+        key("Escape")?;
         key("Escape")?;
         move_to(1300, 900)?;
         pump(500);
