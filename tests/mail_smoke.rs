@@ -27,6 +27,7 @@ enum Mode {
     Drop,
     Garbage,
     Three,
+    Long,
     Gap,
     Trim,
     Empty,
@@ -302,6 +303,15 @@ const SENDER: &str = "Unique mail sender 928374";
 const SNIPPET: &str = "Unique mail snippet 837461";
 
 fn account_at(mode: Mode, n: usize) -> Option<&'static str> {
+    if mode == Mode::Long {
+        return [
+            "a.very.long.account.label@personal.example.test",
+            "a.very.long.account.label@work.example.test",
+            "another.very.long.account.label@example.test",
+        ]
+        .get(n)
+        .copied();
+    }
     match n {
         0 => Some("ana@example.test"),
         1 if mode != Mode::Gap => Some("bo@example.test"),
@@ -374,6 +384,72 @@ fn scenario(ui: &Ui, fixture: &Fixture, data: &std::path::Path) -> Result<()> {
         "ana@example.test",
         "actions carry an address"
     );
+    assert!(visible(ui, ".mail-tabs[role=tablist]"));
+    assert_eq!(
+        text(ui, ".mail-tab[aria-selected=true] .mail-tab-label"),
+        "All"
+    );
+    click_chrome(ui, ".mail-tab[data-key=\"bo@example.test\"]")?;
+    assert_eq!(text(ui, ".mail-inbox .grow"), "bo@example.test");
+    assert!(
+        !visible(ui, ".mail-row"),
+        "the empty account hides other accounts' messages"
+    );
+    assert!(!visible(ui, ".mail-more"));
+    assert_eq!(text(ui, "#mail-pin .count"), "3");
+    click_chrome(ui, "#mail-pin")?;
+    click_chrome(ui, "#mail-pin")?;
+    recheck(ui)?;
+    assert_eq!(text(ui, ".mail-inbox .grow"), "bo@example.test");
+    assert_eq!(
+        text(ui, ".mail-tab[aria-selected=true] .mail-tab-label"),
+        "bo"
+    );
+    click_chrome(ui, ".mail-tab[data-key=\"ana@example.test\"]")?;
+    recheck(ui)?;
+    assert_eq!(
+        chrome(ui, "document.activeElement.getAttribute('aria-selected')")?,
+        "true"
+    );
+    assert_eq!(
+        chrome(ui, "document.activeElement.dataset.key")?,
+        "ana@example.test"
+    );
+    mail_tabs_shot(ui, "account")?;
+    key("Home")?;
+    assert_eq!(
+        text(ui, ".mail-tab[aria-selected=true] .mail-tab-label"),
+        "All"
+    );
+    assert!(visible(ui, ".mail-row"));
+    mail_tabs_shot(ui, "all")?;
+    key("End")?;
+    assert_eq!(
+        text(ui, ".mail-tab[aria-selected=true] .mail-tab-label"),
+        "bo"
+    );
+    key("Right")?;
+    assert_eq!(
+        text(ui, ".mail-tab[aria-selected=true] .mail-tab-label"),
+        "All"
+    );
+    key("Left")?;
+    assert_eq!(
+        text(ui, ".mail-tab[aria-selected=true] .mail-tab-label"),
+        "bo"
+    );
+    key("Home")?;
+    fixture.set(Mode::Long);
+    recheck(ui)?;
+    for theme in ["light", "dark"] {
+        chrome(ui, &format!("intent('theme', {{mode:'{theme}'}}), true"))?;
+        pump(100);
+        assert_eq!(chrome(ui, "(() => { const p = document.querySelector('#popover'); const tabs = [...p.querySelectorAll('.mail-tab')]; return tabs.length === 4 && p.offsetWidth >= 360 && p.offsetWidth <= 440 && p.scrollWidth <= p.clientWidth && tabs.every(t => t.getBoundingClientRect().top === tabs[0].getBoundingClientRect().top && t.scrollWidth <= t.clientWidth); })()")?, true, "three long account tabs fit on one line without scrolling");
+    }
+    mail_tabs_shot(ui, "long-accounts")?;
+    fixture.set(Mode::Normal);
+    recheck(ui)?;
+    println!("PASS mail tabs: account filtering, total badge, session selection, refresh focus and keyboard navigation.");
     let trees = ui
         .snapshot()?
         .visits
@@ -467,6 +543,8 @@ fn scenario(ui: &Ui, fixture: &Fixture, data: &std::path::Path) -> Result<()> {
         "bo@example.test",
         "account-header focus follows the address"
     );
+    click_chrome(ui, ".mail-tab[data-key=\"bo@example.test\"]")?;
+    chrome(ui, "document.querySelector('.mail-inbox').focus(), true")?;
     fixture.set(Mode::Gap);
     recheck(ui)?;
     wait("gap walk keeps the account above the hole", || {
@@ -483,6 +561,15 @@ fn scenario(ui: &Ui, fixture: &Fixture, data: &std::path::Path) -> Result<()> {
         "popover",
         "removed header falls back to popover"
     );
+    assert_eq!(
+        text(ui, ".mail-tab[aria-selected=true] .mail-tab-label"),
+        "All"
+    );
+    assert!(visible(
+        ui,
+        ".mail-inbox[data-account=\"ana@example.test\"]"
+    ));
+    assert!(visible(ui, ".mail-inbox[data-account=\"cy@example.test\"]"));
     let before = ui.snapshot()?.visits.len();
     chrome(ui, "window.ipc.postMessage(JSON.stringify({t:'intent',kind:'open-inbox',account:'bo@example.test'})), true")?;
     pump(200);
@@ -575,4 +662,22 @@ fn mentions(path: &std::path::Path, needles: &[&str]) -> Result<bool> {
         }
     }
     Ok(false)
+}
+
+fn mail_tabs_shot(ui: &Ui, name: &str) -> Result<()> {
+    if let Some(directory) = std::env::var_os("CANOPY_MAIL_TABS_SHOTS") {
+        chrome(ui, "intent('theme', {mode:'dark'}), true")?;
+        pump(450);
+        let directory = std::path::PathBuf::from(directory);
+        std::fs::create_dir_all(&directory)?;
+        anyhow::ensure!(
+            std::process::Command::new("import")
+                .args(["-window", "root"])
+                .arg(directory.join(format!("{name}-dark.png")))
+                .status()?
+                .success(),
+            "mail tabs screenshot"
+        );
+    }
+    Ok(())
 }
