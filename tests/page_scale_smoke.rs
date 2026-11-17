@@ -10,11 +10,15 @@ use std::{io::Write, net::TcpListener, thread};
 use webkit2gtk::WebViewExt;
 
 fn scaled(ui: &Ui, percent: u16) -> Result<()> {
-    wait(&format!("native and badge at {percent}%"), || {
+    let result = wait(&format!("native and badge at {percent}%"), || {
         (ui.pages.selected_page().native.zoom_level() - f64::from(percent) / 100.).abs() < 0.0001
             && chrome(ui, "canopy.state().pageScale.percent").is_ok_and(|p| p == percent)
             && visible(ui, "#page-scale") == (percent != 100)
-    })?;
+    });
+    if result.is_err() {
+        eprintln!("scale timeout: expected={percent}, native={}, chrome={:?}, current={:?}", ui.pages.selected_page().native.zoom_level(), chrome(ui, "({scale:canopy.state().pageScale,current:S.frame.current,cover:canopy.state().reported})"), ui.snapshot()?.current);
+    }
+    result?;
     if percent != 100 {
         assert_eq!(text(ui, "#page-scale"), format!("{percent}%"));
     }
