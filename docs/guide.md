@@ -50,7 +50,7 @@ Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not aff
 
 Press **Ctrl+=** or **Ctrl+plus** to make the page larger, and **Ctrl+-** to make it smaller. Shifted plus works too. The keypad's Add and Subtract keys do the same. Hold **Ctrl** and turn the wheel over the page to change its size one step at a time, from 25% to 500%.
 
-A percentage button appears in the top row when the size is not 100%. Click it, or press **Ctrl+0** or **Ctrl+keypad 0**, to reset to 100%.
+A percentage button appears in the top row when the size is not 100%. Click it, or press **Ctrl+0** or **Ctrl+keypad 0**, to reset to 100%. On AZERTY, **Ctrl+à** and **Ctrl+Shift+0** also reset.
 
 Canopy remembers the size for each site, including after a restart. Pages on the same scheme, host and port share it across trees and waiting pages. Different paths share a size; a different scheme or port has its own. The tabs, strip and forest keep their usual size.
 

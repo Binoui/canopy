@@ -536,6 +536,16 @@ impl Shortcut {
                 Self::PageScale(PageScaleAction::Reset),
             ),
             (
+                Modifiers::CONTROL_SHIFT,
+                key::_0,
+                Self::PageScale(PageScaleAction::Reset),
+            ),
+            (
+                Modifiers::CONTROL,
+                key::agrave,
+                Self::PageScale(PageScaleAction::Reset),
+            ),
+            (
                 Modifiers::CONTROL,
                 key::k,
                 Self::Palette(PaletteSeed::Empty),
@@ -872,6 +882,16 @@ mod shortcut_tests {
             ),
             (
                 key::KP_0,
+                Modifiers::CONTROL,
+                Shortcut::PageScale(PageScaleAction::Reset),
+            ),
+            (
+                key::_0,
+                Modifiers::CONTROL_SHIFT,
+                Shortcut::PageScale(PageScaleAction::Reset),
+            ),
+            (
+                key::agrave,
                 Modifiers::CONTROL,
                 Shortcut::PageScale(PageScaleAction::Reset),
             ),
