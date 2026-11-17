@@ -156,8 +156,13 @@ fn main() -> Result<()> {
     pump(400);
     key("ctrl+shift+e")?;
     wait("sheet from resting chrome", || visible(&ui, "#tree-sheet"))?;
-    assert!(chrome(&ui, "(() => {const a=document.querySelector('.tree-tile.current').getBoundingClientRect(),b=$('tree-board').getBoundingClientRect();return $('tree-board').scrollHeight > $('tree-board').clientHeight && a.left >= b.left && a.right <= b.right && a.top >= b.top && a.bottom <= b.bottom;})()")? == true);
-    println!("PASS first sheet open from resting chrome keeps the current tile fully visible in a tall tree.");
+    assert_eq!(chrome(&ui, "S.treeSide")?, "list");
+    assert_eq!(chrome(&ui, "(() => {const a=document.querySelector('.tree-row[aria-current=page]').getBoundingClientRect(),b=$('tree-list').getBoundingClientRect();return a.top >= b.top && a.bottom <= b.bottom;})()")?, true);
+    chrome(&ui, "(setTreeSide('tree'), true)")?;
+    wait("current tile revealed", || {
+        chrome(&ui, "(() => {const a=document.querySelector('.tree-tile[aria-current=page]').getBoundingClientRect(),b=$('tree-board').getBoundingClientRect();return $('tree-board').scrollHeight > $('tree-board').clientHeight && a.left >= b.left && a.right <= b.right && a.top >= b.top && a.bottom <= b.bottom;})()").is_ok_and(|v| v == true)
+    })?;
+    println!("PASS first sheet open selects List for a tall tree and reveals the current page on both sides.");
     key("Escape")?;
     prove_tree_sheet(&ui)?;
     for theme in ["dark", "light"] {
