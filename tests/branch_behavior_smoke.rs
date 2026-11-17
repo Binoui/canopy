@@ -4,6 +4,8 @@
 mod common;
 #[path = "common/http.rs"]
 mod http;
+#[path = "common/branch_regressions.rs"]
+mod switch_regressions;
 use anyhow::{bail, Context, Result};
 use canopy::{
     browser::{Browser, NavigationTarget, TreeId, VisitId},
@@ -1087,6 +1089,30 @@ fn main() -> Result<()> {
         .collect();
     type Case = (&'static str, fn() -> Result<()>);
     let cases: &[Case] = &[
+        ("owner_form_click_wins_pending_new_tree", || {
+            switch_regressions::owner_action_during_switch("submit")
+        }),
+        ("owner_form_enter_wins_pending_new_tree", || {
+            switch_regressions::owner_action_during_switch("enter")
+        }),
+        ("owner_timeout_click_wins_pending_new_tree", || {
+            switch_regressions::owner_action_during_switch("timer")
+        }),
+        ("owner_fetch_click_wins_pending_new_tree", || {
+            switch_regressions::owner_action_during_switch("fetch")
+        }),
+        ("owner_same_address_link_wins_pending_new_tree", || {
+            switch_regressions::owner_action_during_switch("same")
+        }),
+        ("owner_frame_top_link_wins_pending_new_tree", || {
+            switch_regressions::owner_action_during_switch("frame")
+        }),
+        ("page_timer_loses_pending_new_tree", || {
+            switch_regressions::owner_action_during_switch("page-timer")
+        }),
+        ("page_timer_after_click_loses_pending_new_tree", || {
+            switch_regressions::owner_action_during_switch("page-timer-after-click")
+        }),
         ("no_content", no_content_ends_load),
         ("hash_pulse", || bg_nav("/hash-pulse", 900)),
         ("ps_pulse", || bg_nav("/ps-pulse", 900)),

@@ -119,6 +119,15 @@ impl Server {
             ["iframe-once"] => respond(stream, "200 OK", "", "<!doctype html><title>once</title><body style='height:4000px'><script>setTimeout(()=>{const f=document.createElement('iframe');f.src='/frame/once';document.body.appendChild(f)},700)</script></body>"),
             ["hash-pulse"] => respond(stream, "200 OK", "", "<!doctype html><title>hash</title><body style='height:4000px'><script>let n=0;setInterval(()=>{location.hash='h'+(++n)},150)</script></body>"),
             ["iframe-rotate", ms] => respond(stream, "200 OK", "", &format!("<!doctype html><title>rotate</title><body style='height:4000px'><iframe id=f src='/frame/r0' width=100 height=50></iframe><script>let n=0;setInterval(()=>{{document.getElementById('f').src='/frame/r'+(++n)}},{ms})</script></body>")),
+            ["owner-actions"] => respond(stream, "200 OK", "", r#"<!doctype html><body style='margin:0'>
+<p id=blank style='height:40px'>blank</p>
+<form method=post action='/owner-result'><input id=q name=q><button id=submit>submit</button></form>
+<a id=same href='/owner-actions'>same address</a>
+<button id=timer onclick="setTimeout(()=>location.href='/owner-result',0)">timer</button>
+<button id=fetch onclick="fetch('/ping').then(()=>location.href='/owner-result')">fetch</button>
+<iframe id=frame src='/owner-frame' style='border:0;position:absolute;left:700px;top:0' width=200 height=100></iframe>
+<script>setInterval(()=>{if(window.go){window.go=false;location.href='/page-result'}},30)</script>"#),
+            ["owner-frame"] => respond(stream, "200 OK", "", "<body style='margin:0'><a target=_top href='/owner-result' style='display:block;height:40px'>top</a>"),
             ["script-nav"] => respond(stream, "200 OK", "", "<!doctype html><title>scriptnav</title><body style='height:4000px'><script>setTimeout(()=>{location.href='/after-script'},700)</script></body>"),
             ["busy"] => respond(stream, "200 OK", "", "<!doctype html><title>busy</title><body style='height:4000px'><script>setTimeout(()=>{const t=Date.now();while(Date.now()-t<4000){}},600)</script></body>"),
             ["replaced"] => respond(stream, "200 OK", "", "<!doctype html><title>replaced</title><body style='height:4000px'><script>history.replaceState({}, '', '/replaced?utm=gone')</script></body>"),
@@ -188,6 +197,7 @@ impl Fixture {
         let fixed = gtk::Fixed::new();
         let window = gtk::Window::new(gtk::WindowType::Toplevel);
         window.set_default_size(1000, 800);
+        window.set_title("Canopy");
         window.add(&fixed);
         let pages = Pages::mount(
             &fixed,
@@ -889,18 +899,17 @@ fn click_during_switch() -> Result<()> {
 }
 fn script_during_switch() -> Result<()> {
     let f = Fixture::new()?;
-    f.navigate("/a")?;
+    f.navigate("/owner-actions")?;
     f.server.gate("script-switch", true);
     f.pages
         .open_roots(&[f.server.url("/gate/script-switch/target")])?;
     wait("script switch requested", || {
         f.server.hits("/gate/script-switch/target") > 0
     })?;
-    // Trigger only after the candidate really exists. A timer from page load can
-    // fire before a new web process starts under load, testing no switch at all.
-    f.eval("location.href='/after-script'; return true;")?;
+    // Arm a timer already installed by the page; evaluation does not navigate.
+    f.eval("window.go=true; return true;")?;
     wait("script navigation selected", || {
-        f.cursor_path() == "/after-script"
+        f.cursor_path() == "/page-result"
     })?;
     f.server.gate("script-switch", false);
     wait("owner switch survives script navigation", || {
@@ -908,6 +917,60 @@ fn script_during_switch() -> Result<()> {
     })?;
     Ok(())
 }
+pub fn owner_action_during_switch(action: &str) -> Result<()> {
+    let f = Fixture::new()?;
+    f.navigate("/owner-actions")?;
+    f.server.gate("owner", true);
+    f.pages.open_roots(&[f.server.url("/gate/owner/target")])?;
+    wait("pending new tree", || {
+        f.server.hits("/gate/owner/target") > 0
+    })?;
+    match action {
+        "enter" => {
+            click(&f, "q")?;
+            super::common::key("Return")?;
+        }
+        "frame" => {
+            let native = f.pages.selected_page().native.clone();
+            let (x, y) = native.translate_coordinates(&f.window, 750, 20).unwrap();
+            let (_, ox, oy) = f.window.window().unwrap().origin();
+            super::common::click_at(ox + x, oy + y)?;
+        }
+        "page-timer" | "page-timer-after-click" => {
+            if action == "page-timer-after-click" {
+                click(&f, "blank")?;
+                pump_for(30);
+            }
+            f.eval("window.go=true; return true;")?;
+        }
+        id => click(&f, id)?,
+    }
+    let page_driven = action.starts_with("page-timer");
+    let expected = if page_driven {
+        "/page-result"
+    } else if action == "same" {
+        "/owner-actions"
+    } else {
+        "/owner-result"
+    };
+    wait("outgoing navigation requested", || {
+        f.server.hits(expected) > if action == "same" { 1 } else { 0 }
+    })?;
+    wait("outgoing navigation committed", || {
+        f.cursor_path() == expected && !f.pages.selected_page().native.is_loading()
+    })?;
+    f.server.gate("owner", false);
+    if page_driven {
+        wait("switch wins against page timer", || {
+            f.cursor_path() == "/gate/owner/target"
+        })?;
+    } else {
+        pump_for(700);
+        assert_eq!(f.cursor_path(), expected, "owner action must cancel switch");
+    }
+    Ok(())
+}
+
 fn failed_loading_signal() -> Result<()> {
     let f = Fixture::new()?;
     f.navigate("/a")?;

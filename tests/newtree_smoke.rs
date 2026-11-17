@@ -132,6 +132,26 @@ fn main() -> Result<()> {
             .is_some_and(|v| v.title == "Reading /recipes-child")
             && !ui.pages.selected_page().native.is_loading()
     })?;
+    key("ctrl+t")?;
+    wait("new tree before Back", || {
+        chrome_focused(&ui, "#start-search")
+    })?;
+    key("alt+Left")?;
+    wait("owner Back uncovers page", || {
+        ui.snapshot().unwrap().current == Some(root) && !visible(&ui, "#start-search")
+    })?;
+    println!("PASS owner_back_closes_new_tree");
+    ui.pages.selected_page().navigate(
+        web_url(&format!("http://{address}/recipes-child"))?,
+        NavigationTarget::ChildOf(root),
+    )?;
+    wait("child restored after Back case", || {
+        ui.snapshot()
+            .unwrap()
+            .current_visit()
+            .is_some_and(|v| v.url.path() == "/recipes-child")
+            && !ui.pages.selected_page().native.is_loading()
+    })?;
     let last = ui.snapshot()?.current.unwrap();
     ui.pages.read(|b| b.snapshot())?;
     ui.dispatch(ChromeIntent::SettleTree(tree(&ui, root)));
