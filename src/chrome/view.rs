@@ -108,7 +108,7 @@ pub(crate) fn tree_view_value(
     json!({
         "title": tree.title,
         "query": state.query, "waitingOnly": state.waiting_only,
-        "overflows": view.width > viewport.0 || view.height > viewport.1 - 94. - 52. - 42. - 48.,
+        "overflows": view.width > viewport.0 || view.height > viewport.1 - (super::CHROME_HEIGHT - graph::REST_HEIGHT) - 52. - 42. - 48.,
         "detail": format!("{} · {} waiting", plural(tree.page_count, "page"), tree.pending_count),
         "width": view.width, "height": view.height,
         "tiles": view.tiles.iter().map(|t| json!({"id": t.id.to_string(), "x": t.rect.x, "y": t.rect.y, "w": t.rect.w, "s": t.rect.s, "path": t.on_path})).collect::<Vec<_>>(),
@@ -624,6 +624,16 @@ mod tests {
         let view = tree_view_value(&forest, &tree_view::Workbench::default(), (820., 800.));
         assert_eq!(view["detail"], "3 pages · 1 waiting");
         assert_eq!(view["tiles"].as_array().unwrap().len(), 3);
+        let fits = view["height"].as_f64().unwrap() + 42. + 52. + 42. + 48.;
+        assert_eq!(
+            tree_view_value(&forest, &tree_view::Workbench::default(), (820., fits))["overflows"],
+            false
+        );
+        assert_eq!(
+            tree_view_value(&forest, &tree_view::Workbench::default(), (820., fits - 1.))
+                ["overflows"],
+            true
+        );
         let empty = ForestProjection::from_snapshot(
             Snapshot {
                 visits: vec![],
