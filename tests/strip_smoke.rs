@@ -161,7 +161,7 @@ fn main() -> Result<()> {
                 assert_eq!(strip_height(&ui), 52);
                 assert_eq!(chrome(&ui, "[...document.querySelectorAll('.node.run,.node.earlier')].every(e=>!e.hasAttribute('title'))")?, true);
                 assert_eq!(chrome(&ui, "[...document.querySelectorAll('#strip-list .menu-detail,#strip-list .more')].every(e=>!/(^| · )0 (waiting|read|more)/.test(e.textContent))")?, true);
-                assert_eq!(chrome(&ui, "[...document.querySelectorAll('#strip-list .menu-row[data-id]')].every(e=>e.title===S.frame.visits[e.dataset.id].label && e.getAttribute('aria-label').startsWith(e.title+', ') && e.getAttribute('aria-label').includes('branch pages') && !e.querySelector('.grow').textContent.includes('tutorial ·'))")?, true);
+                assert_eq!(chrome(&ui, "[...document.querySelectorAll('#strip-list .menu-row[data-id]')].every(e=>e.title===S.frame.visits[e.dataset.id].label && e.getAttribute('aria-label').startsWith(e.title) && !/(\\b0 branch|\\b0 waiting|\\b1 branch pages|waiting.*waiting)/.test(e.getAttribute('aria-label')) && !e.querySelector('.grow').textContent.includes('tutorial ·'))")?, true);
                 assert!(
                     chrome(
                         &ui,
