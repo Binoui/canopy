@@ -163,13 +163,17 @@ fn main() -> Result<()> {
     })?;
     key("p")?;
     type_text("roject")?;
-    wait("Find starts at the first result", || {
+    let found = wait("Find starts at the first result", || {
         chrome(
             &ui,
             "S.forest.query==='project' && $('forest-list').scrollTop<50",
         )
         .is_ok_and(|v| v == true)
-    })?;
+    });
+    if found.is_err() {
+        println!("HISTORY FIND {}", chrome(&ui, "({query:S.forest.query,field:$('forest-find').value,scroll:$('forest-list').scrollTop,focus:document.activeElement.outerHTML.slice(0,200),reveal:S.forest.history.reveal,criteria:$('forest-list').dataset.criteria})")?);
+    }
+    found?;
     key("Escape")?;
     key("z")?;
     wait("typing starts Find", || {
