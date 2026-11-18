@@ -37,6 +37,9 @@ use crate::{
 };
 
 const WORLD: &str = "canopy-reading-memory";
+/// How long after a click or Enter a script route still counts as the person's step. Sites
+/// like YouTube fetch the next page's data before they change the address.
+const ROUTE_AFTER_PRESS: std::time::Duration = std::time::Duration::from_secs(4);
 const HELPER: &str = include_str!("../capture.js");
 /// Script message the helper posts, debounced, when the page scrolls.
 const SCROLLED: &str = "canopyScrolled";
@@ -134,6 +137,9 @@ struct NativeState {
     load_generation: Cell<u64>,
     foreground_generation: Cell<u64>,
     same_document_request: RefCell<Option<Url>>,
+    /// When the person last clicked or pressed Enter in this page. A script route that
+    /// follows soon after, as on YouTube, is a step of its own in the tree.
+    pressed: Cell<Option<std::time::Instant>>,
     /// The URL last handed to WebKit. A fresh view reports no URI when that load starts.
     issued: RefCell<Option<Url>>,
     /// WebKit history entries and the visit each one showed, oldest first. Returning to a
@@ -542,6 +548,7 @@ impl LivePage {
             load_generation: Cell::new(0),
             foreground_generation: Cell::new(0),
             same_document_request: RefCell::new(None),
+            pressed: Cell::new(None),
             issued: RefCell::new(None),
             history: RefCell::new(Vec::new()),
             history_document: Cell::new(0),
@@ -907,6 +914,34 @@ impl LivePage {
             let weak = Rc::downgrade(&state);
             signals.push((
                 native.clone().upcast(),
+                native.connect_button_press_event(move |_, event| {
+                    if event.button() == 1 && event.event_type() == gtk::gdk::EventType::ButtonPress
+                    {
+                        if let Some(state) = weak.upgrade() {
+                            state.pressed.set(Some(std::time::Instant::now()));
+                        }
+                    }
+                    glib::Propagation::Proceed
+                }),
+            ));
+            let weak = Rc::downgrade(&state);
+            signals.push((
+                native.clone().upcast(),
+                native.connect_key_press_event(move |_, event| {
+                    use gtk::gdk::keys::constants as key;
+                    if [key::Return, key::KP_Enter, key::ISO_Enter].contains(&event.keyval()) {
+                        if let Some(state) = weak.upgrade() {
+                            state.pressed.set(Some(std::time::Instant::now()));
+                        }
+                    }
+                    glib::Propagation::Proceed
+                }),
+            ));
+        }
+        {
+            let weak = Rc::downgrade(&state);
+            signals.push((
+                native.clone().upcast(),
                 native.connect_title_notify(move |_| {
                     if let Some(state) = Pages::enter_native(&weak) {
                         state.update_title();
@@ -941,7 +976,16 @@ impl LivePage {
                     }
                     if added.is_some() && state.navigation.borrow().pending_ticket().is_none() {
                         let document = state.navigation.borrow().current.clone();
-                        if let Some(document) = document {
+                        let route = document
+                            .as_ref()
+                            .zip(added.as_ref().and_then(|item| item.uri()))
+                            .and_then(|(document, uri)| {
+                                state.clicked_route(&document.page_url, &uri)
+                            });
+                        if let Some(url) = route {
+                            *state.same_document_request.borrow_mut() = Some(url);
+                            state.complete_same_document();
+                        } else if let Some(document) = document {
                             state.remember_entry(document.visit);
                             if let Some(url) = state.native.uri().and_then(|uri| web_url(&uri).ok())
                             {
@@ -2388,6 +2432,19 @@ impl NativeState {
     }
 
     /// Records which visit WebKit's current history entry shows.
+    /// The address a page script moved to just after the person clicked or pressed Enter in
+    /// the page, when it is another resource than `page_url` (not only another `#part`).
+    /// A press counts for the first history entry after it only, so a `#part` link spends it.
+    /// WebKit adds the entry before the view reports its new URI.
+    fn clicked_route(&self, page_url: &Url, entry_uri: &str) -> Option<Url> {
+        let pressed = self.pressed.take()?;
+        if pressed.elapsed() > ROUTE_AFTER_PRESS || self.is_background() {
+            return None;
+        }
+        let url = web_url(entry_uri).ok()?;
+        (url.origin() == page_url.origin() && !same_resource(&url, page_url)).then_some(url)
+    }
+
     fn remember_entry(&self, visit: VisitId) {
         let Some(list) = self.native.back_forward_list() else {
             return;

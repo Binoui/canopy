@@ -487,10 +487,13 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 :root.reduced-motion *, :root.reduced-motion *::before, :root.reduced-motion *::after {
   transition: none !important; animation: none !important; scroll-behavior: auto !important;
 }
-.tab .mk, .tab .count, .tab-pinned-mark { flex: none; }
+.tab .mk, .tab-pinned-mark { flex: none; }
+.unread-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); pointer-events: none; }
 .tab-title { flex: 1; min-width: 0; }
 .tab.icon-only { padding: 0; justify-content: center; }
-.tab.icon-only > :not(.mk):not(.count) { display: none; }
+.tab.icon-only > :not(.mk):not(.unread-dot) { display: none; }
+.tab.icon-only > .unread-dot { position: absolute; right: 3px; top: 4px; box-shadow: 0 0 0 1.5px var(--chrome); }
+.tab[aria-selected="true"] > .unread-dot { position: absolute; right: 5px; top: 5px; width: 6px; height: 6px; box-shadow: 0 0 0 1.5px var(--bg); }
 .overflow-tree { display: flex; align-items: center; }
 .overflow-tree .menu-row { flex: 1; min-width: 0; }
 .overflow-settle { flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 4px; }
@@ -507,10 +510,8 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
   #find-input { width: 90px; }
 }
 
-.tab.short .count, .tab.short .tab-pinned-mark { display: none; }
+.tab.short .tab-pinned-mark { display: none; }
 
-.tab.icon-only > .count, .tab[aria-selected="true"] > .count { display: block; position: absolute; right: 0; top: 2px; font-size: 8px; line-height: 11px; padding: 0 2px; border-radius: 3px; pointer-events: none; }
-.tab[aria-selected="true"] > .count { right: auto; left: 16px; }
 .tab.short:not([aria-selected="true"]) .tab-settle { position: absolute; right: 4px; }
 .tab.short:not([aria-selected="true"]):hover .tab-title { padding-right: 24px; }
 
