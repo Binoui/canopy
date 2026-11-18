@@ -20,6 +20,7 @@ function renderHistory(h) {
     $('forest-find').setAttribute('aria-label', h.field.label);
     $('forest-list').setAttribute('role','list');
     $('forest-list').addEventListener('scroll', historyLoadEdge);
+    new ResizeObserver(historyLoadEdge).observe($('forest-list'));
   }
   $('forest-find').hidden = false;
   $('history-count').textContent = h.count;
@@ -75,6 +76,7 @@ function renderHistory(h) {
     if(!retained || (focusKey==='row' && changed)) selected?.focus({preventScroll:true});
     if(changed || (!retained && focusKey?.startsWith('page-'))) selected?.scrollIntoView({block:'nearest'});
   }
+  requestAnimationFrame(historyLoadEdge);
 }
 function historyLoadEdge() {
   const h=S.forest?.history, list=$('forest-list');

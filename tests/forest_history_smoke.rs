@@ -87,7 +87,7 @@ fn main() -> Result<()> {
     wait("History rows", || visible(&ui, ".forest-row"))?;
     assert_eq!(
         chrome(&ui, "document.querySelectorAll('.forest-row').length")?,
-        60
+        20
     );
     assert!(chrome(&ui, "!document.querySelector('#forest-preview')")? == true);
     assert!(text(&ui, "#history-count").contains("131 of 131"));
@@ -155,7 +155,11 @@ fn main() -> Result<()> {
         "($('forest-list').scrollTop=$('forest-list').scrollHeight,true)",
     )?;
     wait("older rows load without pulling back selection", || {
-        chrome(&ui,"document.querySelectorAll('.forest-row').length>=120 && $('forest-list').scrollTop>100").is_ok_and(|v|v==true)
+        chrome(
+            &ui,
+            "document.querySelectorAll('.forest-row').length>=40 && $('forest-list').scrollTop>100",
+        )
+        .is_ok_and(|v| v == true)
     })?;
     key("p")?;
     type_text("roject")?;
@@ -181,10 +185,11 @@ fn main() -> Result<()> {
     assert_ne!(chrome(&ui, "S.forest.history.count")?, filtered);
     click_chrome(&ui, "#history-rail [data-bucket^=month-]")?;
     wait("old month jump", || visible(&ui, "[data-before=true]"))?;
-    assert!(chrome(&ui, "document.querySelectorAll('.forest-row').length<=60")? == true);
+    assert!(chrome(&ui, "document.querySelectorAll('.forest-row').length<=40")? == true);
+    let before = chrome(&ui, "S.forest.history.before.edge")?;
     chrome(&ui, "($('forest-list').scrollTop=0,true)")?;
     wait("newer edge loads", || {
-        chrome(&ui, "document.querySelectorAll('.forest-row').length>60").is_ok_and(|v| v == true)
+        chrome(&ui, "S.forest.history.before?.edge ?? null").is_ok_and(|v| v != before)
     })?;
     key("Escape")?;
     assert!(!visible(&ui, "#forest"));

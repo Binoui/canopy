@@ -53,7 +53,7 @@ fn main() -> Result<()> {
           globalThis.painted=null;
           const check=()=>{
             const forest=document.querySelector('#forest');
-            const ready=!forest.hidden && S.forest?.view==='history' && document.querySelectorAll('#forest-list .forest-row').length===60 && S.forest.count;
+            const ready=!forest.hidden && S.forest?.view==='history' && document.querySelectorAll('#forest-list .forest-row').length===20 && S.forest.count;
             if(!ready) { requestAnimationFrame(check); return; }
             requestAnimationFrame(()=>requestAnimationFrame(()=>{painted=performance.timeOrigin+performance.now();}));
           };

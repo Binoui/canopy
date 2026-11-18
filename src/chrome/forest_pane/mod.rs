@@ -1,5 +1,3 @@
-const PAGE: usize = 60;
-
 mod days;
 mod history;
 mod index;
@@ -201,7 +199,7 @@ impl ForestPane {
                         }
                         Input::History(i) => {
                             if let Shown::History(h) = &mut open.shown {
-                                let index = h.index(&frame.forest, &*self.calendar);
+                                let index = Index::build(&frame.forest, &*self.calendar);
                                 let reply = h.input(i, &index, &frame.forest, &*self.calendar);
                                 if !matches!(reply, Reply::Unchanged) {
                                     return reply;
@@ -227,10 +225,7 @@ impl ForestPane {
         let State::Open(open) = &mut self.state else {
             return Reply::Unchanged;
         };
-        let index = match &mut open.shown {
-            Shown::History(h) => h.index(&frame.forest, &*self.calendar),
-            Shown::Trees(_) => Index::build(&frame.forest, &*self.calendar),
-        };
+        let index = Index::build(&frame.forest, &*self.calendar);
         let value = json!({ "view": open.shown.view().name(), "query": open.shown.query(),
             "undo":open.undo.as_ref().map(|(id,text)|json!({"id":id.to_string(),"text":text,"label":"Undo"})),
             "count": format!("{} tabs · {} saved for later · {} in history", frame.forest.tabs().len(), frame.forest.shelf().len(), index.history.len()),

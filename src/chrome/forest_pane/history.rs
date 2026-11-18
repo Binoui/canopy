@@ -10,6 +10,8 @@ use crate::{
 };
 use std::collections::BTreeMap;
 
+const PAGE: usize = 20;
+
 #[derive(Debug)]
 pub(in crate::chrome) enum Input {
     Select(TreeId),
@@ -49,7 +51,6 @@ impl Input {
     }
 }
 pub(super) struct State {
-    cache: index::Cache,
     query: String,
     site: Option<String>,
     anchor: Option<Anchor>,
@@ -66,7 +67,6 @@ struct Anchor {
 impl Default for State {
     fn default() -> Self {
         Self {
-            cache: index::Cache::default(),
             query: String::new(),
             site: None,
             anchor: None,
@@ -78,9 +78,6 @@ impl Default for State {
     }
 }
 impl State {
-    pub fn index(&mut self, forest: &ForestProjection, calendar: &dyn Calendar) -> Index {
-        Index::cached(forest, calendar, &mut self.cache)
-    }
     pub fn query(&self) -> &str {
         &self.query
     }
@@ -231,7 +228,6 @@ impl State {
         index: &Index,
         calendar: &dyn Calendar,
     ) -> Value {
-        let trace = std::time::Instant::now();
         let rows = self.rows(index, forest);
         self.anchor = resolve(self.anchor, &rows).map(|at| Anchor {
             tree: rows[at].tree,
@@ -274,7 +270,7 @@ impl State {
                 );
                 items.push(json!({"kind":"row","key":format!("row-{}",e.tree.root()),"id":e.tree.root().to_string(),"time":e.at.clock,
                     "title":tree.title,"titleRuns":segments(&tree.title,&key),"trail":trail,"more":more,
-                    "mini":facts.mini.get_or_init(||tree_card::mini_value(forest,&tree_view::miniature(forest,tree,Fit::ROW))),
+                    "mini":tree_card::mini_value(forest,&tree_view::miniature(forest,tree,Fit::ROW)),
                     "meta":format!("{} · {}",tree_card::sites_line(&facts.sites,3),plural(tree.page_count,"page")),
                     "selected":self.anchor.is_some_and(|a|a.tree==e.tree),"unfolded":self.unfolded==Some(e.tree),
                     "name":format!("{}, {}, {}",tree.title,plural(tree.page_count,"page"),e.at.when(&today)),
@@ -316,9 +312,6 @@ impl State {
                 json!({"edge":e.tree.root().to_string(),"before":before,"label":if before {"Show newer trees"} else {"Show older trees"}}),
             )
         };
-        if std::env::var_os("CANOPY_HISTORY_TRACE").is_some() {
-            eprintln!("history value {:?}", trace.elapsed());
-        }
         json!({"items":items,"field":{"label":"Find a tree","placeholder":"Find a tree by name, site or page"},"query":self.query,"site":self.site,"count":format!("{} of {} trees",rows.len(),index.history.len()),
             "rail":{"whenLabel":"When","sitesLabel":"Sites","when":buckets,"sites":sites},"before":(self.start>0).then(||edge(true)).flatten(),"more":(self.end<rows.len()).then(||edge(false)).flatten(),
             "reveal":self.reveal.map(|(tree,n)|json!({"id":tree.root().to_string(),"n":n})),
@@ -436,7 +429,7 @@ mod tests {
         });
         let mut p = ForestPane::default();
         let v = open(&mut p, &f);
-        assert_eq!(rows(&v).len(), 60);
+        assert_eq!(rows(&v).len(), PAGE);
         assert_eq!(v["history"]["items"][0]["count"], "131 trees");
         assert_eq!(rows(&v)[0]["trail"].as_array().unwrap().len(), 4);
         assert_eq!(rows(&v)[0]["more"], "+3");
@@ -556,7 +549,7 @@ mod tests {
             .position(|e| e.at.bucket(&LocalCalendar.now()).0 == bucket)
             .unwrap();
         assert_eq!(state.start, first);
-        assert_eq!(state.end, first + 60);
+        assert_eq!(state.end, first + PAGE);
         let edge = index.history[first].tree;
         state.input(
             Input::More { edge, before: true },
@@ -564,14 +557,14 @@ mod tests {
             &f.forest,
             &LocalCalendar,
         );
-        assert_eq!(state.start, first - 60);
+        assert_eq!(state.start, first - PAGE);
         state.input(
             Input::More { edge, before: true },
             &index,
             &f.forest,
             &LocalCalendar,
         );
-        assert_eq!(state.start, first - 60);
+        assert_eq!(state.start, first - PAGE);
         let edge = index.history[state.end - 1].tree;
         state.input(
             Input::More {
@@ -582,7 +575,7 @@ mod tests {
             &f.forest,
             &LocalCalendar,
         );
-        assert_eq!(state.end, first + 120);
+        assert_eq!(state.end, first + 2 * PAGE);
     }
     #[test]
     fn successor_and_top_sites_count_each_tree_once() {
