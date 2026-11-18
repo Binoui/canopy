@@ -1719,7 +1719,8 @@ function toggleForest(view = 'trees', fromChrome = true) {
     S.forestWants = view;
     toggleOverlay('forest');
     if (!fromChrome && S.overlay === 'forest') rememberFocus('overlay', document.body);
-  } else post({ t: 'forest', do: 'close' }), closeOverlay();
+  } else if (!S.forest) closeOverlay();
+  else post({ t: 'forest', do: 'toggle', view });
 }
 function focusForest() {
   post({ t: 'focus', target: 'chrome' });
@@ -2010,7 +2011,7 @@ window.canopy = {
     focusStart();
     syncLayer();
   },
-  toggleForest(fromChrome = true) { toggleForest('trees', fromChrome); },
+  toggleForest(view = 'trees', fromChrome = true) { toggleForest(view, fromChrome); },
   workbench(view) {
     if (!S.frame) return;
     const id = document.activeElement?.closest('[data-id]')?.dataset.id;

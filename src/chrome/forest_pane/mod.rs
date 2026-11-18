@@ -38,6 +38,7 @@ pub(super) enum Input {
     More { seen: usize },
     Find(String),
     Escape,
+    Toggle(View),
 }
 impl Input {
     pub fn parse(m: &Value) -> Result<Self> {
@@ -50,6 +51,7 @@ impl Input {
             Some("open") => Self::Open(view()?),
             Some("close") => Self::Close,
             Some("show") => Self::Show(view()?),
+            Some("toggle") => Self::Toggle(view()?),
             Some("find") => {
                 Self::Find(m["query"].as_str().context("Missing Find text")?.to_owned())
             }
@@ -148,6 +150,10 @@ impl ForestPane {
                                 open.shown = Shown::new(view);
                             }
                         }
+                        Input::Toggle(view) => match (view, &open.shown) {
+                            (View::History, Shown::Trees) => open.shown = Shown::new(View::History),
+                            _ => return Reply::Close,
+                        },
                         Input::Find(query) => {
                             if query != open.query {
                                 open.query = query;
@@ -622,5 +628,26 @@ mod tests {
         assert_eq!(v["query"], "");
         let v = value(p.input(Input::Find("absent".into()), &f));
         assert_eq!(v["trees"]["empty"], "No open or saved tree matches.");
+    }
+    #[test]
+    fn forest_shortcuts_switch_to_history_and_otherwise_close() {
+        let f = fixture(3, 1);
+        let mut p = ForestPane::default();
+        p.input(Input::Open(View::Trees), &f);
+        let v = value(p.input(Input::Toggle(View::History), &f));
+        assert_eq!(v["view"], "history");
+        assert!(matches!(
+            p.input(Input::Toggle(View::History), &f),
+            Reply::Close
+        ));
+        assert!(matches!(
+            p.input(Input::Toggle(View::Trees), &f),
+            Reply::Close
+        ));
+        p.input(Input::Show(View::Trees), &f);
+        assert!(matches!(
+            p.input(Input::Toggle(View::Trees), &f),
+            Reply::Close
+        ));
     }
 }

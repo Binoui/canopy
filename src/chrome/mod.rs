@@ -469,11 +469,12 @@ impl HtmlChrome {
         let _ = self.inner.view.focus();
     }
 
-    pub fn toggle_forest(&self) {
+    pub fn toggle_forest(&self, view: ForestView) {
         use gtk::prelude::WidgetExt;
         use wry::WebViewExtUnix;
         let from_chrome = self.inner.view.webview().has_focus();
-        self.inner.call("toggleForest", &[json!(from_chrome)]);
+        self.inner
+            .call("toggleForest", &[json!(view.name()), json!(from_chrome)]);
     }
 
     /// Offers these saved accounts for the sign-in fields on the page. No account takes
