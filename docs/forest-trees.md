@@ -17,3 +17,5 @@ The bar, overflow list and Ctrl+1 through Ctrl+9 use the same stored order. New 
 Run `forest_trees_smoke` under the project's GUI test command. It drives stepped XTest gestures and checks lane marks, moves, outside release, refresh during a drag, tab-bar exchange, keyboard actions and persisted order. `tabs_smoke` checks the tab bar's overflow, pin rule and keyboard order.
 
 For a private real-window drive, use `canopy-verify drag FROM_X FROM_Y TO_X TO_Y`. An optional fifth argument names a screenshot captured before release, for example `canopy-verify drag 200 180 700 320 mid-drag`. The script writes it to that run's evidence folder. Wayland and touch need separate verification.
+
+Set `CANOPY_FOREST_TREES_FIXTURE` to the timing fixture file to repeat the full smoke journey on a private copy of that forest. The test settles its existing tabs and shelf, then adds 23 gesture-test trees. It keeps the original fixture untouched and checks the same drops, keys, refreshes, cancellation and UI restart.

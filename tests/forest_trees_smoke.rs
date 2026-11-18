@@ -140,7 +140,22 @@ fn main() -> Result<()> {
             );
         }
     });
-    let mut b = Browser::open(&dir.path().join("forest.sqlite3"))?;
+    let database = dir.path().join("forest.sqlite3");
+    if let Some(fixture) = std::env::var_os("CANOPY_FOREST_TREES_FIXTURE") {
+        std::fs::copy(fixture, &database)?;
+    }
+    let mut b = Browser::open(&database)?;
+    let existing = b.tree_states()?;
+    let extra_today = existing
+        .iter()
+        .filter(|s| !matches!(s.place(), Place::History { .. }))
+        .count();
+    for s in existing
+        .iter()
+        .filter(|s| !matches!(s.place(), Place::History { .. }))
+    {
+        b.place_tree(s.root, Move::History)?;
+    }
     let trees = b
         .add_roots(
             &(0..23)
@@ -182,7 +197,10 @@ fn main() -> Result<()> {
     wait("three lanes", || visible(&ui, "[data-lane=settled]"))?;
     assert_eq!(
         text(&ui, "#forest-count"),
-        "6 tabs · 3 saved for later · 14 in history"
+        format!(
+            "6 tabs · 3 saved for later · {} in history",
+            14 + existing.len()
+        )
     );
     assert_eq!(
         chrome(
@@ -196,7 +214,7 @@ fn main() -> Result<()> {
             &ui,
             "document.querySelectorAll('[data-lane=settled] .tree-card').length"
         )?,
-        14
+        14 + extra_today
     );
     assert_eq!(
         chrome(
@@ -226,7 +244,7 @@ fn main() -> Result<()> {
     }
     ui.window.resize(1240, 1000);
     pump(200);
-    println!("PASS three counted lanes, all fourteen settled today, pinned lines, no Find and responsive independent scrolling.");
+    println!("PASS three counted lanes, all {} settled today, pinned lines, no Find and responsive independent scrolling over {} trees.",14+extra_today,23+existing.len());
 
     let t = &trees;
     click_chrome(&ui, &main_button(t[0]))?;
