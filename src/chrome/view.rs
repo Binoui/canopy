@@ -121,8 +121,17 @@ pub(crate) fn frame(
             format!("{} waiting, next {label}{state}", waiting_pages.len())
         },
     );
+    // A new tree has no root until its page commits; its tab is drawn from the address.
+    let new_tree = match &frame.pending {
+        Some(crate::browser::PendingTarget::NewTree(url)) => Some(json!({
+            "url": url.as_str(),
+            "title": url.host_str().map_or_else(|| url.to_string(), |host| host.trim_start_matches("www.").to_owned()),
+        })),
+        _ => None,
+    };
     json!({
         "current": current.map(|id| id.to_string()),
+        "newTree": new_tree,
         "tabs": tabs,
         "visits": visits,
         "strip": strip_for_frame(frame, width),
@@ -804,6 +813,7 @@ mod tests {
                 bookmarks: vec![],
                 back,
                 forward,
+                pending: None,
                 files: Vec::new(),
             }
         };
@@ -960,6 +970,7 @@ mod tests {
             bookmarks: vec![],
             back: None,
             forward: None,
+            pending: None,
             files: vec![],
         };
         let closed = super::frame(
@@ -1033,6 +1044,7 @@ mod tests {
             bookmarks: vec![],
             back: None,
             forward: None,
+            pending: None,
             files: vec![],
         };
         let value = super::frame(
@@ -1152,6 +1164,7 @@ mod tests {
             bookmarks: vec![],
             back: None,
             forward: None,
+            pending: None,
             files: Vec::new(),
         };
         let value = super::frame(
@@ -1187,6 +1200,7 @@ mod tests {
             bookmarks: vec![],
             back: None,
             forward: None,
+            pending: None,
             files: Vec::new(),
         };
         let value = super::frame(
@@ -1227,6 +1241,7 @@ mod tests {
             bookmarks: vec![],
             back: None,
             forward: None,
+            pending: None,
             files: Vec::new(),
         };
         let value = super::frame(
@@ -1288,6 +1303,7 @@ mod tests {
             bookmarks: vec![],
             back: None,
             forward: None,
+            pending: None,
             files: vec![
                 file(
                     1,
@@ -1399,6 +1415,7 @@ mod tests {
             bookmarks: vec![],
             back: None,
             forward: None,
+            pending: None,
             files: vec![],
         };
         let value = super::frame(

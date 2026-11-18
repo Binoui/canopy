@@ -30,6 +30,15 @@ pub struct Document {
     pub epoch: u64,
 }
 
+/// Where the load in flight is headed, so the chrome can show it before it commits.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PendingTarget {
+    /// A page already in the forest.
+    Visit(VisitId),
+    /// A new tree, whose root does not exist until the page commits.
+    NewTree(Url),
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Visibility {
     Selected,
@@ -110,6 +119,19 @@ impl Navigation {
         match intent {
             Intent::New { parent, .. } => *parent,
             Intent::Restore { visit } => Some(*visit),
+        }
+    }
+
+    pub fn pending_target(&self) -> Option<PendingTarget> {
+        match &self.pending {
+            Pending::Requested { intent, url, .. } | Pending::Loading { intent, url, .. } => {
+                match intent {
+                    Intent::Restore { visit } => Some(PendingTarget::Visit(*visit)),
+                    Intent::New { parent: None, .. } => Some(PendingTarget::NewTree(url.clone())),
+                    Intent::New { .. } => None,
+                }
+            }
+            Pending::Idle => None,
         }
     }
 
@@ -232,6 +254,33 @@ mod tests {
         let fragment = Url::parse("https://example.org/page#part").unwrap();
         navigation.same_document(fragment.clone());
         assert_eq!(navigation.current.as_ref().unwrap().page_url, fragment);
+    }
+
+    #[test]
+    fn pending_target_names_the_page_before_it_commits() {
+        let mut navigation = Navigation::default();
+        let url = Url::parse("https://example.test/").unwrap();
+        assert_eq!(navigation.pending_target(), None);
+        let root = navigation.native_request(url.clone());
+        assert_eq!(
+            navigation.pending_target(),
+            Some(PendingTarget::NewTree(url.clone()))
+        );
+        let visit: VisitId = Ulid::new().to_string().parse().unwrap();
+        navigation.publish(visit, url.clone());
+        assert_eq!(navigation.pending_target(), None);
+        // A link from a committed page is a child, not a new tree.
+        navigation.native_request(url.clone());
+        assert_eq!(navigation.pending_target(), None);
+        let other: VisitId = Ulid::new().to_string().parse().unwrap();
+        let restore = navigation.request_queued(other, url);
+        assert_eq!(
+            navigation.pending_target(),
+            Some(PendingTarget::Visit(other))
+        );
+        navigation.failed(restore);
+        assert_eq!(navigation.pending_target(), None);
+        assert!(!root.is_latest(&navigation));
     }
 
     #[test]

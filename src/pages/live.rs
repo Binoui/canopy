@@ -261,6 +261,9 @@ impl LivePage {
     pub(super) fn pending_anchor(&self) -> Option<VisitId> {
         self.state.navigation.borrow().pending_anchor()
     }
+    pub(super) fn pending_target(&self) -> Option<crate::browser::PendingTarget> {
+        self.state.navigation.borrow().pending_target()
+    }
     pub(super) fn pending_visit(&self) -> Option<VisitId> {
         self.state.navigation.borrow().pending_restore()
     }

@@ -230,6 +230,14 @@ impl ForestProjection {
         self.current
     }
 
+    /// Shows `id` as the current page, for a page that is opening but has not committed.
+    /// An id the forest does not hold changes nothing.
+    pub fn show_current(&mut self, id: VisitId) {
+        if self.nodes.contains_key(&id) {
+            self.current = Some(id);
+        }
+    }
+
     pub fn visit(&self, id: VisitId) -> Option<&Visit> {
         self.nodes.get(&id).map(|node| &node.visit)
     }

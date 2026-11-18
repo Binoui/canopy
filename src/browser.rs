@@ -260,7 +260,7 @@ impl Snapshot {
 }
 
 mod navigation;
-pub use navigation::{Document, LoadTicket, Navigation, ViewId, Visibility};
+pub use navigation::{Document, LoadTicket, Navigation, PendingTarget, ViewId, Visibility};
 use navigation::{Intent, Pending};
 
 const MAX_TREE_NAME: usize = 80;
