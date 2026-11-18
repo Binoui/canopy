@@ -345,6 +345,7 @@ impl Ui {
                 None => None,
             };
             Ok(ChromeFrame {
+                shown: browser.showings()?,
                 mail: self.mail.mail(),
                 loaded: self.pages.loaded_visits(),
                 live: self.pages.hidden_visits(),

@@ -69,6 +69,7 @@ type ShownPalette = (String, Vec<(Group, PaletteItem)>, usize);
 
 /// Everything the chrome shows, read from SQLite in one go.
 pub struct ChromeFrame {
+    pub shown: crate::browser::Showings,
     pub mail: crate::mail::Mail,
     pub bookmarks: Vec<crate::browser::Bookmark>,
     pub forest: ForestProjection,

@@ -287,6 +287,7 @@ mod tests {
             states[1..].reverse();
         }
         ChromeFrame {
+            shown: Default::default(),
             forest: ForestProjection::from_snapshot(
                 Snapshot {
                     visits,
