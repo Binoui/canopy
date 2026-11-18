@@ -477,6 +477,10 @@ impl Ui {
             Shortcut::NewTree => self.chrome.new_tree(),
             Shortcut::Forest(view) => self.chrome.toggle_forest(view),
             Shortcut::ZoomTree => self.chrome.toggle_tree(),
+            Shortcut::MoveTree { next } => {
+                self.report(self.pages.move_current_tree(next));
+                self.schedule_refresh();
+            }
             Shortcut::PreviousTree => match self.pages.read(|b| b.previous_tree()) {
                 Ok(Some(tree)) => self.dispatch(ChromeIntent::SelectTree(tree)),
                 Ok(None) => {}
@@ -530,6 +534,7 @@ enum Shortcut {
     UndoSettle,
     Forest(crate::chrome::ForestView),
     ZoomTree,
+    MoveTree { next: bool },
     NextWaiting,
     PreviousTree,
     PageScale(PageScaleAction),
@@ -677,6 +682,16 @@ impl Shortcut {
                 Self::Forest(crate::chrome::ForestView::History),
             ),
             (Modifiers::CONTROL_SHIFT, key::e, Self::ZoomTree),
+            (
+                Modifiers::CONTROL_SHIFT,
+                key::Page_Up,
+                Self::MoveTree { next: false },
+            ),
+            (
+                Modifiers::CONTROL_SHIFT,
+                key::Page_Down,
+                Self::MoveTree { next: true },
+            ),
             (Modifiers::CONTROL, key::Tab, Self::NextWaiting),
             (Modifiers::CONTROL_SHIFT, key::Tab, Self::PreviousTree),
             (
@@ -823,6 +838,7 @@ impl ChromeHost for Ui {
                 self.schedule_refresh();
                 result
             }
+            ChromeIntent::StepTree { tree, next } => self.pages.step_tree(tree, next),
             ChromeIntent::PlaceTree { tree, to } => {
                 let result = self.pages.place_tree(tree, to);
                 self.schedule_refresh();
@@ -1080,6 +1096,16 @@ mod shortcut_tests {
                 Shortcut::Forest(crate::chrome::ForestView::History),
             ),
             (key::e, Modifiers::CONTROL_SHIFT, Shortcut::ZoomTree),
+            (
+                key::Page_Up,
+                Modifiers::CONTROL_SHIFT,
+                Shortcut::MoveTree { next: false },
+            ),
+            (
+                key::Page_Down,
+                Modifiers::CONTROL_SHIFT,
+                Shortcut::MoveTree { next: true },
+            ),
             (key::Tab, Modifiers::CONTROL, Shortcut::NextWaiting),
             (key::Tab, Modifiers::CONTROL_SHIFT, Shortcut::PreviousTree),
             (

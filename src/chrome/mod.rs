@@ -121,6 +121,10 @@ pub enum ChromeIntent {
     },
     Stop,
     SelectTree(TreeId),
+    StepTree {
+        tree: TreeId,
+        next: bool,
+    },
     PlaceTree {
         tree: TreeId,
         to: crate::browser::Move,
@@ -1187,6 +1191,25 @@ impl Inner {
             "move-to-tree" => ChromeIntent::MoveToTree(id("id")?),
             "undo-settle" => ChromeIntent::UndoSettle,
 
+            "place-tree" => ChromeIntent::PlaceTree {
+                tree: TreeId(id("id")?),
+                to: match message["place"].as_str()? {
+                    "tabs" => crate::browser::Move::Tabs(if message["before"].is_null() {
+                        crate::browser::Slot::End
+                    } else {
+                        let before = TreeId(id("before")?);
+                        if !frame.forest.tree(before)?.place.is_tab() {
+                            return None;
+                        }
+                        crate::browser::Slot::Before(before)
+                    }),
+                    _ => return None,
+                },
+            },
+            "step-tree" => ChromeIntent::StepTree {
+                tree: TreeId(id("id")?),
+                next: message["next"].as_bool()?,
+            },
             "settle-current" => ChromeIntent::SettleCurrent,
             "rename-tree" => {
                 ChromeIntent::RenameTree(TreeId(id("id")?), message["name"].as_str()?.to_owned())

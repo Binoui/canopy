@@ -201,13 +201,24 @@ fn main() -> Result<()> {
 
     press(&ui, &format!(".tab[data-id='{alpha}']"))?;
     rename(&ui, gamma, "Missed release recovery");
-    let (x, y) = page_point(&ui, 500, 500)?;
-    move_to(x, y)?;
+    let start = chrome_point(&ui, &format!(".tab[data-id='{alpha}']"))?;
+    let end = page_point(&ui, 500, 500)?;
+    for step in 1..=25 {
+        move_to(
+            start.0 + (end.0 - start.0) * step / 25,
+            start.1 + (end.1 - start.1) * step / 25,
+        )?;
+        pump(60);
+    }
+    wait("native tab drag before outside release", || {
+        chrome(&ui, "!!document.querySelector('.tab.dragging')")
+            .is_ok_and(|dragging| dragging == true)
+    })?;
     release()?;
-    hover_chrome(&ui, "#settings-button")?;
-    wait("return after outside release", || {
+    wait("native drag end releases deferred frame", || {
         text(&ui, "#tab-row").contains("Missed release recovery")
     })?;
+    hover_chrome(&ui, "#settings-button")?;
     println!("outside release does not freeze chrome: true");
     assert!(
         tab && menu && card && held,

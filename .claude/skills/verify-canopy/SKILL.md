@@ -43,6 +43,7 @@ Prefer keyboard shortcuts. They are stable handles, and pointer positions move w
 ```sh
 $V key ctrl+k                     # xdotool key names: ctrl+shift+e, alt+Left, Return, Escape, F6
 $V type "http://wiki.localhost:PORT/p/Repotting"
+$V drag 150 26 350 26            # stepped native tab drag
 $V click 390 328 [left|middle|right]
 $V hover 70 68 [seconds]          # rests the pointer, 1.2 s by default
 $V url Repotting                  # fixture address for a page title; CANOPY_HOST=wiki picks the host
@@ -74,7 +75,7 @@ $V db "SELECT title FROM visits ORDER BY created_at DESC LIMIT 3" 04-rows   # re
 
 Both write into `.cache/verify/<run id>/`, which git ignores and cleanup keeps. A proof captures the user action and the state after it, and confirms the stored side effect with a `db` read, not only the screen. Number the files in the order you took them. Drive the real path (shortcut, click, `open`). Never write to the database to set up a journey beyond what `seed.py` does.
 
-The forest schema is version 15. Older installed builds refuse it. Tables you will read most: `visits(id, parent_id, url, title, created_at, opened_at)` with `opened_at` NULL for a waiting page, `tree_state(root_id, last_visit_id, name, place, position, pinned, placed_at)`, `session(current_id)`.
+The forest schema is version 16. Older installed builds refuse it. Tables you will read most: `visits(id, parent_id, url, title, created_at, opened_at)` with `opened_at` NULL for a waiting page, `tree_state(root_id, last_visit_id, name, place, position, pinned, placed_at)`, `session(current_id)`.
 
 ## Cleanup
 

@@ -50,6 +50,11 @@ $('forest-find').addEventListener('input', () => post({t:'forest',do:S.forest?.v
 $('forest-close').addEventListener('click', closeOverlay);
 $('forest').querySelector('.scrim').addEventListener('mousedown', closeOverlay);
 $('forest').addEventListener('keydown', (e) => {
+  if (e.altKey && ['ArrowUp', 'ArrowDown'].includes(e.key)) {
+    const card = e.target.closest('[data-id]');
+    if (card) { intent('step-tree', {id: card.dataset.id, next: e.key === 'ArrowDown'}); e.preventDefault(); }
+    return;
+  }
   if (e.altKey && e.key === 'Enter') {
     const card = e.target.closest('[data-id]');
     if (card) { post({t:'forest',do:'act',tree:card.dataset.id,act:'open-keep'}); e.preventDefault(); }

@@ -300,7 +300,7 @@ impl Browser {
              INSERT OR IGNORE INTO session(singleton, current_id) VALUES(1, NULL);",
         )?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version > 15 {
+        if version > 16 {
             bail!("This database comes from a newer version of Canopy.");
         }
         if version == 0 {
@@ -492,7 +492,19 @@ impl Browser {
         }
         if version < 15 {
             let tx = connection.transaction()?;
-            places::migrate_15(&tx)?;
+            tx.execute_batch(
+                "ALTER TABLE tree_state ADD COLUMN tab_order INTEGER CHECK(tab_order >= 0);
+                 WITH positions AS (
+                     SELECT t.root_id, ROW_NUMBER() OVER (ORDER BY r.created_at, r.rowid) - 1 AS position
+                     FROM tree_state t JOIN visits r ON r.id=t.root_id WHERE t.settled_at IS NULL
+                 ) UPDATE tree_state SET tab_order=(SELECT position FROM positions WHERE positions.root_id=tree_state.root_id);
+                 PRAGMA user_version=15;",
+            )?;
+            tx.commit()?;
+        }
+        if version < 16 {
+            let tx = connection.transaction()?;
+            places::migrate_16(&tx)?;
             tx.commit()?;
         }
         Ok(Self { connection })
@@ -2187,7 +2199,7 @@ mod tests {
             b.connection
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            15
+            16
         );
     }
 

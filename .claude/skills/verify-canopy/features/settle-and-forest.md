@@ -12,4 +12,4 @@ See [History](../../../../docs/forest-history.md). Drive Ctrl+H, row selection, 
 
 ## Verification
 
-Use a private stress launch and doctor. Check 390 px and at least 1920 px widths, both themes and English dates under LC_TIME=fr_FR.UTF-8. Run tree_places_smoke for the shared model, forest_trees_smoke for cards and forest_history_smoke for list/preview. Check schema 15 with tree_state(place,position,pinned,placed_at). Never open the real forest. Copy the schema-14 timing fixture before migrating it.
+Use a private stress launch and doctor. Check 390 px and at least 1920 px widths, both themes and English dates under LC_TIME=fr_FR.UTF-8. Run tree_places_smoke for the shared model, forest_trees_smoke for cards and forest_history_smoke for list/preview. Check schema 16 with tree_state(place,position,pinned,placed_at). Never open the real forest. Copy the schema-14 timing fixture before migrating it.

@@ -1877,6 +1877,25 @@ impl Pages {
                 });
     }
 
+    pub fn move_current_tree(&self, next: bool) -> Result<()> {
+        let tree = self.read(|b| -> Result<Option<TreeId>> {
+            let forest = ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)?;
+            Ok(forest.current().and_then(|id| forest.tree_of(id)))
+        })?;
+        if let Some(tree) = tree {
+            self.step_tree(tree, next)?;
+        }
+        Ok(())
+    }
+
+    pub fn step_tree(&self, tree: TreeId, next: bool) -> Result<()> {
+        let to = self.read(|b| b.tree_step(tree, next))?;
+        if let Some(to) = to {
+            self.place_tree(tree, to)?;
+        }
+        Ok(())
+    }
+
     pub fn place_tree(&self, tree: TreeId, to: crate::browser::Move) -> Result<()> {
         use crate::browser::Move;
         let tab = self

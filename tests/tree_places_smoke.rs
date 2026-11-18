@@ -83,20 +83,35 @@ fn main() -> Result<()> {
     xdo(&["click", "3"])?;
     click_chrome(&ui, "[data-tab-action=pin]")?;
     wait("pinned again", || visible(&ui, &format!("{tab}.pinned")))?;
-    let order = ui.pages.read(|b| b.tree_states())?;
-    let from = chrome_point(&ui, &tab)?;
-    let to = chrome_point(&ui, &format!(".tab[data-id='{}']", ids[1]))?;
-    move_to(from.0, from.1)?;
-    xdo(&["mousedown", "1"])?;
-    for step in 1..=10 {
-        move_to(
-            from.0 + (to.0 - from.0) * step / 10,
-            from.1 + (to.1 - from.1) * step / 10,
-        )?;
-    }
-    xdo(&["mouseup", "1"])?;
-    pump(100);
-    assert_eq!(order, ui.pages.read(|b| b.tree_states())?);
+    assert_eq!(
+        chrome(&ui, &format!("document.querySelector(\"{tab}\").draggable"))?,
+        true
+    );
+    key("ctrl+e")?;
+    wait("Trees cards", || visible(&ui, "#forest-trees .tree-card"))?;
+    chrome(
+        &ui,
+        &format!(
+            "(document.querySelector(\"#forest-trees .tree-card[data-id='{}']\").focus(),true)",
+            ids[0]
+        ),
+    )?;
+    key("alt+Down")?;
+    wait("Alt Down reorders the focused card", || {
+        ui.pages.read(|b| b.tree_states()).is_ok_and(|states| {
+            states[..3].iter().map(|s| s.root).collect::<Vec<_>>() == [trees[2], trees[1], trees[0]]
+        })
+    })?;
+    key("alt+Up")?;
+    wait("Alt Up restores the order", || {
+        ui.pages.read(|b| b.tree_states()).is_ok_and(|states| {
+            states[..3].iter().map(|s| s.root).collect::<Vec<_>>() == [trees[2], trees[0], trees[1]]
+        })
+    })?;
+    assert!(visible(&ui, "#forest"));
+    assert_eq!(ui.snapshot()?.current, Some(ids[2]));
+    key("Escape")?;
+    println!("PASS Alt Up and Alt Down move the focused forest card through stored tab order without changing the page.");
     std::fs::create_dir_all(".cache/shots/tree-places")?;
     for theme in [ThemeMode::Dark, ThemeMode::Light] {
         ui.dispatch(ChromeIntent::SetTheme(theme));

@@ -50,6 +50,8 @@ Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not aff
 - **Ctrl+F** opens a find bar at the right of the tab row. Matches are highlighted as you type, and the bar shows which one is selected, such as **3 of 12**, or **No matches**. Matching ignores case. **Enter** and **Shift+Enter** in the bar, or **Ctrl+G**, **Ctrl+Shift+G**, **F3** and **Shift+F3** anywhere, go to the next or previous match and wrap at either end. A click in the page does not move the count: the next match follows the one counted. If the page changes and the number of matches with it, the count starts again at the first match. **F6** gives the keyboard back to the page and leaves the bar open. **Ctrl+F** again selects the text in the bar. **Escape** closes the bar and clears the highlights. Find belongs to the page it was opened on: switching pages or loading another document closes it. An address change inside the same document, such as a fragment, keeps it open.
 - **Ctrl+Q** quits Canopy.
 
+Drag a tab in the bar to reorder it. A drop among pinned tabs pins it, a drop among other tabs unpins it, and a drop on their border keeps its pin. **Ctrl+Shift+PageUp** and **Ctrl+Shift+PageDown** move the active tab within its pinned or unpinned group. The order survives a restart.
+
 ## Change page size
 
 Press **Ctrl+=** or **Ctrl+plus** to make the page larger, and **Ctrl+-** to make it smaller. Shifted plus works too. The keypad's Add and Subtract keys do the same. Hold **Ctrl** and turn the wheel over the page to change its size one step at a time, from 25% to 500%.

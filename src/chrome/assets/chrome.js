@@ -265,7 +265,7 @@ function renderTabs() {
     const pending = tree.pending ? `, ${tree.pending} waiting` : '';
     const pinned = tree.pinned ? ', pinned' : '';
     const key = index < 9 ? ` · Ctrl+${index + 1}` : '';
-    const html = `<button class="tab${tree.pinned ? ' pinned' : ''}" role="tab" tabindex="${active ? 0 : -1}" aria-selected="${active}" data-id="${tree.id}" title="${esc(`${tree.title}${sub ? ` · ${sub}` : ''} · ${pages}${pending}${pinned}${key}`)}" aria-label="${esc((sub ? `${tree.name}, on ${sub}` : tree.name) + pending)}">`
+    const html = `<button class="tab${tree.pinned ? ' pinned' : ''}" draggable="true" role="tab" tabindex="${active ? 0 : -1}" aria-selected="${active}" data-id="${tree.id}" title="${esc(`${tree.title}${sub ? ` · ${sub}` : ''} · ${pages}${pending}${pinned}${key}`)}" aria-label="${esc((sub ? `${tree.name}, on ${sub}` : tree.name) + pending)}">`
       + (root ? `<span class="mk">${visitFav(root, 14)}</span>` : '')
       + `<span class="tab-title${sub ? ' two-line' : ''}"><span class="tab-name">${esc(tree.title)}</span>${sub ? `<span class="tab-sub">${esc(sub)}</span>` : ''}</span>`
       + (tree.pending ? '<i class="unread-dot" aria-hidden="true"></i>' : '')
@@ -2208,6 +2208,72 @@ $('find-bar').addEventListener('mousedown', (event) => { if (event.target.closes
 $('find-previous').addEventListener('click', () => findIntent('previous'));
 $('find-next').addEventListener('click', () => findIntent('next'));
 $('find-close').addEventListener('click', () => findIntent('close'));
+
+const treeDragType = 'application/x-canopy-tree';
+let tabDrag = null;
+
+function clearTabDrop() {
+  $('tab-row').classList.remove('drop-target');
+  $('tab-row').style.removeProperty('--tab-drop-x');
+}
+
+function finishTabDrag() {
+  clearTabDrop();
+  for (const tab of $('tab-row').children) tab.classList.remove('dragging');
+  tabDrag = null;
+  // A native drag can finish outside chrome without delivering mouseup.
+  releaseRefresh();
+}
+
+function tabDropAt(x) {
+  const row = $('tab-row');
+  const visible = [...row.children].filter(tab => !tab.hidden);
+  const before = visible.find(tab => x < tab.getBoundingClientRect().left + tab.offsetWidth / 2);
+  const anchor = before ?? visible[visible.length - 1];
+  if (!anchor) return null;
+  const r = anchor.getBoundingClientRect();
+  const tabs = S.frame.tabs;
+  const gap = tabs.findIndex(t => t.id === anchor.dataset.id) + (before ? 0 : 1);
+  const beforeId = tabs.slice(gap).find(t => t.id !== tabDrag)?.id ?? null;
+  return { before: beforeId, x: (before ? r.left - 1 : r.right + 1) - row.getBoundingClientRect().left };
+}
+
+$('tab-row').addEventListener('dragstart', event => {
+  const tab = event.target.closest('.tab');
+  if (!tab || event.target.closest('[data-settle]')) {
+    event.preventDefault();
+    return;
+  }
+  settlePress = null;
+  tabDrag = tab.dataset.id;
+  event.dataTransfer.setData(treeDragType, tabDrag);
+  event.dataTransfer.effectAllowed = 'move';
+  requestAnimationFrame(() => { if (tabDrag === tab.dataset.id) tab.classList.add('dragging'); });
+});
+function tabDragOver(event) {
+  if (!tabDrag || ![...event.dataTransfer.types].includes(treeDragType)) return;
+  const drop = tabDropAt(event.clientX);
+  if (!drop) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+  $('tab-row').style.setProperty('--tab-drop-x', `${drop.x}px`);
+  $('tab-row').classList.add('drop-target');
+}
+$('tab-row').addEventListener('dragenter', tabDragOver);
+$('tab-row').addEventListener('dragover', tabDragOver);
+$('tab-row').addEventListener('dragleave', event => {
+  const r = $('tab-row').getBoundingClientRect();
+  if (event.clientX < r.left || event.clientX >= r.right || event.clientY < r.top || event.clientY >= r.bottom) clearTabDrop();
+});
+$('tab-row').addEventListener('drop', event => {
+  const id = event.dataTransfer.getData(treeDragType);
+  if (!tabDrag || id !== tabDrag || !S.frame.tabs.some(tab => tab.id === id)) return;
+  event.preventDefault();
+  const drop = tabDropAt(event.clientX);
+  finishTabDrag();
+  if (drop) intent('place-tree', { id, place: 'tabs', before: drop.before });
+});
+$('tab-row').addEventListener('dragend', finishTabDrag);
 
 let settlePress = null;
 window.addEventListener('mousedown', (event) => {

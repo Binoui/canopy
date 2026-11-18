@@ -23,6 +23,7 @@ def ulid(at):
 
 
 db = sqlite3.connect(DB, timeout=5)
+assert db.execute('PRAGMA user_version').fetchone()[0] == 16, 'seed requires schema 16'
 db.execute('PRAGMA foreign_keys = ON')
 trees = []
 

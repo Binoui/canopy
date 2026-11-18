@@ -82,6 +82,55 @@ pub(crate) fn pin_after_drop(left: Option<bool>, right: Option<bool>, was: bool)
 }
 pub(super) const ORDER: &str = "CASE place WHEN 'tab' THEN 0 WHEN 'shelf' THEN 1 ELSE 2 END, pinned DESC, position, placed_at DESC, root_id";
 impl Browser {
+    pub fn tree_step(&self, tree: TreeId, next: bool) -> Result<Option<Move>> {
+        let states = self.tree_states()?;
+        let Some(state) = states.iter().find(|s| s.root == tree) else {
+            return Ok(None);
+        };
+        let lane = states
+            .iter()
+            .filter(|s| match (state.place(), s.place()) {
+                (Place::Tab { pinned: a }, Place::Tab { pinned: b }) => a == b,
+                (Place::Shelf { .. }, Place::Shelf { .. }) => true,
+                _ => false,
+            })
+            .map(|s| s.root)
+            .collect::<Vec<_>>();
+        let Some(index) = lane.iter().position(|id| *id == tree) else {
+            return Ok(None);
+        };
+        let slot = if next {
+            if index + 1 == lane.len() {
+                return Ok(None);
+            }
+            let after = states
+                .iter()
+                .position(|s| s.root == lane[index + 1])
+                .unwrap()
+                + 1;
+            states
+                .get(after)
+                .filter(|s| {
+                    matches!(
+                        (state.place(), s.place()),
+                        (Place::Tab { .. }, Place::Tab { .. })
+                            | (Place::Shelf { .. }, Place::Shelf { .. })
+                    )
+                })
+                .map_or(Slot::End, |s| Slot::Before(s.root))
+        } else {
+            if index == 0 {
+                return Ok(None);
+            }
+            Slot::Before(lane[index - 1])
+        };
+        Ok(Some(if state.place().is_tab() {
+            Move::Tabs(slot)
+        } else {
+            Move::Shelf(slot)
+        }))
+    }
+
     pub fn place_tree(&mut self, tree: TreeId, to: Move) -> Result<Landing> {
         let tx = self
             .connection
@@ -106,6 +155,9 @@ pub(super) fn append_tab(tx: &Transaction, root: VisitId, last: VisitId, at: i64
     Ok(())
 }
 pub(super) fn place_in(tx: &Transaction, tree: TreeId, to: Move, now: i64) -> Result<()> {
+    if matches!(to, Move::Tabs(Slot::Before(t)) | Move::Shelf(Slot::Before(t)) if t == tree) {
+        return Ok(());
+    }
     let (from, pin, at): (String, bool, i64) = tx
         .query_row(
             "SELECT place,pinned,placed_at FROM tree_state WHERE root_id=?1",
@@ -229,7 +281,7 @@ pub(super) fn create_tree_state_triggers(transaction: &Transaction) -> Result<()
 
     Ok(())
 }
-pub(super) const MIGRATE_15: &str = "
+pub(super) const MIGRATE_16: &str = "
         CREATE TABLE tree_state_next (
             root_id TEXT PRIMARY KEY NOT NULL REFERENCES visits(id),
             last_visit_id TEXT NOT NULL REFERENCES visits(id),
@@ -242,7 +294,7 @@ pub(super) const MIGRATE_15: &str = "
             CHECK(pinned = 0 OR place = 'tab')
         );
         WITH old AS (
-            SELECT t.root_id, t.last_visit_id, t.name, t.settled_at, t.pin_order,
+            SELECT t.root_id, t.last_visit_id, t.name, t.settled_at, t.pin_order, t.tab_order,
                    r.created_at, r.rowid AS root_rowid,
                    CASE WHEN t.settled_at IS NULL THEN 'tab'
                         WHEN t.pin_order IS NOT NULL THEN 'shelf'
@@ -253,7 +305,7 @@ pub(super) const MIGRATE_15: &str = "
         SELECT root_id, last_visit_id, name, place,
                CASE place
                    WHEN 'tab' THEN row_number() OVER (PARTITION BY place
-                       ORDER BY pin_order IS NULL, created_at, root_rowid) - 1
+                       ORDER BY pin_order IS NULL, tab_order) - 1
                    WHEN 'shelf' THEN row_number() OVER (PARTITION BY place ORDER BY pin_order DESC) - 1
                END,
                place = 'tab' AND pin_order IS NOT NULL,
@@ -263,14 +315,14 @@ pub(super) const MIGRATE_15: &str = "
         ALTER TABLE tree_state_next RENAME TO tree_state;
     ";
 
-pub(super) fn migrate_15(tx: &Transaction) -> Result<()> {
-    tx.execute_batch(MIGRATE_15)?;
+pub(super) fn migrate_16(tx: &Transaction) -> Result<()> {
+    tx.execute_batch(MIGRATE_16)?;
     create_tree_state_triggers(tx)?;
     anyhow::ensure!(
         !tx.prepare("PRAGMA foreign_key_check")?.exists([])?,
         "Foreign key violation during forest upgrade."
     );
-    tx.execute_batch("PRAGMA user_version = 15;")?;
+    tx.execute_batch("PRAGMA user_version = 16;")?;
     Ok(())
 }
 
@@ -577,7 +629,7 @@ mod tests {
             b.connection
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            15
+            16
         );
         assert_eq!(
             b.connection
@@ -592,6 +644,87 @@ mod tests {
             .exists([])
             .unwrap());
     }
+    #[test]
+    fn migration_15_keeps_reordered_tabs_and_removes_the_old_order_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("forest.sqlite3");
+        let c = Connection::open(&path).unwrap();
+        c.execute_batch(include_str!("../../tests/fixtures/schema-v14.sql"))
+            .unwrap();
+        let ids = (1..=6)
+            .map(|i| ulid::Ulid::from(i as u128).to_string())
+            .collect::<Vec<_>>();
+        for (i, id) in ids.iter().enumerate() {
+            c.execute("INSERT INTO visits(id,url,created_at,opened_at) VALUES(?1,'https://example.org',?2,1)",params![id,i]).unwrap();
+            c.execute("INSERT INTO tree_state(root_id,last_visit_id,settled_at,pin_order) VALUES(?1,?1,?2,?3)",params![id,if i>=4 {Some(2)}else{None},match i {0|2=>Some(i+1),5=>Some(9),_=>None}]).unwrap();
+        }
+        c.execute_batch("ALTER TABLE tree_state ADD COLUMN tab_order INTEGER CHECK(tab_order >= 0);
+            UPDATE tree_state SET tab_order=CASE root_id WHEN '00000000000000000000000001' THEN 3 WHEN '00000000000000000000000002' THEN 2 WHEN '00000000000000000000000003' THEN 1 WHEN '00000000000000000000000004' THEN 0 END;
+            PRAGMA user_version=15;").unwrap();
+        drop(c);
+        let b = Browser::open(&path).unwrap();
+        let states = b.tree_states().unwrap();
+        assert_eq!(
+            states
+                .iter()
+                .map(|s| s.root.root().to_string())
+                .collect::<Vec<_>>(),
+            [2, 0, 3, 1, 5, 4].map(|i| ids[i].clone())
+        );
+        assert_eq!(
+            b.connection
+                .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            16
+        );
+        assert!(!b
+            .connection
+            .prepare("SELECT 1 FROM pragma_table_info('tree_state') WHERE name='tab_order'")
+            .unwrap()
+            .exists([])
+            .unwrap());
+        assert!(!b
+            .connection
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .exists([])
+            .unwrap());
+        drop(b);
+        assert_eq!(Browser::open(&path).unwrap().tree_states().unwrap(), states);
+    }
+
+    #[test]
+    fn keyboard_steps_stop_at_group_edges_and_keep_pins() {
+        let mut b = browser();
+        let t = roots(&mut b, 6);
+        for id in &t[..3] {
+            b.place_tree(*id, Move::Pin(true)).unwrap();
+        }
+        let current = b.current_id().unwrap();
+        for (id, next) in [(t[0], false), (t[2], true), (t[3], false), (t[5], true)] {
+            assert_eq!(b.tree_step(id, next).unwrap(), None);
+        }
+        for (id, next, expected) in [
+            (t[1], true, vec![t[0], t[2], t[1], t[3], t[4], t[5]]),
+            (t[1], false, t.clone()),
+            (t[4], false, vec![t[0], t[1], t[2], t[4], t[3], t[5]]),
+            (t[4], true, t.clone()),
+        ] {
+            b.place_tree(id, b.tree_step(id, next).unwrap().unwrap())
+                .unwrap();
+            let states = b.tree_states().unwrap();
+            assert_eq!(states.iter().map(|s| s.root).collect::<Vec<_>>(), expected);
+            assert_eq!(
+                states
+                    .iter()
+                    .map(|s| s.place().pinned())
+                    .collect::<Vec<_>>(),
+                [true, true, true, false, false, false]
+            );
+            assert_eq!(b.current_id().unwrap(), current);
+        }
+    }
+
     #[test]
     fn places_verbs_converge_and_reopening_appends_unpinned() {
         let mut b = browser();
