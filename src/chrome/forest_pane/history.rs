@@ -619,4 +619,81 @@ mod tests {
             matches!(state.input(Input::Page(page),&index,&f.forest,&LocalCalendar),Reply::Go(super::super::super::ChromeIntent::Restore(id)) if id==page)
         );
     }
+    #[test]
+    fn top_nine_sites_and_their_toggle_use_tree_counts() {
+        use crate::browser::{Place, Snapshot, Spot, TreeState};
+        let mut f = fixture(13, 1);
+        let visits = f
+            .forest
+            .trees()
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let mut visit = f.forest.visit(t.id.root()).unwrap().clone();
+                visit.url = url::Url::parse(&format!("https://site{i:02}.example/")).unwrap();
+                visit
+            })
+            .collect();
+        let states = f
+            .forest
+            .trees()
+            .iter()
+            .map(|t| TreeState {
+                root: t.id,
+                last_visit: t.last_visit,
+                name: Some(t.title.clone()),
+                last_event_at: t.last_event_at,
+                spot: match t.place {
+                    Place::Tab { pinned } => Spot::Tab {
+                        pinned,
+                        position: 0,
+                    },
+                    Place::History { settled_at } => Spot::History { settled_at },
+                    _ => unreachable!(),
+                },
+            })
+            .collect();
+        f.forest = ForestProjection::from_snapshot(
+            Snapshot {
+                visits,
+                current: f.forest.current(),
+            },
+            states,
+        )
+        .unwrap();
+        let mut p = ForestPane::default();
+        let v = open(&mut p, &f);
+        let sites = v["history"]["rail"]["sites"].as_array().unwrap();
+        assert_eq!(sites.len(), 9);
+        assert!(sites.iter().all(|s| s["count"] == 1));
+        assert_eq!(sites[0]["site"], "site01.example");
+        assert_eq!(sites[8]["site"], "site09.example");
+        let v = value(input(&mut p, Input::Site("site01.example".into()), &f));
+        assert_eq!(rows(&v).len(), 1);
+        assert_eq!(v["history"]["rail"]["sites"][0]["on"], true);
+        let v = value(input(&mut p, Input::Site("site01.example".into()), &f));
+        assert_eq!(rows(&v).len(), 12);
+    }
+    #[test]
+    fn selected_open_save_and_delete_follow_the_keyboard_selection() {
+        let f = fixture(4, 4);
+        let mut p = ForestPane::default();
+        let v = open(&mut p, &f);
+        let first = id(&v, 0);
+        input(&mut p, Input::Step(1), &f);
+        input(&mut p, Input::Fold(true), &f);
+        let v = value(input(&mut p, Input::Fold(false), &f));
+        assert!(rows(&v)[1]["outline"].is_null());
+        input(&mut p, Input::Step(-1), &f);
+        let act = |act| super::super::Input::Act { tree: None, act };
+        assert!(
+            matches!(p.input(act(Act::Open),&f),Reply::Go(super::super::super::ChromeIntent::SelectTree(tree)) if tree==first)
+        );
+        assert!(
+            matches!(p.input(act(Act::Save),&f),Reply::Act(super::super::super::ChromeIntent::PlaceTree{tree,to:crate::browser::Move::Shelf(crate::browser::Slot::First)}) if tree==first)
+        );
+        assert!(
+            matches!(p.input(act(Act::Delete),&f),Reply::Act(super::super::super::ChromeIntent::DeleteTrees(trees)) if trees==vec![first])
+        );
+    }
 }

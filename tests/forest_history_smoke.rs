@@ -147,7 +147,8 @@ fn main() -> Result<()> {
     click_chrome(&ui, "#forest-undo button")?;
     wait("Undo day", || count(&ui) == 131)?;
     println!("PASS History settle-day groups and complete day counts, one-page trails, independent selection/folds, retained row/action/outline nodes, Delete and Undo, full Delete day and Undo.");
-    click_chrome(&ui, ".forest-row[aria-selected=true]")?;
+    chrome(&ui, "($('forest-list').scrollTop=0,true)")?;
+    click_chrome(&ui, ".forest-row")?;
     key("Left")?;
     chrome(
         &ui,
