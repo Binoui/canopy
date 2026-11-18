@@ -7,6 +7,7 @@ Ctrl+click, a middle click, or a link meant for a new window adds the destinatio
 - `waiting-add` adds a waiting page by middle-clicking a link.
 - `waiting-count` shows the count on the strip counter and the tab badge.
 - `waiting-next` opens the newest waiting page with Ctrl+Tab.
+- `page-switcher`: with nothing waiting, Ctrl+Tab opens the read page before this one; holding Ctrl and pressing Tab again shows `#switcher` (waiting rows, then read rows), and releasing Ctrl opens the selected row.
 
 ## How to get to it (user POV)
 
@@ -27,3 +28,5 @@ Preconditions:
 ## Gotchas
 
 - Ctrl+Tab picks the newest waiting page of the current tree, not the closest one in the strip.
+- `$V key ctrl+Tab` is a quick press: it opens the first row and never shows the list. To see the list, hold Ctrl with `xdotool keydown ctrl`, press `key Tab` twice, take the shot, then `keyup ctrl` (which opens the selected row). Shift+Tab under a held Ctrl steps back.
+- Under Xvfb, GDK does not mark Shift or Ctrl presses as modifiers (`EventKey::is_modifier` is false), so the code matches modifier keyvals itself.

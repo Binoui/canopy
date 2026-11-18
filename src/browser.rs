@@ -2092,6 +2092,41 @@ mod tests {
     }
 
     #[test]
+    fn recent_pages_are_the_current_trees_read_pages_newest_first() {
+        let mut b = memory();
+        let other = follow(&mut b, "other", NavigationTarget::Root);
+        let root = follow(&mut b, "root", NavigationTarget::Root);
+        let x = follow_child(&mut b, "x");
+        let y = follow_child(&mut b, "y");
+        let recent = |b: &TestBrowser, limit| {
+            let forest = crate::forest::ForestProjection::from_snapshot(
+                b.snapshot().unwrap(),
+                b.tree_states().unwrap(),
+            )
+            .unwrap();
+            b.recent_pages(&forest, limit).unwrap()
+        };
+        assert_eq!(recent(&b, 8), [x, root]);
+        let load = b.restore(root).unwrap();
+        b.started(load.clone()).unwrap();
+        b.committed(load).unwrap();
+        assert_eq!(recent(&b, 8), [y, x], "the other tree is left out");
+        assert_eq!(recent(&b, 1), [y]);
+        let load = b.restore(x).unwrap();
+        b.started(load.clone()).unwrap();
+        b.committed(load).unwrap();
+        assert_eq!(recent(&b, 8), [root, y]);
+        b.connection
+            .execute(
+                "UPDATE visits SET branch_settled_at=1 WHERE id=?1",
+                [y.to_string()],
+            )
+            .unwrap();
+        assert_eq!(recent(&b, 8), [root], "put-away pages are left out");
+        assert!(!recent(&b, 8).contains(&other));
+    }
+
+    #[test]
     fn the_tree_just_left_follows_the_order_of_the_log_not_the_clock() {
         let mut b = memory();
         let old = follow(&mut b, "old", NavigationTarget::Root);

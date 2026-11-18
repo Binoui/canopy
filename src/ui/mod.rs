@@ -33,6 +33,8 @@ pub struct Ui {
     /// The desktop's light or dark preference, which `Theme: System` follows.
     desktop: Rc<appearance::Desktop>,
     refresh_scheduled: Cell<bool>,
+    /// The Ctrl+Tab list is open and opens its selected page when Ctrl is released.
+    switching: Cell<bool>,
     /// The pending target the chrome last drew, so a load that starts or ends redraws it.
     shown_pending: RefCell<Option<crate::browser::PendingTarget>>,
     me: Weak<Ui>,
@@ -124,6 +126,7 @@ impl Ui {
                 pages,
                 chrome,
                 refresh_scheduled: Cell::new(false),
+                switching: Cell::new(false),
                 shown_pending: RefCell::new(None),
                 me: me.clone(),
                 inbox,
@@ -205,6 +208,26 @@ impl Ui {
         ui.window.connect_key_press_event(move |_, event| {
             weak.upgrade()
                 .map_or(glib::Propagation::Proceed, |ui| ui.shortcut(event))
+        });
+        let weak = Rc::downgrade(&ui);
+        ui.window.connect_key_release_event(move |_, event| {
+            use gdk::keys::constants as key;
+            if let Some(ui) = weak.upgrade() {
+                if ui.switching.get() && matches!(event.keyval(), key::Control_L | key::Control_R) {
+                    ui.end_switcher(true);
+                }
+            }
+            // Page scale also listens for Control's release on this window.
+            glib::Propagation::Proceed
+        });
+        let weak = Rc::downgrade(&ui);
+        ui.window.connect_focus_out_event(move |_, _| {
+            if let Some(ui) = weak.upgrade() {
+                if ui.switching.get() {
+                    ui.end_switcher(false);
+                }
+            }
+            glib::Propagation::Proceed
         });
         if let Some(settings) = gtk::Settings::default() {
             // Not `gtk-application-prefer-dark-theme`: Canopy sets that one for its pages.
@@ -407,6 +430,11 @@ impl Ui {
         self.schedule_refresh();
     }
 
+    fn end_switcher(&self, open: bool) {
+        self.switching.set(false);
+        self.chrome.end_switcher(open);
+    }
+
     fn report(&self, result: Result<()>) {
         if let Err(error) = result {
             self.report_error(&error.to_string());
@@ -437,7 +465,27 @@ impl Ui {
     }
 
     fn shortcut(&self, event: &gdk::EventKey) -> glib::Propagation {
-        let Some(shortcut) = Shortcut::of(event) else {
+        let shortcut = Shortcut::of(event);
+        if self.switching.get() {
+            match shortcut {
+                Some(Shortcut::Switch) => {
+                    self.chrome.step_switcher(false);
+                    return glib::Propagation::Stop;
+                }
+                Some(Shortcut::PreviousTree) => {
+                    self.chrome.step_switcher(true);
+                    return glib::Propagation::Stop;
+                }
+                Some(Shortcut::Escape) => {
+                    self.end_switcher(false);
+                    return glib::Propagation::Stop;
+                }
+                // Any other key, apart from the modifiers themselves, drops the list.
+                None if is_modifier_key(&event.keyval()) => return glib::Propagation::Proceed,
+                _ => self.end_switcher(false),
+            }
+        }
+        let Some(shortcut) = shortcut else {
             return glib::Propagation::Proceed;
         };
         if !matches!(shortcut, Shortcut::Escape) && self.pages.has_form_return() {
@@ -465,7 +513,16 @@ impl Ui {
                 Ok(None) => {}
                 Err(error) => self.report(Err(error)),
             },
-            Shortcut::NextWaiting => self.chrome.next_waiting(),
+            Shortcut::Switch => {
+                let opened = self.chrome.open_switcher(|forest, limit| {
+                    self.pages
+                        .read(|browser| browser.recent_pages(forest, limit))
+                });
+                match opened {
+                    Ok(()) => self.switching.set(true),
+                    Err(error) => self.report(Err(error)),
+                }
+            }
             Shortcut::PageScale(action) => self.report(self.pages.page_scale(action)),
             Shortcut::Reload => {
                 self.chrome.uncover();
@@ -503,6 +560,29 @@ impl Ui {
     }
 }
 
+/// Modifier keys on their own. `EventKey::is_modifier` is not set on every backend.
+fn is_modifier_key(keyval: &gdk::keys::Key) -> bool {
+    use gdk::keys::constants as key;
+    [
+        key::Shift_L,
+        key::Shift_R,
+        key::Control_L,
+        key::Control_R,
+        key::Alt_L,
+        key::Alt_R,
+        key::Meta_L,
+        key::Meta_R,
+        key::Super_L,
+        key::Super_R,
+        key::Hyper_L,
+        key::Hyper_R,
+        key::ISO_Level3_Shift,
+        key::Caps_Lock,
+        key::Num_Lock,
+    ]
+    .contains(keyval)
+}
+
 /// Window-level keys, handled before the focused web view sees them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Shortcut {
@@ -513,7 +593,8 @@ enum Shortcut {
     UndoSettle,
     Forest(crate::chrome::ForestView),
     ZoomTree,
-    NextWaiting,
+    /// Ctrl+Tab: opens the next row of the page list, held to pick another.
+    Switch,
     PreviousTree,
     PageScale(PageScaleAction),
     Reload,
@@ -660,7 +741,7 @@ impl Shortcut {
                 Self::Forest(crate::chrome::ForestView::History),
             ),
             (Modifiers::CONTROL_SHIFT, key::e, Self::ZoomTree),
-            (Modifiers::CONTROL, key::Tab, Self::NextWaiting),
+            (Modifiers::CONTROL, key::Tab, Self::Switch),
             (Modifiers::CONTROL_SHIFT, key::Tab, Self::PreviousTree),
             (
                 Modifiers::CONTROL_SHIFT,
@@ -1055,7 +1136,7 @@ mod shortcut_tests {
                 Shortcut::Forest(crate::chrome::ForestView::History),
             ),
             (key::e, Modifiers::CONTROL_SHIFT, Shortcut::ZoomTree),
-            (key::Tab, Modifiers::CONTROL, Shortcut::NextWaiting),
+            (key::Tab, Modifiers::CONTROL, Shortcut::Switch),
             (key::Tab, Modifiers::CONTROL_SHIFT, Shortcut::PreviousTree),
             (
                 key::ISO_Left_Tab,

@@ -54,7 +54,7 @@ fn main() -> Result<()> {
     ready(&ui)?;
     key("ctrl+Tab")?;
     wait("empty forest toast", || {
-        toast_text(&ui).as_deref() == Some("No waiting pages in this tree")
+        toast_text(&ui).as_deref() == Some("No other pages in this tree")
     })?;
     assert!(!visible(&ui, "#waiting-pin"));
     key("ctrl+shift+e")?;
@@ -316,9 +316,11 @@ fn main() -> Result<()> {
     activated(&ui, &next)?;
     assert_eq!(waiting(&ui)?.len(), count - 1);
     println!("PASS repeated Ctrl+Tab during a slow load asks for the same page.");
+    let mut read = Vec::new();
     while let Some(next) = waiting(&ui)?.first().cloned() {
         key("ctrl+Tab")?;
         activated(&ui, &next)?;
+        read.push(next);
     }
     assert!(!visible(&ui, "#waiting-pin"));
     assert_eq!(
@@ -329,10 +331,7 @@ fn main() -> Result<()> {
         chrome(&ui, "canopy.state().room")?.as_f64().unwrap()
             < f64::from(ui.window.allocated_width())
     );
-    key("ctrl+Tab")?;
-    wait("nothing waiting toast", || {
-        toast_text(&ui).as_deref() == Some("No waiting pages in this tree")
-    })?;
+    switch_read_pages(&ui, &read)?;
     for theme in ["dark", "light"] {
         chrome(
             &ui,
@@ -343,6 +342,84 @@ fn main() -> Result<()> {
     println!("PASS counter hides and only the zoom pin reserves room at zero; empty shortcut shows toast.");
     small_tree_shots(&ui, &base)?;
     ui.window.close();
+    Ok(())
+}
+
+/// With nothing waiting, Ctrl+Tab goes through read pages: a quick press flips between the
+/// last two, a held Ctrl steps down the list and opens the row selected on release.
+fn switch_read_pages(ui: &Ui, read: &[String]) -> Result<()> {
+    let [.., previous, last] = read else {
+        anyhow::bail!("the test reads at least two waiting pages");
+    };
+    assert!(!visible(ui, "#switcher"));
+    key("ctrl+Tab")?;
+    activated(ui, previous)?;
+    key("ctrl+Tab")?;
+    activated(ui, last)?;
+    assert!(
+        !visible(ui, "#switcher"),
+        "a quick press never shows the list"
+    );
+    println!("PASS with nothing waiting, a quick Ctrl+Tab flips between the last two read pages.");
+    let rows = |ui: &Ui| -> Result<Vec<String>> {
+        Ok(serde_json::from_value(chrome(
+            ui,
+            "[...document.querySelectorAll('#switcher [data-id]')].map((row) => row.dataset.id)",
+        )?)?)
+    };
+    let selected = |ui: &Ui, row: &str, why: &str| {
+        let row = serde_json::json!(row);
+        wait(why, || {
+            chrome(
+                ui,
+                "document.querySelector('#switcher [aria-selected=\"true\"]')?.dataset.id ?? null",
+            )
+            .is_ok_and(|id| id == row)
+        })
+    };
+    focus_window()?;
+    xdo(&["keydown", "ctrl"])?;
+    xdo(&["key", "Tab"])?;
+    pump(60);
+    xdo(&["key", "Tab"])?;
+    wait("list shown", || visible(ui, "#switcher"))?;
+    let listed = rows(ui)?;
+    assert_eq!(listed.first(), Some(previous), "most recently read first");
+    assert!(!listed.contains(last), "the current page is not listed");
+    selected(ui, &listed[1], "second Tab selects the second row")?;
+    shots(ui, "switcher")?;
+    xdo(&["key", "shift+Tab"])?;
+    selected(ui, &listed[0], "Shift+Tab steps back")?;
+    xdo(&["key", "shift+Tab"])?;
+    selected(
+        ui,
+        listed.last().unwrap(),
+        "Shift+Tab wraps to the last row",
+    )?;
+    xdo(&["key", "Tab"])?;
+    selected(ui, &listed[0], "Tab wraps to the first row")?;
+    xdo(&["key", "Tab"])?;
+    selected(ui, &listed[1], "Tab steps down")?;
+    xdo(&["keyup", "ctrl"])?;
+    activated(ui, &listed[1])?;
+    assert!(!visible(ui, "#switcher"));
+    println!("PASS held Ctrl+Tab lists read pages newest first, Tab and Shift+Tab step and wrap, release opens the row.");
+    let here = ui.snapshot()?.current;
+    xdo(&["keydown", "ctrl"])?;
+    xdo(&["key", "Tab"])?;
+    pump(30);
+    xdo(&["key", "Tab"])?;
+    wait("list shown again", || visible(ui, "#switcher"))?;
+    xdo(&["key", "Escape"])?;
+    wait("Escape drops the list", || !visible(ui, "#switcher"))?;
+    xdo(&["keyup", "ctrl"])?;
+    pump(200);
+    assert_eq!(
+        ui.snapshot()?.current,
+        here,
+        "release after Escape opens nothing"
+    );
+    println!("PASS Escape with Ctrl held drops the list and the release opens nothing.");
     Ok(())
 }
 
@@ -437,7 +514,7 @@ fn prove_delivery(ui: &Ui) -> Result<()> {
         chrome(ui, "document.getElementById('toast').hidden = true")?;
         key("ctrl+Tab")?;
         wait("Ctrl+Tab toast", || {
-            toast_text(ui).as_deref() == Some("No waiting pages in this tree")
+            toast_text(ui).as_deref() == Some("No other pages in this tree")
         })?;
         assert_eq!(
             ui.window.focused_widget(),
