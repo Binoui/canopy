@@ -261,7 +261,7 @@ impl State {
             let label = e.at.label(&today);
             let count = days[e.at.date.as_str()];
             items.push(json!({"kind":"day", "key":format!("day-{}",e.at.date), "label":label, "count":plural(count,"tree"),
-                "delete":(key.is_empty() && self.site.is_none()).then(||json!({"day":e.at.date,"label":"Delete day","name":format!("Delete {count} trees of {label}")}))}));
+                "delete":(key.is_empty() && self.site.is_none()).then(||json!({"day":e.at.date,"label":"Delete day","name":format!("Delete {} of {label}",plural(count,"tree"))}))}));
             for e in run {
                 let tree = forest.tree(e.tree).unwrap();
                 let facts = &index.facts[&e.tree];
@@ -274,7 +274,7 @@ impl State {
                 );
                 items.push(json!({"kind":"row","key":format!("row-{}",e.tree.root()),"id":e.tree.root().to_string(),"time":e.at.clock,
                     "title":tree.title,"titleRuns":segments(&tree.title,&key),"trail":trail,"more":more,
-                    "mini":tree_card::mini_value(forest,&tree_view::miniature(forest,tree,Fit::ROW)),
+                    "mini":facts.mini.get_or_init(||tree_card::mini_value(forest,&tree_view::miniature(forest,tree,Fit::ROW))),
                     "meta":format!("{} · {}",tree_card::sites_line(&facts.sites,3),plural(tree.page_count,"page")),
                     "selected":self.anchor.is_some_and(|a|a.tree==e.tree),"unfolded":self.unfolded==Some(e.tree),
                     "name":format!("{}, {}, {}",tree.title,plural(tree.page_count,"page"),e.at.when(&today)),
@@ -282,11 +282,22 @@ impl State {
                     "outline":(self.unfolded==Some(e.tree)).then(||outline(forest,tree))}));
             }
         }
-        let mut buckets = Vec::<Value>::new();
+        let mut buckets: Vec<Value> = [
+            ("today", "Today"),
+            ("yesterday", "Yesterday"),
+            ("week", "Earlier this week"),
+            ("last-week", "Last week"),
+        ]
+        .into_iter()
+        .map(|(key, label)| json!({"key":key,"label":label,"count":0,"disabled":true}))
+        .collect();
         let mut sites = BTreeMap::<&str, (usize, &str)>::new();
         for e in &index.history {
             let (bucket, label) = e.at.bucket(&today);
-            if let Some(b) = buckets.last_mut().filter(|b| b["key"] == bucket) {
+            if let Some(b) = buckets.iter_mut().find(|b| b["key"] == bucket) {
+                if b["count"] == 0 {
+                    b["disabled"] = json!(!rows.iter().any(|r| r.at.bucket(&today).0 == bucket));
+                }
                 b["count"] = json!(b["count"].as_u64().unwrap() + 1);
             } else {
                 buckets.push(json!({"key":bucket,"label":label,"count":1,"disabled":!rows.iter().any(|r|r.at.bucket(&today).0==bucket)}));
@@ -308,8 +319,8 @@ impl State {
         if std::env::var_os("CANOPY_HISTORY_TRACE").is_some() {
             eprintln!("history value {:?}", trace.elapsed());
         }
-        json!({"items":items,"query":self.query,"site":self.site,"count":format!("{} of {} trees",rows.len(),index.history.len()),
-            "rail":{"when":buckets,"sites":sites},"before":(self.start>0).then(||edge(true)).flatten(),"more":(self.end<rows.len()).then(||edge(false)).flatten(),
+        json!({"items":items,"field":{"label":"Find a tree","placeholder":"Find a tree by name, site or page"},"query":self.query,"site":self.site,"count":format!("{} of {} trees",rows.len(),index.history.len()),
+            "rail":{"whenLabel":"When","sitesLabel":"Sites","when":buckets,"sites":sites},"before":(self.start>0).then(||edge(true)).flatten(),"more":(self.end<rows.len()).then(||edge(false)).flatten(),
             "reveal":self.reveal.map(|(tree,n)|json!({"id":tree.root().to_string(),"n":n})),
             "empty":rows.is_empty().then_some(if index.history.is_empty(){"No settled trees yet. A tree you settle waits here."}else{"No settled tree matches."})})
     }

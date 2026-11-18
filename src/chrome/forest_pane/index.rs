@@ -21,6 +21,7 @@ pub(super) struct Facts {
     pub sites: Vec<Site>,
     pages: OnceCell<Vec<VisitId>>,
     titles: OnceCell<Vec<String>>,
+    pub mini: OnceCell<serde_json::Value>,
 }
 impl Facts {
     pub fn pages(&self, tree: TreeId, forest: &ForestProjection) -> &[VisitId] {
@@ -55,6 +56,7 @@ impl Facts {
             sites: tree_card::sites(forest, tree),
             pages: OnceCell::new(),
             titles: OnceCell::new(),
+            mini: OnceCell::new(),
         }
     }
 }

@@ -16,15 +16,15 @@ function renderHistory(h) {
     $('forest-history').prepend(rail, main);
     main.append(top, $('forest-list'));
     top.append($('forest-find'), chips, count);
-    $('forest-find').placeholder = 'Find a tree by name, site or page';
-    $('forest-find').setAttribute('aria-label', 'Find a tree');
+    $('forest-find').placeholder = h.field.placeholder;
+    $('forest-find').setAttribute('aria-label', h.field.label);
     $('forest-list').setAttribute('role','list');
     $('forest-list').addEventListener('scroll', historyLoadEdge);
   }
   $('forest-find').hidden = false;
   $('history-count').textContent = h.count;
   patchChildren($('history-chips'), historySites(h.rail.sites));
-  patchChildren($('history-rail'), `<h4 data-key="when">When</h4>` + h.rail.when.map(b => `<button data-key="${b.key}" data-forest="jump" data-bucket="${b.key}" ${b.disabled ? 'disabled' : ''}><span>${esc(b.label)}</span><em>${b.count}</em></button>`).join('') + `<h4 data-key="sites">Sites</h4>` + historySites(h.rail.sites));
+  patchChildren($('history-rail'), `<h4 data-key="when">${esc(h.rail.whenLabel)}</h4>` + h.rail.when.map(b => `<button data-key="${b.key}" data-forest="jump" data-bucket="${b.key}" ${b.disabled ? 'disabled' : ''}><span>${esc(b.label)}</span><em>${b.count}</em></button>`).join('') + `<h4 data-key="sites">${esc(h.rail.sitesLabel)}</h4>` + historySites(h.rail.sites));
   const list = $('forest-list');
   const focused = list.contains(document.activeElement);
   const focusKey = focused ? document.activeElement.dataset.key : null;
@@ -33,6 +33,7 @@ function renderHistory(h) {
   const witness = [...list.querySelectorAll('.history-item')].find(el => el.getBoundingClientRect().bottom > list.getBoundingClientRect().top);
   const witnessKey = witness?.dataset.key;
   const offset = witness?.getBoundingClientRect().top;
+  const oldMinis = new Map([...list.querySelectorAll('.forest-row')].map(el=>[el.dataset.id,el.querySelector('.history-mini')]));
   const entries = [];
   if(h.before) entries.push(`<div class="history-edge" data-key="before">${historyEdge(h.before,'before-button')}</div>`);
   for (const i of h.items) {
@@ -41,17 +42,21 @@ function renderHistory(h) {
     if(i.kind === 'day') {
       content = `<b data-key="label">${esc(i.label)}</b><span data-key="count">${esc(i.count)}</span>` + (i.delete ? `<button data-key="delete" data-forest="delete-day" data-day="${i.delete.day}" aria-label="${esc(i.delete.name)}">${esc(i.delete.label)}</button>` : '');
     } else {
-    const row = `<button class="forest-row" data-key="row" data-id="${i.id}" data-forest="row" data-tree-menu aria-selected="${i.selected}" aria-expanded="${i.unfolded}" tabindex="${i.selected ? 0 : -1}" aria-label="${esc(i.name)}"><span class="tm">${esc(i.time)}</span><span class="history-mini">${miniHtml(i.mini)}</span><span class="history-names"><b>${historyRuns(i.titleRuns)}</b><span>${i.trail.map(historyRuns).join(' · ')}${i.more ? ` · ${esc(i.more)}` : ''}</span></span><span class="history-meta">${esc(i.meta)}</span></button>`;
-    const actions = i.buttons.map(a=>`<button class="history-action ${a.act}" data-key="act-${a.act}" data-forest="act" data-act="${a.act}" data-id="${i.id}" aria-label="${esc(a.label)}" title="${esc(a.label)}">${a.act==='open'?esc(a.label):a.act==='save'?icon('bookmark'):icon('close')}</button>`).join('');
-    const outline = i.outline ? i.outline.rows.map(r=>`<button class="history-page${r.last?' last':''}${r.waiting?' waiting':''}" data-key="page-${r.id}" data-forest="page" data-id="${r.id}" aria-label="${esc(r.label)}" style="padding-left:${Math.min(r.depth,12)*16+10}px">${fav(r.url,!r.waiting,14)}<span>${esc(r.name)}</span></button>`).join('') + (i.outline.cut?`<div class="history-cut" data-key="cut">${esc(i.outline.cut)}</div>`:'') : '';
-    content=row+actions+outline;
+      const shape=JSON.stringify([i.mini,i.mini.nodes.map(n=>S.revisions.get(iconSite(n.url))??0)]);
+      const oldMini=oldMinis.get(i.id);
+      const mini=oldMini?.dataset.shape===shape ? oldMini.innerHTML : miniHtml(i.mini);
+      const row = `<button class="forest-row" data-key="row" data-id="${i.id}" data-forest="row" data-tree-menu aria-selected="${i.selected}" aria-expanded="${i.unfolded}" tabindex="${i.selected ? 0 : -1}" aria-label="${esc(i.name)}"><span data-key="time" class="tm">${esc(i.time)}</span><span data-key="mini" class="history-mini" data-shape="${esc(shape)}">${mini}</span><span data-key="names" class="history-names"><b>${historyRuns(i.titleRuns)}</b><span>${i.trail.map(historyRuns).join(' · ')}${i.more ? ` · ${esc(i.more)}` : ''}</span></span><span data-key="meta" class="history-meta">${esc(i.meta)}</span></button>`;
+      const actions = i.buttons.map(a=>`<button class="history-action ${a.act}" data-key="act-${a.act}" data-forest="act" data-act="${a.act}" data-id="${i.id}" aria-label="${esc(a.label)}" title="${esc(a.label)}">${a.act==='open'?esc(a.label):a.act==='save'?icon('bookmark'):icon('close')}</button>`).join('');
+      const outline = i.outline ? i.outline.rows.map(r=>`<button class="history-page${r.last?' last':''}${r.waiting?' waiting':''}" data-key="page-${r.id}" data-forest="page" data-id="${r.id}" aria-label="${esc(r.label)}" style="padding-left:${Math.min(r.depth,12)*16+10}px">${fav(r.url,!r.waiting,14)}<span>${esc(r.name)}</span></button>`).join('') + (i.outline.cut?`<div class="history-cut" data-key="cut">${esc(i.outline.cut)}</div>`:'') : '';
+      content=row+actions+outline;
     }
     entries.push(`<div class="${cls}" data-key="${i.key}">${content}</div>`);
   }
   if(h.more) entries.push(`<div class="history-edge" data-key="more">${historyEdge(h.more,'more-button')}</div>`);
   patchChildren(list,entries.join(''));
   if(jumping) {
-    list.querySelector(`.forest-row[data-id="${h.reveal.id}"]`)?.scrollIntoView({block:'start'});
+    const row=list.querySelector(`.forest-row[data-id="${h.reveal.id}"]`);
+    (row?.closest('.history-item')?.previousElementSibling ?? row)?.scrollIntoView({block:'start'});
   } else if(witnessKey) {
     const kept = [...list.children].find(el=>el.dataset.key===witnessKey);
     if(kept) list.scrollTop += kept.getBoundingClientRect().top-offset;
