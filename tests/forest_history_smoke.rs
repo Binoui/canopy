@@ -1,43 +1,30 @@
 use anyhow::Result;
+use canopy::chrome::ChromeHost;
 use canopy::{
-    browser::{Browser, ThemeMode},
-    chrome::{ChromeHost, ChromeIntent},
+    browser::{Browser, Move, Place},
     ui::Ui,
 };
 use gtk::prelude::*;
 mod common;
 use common::*;
-
-fn held_refresh(ui: &Ui, selector: &str) -> Result<()> {
-    let id = chrome(ui, "S.forest.history?.preview?.id ?? document.querySelector('.tree-card[aria-current=true]')?.dataset.id")?
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let tree = ui
-        .pages
-        .read(|b| b.tree_states())?
-        .into_iter()
-        .find(|s| s.root.root().to_string() == id)
-        .unwrap()
-        .root;
-    let (x, y) = chrome_point(ui, selector)?;
-    move_to(x, y)?;
-    xdo(&["mousedown", "1"])?;
-    wait("held forest control", || {
-        chrome(ui, "canopy.state().buttons").is_ok_and(|v| v == 1)
-    })?;
-    ui.dispatch(ChromeIntent::RenameTree(
-        tree,
-        format!("Refreshed {selector}"),
-    ));
-    wait("forest refresh held until release", || {
-        chrome(ui, "canopy.state().deferred.includes('forest')").is_ok_and(|v| v == true)
-    })?;
-    xdo(&["mouseup", "1"])?;
-    pump(200);
-    Ok(())
+fn selected(ui: &Ui) -> String {
+    chrome(
+        ui,
+        "document.querySelector('.forest-row[aria-selected=true]').dataset.id",
+    )
+    .unwrap()
+    .as_str()
+    .unwrap()
+    .to_owned()
 }
-
+fn count(ui: &Ui) -> usize {
+    ui.pages
+        .read(|b| b.tree_states())
+        .unwrap()
+        .iter()
+        .filter(|s| matches!(s.place(), Place::History { .. }))
+        .count()
+}
 fn main() -> Result<()> {
     let _runtime = private_runtime()?;
     let dir = tempfile::tempdir()?;
@@ -52,14 +39,20 @@ fn main() -> Result<()> {
         for mut stream in listener.incoming().flatten() {
             let mut buf = [0; 4096];
             let _ = stream.read(&mut buf);
-            let body = "<!doctype html><title>Forest fixture</title>Local page";
-            let _=write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len());
+            let body = "<!doctype html><title>History fixture</title>Local page";
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
         }
     });
     let mut b = Browser::open(&dir.path().join("forest.sqlite3"))?;
     let roots = b.add_roots(
-        &(0..131)
-            .map(|i| url::Url::parse(&format!("http://fixture.localhost:{port}/{i}")).unwrap())
+        &(0..132)
+            .map(|i| {
+                url::Url::parse(&format!("http://site{}.localhost:{port}/{i}", i % 12)).unwrap()
+            })
             .collect::<Vec<_>>(),
     )?;
     for (i, id) in roots.iter().enumerate() {
@@ -70,234 +63,203 @@ fn main() -> Result<()> {
             .unwrap()
             .root;
         b.rename_tree(tree, &format!("Project {i}"))?;
-        if i >= 4 {
-            b.place_tree(tree, canopy::browser::Move::History)?;
-        }
-        if i == 0 {
-            b.place_tree(tree, canopy::browser::Move::Pin(true))?;
-        }
-        if i == 4 {
-            b.place_tree(
-                tree,
-                canopy::browser::Move::Shelf(canopy::browser::Slot::First),
-            )?;
+        if i > 0 {
+            b.place_tree(tree, Move::History)?;
         }
     }
     drop(b);
+    let db = rusqlite::Connection::open(dir.path().join("forest.sqlite3"))?;
+    let now = glib::DateTime::now_local()?;
+    for (i, id) in roots.iter().enumerate().skip(1) {
+        let day = now.add_days(if i < 81 { 0 } else { -(i as i32 * 4) })?;
+        db.execute(
+            "UPDATE tree_state SET placed_at=? WHERE root_id=?",
+            rusqlite::params![day.to_unix() * 1000 + i as i64, id.to_string()],
+        )?;
+    }
+    drop(db);
     start(dir.path())?;
     let ui = Ui::new(dir.path())?;
     ui.window.resize(1240, 800);
     ui.window.show_all();
     ready(&ui)?;
-    key("ctrl+e")?;
-    wait("Trees", || visible(&ui, "#forest-trees .tree-card"))?;
-    assert_eq!(
-        text(&ui, "#forest-count"),
-        "4 tabs · 1 saved for later · 126 in history"
-    );
-    assert_eq!(
-        chrome(
-            &ui,
-            "[...document.querySelectorAll('#forest-trees .tree-card')].map(c=>c.dataset.id)"
-        )?,
-        serde_json::json!(
-            [roots[0], roots[1], roots[2], roots[3], roots[4]].map(|id| id.to_string())
-        )
-    );
-    assert!(text(&ui, "#forest-trees").contains("Saved"));
-    assert!(chrome(&ui,"[...document.querySelectorAll('#forest-trees .tree-card')].every(c=>[...c.querySelectorAll('.pc-page,.pc-meta')].every(e=>e.getBoundingClientRect().bottom<=c.getBoundingClientRect().bottom))")?==true);
-    for width in [1240, 2560, 600] {
-        ui.window.resize(width, 800);
-        pump(200);
-        assert_eq!(chrome(&ui,"(()=>{const r=$('forest').querySelector('.forest-pop').getBoundingClientRect();return [r.left,innerWidth-r.right]})()")?,serde_json::json!([22,22]));
-        assert!(rect(&ui, "#forest-trees .tree-card")?.2 <= 240.);
-    }
-    ui.window.resize(1240, 800);
-    pump(200);
-    click_chrome(&ui, "#forest-views [data-view=history]")?;
-    wait("History", || visible(&ui, ".forest-row"))?;
+    key("ctrl+h")?;
+    wait("History rows", || visible(&ui, ".forest-row"))?;
     assert_eq!(
         chrome(&ui, "document.querySelectorAll('.forest-row').length")?,
         60
     );
-    assert!(
-        chrome(
-            &ui,
-            "document.querySelector('.forest-row').getAttribute('aria-selected') === 'true'"
-        )? == true
-    );
-    let first = chrome(&ui, "S.forest.history.preview.id")?;
-    let first_selector = format!(".forest-row[data-id='{}']", first.as_str().unwrap());
+    assert!(chrome(&ui, "!document.querySelector('#forest-preview')")? == true);
+    assert!(text(&ui, "#history-count").contains("131 of 131"));
+    assert_eq!(chrome(&ui, "S.forest.history.rail.sites.length")?, 9);
+    assert!(text(&ui, "#forest-list").contains("One page"));
+    assert!(text(&ui, ".forest-day").contains("80 trees"));
+    let first = selected(&ui);
     key("Down")?;
-    assert_ne!(chrome(&ui, "S.forest.history.preview.id")?, first);
-    key("Up")?;
-    assert_eq!(chrome(&ui, "S.forest.history.preview.id")?, first);
-    assert!(visible(&ui, ".pv-row"));
-    ui.window.resize(600, 800);
-    pump(200);
-    assert!(rect(&ui, "#forest-preview")?.1 < rect(&ui, "#forest-list")?.1);
-    assert!(rect(&ui, "#forest-preview")?.3 <= 266.);
-    ui.window.resize(2560, 900);
-    pump(200);
-    assert!(rect(&ui, "#forest-list")?.2 <= 720.);
-    ui.window.resize(1240, 800);
-    pump(200);
+    assert_ne!(selected(&ui), first);
+    assert!(!visible(&ui, ".history-page"));
+    key("Right")?;
+    wait("unfolded outline", || visible(&ui, ".history-page"))?;
+    key("Left")?;
+    assert!(!visible(&ui, ".history-page"));
+    key("space")?;
+    assert!(visible(&ui, ".history-page"));
+    click_chrome(&ui, ".forest-row[aria-selected=true]")?;
+    assert!(!visible(&ui, ".history-page"));
+    key("Right")?;
     chrome(
         &ui,
-        "($('forest-list').scrollTop=$('forest-list').scrollHeight,true)",
+        "(globalThis.kept=[...document.querySelector('.history-item.selected').children],true)",
     )?;
-    pump(100);
-    held_refresh(&ui, ".forest-more")?;
-    wait("older rows", || {
-        chrome(&ui, "document.querySelectorAll('.forest-row').length").is_ok_and(|v| v == 120)
-    })?;
-    chrome(&ui, "($('forest-list').scrollTop=0,true)")?;
-    key("z")?;
-    wait("Find letters", || {
-        chrome(&ui, "S.forest.query").is_ok_and(|v| v == "z")
-    })?;
-    assert!(text(&ui, "#forest-empty").contains("matches"));
-    key("Escape")?;
-    wait("cleared Find", || {
-        chrome(&ui, "S.forest.query").is_ok_and(|v| v == "")
-    })?;
-    assert!(visible(&ui, "#forest"));
-    held_refresh(&ui, &first_selector)?;
-    key("Menu")?;
-    assert_eq!(
-        text(&ui, "#popover"),
-        "Reopen\nSave for later\nRename\nDelete"
-    );
-    click_chrome(&ui, "[data-tab-action=rename]")?;
-    type_text("History project renamed")?;
-    key("Return")?;
-    wait("renamed in forest", || {
-        text(&ui, "#forest-list").contains("History project renamed")
-    })?;
-    assert!(visible(&ui, "#forest"));
     let tree = ui
         .pages
         .read(|b| b.tree_states())?
         .into_iter()
-        .find(|s| s.root.root().to_string() == first.as_str().unwrap())
+        .find(|s| s.root.root().to_string() == selected(&ui))
         .unwrap()
         .root;
-    chrome(
-        &ui,
-        "(globalThis.heldControls=[...$('forest-preview').querySelectorAll('button')],true)",
-    )?;
-    ui.dispatch(ChromeIntent::RenameTree(
+    ui.dispatch(canopy::chrome::ChromeIntent::RenameTree(
         tree,
-        "History title refreshed".into(),
+        "Renamed History".into(),
     ));
-    wait("preview title updated", || {
-        text(&ui, "#forest-preview").contains("History title refreshed")
+    wait("renamed row", || {
+        text(&ui, "#forest-list").contains("Renamed History")
     })?;
     assert!(
         chrome(
             &ui,
-            "heldControls.every((el,i)=>el===$('forest-preview').querySelectorAll('button')[i])"
+            "kept.every((el,i)=>el===document.querySelector('.history-item.selected').children[i])"
         )? == true
     );
-    held_refresh(&ui, "[data-forest=save]")?;
-    wait("Save moves selection", || {
-        chrome(&ui, "S.forest.history.preview.id").is_ok_and(|v| v != first)
+    key("Delete")?;
+    wait("Delete and successor", || {
+        count(&ui) == 130 && visible(&ui, "#forest-undo button")
     })?;
-    assert!(ui
+    key("z")?;
+    assert!(visible(&ui, "#forest-undo button"));
+    key("Escape")?;
+    click_chrome(&ui, "#forest-undo button")?;
+    wait("Undo", || count(&ui) == 131)?;
+    click_chrome(&ui, ".forest-day button")?;
+    wait("Delete entire day", || {
+        count(&ui) == 51 && text(&ui, "#forest-undo").contains("80 trees")
+    })?;
+    click_chrome(&ui, "#forest-undo button")?;
+    wait("Undo day", || count(&ui) == 131)?;
+    println!("PASS History settle-day groups and complete day counts, one-page trails, independent selection/folds, retained row/action/outline nodes, Delete and Undo, full Delete day and Undo.");
+    key("z")?;
+    wait("typing starts Find", || {
+        text(&ui, "#forest-empty").contains("matches")
+    })?;
+    key("Escape")?;
+    wait("Find clears", || visible(&ui, ".forest-row"))?;
+    assert!(visible(&ui, "#forest"));
+    click_chrome(&ui, "#history-rail [data-forest=site]")?;
+    assert!(!visible(&ui, ".forest-day button"));
+    let filtered = chrome(&ui, "S.forest.history.count")?;
+    click_chrome(&ui, "#history-rail [data-forest=site]")?;
+    assert_ne!(chrome(&ui, "S.forest.history.count")?, filtered);
+    click_chrome(&ui, "#history-rail [data-bucket^=month-]")?;
+    wait("old month jump", || visible(&ui, "[data-before=true]"))?;
+    assert!(chrome(&ui, "document.querySelectorAll('.forest-row').length<=60")? == true);
+    chrome(&ui, "($('forest-list').scrollTop=0,true)")?;
+    wait("newer edge loads", || {
+        chrome(&ui, "document.querySelectorAll('.forest-row').length>60").is_ok_and(|v| v == true)
+    })?;
+    key("Escape")?;
+    assert!(!visible(&ui, "#forest"));
+    key("ctrl+h")?;
+    wait("History again", || visible(&ui, ".forest-row"))?;
+    key("s")?;
+    wait("Save moves successor", || count(&ui) == 130)?;
+    assert!(visible(&ui, "#forest"));
+    key("Right")?;
+    let page = chrome(&ui, "document.querySelector('.history-page').dataset.id")?;
+    let (x, y) = chrome_point(&ui, ".history-page")?;
+    move_to(x, y)?;
+    xdo(&["mousedown", "1"])?;
+    let tree = ui
         .pages
         .read(|b| b.tree_states())?
-        .iter()
-        .any(|s| s.root == tree && matches!(s.place(), canopy::browser::Place::Shelf { .. })));
-    let reopen = chrome(&ui, "S.forest.history.preview.id")?;
-    held_refresh(&ui, "[data-forest=reopen]")?;
-    wait("Reopen navigates", || {
-        !visible(&ui, "#forest")
-            && ui.snapshot().is_ok_and(|s| {
-                s.current
-                    .is_some_and(|id| Some(id.to_string().as_str()) == reopen.as_str())
-            })
+        .into_iter()
+        .find(|s| s.root.root().to_string() == selected(&ui))
+        .unwrap()
+        .root;
+    ui.dispatch(canopy::chrome::ChromeIntent::RenameTree(
+        tree,
+        "Refreshed under a held outline".into(),
+    ));
+    wait("held outline refresh", || {
+        chrome(&ui, "canopy.state().deferred.includes('forest')").is_ok_and(|v| v == true)
     })?;
-    key("ctrl+e")?;
-    wait("Trees again", || visible(&ui, "#forest-trees .tree-card"))?;
-    held_refresh(&ui, ".tree-card[aria-current=true]")?;
-    assert!(!visible(&ui, "#forest"));
-    key("ctrl+h")?;
-    wait("History shortcut", || visible(&ui, ".forest-row"))?;
-    key("ctrl+h")?;
-    assert!(!visible(&ui, "#forest"));
-    key("ctrl+e")?;
-    wait("Trees shortcut", || {
-        visible(&ui, "#forest-trees .tree-card")
-    })?;
-    key("ctrl+h")?;
-    wait("switch shortcut", || visible(&ui, ".forest-row"))?;
-    key("ctrl+e")?;
-    assert!(!visible(&ui, "#forest"));
-    key("ctrl+e")?;
-    wait("current card menu", || {
-        visible(&ui, ".tree-card[aria-current=true]")
-    })?;
-    chrome(
-        &ui,
-        "(document.querySelector('.tree-card[aria-current=true]').focus(),true)",
-    )?;
-    key("shift+F10")?;
-    click_chrome(&ui, "[data-tab-action=settle]")?;
-    pump(700);
-    assert!(visible(&ui, "#forest"));
-    assert_eq!(
-        chrome(&ui, "S.forest.count")?,
-        serde_json::json!("4 tabs · 2 saved for later · 125 in history")
-    );
-    click_chrome(&ui, "#forest-views [data-view=history]")?;
-    wait("outline target", || visible(&ui, ".pv-row"))?;
-    let page = chrome(&ui, "document.querySelector('.pv-row').dataset.id")?;
-    held_refresh(&ui, ".pv-row")?;
-    wait("held outline opens its page", || {
+    xdo(&["mouseup", "1"])?;
+    wait("outline reopens page", || {
         !visible(&ui, "#forest")
             && ui.snapshot().is_ok_and(|s| {
                 s.current
                     .is_some_and(|id| Some(id.to_string().as_str()) == page.as_str())
             })
     })?;
-    key("ctrl+e")?;
-    wait("forest for focus check", || visible(&ui, "#forest"))?;
-    println!("PASS forest preview, row keys, older rows, Find/Escape, real settled Rename, retained controls, Save stays settled, Reopen, card activation, E/H shortcuts and Settle keeps the forest open.");
-    key("Tab")?;
-    assert!(chrome(&ui, "!!document.activeElement.closest('#forest')")? == true);
-    key("Escape")?;
-    wait("closed", || !visible(&ui, "#forest"))?;
-    let current = ui.snapshot()?.current.unwrap();
-    for state in ui.pages.read(|b| b.tree_states())? {
-        if state.place().is_tab() && state.root.root() != current {
-            ui.pages
-                .place_tree(state.root, canopy::browser::Move::History)?;
-        }
-    }
-    pump(300);
-    key("ctrl+e")?;
-    wait("last open card", || {
-        visible(&ui, ".tree-card[aria-current=true]")
+    key("ctrl+h")?;
+    wait("History for Enter", || visible(&ui, ".forest-row"))?;
+    let target = selected(&ui);
+    key("Return")?;
+    wait("Enter reopens", || {
+        !visible(&ui, "#forest")
+            && ui
+                .snapshot()
+                .is_ok_and(|s| s.current.is_some_and(|id| id.to_string() == target))
     })?;
+    key("ctrl+h")?;
+    wait("History for double click", || visible(&ui, ".forest-row"))?;
+    let target = selected(&ui);
+    let (x, y) = chrome_point(&ui, ".forest-row[aria-selected=true]")?;
+    move_to(x, y)?;
+    xdo(&["click", "--repeat", "2", "--delay", "100", "1"])?;
+    wait("double click reopens", || {
+        !visible(&ui, "#forest")
+            && ui
+                .snapshot()
+                .is_ok_and(|s| s.current.is_some_and(|id| id.to_string() == target))
+    })?;
+    key("ctrl+h")?;
+    wait("History for menu", || visible(&ui, ".forest-row"))?;
     key("Menu")?;
-    click_chrome(&ui, "[data-tab-action=settle]")?;
-    wait("last tree settled with forest open", || {
-        ui.snapshot().is_ok_and(|s| s.current.is_none())
-            && visible(&ui, "#forest")
-            && chrome(
-                &ui,
-                "document.querySelectorAll('#forest-trees [data-key^=open-]').length===0",
-            )
-            .is_ok_and(|v| v == true)
-    })?;
-    assert!(chrome(&ui, "!!document.activeElement.closest('#forest')")? == true);
+    assert_eq!(
+        text(&ui, "#popover"),
+        "Reopen\nSave for later\nRename\nDelete"
+    );
     key("Escape")?;
-    println!("PASS settling the last open tree preserves the forest and its keyboard focus.");
-    for mode in [ThemeMode::Light, ThemeMode::Dark] {
-        ui.dispatch(ChromeIntent::SetTheme(mode));
-        pump(100);
-    }
-    println!("PASS forest toolbar totals, ordered Open/Saved bands, bounded cards, width, history membership and focus containment.");
+    ui.window.resize(390, 800);
+    pump(300);
+    assert!(visible(&ui, "#history-chips"));
+    assert!(!visible(&ui, "#history-rail"));
+    ui.window.resize(1920, 900);
+    pump(300);
+    assert!(visible(&ui, "#history-rail"));
+    let deleted = selected(&ui);
+    key("Delete")?;
+    wait("delete before restart", || {
+        !text(&ui, "#forest-list").contains(&deleted)
+    })?;
+    let remaining = count(&ui);
+    ui.window.close();
+    drop(ui);
+    pump(300);
+    let b = Browser::open(&dir.path().join("forest.sqlite3"))?;
+    assert!(!b
+        .tree_states()?
+        .iter()
+        .any(|s| s.root.root().to_string() == deleted));
+    drop(b);
+    let ui = Ui::new(dir.path())?;
+    ui.window.show_all();
+    ready(&ui)?;
+    key("ctrl+h")?;
+    wait("restart History", || visible(&ui, ".forest-row"))?;
+    assert_eq!(count(&ui), remaining);
+    assert!(!visible(&ui, "#forest-undo button"));
+    println!("PASS typing Find and two-step Escape, site toggle and filtered Delete day guard, old month jump and newer-edge load, Save, outline/Enter reopen, History menu, narrow chips, wide rail and deletion surviving a window restart.");
     ui.window.close();
     Ok(())
 }
