@@ -323,11 +323,9 @@ pub(crate) fn strip(forest: &ForestProjection, mail: &crate::mail::Mail, width: 
         if page_head {
             actions.push(json!({ "kind": if id == current { "reload" } else { "open" }, "label": if id == current { "Reload" } else { "Open" } }));
             actions.push(json!({ "kind": "branch", "label": "New branch here" }));
-            if id == current {
-                if v.source.is_some() {
-                    if v.parent.is_some() { actions.push(json!({ "kind": "source", "label": if forest.source_parent_matches(id) { "Back to source" } else { "Back to parent" } })); }
-                    if forest.citation_parent_matches(id) { actions.push(json!({ "kind": "comment", "label": "Open comment" })); }
-                }
+            if id == current && v.source.is_some() {
+                if v.parent.is_some() { actions.push(json!({ "kind": "source", "label": if forest.source_parent_matches(id) { "Back to source" } else { "Back to parent" } })); }
+                if forest.citation_parent_matches(id) { actions.push(json!({ "kind": "comment", "label": "Open comment" })); }
             }
         }
         json!({
