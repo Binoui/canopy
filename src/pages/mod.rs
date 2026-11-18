@@ -638,11 +638,15 @@ impl Pages {
         let page = self.branches.candidate.borrow_mut().take();
         if let Some(page) = page {
             if page.background_visit().is_some() {
+                // Opened but left before it appeared: still unseen, so muted, in a slot and timed.
+                page.unadopt();
                 let stamp = page.last_shown.get();
+                let view = page.view();
                 self.branches.background.borrow_mut().push(Hidden {
                     page,
                     last_shown: stamp,
                 });
+                self.arm_background_timeout(view);
             } else if let Some(last_shown) = self.branches.candidate_live.take() {
                 page.cancel_foreground();
                 page.native.set_child_visible(false);
@@ -1125,9 +1129,18 @@ impl Pages {
             registry.iter().filter_map(Weak::upgrade).collect()
         });
         loop {
+            // A background page you opened keeps its slot until it commits.
             let running: usize = windows
                 .iter()
                 .map(|window| {
+                    let opening = window
+                        .branches
+                        .candidate
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|p| {
+                            p.background_visit().is_some() && p.current_visit().is_none()
+                        });
                     window
                         .branches
                         .background
@@ -1137,6 +1150,7 @@ impl Pages {
                             h.page.never_seen().is_some() && h.page.current_visit().is_none()
                         })
                         .count()
+                        + usize::from(opening)
                 })
                 .sum();
             if running >= 3 {
@@ -1183,26 +1197,31 @@ impl Pages {
                 last_shown: stamp,
             });
             BACKGROUND_STARTS.with(|n| n.set(n.get() + 1));
-            let weak = window.me.clone();
-            let view = page.view();
-            glib::timeout_add_local_once(BACKGROUND_TIMEOUT.with(Cell::get), move || {
-                if let Some(window) = weak.upgrade() {
-                    let expired = window.branches.background.borrow().iter().any(|h| {
-                        h.page.view() == view
-                            && h.page.never_seen().is_some()
-                            && h.page.current_visit().is_none()
-                    });
-                    if expired {
-                        window.drop_background(view);
-                        window.start_background();
-                    }
-                }
-            });
+            window.arm_background_timeout(page.view());
             if page.background(visit).is_err() {
                 window.drop_background(page.view());
             }
         }
         SCHEDULING_BACKGROUND.with(|scheduling| scheduling.set(false));
+    }
+
+    /// Drops `view` if it is still an unseen background page with no document when the
+    /// background time limit runs out.
+    fn arm_background_timeout(&self, view: crate::browser::ViewId) {
+        let weak = self.me.clone();
+        glib::timeout_add_local_once(BACKGROUND_TIMEOUT.with(Cell::get), move || {
+            if let Some(window) = weak.upgrade() {
+                let expired = window.branches.background.borrow().iter().any(|h| {
+                    h.page.view() == view
+                        && h.page.never_seen().is_some()
+                        && h.page.current_visit().is_none()
+                });
+                if expired {
+                    window.drop_background(view);
+                    window.start_background();
+                }
+            }
+        });
     }
 
     fn drop_background(&self, view: crate::browser::ViewId) {
