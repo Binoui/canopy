@@ -5,6 +5,7 @@ use canopy::{
     ui::Ui,
 };
 use gtk::prelude::*;
+use webkit2gtk::WebViewExt;
 mod common;
 use common::*;
 fn main() -> Result<()> {
@@ -228,6 +229,49 @@ fn main() -> Result<()> {
         click_chrome(&ui, "#forest-views [data-view=history]")?;
         pump(150);
     }
+    key("Escape")?;
+    ui.pages.go(canopy::pages::Go::Tree(trees[3]))?;
+    settle(&ui)?;
+    ui.pages.selected_page().navigate(
+        url::Url::parse(&format!("http://fixture.localhost:{port}/checkpoint-child"))?,
+        canopy::browser::NavigationTarget::ChildOf(ids[3]),
+    )?;
+    wait("checkpoint child", || {
+        ui.snapshot().is_ok_and(|s| {
+            s.current_visit()
+                .is_some_and(|v| v.url.path() == "/checkpoint-child")
+        }) && !ui.pages.selected_page().native.is_loading()
+    })?;
+    let child = ui.snapshot()?.current.unwrap();
+    assert!(ui.pages.selected_history_visits().contains(&ids[3]));
+    ui.pages.place_tree(trees[3], Move::History)?;
+    wait("settle landing leaves checkpoint tree", || {
+        ui.snapshot().is_ok_and(|s| s.current != Some(child))
+            && !ui.pages.selected_page().native.is_loading()
+    })?;
+    pump(1000);
+    key("ctrl+h")?;
+    wait("checkpoint tree in History", || visible(&ui, ".forest-row"))?;
+    let row = format!(".forest-row[data-id='{}']", ids[3]);
+    hover_chrome(&ui, &row)?;
+    xdo(&["click", "3"])?;
+    click_chrome(&ui, "[data-tab-action=delete]")?;
+    wait("checkpoint tree deleted", || {
+        !visible(&ui, &row) && visible(&ui, "[data-delete-id]")
+    })?;
+    click_chrome(&ui, "[data-delete-id]")?;
+    wait("checkpoint tree restored", || visible(&ui, &row))?;
+    hover_chrome(&ui, &row)?;
+    xdo(&["click", "3"])?;
+    click_chrome(&ui, "[data-tab-action=open]")?;
+    wait("restored tree opens cold at its last page", || {
+        ui.snapshot().is_ok_and(|s| s.current == Some(child))
+            && !ui.pages.selected_page().native.is_loading()
+    })?;
+    assert_eq!(ui.pages.selected_history_visits(), vec![child]);
+    println!(
+        "PASS Delete drops the settled tree’s native checkpoint; Undo reopens its last page cold."
+    );
     println!("PASS stored order and Ctrl+1, tab Pin/Unpin, Save with landing and info, shelf Open, pinned Ctrl+W, History Delete/Undo, capture removal/restoration, bookmark and download file retention, dark/light chrome.");
     ui.window.close();
     Ok(())

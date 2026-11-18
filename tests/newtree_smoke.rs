@@ -332,6 +332,9 @@ fn main() -> Result<()> {
         tree: tree(&ui, roots[2]),
         to: canopy::browser::Move::History,
     });
+    ui.pages.go(canopy::pages::Go::Tree(tree(&ui, roots[2])))?;
+    settle(&ui)?;
+    chrome(&ui, "(uncover(),true)")?;
     suggested(&ui, directory.path(), &format!("http://{address}"))?;
     {
         let mut browser = canopy::browser::Browser::open(&directory.path().join("forest.sqlite3"))?;
