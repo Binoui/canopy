@@ -237,12 +237,11 @@ fn main() -> Result<()> {
         );
         chrome(&ui, "(canopy.toggleForest(), true)")?;
         wait("forest waiting count", || visible(&ui, ".tree-card .count"))?;
-        assert!(
-            chrome(
-                &ui,
-                "!!document.querySelector('.tree-card .mt-node.waiting')"
-            )? == true
+        assert_eq!(
+            text(&ui, ".tree-card[aria-current=true] .count"),
+            waiting(&ui)?.len().to_string()
         );
+        assert!(visible(&ui, ".tree-card[aria-current=true] .mt-node.last"));
         chrome(&ui, "(canopy.toggleForest(), true)")?;
         assert_eq!(text(&ui, "#popover .next .menu-detail"), "loaded");
         shots(&ui, &format!("{theme}-loaded"))?;

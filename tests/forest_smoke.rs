@@ -272,7 +272,13 @@ fn main() -> Result<()> {
     key("Menu")?;
     click_chrome(&ui, "[data-tab-action=settle]")?;
     wait("last tree settled with forest open", || {
-        ui.snapshot().is_ok_and(|s| s.current.is_none()) && visible(&ui, "#forest")
+        ui.snapshot().is_ok_and(|s| s.current.is_none())
+            && visible(&ui, "#forest")
+            && chrome(
+                &ui,
+                "document.querySelectorAll('#forest-trees [data-key^=open-]').length===0",
+            )
+            .is_ok_and(|v| v == true)
     })?;
     assert!(chrome(&ui, "!!document.activeElement.closest('#forest')")? == true);
     key("Escape")?;
