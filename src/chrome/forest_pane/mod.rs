@@ -406,6 +406,7 @@ mod tests {
                 states,
             )
             .unwrap(),
+            pending: None,
             mail: Default::default(),
             loaded: Default::default(),
             live: Default::default(),
