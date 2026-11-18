@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 use url::Url;
 
-use super::{Mail, MessageId};
+use super::{feed, Account, Mail, MessageId};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Key {
@@ -23,8 +23,14 @@ pub(super) enum State<T> {
     Failed(Unmarked),
 }
 
+struct Entry<T> {
+    key: Key,
+    issued: Option<i64>,
+    state: State<T>,
+}
+
 pub(super) struct Marks<T> {
-    entries: Vec<(Key, State<T>)>,
+    entries: Vec<Entry<T>>,
 }
 
 impl<T> Default for Marks<T> {
@@ -53,10 +59,13 @@ impl<T> Marks<T> {
         let index = self
             .entries
             .iter()
-            .position(|(k, _)| k.address == address && k.id.as_str() == id);
-        if index
-            .is_some_and(|i| matches!(self.entries[i].1, State::Sending(_) | State::Sent { .. }))
-        {
+            .position(|e| e.key.address == address && e.key.id.as_str() == id);
+        if index.is_some_and(|i| {
+            matches!(
+                self.entries[i].state,
+                State::Sending(_) | State::Sent { .. }
+            )
+        }) {
             return false;
         }
         let key = Key {
@@ -64,7 +73,11 @@ impl<T> Marks<T> {
             id: message.id.clone(),
         };
         let ticket = send(key.clone(), &message.link);
-        let entry = (key, State::Sending(ticket));
+        let entry = Entry {
+            key,
+            issued: message.issued,
+            state: State::Sending(ticket),
+        };
         if let Some(i) = index {
             self.entries[i] = entry;
         } else {
@@ -74,7 +87,7 @@ impl<T> Marks<T> {
     }
 
     pub fn page_left(&mut self, key: &Key, result: Result<(), Unmarked>, now: Instant) -> bool {
-        let Some((_, state)) = self.entries.iter_mut().find(|(k, _)| k == key) else {
+        let Some(Entry { state, .. }) = self.entries.iter_mut().find(|e| &e.key == key) else {
             return false;
         };
         if !matches!(state, State::Sending(_)) {
@@ -94,35 +107,45 @@ impl<T> Marks<T> {
         settle: Duration,
         now: Instant,
     ) -> Option<Duration> {
-        self.entries.retain_mut(|(key, state)| {
-            let listed = check
+        self.entries.retain_mut(|entry| {
+            let Some(account) = check
                 .accounts
                 .iter()
-                .any(|a| a.address == key.address && a.messages.iter().any(|m| m.id == key.id));
-            if !listed {
+                .find(|a| a.address == entry.key.address)
+            else {
                 return false;
+            };
+            if !lists(account, &entry.key) {
+                return may_have_slid_out(account, entry.issued);
             }
-            if let State::Sent { left } = state {
-                if began >= *left + settle {
-                    *state = State::Failed(Unmarked::StillUnread);
+            if let State::Sent { left } = entry.state {
+                if began >= left + settle {
+                    entry.state = State::Failed(Unmarked::StillUnread);
                 }
             }
             true
         });
         self.entries
             .iter()
-            .filter_map(|(_, state)| match state {
-                State::Sent { left } => Some((*left + settle).saturating_duration_since(now)),
+            .filter_map(|entry| match entry.state {
+                State::Sent { left }
+                    if check
+                        .accounts
+                        .iter()
+                        .any(|a| a.address == entry.key.address && lists(a, &entry.key)) =>
+                {
+                    Some((left + settle).saturating_duration_since(now))
+                }
                 _ => None,
             })
             .min()
     }
 
     pub fn expire(&mut self, now: Instant, unconfirmed: Duration) {
-        for (_, state) in &mut self.entries {
-            if matches!(state, State::Sent { left } if now.saturating_duration_since(*left) >= unconfirmed)
+        for entry in &mut self.entries {
+            if matches!(entry.state, State::Sent { left } if now.saturating_duration_since(left) >= unconfirmed)
             {
-                *state = State::Failed(Unmarked::Unconfirmed);
+                entry.state = State::Failed(Unmarked::Unconfirmed);
             }
         }
     }
@@ -135,8 +158,8 @@ impl<T> Marks<T> {
                 match self
                     .entries
                     .iter()
-                    .find(|(k, _)| k.address == account.address && k.id == message.id)
-                    .map(|(_, s)| s)
+                    .find(|e| e.key.address == account.address && e.key.id == message.id)
+                    .map(|e| &e.state)
                 {
                     Some(State::Sending(_) | State::Sent { .. }) => false,
                     state => {
@@ -154,6 +177,20 @@ impl<T> Marks<T> {
         }
         mail
     }
+}
+
+fn lists(account: &Account, key: &Key) -> bool {
+    account.messages.iter().any(|m| m.id == key.id)
+}
+
+/// The feed lists only a page of the newest unread mails. A mail missing from a full page that
+/// holds fewer mails than the unread count may have been pushed out by newer mail while still
+/// unread, unless it is newer than the oldest mail listed.
+fn may_have_slid_out(account: &Account, issued: Option<i64>) -> bool {
+    let listed = account.messages.len();
+    let cut_off = listed >= feed::PAGE && account.unread as usize > listed;
+    let oldest = account.messages.iter().map(|m| m.issued).min();
+    cut_off && !matches!((issued, oldest), (Some(t), Some(Some(o))) if t > o)
 }
 
 #[cfg(test)]
@@ -311,6 +348,79 @@ mod tests {
             now + Duration::from_secs(60),
         );
         book.expire(now + Duration::from_secs(60), Duration::from_secs(60));
+        assert_eq!(book.shown(&mail), mail);
+    }
+
+    /// A full page: 20 listed of 25 unread, newest first, with 111 the oldest listed.
+    fn full_page() -> Mail {
+        let mut mail = fixture();
+        let account = &mut mail.accounts[0];
+        let first = account.messages[0].clone();
+        let at = first.issued.unwrap();
+        account.messages = (0..feed::PAGE as i64)
+            .map(|i| {
+                let mut m = first.clone();
+                m.id = MessageId(format!("{}", 1000 + i));
+                m.issued = Some(at - i * 1_000);
+                m
+            })
+            .collect();
+        account.messages[feed::PAGE - 1].id = MessageId("111".into());
+        account.unread = 25;
+        mail
+    }
+
+    #[test]
+    fn a_mail_pushed_past_a_full_page_stays_marked() {
+        let mail = full_page();
+        let dropped = Rc::default();
+        let mut book = Marks::default();
+        let key = mark(&mut book, &mail, &dropped);
+        let now = Instant::now();
+        let settle = Duration::from_secs(15);
+        // Newer mail arrives: 111 drops off the end while still unread.
+        let mut slid = mail.clone();
+        let mut newer = slid.accounts[0].messages[0].clone();
+        newer.id = MessageId("999".into());
+        newer.issued = newer.issued.map(|t| t + 1_000);
+        slid.accounts[0].messages.insert(0, newer);
+        slid.accounts[0].messages.pop();
+        slid.accounts[0].unread = 26;
+        assert_eq!(book.checked(&slid, now, settle, now), None);
+        assert_eq!(dropped.get(), 0, "the hidden page keeps working");
+        book.page_left(&key, Ok(()), now);
+        assert_eq!(dropped.get(), 1);
+        assert_eq!(
+            book.checked(&slid, now, settle, now),
+            None,
+            "no confirming check for a mail the feed cannot show"
+        );
+        assert_eq!(book.shown(&mail).accounts[0].messages.len(), feed::PAGE - 1);
+        book.checked(&mail, now + settle, settle, now + settle);
+        let shown = book.shown(&mail);
+        assert_eq!(
+            shown.accounts[0].messages[feed::PAGE - 1].unmarked,
+            Some(Unmarked::StillUnread),
+            "back in the feed still unread: the row says the mark failed"
+        );
+    }
+
+    #[test]
+    fn a_missing_mail_newer_than_the_oldest_listed_was_read() {
+        let mail = full_page();
+        let dropped = Rc::default();
+        let mut book = Marks::default();
+        mark(&mut book, &mail, &dropped);
+        // Gmail read 111, so the next older unread mail joins the page.
+        let mut read = mail.clone();
+        let mut older = read.accounts[0].messages.pop().unwrap();
+        older.id = MessageId("2000".into());
+        older.issued = older.issued.map(|t| t - 1_000);
+        read.accounts[0].messages.push(older);
+        read.accounts[0].unread = 24;
+        let now = Instant::now();
+        book.checked(&read, now, Duration::from_secs(15), now);
+        assert_eq!(dropped.get(), 1);
         assert_eq!(book.shown(&mail), mail);
     }
 }

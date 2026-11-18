@@ -3,6 +3,9 @@
 use super::{Account, AccountNumber, Message, MessageId, Origin, Trouble, SIGN_IN_HOST};
 use roxmltree::Node;
 
+/// Gmail's feed lists at most this many unread mails, newest first.
+pub(super) const PAGE: usize = 20;
+
 pub(super) struct Answer<'a> {
     pub status: u16,
     pub location: Option<&'a str>,
@@ -118,7 +121,7 @@ fn parse(xml: &str, origin: &Origin, number: AccountNumber) -> Option<Account> {
                 link,
             })
         })
-        .take(20)
+        .take(PAGE)
         .collect();
     Some(Account {
         number,
