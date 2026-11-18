@@ -223,12 +223,28 @@ fn main() -> Result<()> {
         wait("pin state in accessible name", || {
             chrome(&ui, "document.querySelector('#tab-row [aria-selected=true]').getAttribute('aria-label').includes('pinned')").is_ok_and(|v|v==true)
         })?;
+        check(&ui, "document.activeElement === window.keptTab")?;
         key("shift+F10")?;
+        wait("Unpin menu focused", || {
+            chrome(&ui, "document.activeElement.dataset.tabAction").is_ok_and(|v| v == "unpin")
+        })
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "{error}; focus and menu {:?}",
+                chrome(
+                    &ui,
+                    "({focus:document.activeElement.tagName,id:document.activeElement.dataset.id,menu:S.popover?.kind})"
+                )
+            )
+        })?;
         key("Return")?;
+        wait("tab unpinned", || {
+            chrome(&ui, "S.frame.tabs.find(t=>t.active)?.pinned").is_ok_and(|v| v == false)
+        })?;
         ui.window.resize(480, 800);
         wait("tab overflow at narrow width", || {
             visible(&ui, "#tab-overflow")
-        })?;
+        }).map_err(|error|anyhow::anyhow!("{error}; tabs and fit {:?}",chrome(&ui,"({width:innerWidth,tabs:S.frame.tabs,fit:S.frame.tabFit,room:$('tabs-wrap')?.clientWidth})")))?;
         focus(&ui, "#tab-overflow")?;
         key("Return")?;
         check(&ui, "document.activeElement.matches('#popover button')")?;

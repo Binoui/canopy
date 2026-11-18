@@ -118,7 +118,7 @@ impl ForestProjection {
         let tree_order: HashMap<_, _> = tree_states
             .iter()
             .enumerate()
-            .map(|(i, s)| (s.root, (s.spot.order(), i)))
+            .map(|(i, s)| (s.root, i))
             .collect();
         let mut states = HashMap::with_capacity(tree_states.len());
         for state in tree_states {
@@ -316,27 +316,29 @@ mod tests {
     }
 
     #[test]
-    fn open_trees_keep_creation_order_and_settled_trees_list_newest_first() {
+    fn projection_keeps_the_stores_order_of_tabs_and_history() {
         let visits: Vec<_> = (0..5)
             .map(|time| visit(None, time, VisitState::Opened))
             .collect();
         let ids: Vec<_> = visits.iter().map(|v| v.id).collect();
-        let states = ids
-            .iter()
-            .enumerate()
-            .map(|(i, &id)| TreeState {
-                last_event_at: None,
-                root: TreeId(id),
-                last_visit: id,
-                name: None,
-                spot: match i {
-                    1 => crate::browser::Spot::History { settled_at: 10 },
-                    3 => crate::browser::Spot::History { settled_at: 20 },
-                    _ => crate::browser::Spot::Tab {
-                        pinned: false,
-                        position: 0,
+        let states = [0, 2, 4, 3, 1]
+            .into_iter()
+            .map(|i| {
+                let id = ids[i];
+                TreeState {
+                    last_event_at: None,
+                    root: TreeId(id),
+                    last_visit: id,
+                    name: None,
+                    spot: match i {
+                        1 => crate::browser::Spot::History { settled_at: 10 },
+                        3 => crate::browser::Spot::History { settled_at: 20 },
+                        _ => crate::browser::Spot::Tab {
+                            pinned: false,
+                            position: i as u32,
+                        },
                     },
-                },
+                }
             })
             .collect();
         let f = ForestProjection::from_snapshot(

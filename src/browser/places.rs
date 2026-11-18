@@ -49,6 +49,7 @@ impl Spot {
             _ => bail!("Invalid tree place."),
         })
     }
+    #[cfg(test)]
     pub(crate) fn order(self) -> (u8, bool, u32, std::cmp::Reverse<i64>) {
         match self {
             Self::Tab { pinned, position } => (0, !pinned, position, std::cmp::Reverse(0)),

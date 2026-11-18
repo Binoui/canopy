@@ -285,6 +285,9 @@ mod tests {
                 },
             });
         }
+        if states.len() > 1 {
+            states[1..].reverse();
+        }
         ChromeFrame {
             forest: ForestProjection::from_snapshot(
                 Snapshot {
@@ -350,6 +353,7 @@ mod tests {
             });
         }
         mutate(&mut states);
+        states.sort_by_key(|s| s.spot.order());
         frame.forest = ForestProjection::from_snapshot(
             Snapshot {
                 visits,

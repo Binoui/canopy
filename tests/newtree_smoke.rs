@@ -665,6 +665,7 @@ fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
     use canopy::browser::{Browser, VisitId};
     use rusqlite::{params, Connection};
     let connection = Connection::open(data.join("forest.sqlite3"))?;
+    connection.execute("DELETE FROM visit_events", [])?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
         .as_millis() as i64;

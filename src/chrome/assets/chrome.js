@@ -254,6 +254,7 @@ function renderTabs() {
   $('new-tree-tab').setAttribute('aria-label', opening ? `${opening}, loading` : 'New tree');
   $('new-tree-close').hidden = !current();
   const row = $('tab-row');
+  const focusedTab = document.hasFocus() && row.contains(document.activeElement) ? document.activeElement.closest('.tab')?.dataset.id : null;
   const trees = S.frame?.tabs ?? [];
   const kept = new Map([...row.children].map((tab) => [tab.dataset.id, tab]));
   const nodes = trees.map((tree, index) => {
@@ -291,6 +292,7 @@ function renderTabs() {
   nodes.forEach((tab, index) => { if (row.children[index] !== tab) row.insertBefore(tab, row.children[index] ?? null); });
   if (S.frame?.tabFit) window.canopy.tabsFit(S.frame.tabFit);
   fitTabs();
+  if (focusedTab) nodes.find(tab => tab.dataset.id === focusedTab && !tab.hidden)?.focus({preventScroll:true});
   const focused = row.contains(document.activeElement) && !document.activeElement.hidden ? document.activeElement : row.querySelector('[aria-selected="true"]') ?? row.querySelector('.tab:not([hidden])');
   for (const tab of row.children) tab.tabIndex = tab === focused ? 0 : -1;
 }
