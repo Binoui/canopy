@@ -649,8 +649,14 @@ fn page_move_picker() -> Result<()> {
     f.select(leaf)?;
     let view = f.ui.pages.selected_page().native.clone();
     let hits = f.hits("/move-leaf");
-    f.menu(&format!("#strip-nodes [data-page='{head}']"))?;
-    common::click_chrome(&f.ui, "[data-node-action='choose-move-tree']")?;
+    f.ui.chrome.native().grab_focus();
+    common::chrome(&f.ui, &format!("(() => {{ document.querySelector(\"#strip-nodes [data-page='{head}']\").focus(); return true; }})()"))?;
+    common::key("shift+F10")?;
+    common::wait("keyboard page menu", || {
+        common::visible(&f.ui, "[data-node-action='choose-move-tree']")
+    })?;
+    common::key("End")?;
+    common::key("Return")?;
     common::wait("tree picker destination", || {
         common::visible(&f.ui, &format!("[data-move-tree='{target}']"))
     })?;

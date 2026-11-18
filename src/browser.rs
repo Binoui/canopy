@@ -4434,4 +4434,58 @@ mod tests {
         assert_eq!(b.open_citation(child).unwrap(), None);
         assert_eq!(b.visit(child).unwrap().source, Some(origin));
     }
+    #[test]
+    fn moving_pending_visits_keeps_committed_selection_until_commit() {
+        for restore in [false, true] {
+            let mut b = memory();
+            let a = follow(&mut b, "a", NavigationTarget::Root);
+            let head = follow_child(&mut b, "head");
+            let t = follow(&mut b, "t", NavigationTarget::Root);
+            let request = if restore {
+                b.restore(head).unwrap()
+            } else {
+                b.navigate(url("pending-child"), NavigationTarget::ChildOf(head))
+                    .unwrap()
+            };
+            let ticket = b.navigation.pending_ticket();
+            b.move_branch(head, MoveTo::Tree(TreeId(t))).unwrap();
+            assert_eq!(b.current_id().unwrap(), Some(t));
+            assert_eq!(b.tree_target(TreeId(t)).unwrap(), t);
+            assert_eq!(b.tree_target(TreeId(a)).unwrap(), a);
+            assert_eq!(b.navigation.pending_ticket(), ticket);
+            b.started(request.clone()).unwrap();
+            b.committed(request).unwrap();
+            let committed = b.current_id().unwrap().unwrap();
+            assert_eq!(
+                forest_on(&b.connection).unwrap().tree_of(committed),
+                Some(TreeId(t))
+            );
+            assert_eq!(b.tree_target(TreeId(t)).unwrap(), committed);
+            if restore {
+                assert_eq!(committed, head);
+            } else {
+                assert_eq!(b.visit(committed).unwrap().parent, Some(head));
+            }
+        }
+    }
+
+    #[test]
+    fn move_branch_validates_untouched_tree_rows_before_commit() {
+        let mut b = memory();
+        let a = follow(&mut b, "a", NavigationTarget::Root);
+        let head = follow_child(&mut b, "head");
+        let t = follow(&mut b, "t", NavigationTarget::Root);
+        let unrelated = follow(&mut b, "unrelated", NavigationTarget::Root);
+        b.connection.execute_batch(&format!("CREATE TRIGGER invalidate_unrelated AFTER UPDATE OF parent_id ON visits BEGIN DELETE FROM tree_state WHERE root_id='{unrelated}'; END;")).unwrap();
+        let snapshot = b.snapshot().unwrap();
+        let states = b.tree_states().unwrap();
+        assert!(b
+            .move_branch(head, MoveTo::Tree(TreeId(t)))
+            .unwrap_err()
+            .to_string()
+            .contains("Missing tree state"));
+        assert_eq!(b.snapshot().unwrap(), snapshot);
+        assert_eq!(b.tree_states().unwrap(), states);
+        assert_eq!(b.visit(head).unwrap().parent, Some(a));
+    }
 }
