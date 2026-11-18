@@ -588,16 +588,23 @@ fn main() -> Result<()> {
         .into_iter()
         .find(|v| v.parent.is_none() && v.id != hidden_root)
         .unwrap();
+    let last = ui
+        .pages
+        .read(|b| b.tree_states())?
+        .into_iter()
+        .find(|t| t.root.root() == other.id)
+        .unwrap()
+        .last_visit;
     click_chrome(&ui, &forest_node(other.id))?;
     wait(
-        "forest node restores another tree and closes overlay",
+        "forest card restores another tree and closes overlay",
         || {
             !visible(&ui, "#forest")
-                && ui.snapshot().unwrap().current == Some(other.id)
+                && ui.snapshot().unwrap().current == Some(last)
                 && !ui.pages.selected_page().native.is_loading()
         },
     )?;
-    let first = other.id;
+    let first = last;
     key("ctrl+e")?;
     wait("forest open", || visible(&ui, "#forest"))?;
     key("Escape")?;
@@ -608,7 +615,7 @@ fn main() -> Result<()> {
     key("Escape")?;
     wait("new-tree page closed", || !visible(&ui, "#start"))?;
     assert_eq!(ui.snapshot()?.current, Some(first));
-    println!("PASS Ctrl+E opens the forest, node selection and Escape close it, and Ctrl+T opens a reversible new-tree page.");
+    println!("PASS Ctrl+E opens the forest, card selection and Escape close it, and Ctrl+T opens a reversible new-tree page.");
 
     {
         let mut other = canopy::browser::Browser::open(&directory.path().join("forest.sqlite3"))?;

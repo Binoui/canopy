@@ -393,7 +393,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .forest-row[aria-selected="true"] { border-color: var(--green); }
 .forest-row .tm, .forest-row .pg, .forest-row .st { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .forest-row .tm { flex: none; width: 34px; }
-.forest-row .sg { display: flex; align-items: center; gap: 3px; width: 65px; flex: none; font-size: 10px; color: var(--muted); }
+.forest-row .forest-icons { display: flex; align-items: center; gap: 3px; width: 65px; flex: none; font-size: 10px; color: var(--muted); }
 .forest-row .nm { flex: 1 1 auto; min-width: 55px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
 .forest-row .st { flex: 0 1000 180px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .forest-row .pg { flex: none; }
@@ -603,3 +603,13 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .forest-more { width: 100%; padding: 14px; color: var(--muted); border: 1px solid var(--border); border-radius: 8px; margin-top: 8px; }
 
 #forest-find { width: 170px; min-width: 100px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; background: var(--bg); color: var(--text); }
+
+#forest-trees .tree-card { min-height: 150px; }
+#forest-trees .tree-card > span { flex: none; }
+#forest-trees .pc-meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@container (max-width: 700px) {
+  .pv-art .mt { transform: scale(.6); }
+  #forest-count { min-width: 170px; white-space: nowrap; }
+  #forest-views, #forest-find { order: 1; }
+  #forest-close { margin-left: auto; }
+}

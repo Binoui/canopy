@@ -9,19 +9,29 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let dir = tempfile::tempdir()?;
-    Browser::open(&dir.path().join("forest.sqlite3"))?;
-    let mut db = rusqlite::Connection::open(dir.path().join("forest.sqlite3"))?;
-    let tx = db.transaction()?;
-    let id = |n: usize| ulid::Ulid::from(n as u128 + 1).to_string();
-    for t in 0..2000 {
-        for p in 0..10 {
-            let n = t * 10 + p;
-            tx.execute("INSERT INTO visits(id,parent_id,url,title,created_at,opened_at) VALUES(?,?,?,?,?,?)",rusqlite::params![id(n), (p>0).then(|| id(n-1)), format!("http://site{}.localhost:9/p/{t}/{p}",p%4),format!("Project {t} page {p}"),1_790_000_000_000i64+n as i64,1_790_000_000_000i64+n as i64])?;
+    let database = dir.path().join("forest.sqlite3");
+    if let Some(source) = std::env::var_os("FOREST_FIXTURE") {
+        std::fs::copy(source, &database)?;
+    } else {
+        Browser::open(&dir.path().join("forest.sqlite3"))?;
+        let mut db = rusqlite::Connection::open(dir.path().join("forest.sqlite3"))?;
+        let tx = db.transaction()?;
+        let id = |n: usize| ulid::Ulid::from(n as u128 + 1).to_string();
+        for t in 0..2000 {
+            for p in 0..10 {
+                let n = t * 10 + p;
+                tx.execute("INSERT INTO visits(id,parent_id,url,title,created_at,opened_at) VALUES(?,?,?,?,?,?)",rusqlite::params![id(n), (p>0).then(|| id(n-1)), format!("http://site{}.localhost:9/p/{t}/{p}",p%4),format!("Project {t} page {p}"),1_790_000_000_000i64+n as i64,1_790_000_000_000i64+n as i64])?;
+            }
+            tx.execute("INSERT INTO tree_state(root_id,last_visit_id,name,settled_at,pin_order) VALUES(?,?,?,?,?)",rusqlite::params![id(t*10),id(t*10+9),format!("Project {t}"),(t>=4).then_some(1_790_000_000_000i64+t as i64),(t<5).then_some(t as i64+1)])?;
         }
-        tx.execute("INSERT INTO tree_state(root_id,last_visit_id,name,settled_at,pin_order) VALUES(?,?,?,?,?)",rusqlite::params![id(t*10),id(t*10+9),format!("Project {t}"),(t>=4).then_some(1_790_000_000_000i64+t as i64),(t<5).then_some(t as i64+1)])?;
+        tx.execute("UPDATE session SET current_id=?", [id(9)])?;
+        tx.commit()?;
     }
-    tx.execute("UPDATE session SET current_id=?", [id(9)])?;
-    tx.commit()?;
+    let db = rusqlite::Connection::open(&database)?;
+    if let Some(destination) = std::env::var_os("FOREST_FIXTURE_OUT") {
+        db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
+        std::fs::copy(&database, destination)?;
+    }
     println!(
         "fixture trees={} pages={}",
         db.query_row("SELECT count(*) FROM tree_state", [], |r| r
@@ -54,7 +64,15 @@ fn main() -> Result<()> {
             .as_secs_f64()
             * 1000.;
         let started = Instant::now();
-        xdo(&["key", "--clearmodifiers", "ctrl+e"])?;
+        xdo(&[
+            "key",
+            "--clearmodifiers",
+            if std::env::var_os("FOREST_HISTORY").is_some() {
+                "ctrl+h"
+            } else {
+                "ctrl+e"
+            },
+        ])?;
         wait("forest paint", || {
             chrome(&ui, "painted!==null").is_ok_and(|v| v == true)
         })?;

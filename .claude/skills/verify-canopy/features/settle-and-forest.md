@@ -1,36 +1,18 @@
 # Settle and the forest
 
-Settling a tree takes its tab away and keeps every page, waiting ones included. A toast offers Undo. The forest view lists every tree and keeps settled ones under Settled, where opening a page brings the tab back.
+Settling removes a tab and keeps every page, including waiting pages. Undo returns it. Saving and settling are independent.
 
 ## Sub-features
 
-- `settle-tree` settles the current tree.
-- `settle-undo` brings it back from the toast.
-- `forest-view` shows open and settled trees with their page counts.
+- `settle-tree`: Ctrl+W, tab ×, middle click or tree menu; Undo or Ctrl+Shift+T restores it.
+- `forest-view`: Ctrl+E or Forest opens Trees, with Open cards in tab order and Saved cards in saved order. Ctrl+H opens History, switches from Trees, or closes History.
+- `forest-history`: settled unsaved trees grouped by local last-use day; select a row for a miniature and a capped preorder outline. Reopen/Enter/double-click resumes its last page; an outline click opens that page. Save keeps it settled, moves it to Saved and selects the successor.
+- `forest-find`: typing anywhere searches titles and every site in both views. Escape clears text first, then closes; close clears the query.
 
-## How to get to it (user POV)
+## Drive with canopy-verify
 
-- Ctrl+W, a middle click on a tab, the × on a tab, or right-click a tab then Settle tree.
-- Undo in the toast, or Ctrl+Shift+T.
-- Ctrl+E or the Forest button at the left of the tab row.
+Use a stress launch and doctor. At 1240px, open Ctrl+E; inspect Open and Saved, click a card, then reopen. Use arrows and Tab. Menu, Shift+F10 and right-click open Rename, Save tree/Remove from saved, and Settle tree for open trees. All mutations keep the forest open, including settling the current tree.
 
-## Driving it with canopy-verify
+Open Ctrl+H. Select a history row, use Up/Down and inspect the preview; exercise Reopen, Save and an outline page. Find a title and a site; check no matches and the two Escape presses. Resize to at least 1920px and below 700px pop-in width; the preview stacks above the list at narrow width. Capture dark and light at each size, resizing by one pixel and back before capture if WebKit leaves a black band. On large fixtures, Show older trees or keyboard traversal extends the loaded rows by 60.
 
-Preconditions:
-
-- A fresh stress launch and a clean doctor.
-
-- **Settle.** Run `$V key ctrl+2`, `sleep 3`, `$V key ctrl+w`, `sleep 2`, `$V shot settle-toast`. The "best 75%" tab is gone, and a toast reads "Settled 'best 75% mechanical keyboard 2026 at Search' · 9 waiting kept" with Undo.
-- **Stored.** Run `$V db "SELECT t.settled_at IS NOT NULL AS settled FROM tree_state t JOIN visits r ON r.id = t.root_id WHERE r.title LIKE 'best 75%'" settle-row`. Returns 1.
-- **Forest.** Run `$V key ctrl+e`, `sleep 2`, `$V shot settle-forest`. The header counts one more settled tree than before (4 settled on the stress seed), and the current tree is listed first.
-- **Undo.** Right after the settle, run `$V key ctrl+shift+t`, `sleep 2`, `$V shot settle-undo`. The tab returns on the page it was on, and the same query, saved as `settle-undo-row`, returns 0.
-
-## Saved trees
-
-Tab menus offer Rename, Save tree (or Remove from saved), and Settle tree. Saved trees keep their pushpin mark, including in the overflow list. Saving and settling are independent: a settled saved tree stays on the new-tree page under Saved trees and its card restores the last page. The card menu offers Remove from saved. Saved state survives a restart. The forest canvas sits 22 px from each window edge with no width cap; Fit still fits it to the available width.
-
-## Gotchas
-
-- After settling, Canopy moves to another open tree. Do not assume which one.
-- With the palette, new-tree page or forest open, Ctrl+W closes that overlay instead of settling. Press Escape first.
-- The toast stays on screen for a while after Undo. Assert the tab and the query, not the toast.
+Check saved/settled state with read-only `tree_state` queries. A saved settled card also restores from the new-tree page after a restart. With no history a hint explains it; no saved trees has a separate saving hint. The forest keeps 22px margins and no width cap. Closing returns focus to its trigger or the page; Ctrl+W closes the forest before settling.

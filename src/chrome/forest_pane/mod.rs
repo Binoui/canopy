@@ -650,4 +650,40 @@ mod tests {
             Reply::Close
         ));
     }
+    #[test]
+    fn history_dates_use_events_else_settle_and_day_counts_include_unloaded_rows() {
+        let mut f = fixture(132, 1);
+        change(&mut f, |states| {
+            for s in states {
+                s.last_event_at = None;
+                if !s.lifecycle.is_open() {
+                    s.lifecycle = crate::browser::Lifecycle::Settled {
+                        since: 1_790_000_000_000,
+                    };
+                }
+            }
+        });
+        let mut p = ForestPane::default();
+        let v = value(p.input(Input::Open(View::History), &f));
+        assert_eq!(rows(&v).len(), 60);
+        assert_eq!(v["history"]["items"][0]["count"], "131 trees");
+        let tree = f.forest.settled().last().unwrap().id;
+        change(&mut f, |states| {
+            states
+                .iter_mut()
+                .find(|s| s.root == tree)
+                .unwrap()
+                .last_event_at = Some(1_800_000_000_000)
+        });
+        let v = value(p.present(&f));
+        assert_eq!(rows(&v)[0]["id"], tree.root().to_string());
+        let f = fixture(1, 1);
+        p.input(Input::Close, &f);
+        let v = value(p.input(Input::Open(View::History), &f));
+        assert_eq!(
+            v["history"]["empty"],
+            "No settled trees yet. A tree you settle waits here."
+        );
+        assert!(v["history"]["preview"].is_null());
+    }
 }

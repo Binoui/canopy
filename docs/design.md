@@ -119,8 +119,7 @@ The tabs, the tree strip, the palette, the attached lists, the menus, the "New t
 
 Chrome frames carry the current tree, open-tab summaries, waiting pages and the
 open palette's scope page. The start page requests its saved and suggested miniature data when shown. The
-forest requests both layouts on open; Rust rebuilds them when the forest changes
-while open. Closing the forest stops sending its history. Unchanged strip items
+forest requests its independent value after allocation. `ForestPane` owns Closed or Open, Find text and either Trees or History with its selection anchor and loaded reach. A fresh `Index` derives sites and dated history from the in-memory projection, without a cache. Closing discards pane state. Unchanged strip items
 and list rows keep their DOM nodes. After a refresh, the strip keeps WebKit's
 animation clock active for up to 300 ms, as it does during movement, but skips
 all geometry writes when nothing moves. This prevents idle clock startup from
@@ -141,13 +140,13 @@ The current-tree workbench uses one Rust preorder outline for both Tree tiles an
 
 The sheet takes keyboard focus after its final allocation. On close, a visible, focusable keyboard trigger gets focus back; otherwise the page gets focus. A pointer opening returns to the page. Escape clears both filters before closing. Every close clears the filters, while fold overrides last for the window session. The side chosen by the user stays separate from a List forced by overflow. Arrow keys traverse or fold the outline, Enter opens, Delete reuses Dismiss, and Menu or Shift+F10 reuses the node menu. A non-navigation action keeps the sheet open, including settling a branch that moves the current page. Keyed row and tile buttons survive frame refreshes. Filter and toolbar controls also survive refreshes. Node menus focus their first action and share Up, Down, Home, End, Enter, and Escape handling wherever they open.
 
-Tree menus come from `tree_card::menu` in Rust for tabs and saved cards. The new-tree page keeps its single Remove from saved action. Rename takes the name carried by its menu row, independent of tab membership. `tree_card::card` builds saved cards and their miniature JSON; one `treeCard` painter and `.tree-card` style draw them. Saving remains independent of settling. The forest pop-in sits 22 px from each window edge without a width cap; its existing canvas and Fit control use that room.
+Tree menus come from `tree_card::menu` in Rust for tabs and saved cards. The new-tree page keeps its single Remove from saved action. Rename takes the name carried by its menu row, independent of tab membership. `tree_card::card` builds saved cards and their miniature JSON; one `treeCard` painter and `.tree-card` style draw them. Saving remains independent of settling. The forest pop-in sits 22 px from each window edge without a width cap. Bounded cards align left; History keeps a list at most 720 px wide beside a preview, stacking below it when the pop-in is under 700 px. Tree menus on both bands and History use the same builder and tab-menu order. Save, Remove from saved, Rename and Settle preserve the pop-in, even when settling changes the current page.
 
 Transient views retain their trigger in a focus-return record. Menus, search, saved text and the forest take focus and contain Tab. Closing returns focus to the trigger, with a stable DOM locator when a refresh replaced it. Tab buttons retain identity across frames. Attached strip lists take focus on Down or Enter and return to the item on Escape. Menu and Shift+F10 use the same context-menu handlers as pointer input.
 
 Rust builds accessible names, branch-count descriptions and each visit's waiting, loaded and live state suffix. Chrome exposes tab selection, current pages, branch counts, switch state, theme state and palette selection through ARIA. CSS reads the state attributes for selection and toggles. The palette keeps DOM focus on its combobox and exposes the selected listbox option through aria-activedescendant. Separate visually hidden live regions announce status and errors. The visible toast carries no live role. Keyboard focus uses the text colour to distinguish it from green selection. Tabs and list headers use inset outlines to keep the full ring visible. The tab row uses roving focus with Left, Right, Home and End. The Saved text button follows the current-page item in DOM order. Strip lists retain focus on pointer leave only after keyboard input.
 
-With the desktop reduced-motion preference, strip moves and the forest camera finish immediately, and CSS transitions are disabled.
+With the desktop reduced-motion preference, strip moves finish immediately, and CSS transitions are disabled.
 
 The zoomed tree sizes its body from the window height sent by Rust, before measuring and centring the current tile. It never uses the temporary native view height. The chrome suppresses WebKit navigation context menus outside editable fields and selected text. GTK tooltip queries are refused while a chrome layer is open, so cached tooltips cannot cover menus even with a stationary pointer. Tooltips work again after the layer closes.
 
@@ -310,7 +309,7 @@ chrome frame. Building it scans hidden handles once (O(hidden pages), no databas
 queries). Only that current visit gets a filled grey bottom-left dot (green is kept
 for pages not read yet, whose top-right dot is larger);
 selected pages, native back entries and dormant checkpoints do not. The strip,
-forest, tree sheet tree/list and tabs share the mark; a tab uses its tree's last
+tree sheet tree/list and tabs share the mark; a tab uses its tree's last
 visit. Preview metadata, node tooltips and tree list details say “Still open”.
 Never-seen pages keep their separate top-right waiting dot. Absolute positioning
 preserves node geometry. Hold completion, pressure removal and hidden process death
@@ -480,10 +479,9 @@ site icon. An arriving icon refreshes retained images on every chrome surface.
 Start cards carry miniature icon URLs independently of the current-tree visit
 map. Reopening clears the old cards. Rust sends saved trees and bookmarks first;
 the view acknowledges two animation frames before asking Rust to rank suggestions.
-Forest layouts survive closing and reopening until the projection changes. The
-view requests a forest frame after its full-window allocation, and retains that
-payload by revision. A projection, live-page or loaded-page change invalidates the
-payload; an unchanged reopen reuses it without resending all visits.
+Forest values carry only the shown view. Trees lists open trees in tab order and saved trees in pin order; the categories overlap. History excludes saved trees, sorts by last event (settle time as fallback), and groups in local calendar days. It sends 60 rows initially, growing by 60 on explicit request or keyboard traversal to the end; repeated requests for the same reach do nothing. Day counts include matching trees beyond the loaded slice. The count line always shows category totals. Title and all-site Find matching, selection reconciliation and labels belong to Rust. Selection keeps its tree when possible, otherwise the row at its old position, then the last row. Each History value carries one larger miniature and a plain preorder outline, using true depth and stopping at 40 rows. The main chrome frame never includes forest data or inactive trees' pages for this surface.
+
+Cards, history rows, preview actions, outline pages and the older-trees control retain keyed DOM nodes across values. Preview buttons are direct keyed children, so changes to nearby text cannot replace a held control. Closing clears query, selection and paging. Ctrl+E toggles Trees, Ctrl+H switches Trees to History or toggles History; Escape clears a nonempty query before closing.
 
 The new-tree page shows a How trees work card until Got it updates session.trees_help. Settings and F1 persistently restore the card and open the start surface. Rust sends its static lines and legend once when the chrome is ready; the view reuses the page marks and miniature drawing. A successful queued-link context callback emits Waiting once. HtmlChrome groups feedback from the same current parent within 2.6 seconds. The After item and waiting counter glow once for 320 ms, with no animation under reduced motion.
 

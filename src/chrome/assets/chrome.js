@@ -1772,7 +1772,7 @@ function forestPreviewHtml(p) {
 function historyItemHtml(i) {
   if (i.kind === 'day') return `<div class="forest-day" data-key="${i.key}" role="presentation"><b>${esc(i.label)}</b><span>${esc(i.count)}</span></div>`;
   return `<button class="forest-row" role="option" data-key="${i.key}" data-id="${i.id}" data-forest="row" data-tree-menu aria-selected="${i.selected}" tabindex="${i.selected ? 0 : -1}" aria-label="${esc(i.name)}">`
-    + `<span class="tm">${esc(i.time)}</span><span class="sg">${i.icons.map(n => fav(n.url, true, 16)).join('')}${i.more ? `<span>${esc(i.more)}</span>` : ''}</span>`
+    + `<span class="tm">${esc(i.time)}</span><span class="forest-icons">${i.icons.map(n => fav(n.url, true, 16)).join('')}${i.more ? `<span>${esc(i.more)}</span>` : ''}</span>`
     + `<span class="nm">${esc(i.title)}</span><span class="st">${esc(i.sites)}</span><span class="pg">${esc(i.pages)}</span></button>`;
 }
 function openForestTree(id) { uncover(); intent('select-tree', { id }); }
