@@ -9,6 +9,7 @@ const MOVE = 300;
 const LEAVES = 3;
 const MONOGRAM = ['#d95c42', '#3b7ad6', '#2e9e5e', '#9c6bde', '#d9962e', '#3b99ad', '#d1547a', '#6b7380'];
 const ICONS = {
+  read: '<path d="M4 10l8-5 8 5v9H4z" stroke-width="1.7"/><path d="M4 10l8 5.5 8-5.5" stroke-width="1.7"/>',
   mail: '<path d="M4 6h16v12H4z" stroke-width="1.7"/><path d="M4 7l8 6 8-6" stroke-width="1.7"/>',
   bookmark: '<path d="M6 3h12v18l-6-4-6 4z" stroke-width="1.7"/>',
   expand: '<path d="M9 4H4v5M15 4h5v5M4 15v5h5M20 15v5h-5" stroke-width="1.7"/>',
@@ -957,14 +958,21 @@ function refreshPopover() {
     const address = active?.dataset.account;
     const id = active?.dataset.id;
     const key = active?.dataset.key;
-    const role = ['mail-tab', 'mail-row', 'mail-inbox', 'mail-more'].find((c) => active?.classList.contains(c));
+    const role = ['mail-tab', 'mail-row', 'mail-mark', 'mail-inbox', 'mail-more'].find((c) => active?.classList.contains(c));
+    const item = active?.closest('.mail-item');
+    const items = item ? [...item.parentElement.querySelectorAll('.mail-item')] : [];
+    const index = items.indexOf(item);
+    const near = index < 0 ? [] : [...items.slice(index + 1), ...items.slice(0, index).reverse()]
+      .map((el) => el.querySelector('.mail-row').dataset.id);
     const hadFocus = popover.contains(active);
     renderPopover();
     if (!S.popover) return;
     keepPopoverInside();
     if (hadFocus) {
-      const row = role && [...popover.querySelectorAll(`.${role}`)].find((el) =>
-        role === 'mail-tab' ? el.dataset.key === key : el.dataset.account === address && (role !== 'mail-row' || el.dataset.id === id));
+      const controls = role ? [...popover.querySelectorAll(`.${role}`)] : [];
+      const row = role === 'mail-row' || role === 'mail-mark'
+        ? [id, ...near].map((wanted) => controls.find((el) => el.dataset.account === address && el.dataset.id === wanted)).find(Boolean)
+        : controls.find((el) => role === 'mail-tab' ? el.dataset.key === key : el.dataset.account === address);
       (row || (role === 'mail-tab' && popover.querySelector('.mail-tab[aria-selected="true"]')) || popover).focus({ preventScroll: true });
       row?.scrollIntoView({ block: 'nearest' });
     }
@@ -1041,9 +1049,12 @@ function renderPopover() {
       + (mail.notice ? `<div class="mail-notice" role="status">${esc(mail.notice)}</div>` : '')
       + accounts.map((a) => '<section class="mail-account">'
         + `<button class="menu-row mail-inbox" data-account="${esc(a.account)}" aria-label="${esc(a.name)}"><span class="grow">${esc(a.address)}</span><span class="menu-detail">${esc(a.count)}</span></button>`
-        + a.rows.map((r) => `<button class="menu-row mail-row" data-account="${esc(a.account)}" data-id="${esc(r.id)}" aria-label="${esc(r.name)}">`
+        + a.rows.map((r) => `<div class="mail-item"><button class="menu-row mail-row" data-account="${esc(a.account)}" data-id="${esc(r.id)}" aria-label="${esc(r.name)}">`
           + `<span class="mail-line"><span class="mail-from">${esc(r.from)}</span><span class="menu-detail">${esc(r.when)}</span></span>`
-          + `<span class="mail-subject">${esc(r.subject)}</span><span class="mail-snippet">${esc(r.snippet)}</span></button>`).join('')
+          + `<span class="mail-subject">${esc(r.subject)}</span><span class="mail-snippet">${esc(r.snippet)}</span>`
+          + (r.unmarked ? `<span class="mail-unmarked">${esc(r.unmarked)}</span>` : '') + '</button>'
+          + (r.markName ? `<button class="icon-button mail-mark" data-account="${esc(a.account)}" data-id="${esc(r.id)}" title="Mark read" aria-label="${esc(r.markName)}">${icon('read')}</button>` : '')
+          + '</div>').join('')
         + (a.more ? `<button class="menu-row mail-more" data-account="${esc(a.account)}">${esc(a.more)}</button>` : '')
         + '</section>').join('');
     popover.querySelectorAll('.mail-tab').forEach((tab) => {
@@ -1063,6 +1074,11 @@ function renderPopover() {
         select(tabs[next].key);
       });
     });
+    popover.querySelectorAll('.mail-mark').forEach((button) => button.addEventListener('click', (event) => {
+      // Reflow can put the next mail under the second click of a double click.
+      if (event.detail > 1) return;
+      intent('mark-mail-read', { account: button.dataset.account, id: button.dataset.id });
+    }));
     popover.querySelectorAll('.mail-row').forEach((row) => row.addEventListener('click', () => {
       closePopover(false);
       intent('open-mail', { account: row.dataset.account, id: row.dataset.id });

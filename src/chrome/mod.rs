@@ -108,7 +108,7 @@ pub enum PaletteSeed {
 /// What the chrome asks the browser to do.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChromeIntent {
-    CheckMail,
+    Mail(crate::mail::MailAsk),
     PageScale(crate::pages::PageScaleAction),
     AnswerFormReturn {
         question: u64,
@@ -1134,7 +1134,11 @@ impl Inner {
         let frame = frame.as_ref()?;
         let index = || message["index"].as_u64().map(|i| i as usize);
         Some(match message["kind"].as_str()? {
-            "check-mail" => ChromeIntent::CheckMail,
+            "check-mail" => ChromeIntent::Mail(crate::mail::MailAsk::Check),
+            "mark-mail-read" => ChromeIntent::Mail(crate::mail::MailAsk::MarkRead {
+                address: message["account"].as_str()?.to_owned(),
+                id: message["id"].as_str()?.to_owned(),
+            }),
             "open-mail" => ChromeIntent::Navigate {
                 url: frame
                     .mail

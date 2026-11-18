@@ -13,13 +13,22 @@ use super::{
     delay_after, feed, trigger_delay, AccountNumber, Check, Mail, Origin, Step, Walk, FIRST, GAP,
     PAGE_DELAY,
 };
-use crate::pages::{Fetched, Pages};
+use super::{
+    marks::{Key, Marks},
+    MailAsk, Unmarked, CONFIRM, LINGER, SETTLE, UNCONFIRMED,
+};
+use crate::pages::{ErrandEnd, ErrandTicket, Fetched, Pages};
 
 pub struct MailWatch {
     me: Weak<Self>,
     pages: Rc<Pages>,
     origin: Option<Origin>,
     mail: RefCell<Mail>,
+    marks: RefCell<Marks<ErrandTicket>>,
+    linger: Cell<Duration>,
+    settle: Cell<Duration>,
+    confirm: Cell<Duration>,
+    unconfirmed: Cell<Duration>,
     phase: RefCell<Phase>,
     stopped: Cell<bool>,
     failures: Cell<u32>,
@@ -28,7 +37,7 @@ pub struct MailWatch {
     gap: Cell<Duration>,
     /// A trigger that arrived while a check ran. It applies once that check ends.
     pending: Cell<Option<Duration>>,
-    checked: Box<dyn Fn(Vec<String>)>,
+    changed: Box<dyn Fn(Vec<String>)>,
 }
 
 enum Phase {
@@ -40,6 +49,7 @@ enum Phase {
     Checking {
         walk: Walk,
         cancel: gio::Cancellable,
+        began: Instant,
     },
 }
 
@@ -47,13 +57,18 @@ impl MailWatch {
     pub fn start(
         pages: Rc<Pages>,
         origin: Option<Origin>,
-        checked: impl Fn(Vec<String>) + 'static,
+        changed: impl Fn(Vec<String>) + 'static,
     ) -> Rc<Self> {
         let watch = Rc::new_cyclic(|me| Self {
             me: me.clone(),
             pages,
             origin,
             mail: RefCell::default(),
+            marks: RefCell::default(),
+            linger: Cell::new(LINGER),
+            settle: Cell::new(SETTLE),
+            confirm: Cell::new(CONFIRM),
+            unconfirmed: Cell::new(UNCONFIRMED),
             phase: RefCell::new(Phase::Idle),
             stopped: Cell::new(false),
             failures: Cell::new(0),
@@ -61,7 +76,7 @@ impl MailWatch {
             page: RefCell::default(),
             gap: Cell::new(GAP),
             pending: Cell::new(None),
-            checked: Box::new(checked),
+            changed: Box::new(changed),
         });
         if watch.origin.is_some() {
             watch.wait(FIRST);
@@ -70,7 +85,71 @@ impl MailWatch {
     }
 
     pub fn mail(&self) -> Mail {
-        self.mail.borrow().clone()
+        self.marks.borrow().shown(&self.mail.borrow())
+    }
+
+    pub fn ask(&self, ask: MailAsk) {
+        match ask {
+            MailAsk::Check => self.check_soon(),
+            MailAsk::MarkRead { address, id } => self.mark_read(&address, &id),
+        }
+    }
+
+    fn mark_read(&self, address: &str, id: &str) {
+        if self.stopped.get() {
+            return;
+        }
+        let changed =
+            self.marks
+                .borrow_mut()
+                .mark(&self.mail.borrow(), address, id, |key, link| {
+                    let weak = self.me.clone();
+                    self.pages.run_errand(link, self.linger.get(), move |end| {
+                        if let Some(watch) = weak.upgrade() {
+                            watch.page_left(key, end);
+                        }
+                    })
+                });
+        if changed {
+            (self.changed)(vec![]);
+        }
+    }
+
+    fn page_left(&self, key: Key, end: ErrandEnd) {
+        if self.stopped.get() {
+            return;
+        }
+        let result = match end {
+            ErrandEnd::Done => Ok(()),
+            ErrandEnd::Strayed => Err(Unmarked::SignIn),
+            ErrandEnd::Failed => Err(Unmarked::NoAnswer),
+        };
+        let changed = self
+            .marks
+            .borrow_mut()
+            .page_left(&key, result, Instant::now());
+        match result {
+            Ok(()) => self.pull_forward(self.confirm.get()),
+            Err(Unmarked::SignIn) => self.pull_forward(Duration::ZERO),
+            Err(_) => (),
+        }
+        if changed {
+            (self.changed)(vec![]);
+        }
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn set_mark_pace(
+        &self,
+        linger: Duration,
+        settle: Duration,
+        confirm: Duration,
+        unconfirmed: Duration,
+    ) {
+        self.linger.set(linger);
+        self.settle.set(settle);
+        self.confirm.set(confirm);
+        self.unconfirmed.set(unconfirmed);
     }
 
     pub fn check_soon(&self) {
@@ -94,6 +173,7 @@ impl MailWatch {
     /// Permanently stops timers and in-flight requests. Late answers are ignored.
     pub fn stop(&self) {
         self.stopped.set(true);
+        self.marks.replace(Marks::default());
         match self.phase.replace(Phase::Idle) {
             Phase::Waiting { timer, .. } => timer.remove(),
             Phase::Checking { cancel, .. } => cancel.cancel(),
@@ -152,6 +232,7 @@ impl MailWatch {
         *self.phase.borrow_mut() = Phase::Checking {
             walk,
             cancel: gio::Cancellable::new(),
+            began: Instant::now(),
         };
         self.fetch(first);
     }
@@ -193,6 +274,11 @@ impl MailWatch {
     }
 
     fn finish(&self, check: Check) {
+        let began = match &*self.phase.borrow() {
+            Phase::Checking { began, .. } => *began,
+            _ => return,
+        };
+        let good = matches!(check, Check::Read(_));
         let failures = if matches!(check, Check::Failed(_)) {
             self.failures.get().saturating_add(1)
         } else {
@@ -210,8 +296,19 @@ impl MailWatch {
             .as_millis() as i64;
         let (mail, signed_out) = self.mail.borrow().after(check, now_ms);
         *self.mail.borrow_mut() = mail;
+        let now = Instant::now();
+        if good {
+            if let Some(wanted) =
+                self.marks
+                    .borrow_mut()
+                    .checked(&self.mail.borrow(), began, self.settle.get(), now)
+            {
+                delay = delay.min(trigger_delay(wanted, Some(Duration::ZERO), self.gap.get()));
+            }
+        }
+        self.marks.borrow_mut().expire(now, self.unconfirmed.get());
         self.wait(delay);
-        (self.checked)(signed_out);
+        (self.changed)(signed_out);
     }
 }
 

@@ -1,6 +1,8 @@
 //! Memory-only unread Gmail, read with the login the pages already hold.
 
 mod feed;
+mod marks;
+pub use marks::Unmarked;
 #[cfg(feature = "desktop")]
 mod watch;
 #[cfg(feature = "desktop")]
@@ -16,6 +18,17 @@ const EVERY: Duration = Duration::from_secs(180);
 const RETRY: Duration = Duration::from_secs(30);
 const RETRY_MAX: Duration = Duration::from_secs(900);
 const GAP: Duration = Duration::from_secs(20);
+const LINGER: Duration = Duration::from_secs(8);
+const CONFIRM: Duration = Duration::from_secs(3);
+const SETTLE: Duration = Duration::from_secs(15);
+const UNCONFIRMED: Duration = Duration::from_secs(60);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MailAsk {
+    Check,
+    MarkRead { address: String, id: String },
+}
+
 const PAGE_DELAY: Duration = Duration::from_secs(2);
 
 /// Gmail's bounded account slot.
@@ -120,6 +133,7 @@ pub struct Message {
     pub snippet: String,
     pub issued: Option<i64>,
     pub link: Url,
+    pub unmarked: Option<Unmarked>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

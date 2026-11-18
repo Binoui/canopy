@@ -690,8 +690,8 @@ impl ChromeHost for Ui {
 
     fn dispatch(&self, intent: ChromeIntent) {
         let Some(ui) = self.me.upgrade() else { return };
-        if intent == ChromeIntent::CheckMail {
-            self.mail.check_soon();
+        if let ChromeIntent::Mail(ask) = intent {
+            self.mail.ask(ask);
             return;
         }
         if let ChromeIntent::AnswerFormReturn { question, proceed } = intent {
@@ -717,7 +717,7 @@ impl ChromeHost for Ui {
             self.chrome.uncover();
         }
         let result = match intent {
-            ChromeIntent::AnswerFormReturn { .. } | ChromeIntent::CheckMail => unreachable!(),
+            ChromeIntent::AnswerFormReturn { .. } | ChromeIntent::Mail(_) => unreachable!(),
             ChromeIntent::CancelContinuation => Ok(()),
             ChromeIntent::OpenPath { first, second } => self.pages.open_path(first, second),
             ChromeIntent::Bookmark { url, title } => {
