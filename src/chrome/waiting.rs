@@ -129,7 +129,9 @@ mod tests {
                 lifecycle: if settled {
                     Lifecycle::Settled { since: 100 }
                 } else {
-                    Lifecycle::Open
+                    Lifecycle::Open {
+                        tab: crate::browser::TabOrder::new(0),
+                    }
                 },
             })
             .collect();

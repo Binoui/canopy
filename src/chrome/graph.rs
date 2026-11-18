@@ -431,7 +431,9 @@ mod tests {
                 pin: None,
                 name: None,
                 last_event_at: None,
-                lifecycle: Lifecycle::Open,
+                lifecycle: Lifecycle::Open {
+                    tab: crate::browser::TabOrder::new(0),
+                },
             }],
         )
         .unwrap();

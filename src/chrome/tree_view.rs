@@ -418,7 +418,9 @@ mod tests {
             vec![TreeState {
                 root: TreeId(ids[0]),
                 last_visit: ids[3],
-                lifecycle: Lifecycle::Open,
+                lifecycle: Lifecycle::Open {
+                    tab: crate::browser::TabOrder::new(0),
+                },
                 name: None,
                 pin: None,
                 last_event_at: None,
@@ -499,7 +501,9 @@ mod tests {
                 vec![TreeState {
                     root: TreeId(ids[0]),
                     last_visit: ids[0],
-                    lifecycle: Lifecycle::Open,
+                    lifecycle: Lifecycle::Open {
+                        tab: crate::browser::TabOrder::new(0),
+                    },
                     name: None,
                     pin: None,
                     last_event_at: None,
@@ -637,7 +641,9 @@ mod tests {
                     last_event_at: None,
                     root: TreeId(ids[0]),
                     last_visit: ids[current],
-                    lifecycle: Lifecycle::Open,
+                    lifecycle: Lifecycle::Open {
+                        tab: crate::browser::TabOrder::new(0),
+                    },
                     name: None,
                 }],
             )

@@ -698,7 +698,9 @@ mod tests {
     use crate::browser::{Download, Snapshot, TreeId, TreeState};
 
     fn chain() -> (ForestProjection, Vec<VisitId>) {
-        chain_with_lifecycle(Lifecycle::Open)
+        chain_with_lifecycle(Lifecycle::Open {
+            tab: crate::browser::TabOrder::new(0),
+        })
     }
     fn chain_with_lifecycle(lifecycle: Lifecycle) -> (ForestProjection, Vec<VisitId>) {
         chain_length(lifecycle, 3)
@@ -747,7 +749,12 @@ mod tests {
 
     #[test]
     fn back_and_forward_name_their_pages_and_the_tree_starts_after_them() {
-        let (forest, ids) = chain_length(Lifecycle::Open, 4);
+        let (forest, ids) = chain_length(
+            Lifecycle::Open {
+                tab: crate::browser::TabOrder::new(0),
+            },
+            4,
+        );
         let frame = |forest: ForestProjection, back: Option<VisitId>, forward: Option<VisitId>| {
             ChromeFrame {
                 mail: crate::mail::Mail::default(),
@@ -780,24 +787,54 @@ mod tests {
         assert_eq!(strip_for_frame(&chain, 1240.)["back"]["label"], "Page 0");
         assert_eq!(strip["left"], pins::NAV);
         let pins = pins::pins(
-            &chain_length(Lifecycle::Open, 4).0,
+            &chain_length(
+                Lifecycle::Open {
+                    tab: crate::browser::TabOrder::new(0),
+                },
+                4,
+            )
+            .0,
             &crate::mail::Mail::default(),
             1240.,
         );
         assert_eq!(strip["room"], pins.room - pins::NAV);
 
-        let (root, _) = chain_length(Lifecycle::Open, 2);
+        let (root, _) = chain_length(
+            Lifecycle::Open {
+                tab: crate::browser::TabOrder::new(0),
+            },
+            2,
+        );
         let strip = strip_for_frame(&frame(root, None, None), 1240.);
         assert!(strip["back"].is_null(), "the root has no page before it");
         assert!(strip["forward"].is_null());
 
-        let narrow = strip_for_frame(&frame(chain_length(Lifecycle::Open, 4).0, None, None), 390.);
+        let narrow = strip_for_frame(
+            &frame(
+                chain_length(
+                    Lifecycle::Open {
+                        tab: crate::browser::TabOrder::new(0),
+                    },
+                    4,
+                )
+                .0,
+                None,
+                None,
+            ),
+            390.,
+        );
         assert_eq!(
             narrow["left"], 0.,
             "a narrow window leaves the room to the tree"
         );
         let pins = pins::pins(
-            &chain_length(Lifecycle::Open, 4).0,
+            &chain_length(
+                Lifecycle::Open {
+                    tab: crate::browser::TabOrder::new(0),
+                },
+                4,
+            )
+            .0,
             &crate::mail::Mail::default(),
             390.,
         );
@@ -860,7 +897,12 @@ mod tests {
 
     #[test]
     fn current_pill_fits_reserved_room() {
-        let (forest, _) = chain_length(Lifecycle::Open, 40);
+        let (forest, _) = chain_length(
+            Lifecycle::Open {
+                tab: crate::browser::TabOrder::new(0),
+            },
+            40,
+        );
         for width in [390., 800., 1240., 1440.] {
             let strip = super::strip(&forest, &crate::mail::Mail::default(), width);
             let room = strip["room"].as_f64().unwrap();
@@ -1306,7 +1348,9 @@ mod tests {
                 name: None,
                 pin: None,
                 last_event_at: None,
-                lifecycle: Lifecycle::Open,
+                lifecycle: Lifecycle::Open {
+                    tab: crate::browser::TabOrder::new(0),
+                },
             }],
         )
         .unwrap();
