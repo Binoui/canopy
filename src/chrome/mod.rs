@@ -358,6 +358,7 @@ impl HtmlChrome {
 
     pub fn present(&self, mut frame: ChromeFrame) {
         let inner = &self.inner;
+        let committed = frame.forest.current();
         // A settled tree's page waits for its tree to reopen at commit; drawn earlier, it
         // would be current with no tab to stand under.
         if let Some(crate::browser::PendingTarget::Visit(visit)) = &frame.pending {
@@ -399,6 +400,8 @@ impl HtmlChrome {
             Some(&inner.forest_layout.borrow()),
         );
         value["tabFit"] = tabs::layout(&frame.forest, inner.tab_room.get(), inner.start.get());
+        // The page the window really shows, while `current` may already name the one opening.
+        value["committed"] = json!(committed.map(|id| id.to_string()));
         inner.call("present", &[value]);
         *inner.frame.borrow_mut() = Some(frame);
         inner.present_error();

@@ -1902,15 +1902,17 @@ window.canopy = {
     const previous = current();
     const previousTree = S.frame?.tabs.find((tab) => tab.active)?.id;
     const previousNewTree = S.frame?.newTree?.url ?? null;
+    const previousCommitted = S.frame?.committed ?? null;
     S.frame = { ...frame, start: frame.start ?? S.frame?.start };
     applyStrip(frame.strip);
     paintLoading();
     renderWaitingPin();
     renderMailPin();
     applyTheme();
+    // Overlays stay over the old page until the new one commits, as they always have.
+    if (frame.committed !== previousCommitted && S.overlay !== 'tree') setOverlay(null);
     if (frame.current !== previous) {
       hideList();
-      if (S.overlay !== 'tree') setOverlay(null);
       const sameTree = previousTree && previousTree === frame.tabs.find((tab) => tab.active)?.id;
       if (S.surface !== 'reading' && !(S.surface === 'start' && sameTree)) setSurface('reading');
     }
