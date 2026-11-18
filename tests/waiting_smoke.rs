@@ -420,6 +420,45 @@ fn switch_read_pages(ui: &Ui, read: &[String]) -> Result<()> {
         "release after Escape opens nothing"
     );
     println!("PASS Escape with Ctrl held drops the list and the release opens nothing.");
+    queue(ui, "link5")?;
+    let queued = waiting(ui)?;
+    assert_eq!(queued.len(), 1);
+    let column = |kind: &str| -> Result<Vec<String>> {
+        Ok(serde_json::from_value(chrome(
+            ui,
+            &format!("[...document.querySelectorAll('#switcher .switcher-col[data-kind=\"{kind}\"] [data-id]')].map((row) => row.dataset.id)"),
+        )?)?)
+    };
+    focus_window()?;
+    xdo(&["keydown", "ctrl"])?;
+    xdo(&["key", "Tab"])?;
+    pump(60);
+    xdo(&["key", "Tab"])?;
+    wait("list with a waiting page", || visible(ui, "#switcher"))?;
+    assert_eq!(
+        column("waiting")?,
+        queued,
+        "waiting pages fill the left column"
+    );
+    let read = column("read")?;
+    assert!(read.len() >= 2, "read pages fill the right column");
+    assert_eq!(rows(ui)?, [queued.clone(), read.clone()].concat());
+    selected(ui, &read[0], "the second Tab crosses to the read column")?;
+    shots(ui, "switcher-columns")?;
+    click_chrome(ui, &format!("#switcher [data-id=\"{}\"]", read[1]))?;
+    activated(ui, &read[1])?;
+    assert!(!visible(ui, "#switcher"));
+    xdo(&["keyup", "ctrl"])?;
+    pump(200);
+    assert_eq!(
+        ui.snapshot()?.current.map(|id| id.to_string()).as_ref(),
+        Some(&read[1]),
+        "releasing Ctrl after a click opens nothing more"
+    );
+    println!("PASS the list shows waiting pages left and read pages right, Tab crosses columns, a click opens a row.");
+    key("ctrl+Tab")?;
+    activated(ui, &queued[0])?;
+    println!("PASS a quick Ctrl+Tab still opens the waiting page first.");
     Ok(())
 }
 

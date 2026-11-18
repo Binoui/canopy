@@ -848,11 +848,15 @@ function renderSwitcher() {
     return `<div class="menu-row switcher-row" role="option" id="switcher-${i++}" data-id="${v.id}" aria-selected="${selected}" aria-label="${esc(v.name)}">`
       + `${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(detail)}</span></div>`;
   };
+  // Waiting pages on the left, read pages on the right. Tab walks down the left column first.
+  const column = (kind, heading, pages, detail, empty, after = '') => `<div class="switcher-col" data-kind="${kind}"><div class="menu-heading">${heading}</div>`
+    + (pages.length ? pages.map((v) => row(v, detail(v) === v.label ? '' : detail(v))).join('') : `<div class="menu-hint">${empty}</div>`) + `${after}</div>`;
   const waiting = rows.waiting.length + rows.moreWaiting;
-  $('switcher').innerHTML = (rows.waiting.length ? `<div class="menu-heading">Waiting · ${waiting}</div>` + rows.waiting.map((v) => row(v, v.detail)).join('')
-      + (rows.moreWaiting ? `<div class="menu-hint">${rows.moreWaiting} more waiting</div>` : '') : '')
-    + (rows.read.length ? '<div class="menu-heading">Read</div>' + rows.read.map((v) => row(v, v.site)).join('') : '')
-    + '<div class="switcher-keys"><kbd>Tab</kbd> next · <kbd>Shift Tab</kbd> back · release <kbd>Ctrl</kbd> to open</div>';
+  $('switcher').innerHTML = '<div class="switcher-cols">'
+    + column('waiting', waiting ? `Waiting · ${waiting}` : 'Waiting', rows.waiting, (v) => v.detail, 'Nothing waiting',
+      rows.moreWaiting ? `<div class="menu-hint">${rows.moreWaiting} more waiting</div>` : '')
+    + column('read', 'Read', rows.read, (v) => v.site, 'No other read pages')
+    + '</div><div class="switcher-keys"><kbd>Tab</kbd> next · <kbd>Shift Tab</kbd> back · release <kbd>Ctrl</kbd> or click to open</div>';
   const chosen = $('switcher').querySelector('[aria-selected="true"]');
   $('switcher').setAttribute('aria-activedescendant', chosen?.id ?? '');
   chosen?.scrollIntoView({ block: 'nearest' });

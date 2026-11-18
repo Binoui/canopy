@@ -7,7 +7,7 @@ Ctrl+click, a middle click, or a link meant for a new window adds the destinatio
 - `waiting-add` adds a waiting page by middle-clicking a link.
 - `waiting-count` shows the count on the strip counter and the tab badge.
 - `waiting-next` opens the newest waiting page with Ctrl+Tab.
-- `page-switcher`: with nothing waiting, Ctrl+Tab opens the read page before this one; holding Ctrl and pressing Tab again shows `#switcher` (waiting rows, then read rows), and releasing Ctrl opens the selected row.
+- `page-switcher`: with nothing waiting, Ctrl+Tab opens the read page before this one; holding Ctrl and pressing Tab again shows `#switcher` (waiting rows in the left `.switcher-col[data-kind="waiting"]`, read rows in the right one; Tab walks left then right; a click opens a row), and releasing Ctrl opens the selected row.
 
 ## How to get to it (user POV)
 
