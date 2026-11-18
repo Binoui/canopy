@@ -167,8 +167,8 @@ impl ForestProjection {
             }
         }
         trees.sort_by_key(|tree| match tree.lifecycle {
-            Lifecycle::Open { .. } => (0, 0),
-            Lifecycle::Settled { since } => (1, -since),
+            Lifecycle::Open { tab } => (0, tab.index() as i128),
+            Lifecycle::Settled { since } => (1, -i128::from(since)),
         });
         let open = trees.partition_point(|tree| tree.lifecycle.is_open());
         Ok(Self {

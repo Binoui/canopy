@@ -2359,16 +2359,15 @@ mod tests {
     }
 
     fn tab_roots(b: &Browser) -> Vec<TreeId> {
-        let mut states = b.tree_states().unwrap();
-        states.sort_by_key(|state| match state.lifecycle {
-            Lifecycle::Open { tab } => Some(tab),
-            Lifecycle::Settled { .. } => None,
-        });
-        states
-            .into_iter()
-            .filter(|state| state.lifecycle.is_open())
-            .map(|state| state.root)
-            .collect()
+        crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap()
+        .open()
+        .iter()
+        .map(|tree| tree.id)
+        .collect()
     }
 
     #[test]
