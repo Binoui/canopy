@@ -17,12 +17,10 @@
 #forest-find { width: 170px; min-width: 100px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; background: var(--bg); color: var(--text); }
 
 @container (max-width: 700px) {
-  #forest-count { min-width: 170px; white-space: nowrap; }
-  #forest-views, #forest-find { order: 1; }
-  #forest-close { margin-left: auto; }
+  #forest-count { order: 1; flex-basis: 100%; white-space: nowrap; }
+  #forest-views { margin-left: auto; }
 }
 
 #forest-undo { flex:none; display:flex; align-items:center; gap:12px; padding:10px 14px; border-top:1px solid var(--border); }
 #forest-undo button { padding:5px 10px; background:var(--hover); border-radius:6px; }
 
-@container (max-width: 700px) { .forest-toolbar #forest-count { flex:1; } }

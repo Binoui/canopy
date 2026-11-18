@@ -7,7 +7,7 @@
 #history-rail button span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #history-rail em, #history-chips em { font-style: normal; font-size: 11px; color: var(--muted); margin-left: auto; }
 #history-rail [aria-pressed="true"], #history-chips [aria-pressed="true"] { background: var(--green-soft); color: var(--green-ink); }
-#history-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+#history-main { flex: 1; min-width: 0; max-width: 1040px; display: flex; flex-direction: column; }
 #history-top { flex: none; padding-bottom: 6px; }
 #history-top #forest-find { display: block; width: 100%; box-sizing: border-box; padding: 11px 13px; border-radius: 10px; font-size: 13px; }
 #history-count { padding: 8px 2px 2px; color: var(--muted); font-size: 11px; }
