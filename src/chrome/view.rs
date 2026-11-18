@@ -515,10 +515,19 @@ fn node_menu(forest: &ForestProjection, visit: &Visit) -> Vec<Value> {
         if !forest.is_settled(visit.id) {
             rows.push(row("settle-branch", "Settle branch".into()));
         }
-        if visit.state == VisitState::Opened || forest.opened_descendant_count(visit.id) > 0 {
+        if forest.can_detach_branch(visit.id) {
             rows.push(row("move-to-tree", "Move to its own tree".into()));
         }
     }
+    rows.push(row(
+        "choose-move-tree",
+        if visit.parent.is_none() {
+            "Merge into tree…"
+        } else {
+            "Move to tree…"
+        }
+        .into(),
+    ));
     rows
 }
 
