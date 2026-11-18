@@ -1506,7 +1506,7 @@ function setSurface(surface) {
   if (S.surface === surface) return;
   S.surface = surface;
   post({ t: 'surface', start: surface === 'start' });
-  if (surface === 'start') { if (S.frame) S.frame.start = null; S.startPaint = null; $('start-content').replaceChildren(); focusStart(); }
+  if (surface === 'start') { if (S.frame) S.frame.start = null; S.startPaint = null; $('start-content').replaceChildren(); if (S.overlay !== 'forest') focusStart(); }
   renderTabs();
   renderPlaceholder();
   $('start').hidden = surface !== 'start';

@@ -258,6 +258,25 @@ fn main() -> Result<()> {
     assert!(chrome(&ui, "!!document.activeElement.closest('#forest')")? == true);
     key("Escape")?;
     wait("closed", || !visible(&ui, "#forest"))?;
+    let current = ui.snapshot()?.current.unwrap();
+    for state in ui.pages.read(|b| b.tree_states())? {
+        if state.lifecycle.is_open() && state.root.root() != current {
+            ui.pages.settle_tree(state.root)?;
+        }
+    }
+    pump(300);
+    key("ctrl+e")?;
+    wait("last open card", || {
+        visible(&ui, ".tree-card[aria-current=true]")
+    })?;
+    key("Menu")?;
+    click_chrome(&ui, "[data-tab-action=settle]")?;
+    wait("last tree settled with forest open", || {
+        ui.snapshot().is_ok_and(|s| s.current.is_none()) && visible(&ui, "#forest")
+    })?;
+    assert!(chrome(&ui, "!!document.activeElement.closest('#forest')")? == true);
+    key("Escape")?;
+    println!("PASS settling the last open tree preserves the forest and its keyboard focus.");
     for mode in [ThemeMode::Light, ThemeMode::Dark] {
         ui.dispatch(ChromeIntent::SetTheme(mode));
         pump(100);
