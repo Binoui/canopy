@@ -723,6 +723,17 @@ fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
     wait("three suggested kinds", || {
         chrome(ui, "canopy.state().start.suggested.map(s=>s.kind)")
             .is_ok_and(|v| v == serde_json::json!(["page", "tree", "path"]))
+    })
+    .map_err(|error| {
+        let forest = ui.pages.read(|b| {
+            canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)
+        });
+        anyhow::anyhow!(
+            "{error}; painted {:?}; fresh {:?}; surface {:?}",
+            chrome(ui, "canopy.state().start.suggested"),
+            forest.as_ref().map(|f| ui.suggestions(f)),
+            chrome(ui, "canopy.state().surface")
+        )
     })?;
     let keys = chrome(ui, "canopy.state().start.suggested.map(s=>s.key)")?;
     assert_eq!(

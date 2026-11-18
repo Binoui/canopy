@@ -243,7 +243,7 @@ impl ForestPane {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browser::{Browser, Snapshot, TreeState, VisitId};
+    use crate::browser::{Browser, Snapshot, Spot, TreeState, VisitId};
     use crate::forest::ForestProjection;
     pub(super) fn fixture(count: usize, pages: usize) -> ChromeFrame {
         let dir = tempfile::tempdir().unwrap();
@@ -321,6 +321,43 @@ mod tests {
             .iter()
             .filter(|r| r["kind"] == "row")
             .collect()
+    }
+    pub(super) fn change(frame: &mut ChromeFrame, mutate: impl FnOnce(&mut Vec<TreeState>)) {
+        let mut visits = vec![];
+        let mut states = vec![];
+        for tree in frame.forest.trees() {
+            let mut stack = vec![tree.id.root()];
+            while let Some(id) = stack.pop() {
+                visits.push(frame.forest.visit(id).unwrap().clone());
+                stack.extend(frame.forest.children(id));
+            }
+            states.push(TreeState {
+                root: tree.id,
+                last_visit: tree.last_visit,
+                last_event_at: tree.last_event_at,
+                name: Some(tree.title.clone()),
+                spot: match tree.place {
+                    crate::browser::Place::Tab { pinned } => Spot::Tab {
+                        pinned,
+                        position: 0,
+                    },
+                    crate::browser::Place::Shelf { saved_at } => Spot::Shelf {
+                        saved_at,
+                        position: 0,
+                    },
+                    crate::browser::Place::History { settled_at } => Spot::History { settled_at },
+                },
+            });
+        }
+        mutate(&mut states);
+        frame.forest = ForestProjection::from_snapshot(
+            Snapshot {
+                visits,
+                current: frame.forest.current(),
+            },
+            states,
+        )
+        .unwrap();
     }
     #[test]
     fn input_rejects_unknown_actions_and_malformed_ids() {

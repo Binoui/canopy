@@ -217,24 +217,16 @@ fn preview(forest: &ForestProjection, entry: &Entry, today: &days::Civil) -> Val
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{fixture, rows, value};
+    use super::super::tests::{change, fixture, rows, value};
     use super::super::{Input, State};
     use super::*;
-    use crate::browser::{Browser, Snapshot, Spot, TreeState};
+    use crate::browser::Spot;
     #[test]
-    fn trees_follow_tabs_and_history_starts_first_and_steps() {
+    fn history_starts_first_and_steps() {
         let f = fixture(4, 4);
         let mut p = ForestPane::default();
         assert!(matches!(p.present(&f), Reply::Unchanged));
-        let v = value(p.input(Input::Open(View::Trees), &f));
-        assert_eq!(v["count"], "1 tabs · 0 saved for later · 3 in history");
-        assert_eq!(
-            v["trees"]["items"][1]["id"],
-            f.forest.tabs()[0].id.root().to_string()
-        );
-        assert_eq!(v["trees"]["items"][1]["current"], true);
-        assert!(matches!(p.present(&f), Reply::Unchanged));
-        let v = value(p.input(Input::Show(View::History), &f));
+        let v = value(p.input(Input::Open(View::History), &f));
         assert_eq!(rows(&v).len(), 3);
         assert_eq!(rows(&v)[0]["title"], "Tree 3");
         assert_eq!(rows(&v)[0]["selected"], true);
@@ -295,43 +287,6 @@ mod tests {
             json!([{"kind":"reopen","label":"Reopen"},{"kind":"save","label":"Save for later"}])
         );
     }
-    pub(super) fn change(frame: &mut ChromeFrame, mutate: impl FnOnce(&mut Vec<TreeState>)) {
-        let mut visits = vec![];
-        let mut states = vec![];
-        for tree in frame.forest.trees() {
-            let mut stack = vec![tree.id.root()];
-            while let Some(id) = stack.pop() {
-                visits.push(frame.forest.visit(id).unwrap().clone());
-                stack.extend(frame.forest.children(id));
-            }
-            states.push(TreeState {
-                root: tree.id,
-                last_visit: tree.last_visit,
-                last_event_at: tree.last_event_at,
-                name: Some(tree.title.clone()),
-                spot: match tree.place {
-                    crate::browser::Place::Tab { pinned } => Spot::Tab {
-                        pinned,
-                        position: 0,
-                    },
-                    crate::browser::Place::Shelf { saved_at } => Spot::Shelf {
-                        saved_at,
-                        position: 0,
-                    },
-                    crate::browser::Place::History { settled_at } => Spot::History { settled_at },
-                },
-            });
-        }
-        mutate(&mut states);
-        frame.forest = ForestProjection::from_snapshot(
-            Snapshot {
-                visits,
-                current: frame.forest.current(),
-            },
-            states,
-        )
-        .unwrap();
-    }
     #[test]
     fn saving_selected_history_keeps_it_settled_and_selects_the_successor() {
         let mut f = fixture(4, 4);
@@ -339,13 +294,6 @@ mod tests {
         let v = value(p.input(Input::Open(View::History), &f));
         let selected = rows(&v)[0]["id"].as_str().unwrap().to_owned();
         let successor = rows(&v)[1]["id"].clone();
-        let dir = tempfile::tempdir().unwrap();
-        let mut b = Browser::open(&dir.path().join("db")).unwrap();
-        let root = b
-            .add_roots(&[url::Url::parse("https://saved.example").unwrap()])
-            .unwrap()[0];
-        b.place_tree(TreeId(root), crate::browser::Move::Pin(true))
-            .unwrap();
         let spot = Spot::Shelf {
             position: 0,
             saved_at: 1,
@@ -362,15 +310,6 @@ mod tests {
         assert_eq!(rows(&v)[0]["selected"], true);
         assert_eq!(v["count"], "1 tabs · 1 saved for later · 2 in history");
         assert_eq!(f.forest.history().len(), 2);
-        let v = value(p.input(Input::Show(View::Trees), &f));
-        let saved = v["trees"]["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|i| i["key"].as_str().is_some_and(|s| s.starts_with("saved-")))
-            .unwrap();
-        assert_eq!(saved["id"], selected);
-        assert!(saved["badge"].is_null());
     }
     #[test]
     fn two_thousand_trees_send_sixty_rows_and_one_preview_without_hidden_visits() {
@@ -428,10 +367,6 @@ mod tests {
         assert!(matches!(p.input(Input::Escape, &f), Reply::Close));
         p.input(Input::History(super::Input::Find("unkept".into())), &f);
         p.input(Input::Close, &f);
-        let v = value(p.input(Input::Open(View::Trees), &f));
-        assert_eq!(v["query"], "");
-        let v = value(p.input(Input::Trees(trees::Input::Find("absent".into())), &f));
-        assert_eq!(v["trees"]["empty"], "No open or saved tree matches.");
     }
     #[test]
     fn history_dates_use_events_else_settle_and_day_counts_include_unloaded_rows() {

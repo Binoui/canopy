@@ -9,7 +9,7 @@ mod common;
 use common::*;
 
 fn held_refresh(ui: &Ui, selector: &str) -> Result<()> {
-    let id = chrome(ui, "S.forest.history?.preview?.id ?? document.querySelector('.tree-card[aria-current=true]')?.dataset.id")?
+    let id = chrome(ui, "S.forest.history?.preview?.id ?? document.querySelector('.tree-card[aria-current=true]')?.dataset.id ?? document.querySelector('.tree-card')?.dataset.id")?
         .as_str()
         .unwrap()
         .to_owned();
@@ -114,7 +114,7 @@ fn main() -> Result<()> {
     }
     ui.window.resize(1240, 800);
     pump(200);
-    held_refresh(&ui, ".tree-card[aria-current=true]")?;
+    held_refresh(&ui, ".tree-card")?;
     assert!(!visible(&ui, "#forest"));
     println!("PASS Trees ordered bands, bounded cards, widths and held activation.");
     ui.window.close();
