@@ -2273,7 +2273,7 @@ $('tab-row').addEventListener('drop', event => {
   const drop = tabDropAt(event.clientX);
   finishTabDrag();
   if (drop) {
-    if (S.overlay === 'forest') post({t:'forest',do:'drop',tree:id,lane:'tabs',before:drop.before});
+    if (S.overlay === 'forest' && S.forest?.view === 'trees') post({t:'forest',do:'drop',tree:id,lane:'tabs',before:drop.before});
     else intent('place-tree', { id, place: 'tabs', before: drop.before });
   }
 });

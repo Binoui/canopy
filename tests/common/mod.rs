@@ -409,3 +409,28 @@ pub fn private_runtime() -> Result<Option<tempfile::TempDir>> {
     std::env::set_var("XDG_RUNTIME_DIR", directory.path());
     Ok(Some(directory))
 }
+
+pub fn drag(
+    ui: &Ui,
+    source: &str,
+    end: (i32, i32),
+    held: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    let start = chrome_point(ui, source)?;
+    move_to(start.0, start.1)?;
+    pump(150);
+    xdo(&["mousedown", "1"])?;
+    pump(200);
+    for step in 1..=25 {
+        move_to(
+            start.0 + (end.0 - start.0) * step / 25,
+            start.1 + (end.1 - start.1) * step / 25,
+        )?;
+        pump(60);
+    }
+    pump(200);
+    let result = held();
+    xdo(&["mouseup", "1"])?;
+    pump(400);
+    result
+}
