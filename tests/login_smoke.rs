@@ -354,7 +354,7 @@ fn main() -> Result<()> {
     )?;
     for tree in forest.tabs() {
         ui.pages
-            .place_tree(tree.id, crate::browser::Move::History)?;
+            .place_tree(tree.id, canopy::browser::Move::History)?;
     }
     wait("the offer leaves with the last tree", || {
         offered(&ui) == json!([])

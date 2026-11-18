@@ -71,10 +71,16 @@ fn main() -> Result<()> {
             .root;
         b.rename_tree(tree, &format!("Project {i}"))?;
         if i >= 4 {
-            b.place_tree(tree, crate::browser::Move::History)?;
+            b.place_tree(tree, canopy::browser::Move::History)?;
         }
-        if i == 0 || i == 4 {
-            b.place_tree(tree, crate::browser::Move::Pin(true))?;
+        if i == 0 {
+            b.place_tree(tree, canopy::browser::Move::Pin(true))?;
+        }
+        if i == 4 {
+            b.place_tree(
+                tree,
+                canopy::browser::Move::Shelf(canopy::browser::Slot::First),
+            )?;
         }
     }
     drop(b);
@@ -87,7 +93,7 @@ fn main() -> Result<()> {
     wait("Trees", || visible(&ui, "#forest-trees .tree-card"))?;
     assert_eq!(
         text(&ui, "#forest-count"),
-        "4 open · 2 saved · 126 in history"
+        "4 tabs · 1 saved for later · 126 in history"
     );
     assert_eq!(
         chrome(
@@ -95,7 +101,7 @@ fn main() -> Result<()> {
             "[...document.querySelectorAll('#forest-trees .tree-card')].map(c=>c.dataset.id)"
         )?,
         serde_json::json!(
-            [roots[0], roots[1], roots[2], roots[3], roots[0], roots[4]].map(|id| id.to_string())
+            [roots[0], roots[1], roots[2], roots[3], roots[4]].map(|id| id.to_string())
         )
     );
     assert!(text(&ui, "#forest-trees").contains("Saved"));
@@ -158,7 +164,10 @@ fn main() -> Result<()> {
     assert!(visible(&ui, "#forest"));
     held_refresh(&ui, &first_selector)?;
     key("Menu")?;
-    assert_eq!(text(&ui, "#popover"), "Rename\nSave tree");
+    assert_eq!(
+        text(&ui, "#popover"),
+        "Reopen\nSave for later\nRename\nDelete"
+    );
     click_chrome(&ui, "[data-tab-action=rename]")?;
     type_text("History project renamed")?;
     key("Return")?;
@@ -198,7 +207,7 @@ fn main() -> Result<()> {
         .pages
         .read(|b| b.tree_states())?
         .iter()
-        .any(|s| s.root == tree && s.place.pinned() && !s.place.is_tab()));
+        .any(|s| s.root == tree && matches!(s.place(), canopy::browser::Place::Shelf { .. })));
     let reopen = chrome(&ui, "S.forest.history.preview.id")?;
     held_refresh(&ui, "[data-forest=reopen]")?;
     wait("Reopen navigates", || {
@@ -238,7 +247,7 @@ fn main() -> Result<()> {
     assert!(visible(&ui, "#forest"));
     assert_eq!(
         chrome(&ui, "S.forest.count")?,
-        serde_json::json!("4 open · 3 saved · 125 in history")
+        serde_json::json!("4 tabs · 2 saved for later · 125 in history")
     );
     click_chrome(&ui, "#forest-views [data-view=history]")?;
     wait("outline target", || visible(&ui, ".pv-row"))?;
@@ -260,9 +269,9 @@ fn main() -> Result<()> {
     wait("closed", || !visible(&ui, "#forest"))?;
     let current = ui.snapshot()?.current.unwrap();
     for state in ui.pages.read(|b| b.tree_states())? {
-        if state.place.is_tab() && state.root.root() != current {
+        if state.place().is_tab() && state.root.root() != current {
             ui.pages
-                .place_tree(state.root, crate::browser::Move::History)?;
+                .place_tree(state.root, canopy::browser::Move::History)?;
         }
     }
     pump(300);

@@ -20,6 +20,8 @@ function renderForest() {
   const f = S.forest;
   if (!f || S.overlay !== 'forest') return;
   const within = $('forest').contains(document.activeElement);
+  $('forest-undo').hidden = !f.undo;
+  patchChildren($('forest-undo'), f.undo ? `<span data-key="text">${esc(f.undo.text)}</span><button data-key="undo" data-delete-id="${f.undo.id}">${esc(f.undo.label)}</button>` : '');
   $('forest-count').textContent = f.count;
   if (document.activeElement !== $('forest-find') || !f.query) $('forest-find').value = f.query;
   for (const b of $('forest-views').children) b.setAttribute('aria-pressed', String(b.dataset.view === f.view));
@@ -32,18 +34,8 @@ function renderForest() {
   $('forest-empty').textContent = empty ?? '';
   if (within && (!$('forest').contains(document.activeElement) || !document.activeElement.getClientRects().length)) focusForest();
 }
-function openForestTree(id) { uncover(); intent('select-tree', { id }); }
-$('forest').addEventListener('click', (e) => {
-  const el = e.target.closest('[data-forest]');
-  if (!el) return;
-  const id = el.dataset.id;
-  if (el.dataset.forest === 'card') openForestTree(id);
-  else if (el.dataset.forest === 'row') post({ t: 'forest', do: 'select', tree: id });
-  else if (el.dataset.forest === 'reopen') openForestTree(id);
-  else if (el.dataset.forest === 'more') post({ t: 'forest', do: 'more', seen: Number(el.dataset.seen) });
-  else if (el.dataset.forest === 'save') intent('pin-tree', { id, pinned: true });
-  else if (el.dataset.forest === 'page') { uncover(); intent('restore', { id }); }
-});
+function openForestTree(id) { treeAct(id, 'open'); }
+$('forest').addEventListener('click', e => { if (S.forest?.view === 'trees') forestTreesClick(e); else forestHistoryClick(e); });
 $('forest').addEventListener('contextmenu', (e) => {
   const el = e.target.closest('[data-tree-menu]');
   if (!el) return;
@@ -52,28 +44,32 @@ $('forest').addEventListener('contextmenu', (e) => {
   post({ t: 'focus', target: 'chrome' });
   $('popover').querySelector('button')?.focus();
 });
-$('forest').addEventListener('dblclick', (e) => {
-  const row = e.target.closest('[data-forest="row"]');
-  if (row) openForestTree(row.dataset.id);
-});
 $('forest-views').addEventListener('click', (e) => {
   const b = e.target.closest('[data-view]');
   if (b) post({ t: 'forest', do: 'show', view: b.dataset.view });
 });
-$('forest-find').addEventListener('input', () => post({ t: 'forest', do: 'find', query: $('forest-find').value }));
+$('forest-find').addEventListener('input', () => post({t:'forest',do:S.forest?.view === 'trees' ? 'trees-find' : 'find',query:$('forest-find').value}));
 $('forest-close').addEventListener('click', closeOverlay);
 $('forest').querySelector('.scrim').addEventListener('mousedown', closeOverlay);
 $('forest').addEventListener('keydown', (e) => {
+  if (e.altKey && e.key === 'Enter') {
+    const card = e.target.closest('[data-id]');
+    if (card) { post({t:'forest',do:'act',tree:card.dataset.id,act:'open-keep'}); e.preventDefault(); }
+    return;
+  }
   if (S.popover || e.ctrlKey || e.altKey || e.metaKey || e.isComposing) return;
-  const field = e.target === $('forest-find');
-  const row = e.target.closest('.forest-row'), card = e.target.closest('.tree-card');
-  if (!field && [...e.key].length === 1 && e.key !== ' ') {
-    $('forest-find').focus(); $('forest-find').value += e.key;
-    post({ t: 'forest', do: 'find', query: $('forest-find').value });
-  } else if (field && e.key === 'ArrowDown') focusForest();
-  else if (row && ['ArrowUp', 'ArrowDown'].includes(e.key)) post({ t: 'forest', do: 'step', by: e.key === 'ArrowUp' ? -1 : 1 });
-  else if (row && e.key === 'Enter') openForestTree(row.dataset.id);
-  else if (card && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) moveForestCard(card, e.key);
-  else return;
-  e.preventDefault();
+  if (S.forest?.view === 'trees') forestTreesKey(e); else forestHistoryKey(e);
+
 });
+
+$('forest-undo').addEventListener('click', e => { const b=e.target.closest('[data-delete-id]'); if(b) post({t:'forest',do:'undo',id:b.dataset.deleteId}); });
+
+function forestFindKey(e, action) {
+  const field=e.target===$('forest-find');
+  if(!field && [...e.key].length===1 && e.key!==' ') {
+    $('forest-find').focus();$('forest-find').value+=e.key;
+    post({t:'forest',do:action,query:$('forest-find').value});return true;
+  }
+  if(field && e.key==='ArrowDown') {focusForest();return true;}
+  return false;
+}

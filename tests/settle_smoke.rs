@@ -57,7 +57,7 @@ fn reopen_scroll(
         canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)
     })?;
     ui.pages
-        .place_tree(forest.tree_of(a).unwrap(), crate::browser::Move::History)?;
+        .place_tree(forest.tree_of(a).unwrap(), canopy::browser::Move::History)?;
     wait("home", || {
         ui.pages.selected_page().native.uri().as_deref() == Some("about:blank")
             && !ui.pages.selected_page().native.is_loading()
@@ -265,7 +265,7 @@ fn main() -> Result<()> {
         assert_eq!(
             browser.place_tree(
                 browser.tree_states()?[1].root,
-                crate::browser::Move::History
+                canopy::browser::Move::History
             )?,
             Landing::Restore(roots[0])
         );
@@ -273,7 +273,7 @@ fn main() -> Result<()> {
             assert_eq!(
                 browser.place_tree(
                     browser.tree_states()?[0].root,
-                    crate::browser::Move::History
+                    canopy::browser::Move::History
                 )?,
                 Landing::Start
             );

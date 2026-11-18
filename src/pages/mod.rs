@@ -46,14 +46,24 @@ pub enum PageEvent {
     FormReturn(Option<u64>),
     Selected,
     Settled(String),
-    Waiting { parent: VisitId, label: String },
+    Saved(String),
+    Deleted {
+        id: Option<crate::browser::DeleteId>,
+        text: String,
+    },
+    Waiting {
+        parent: VisitId,
+        label: String,
+    },
     Changed,
     Loading(bool),
     LoadState(LoadingReadout),
     Error(String),
     Remembered(i64),
     Download(DownloadEvent),
-    OpenBranchPalette { visit: VisitId },
+    OpenBranchPalette {
+        visit: VisitId,
+    },
     Login(LoginEvent),
     Find(FindUpdate),
 }
@@ -325,6 +335,7 @@ pub struct Pages {
     observer: RefCell<Option<Observer>>,
     start: Cell<Option<StartPage>>,
     settle_undo: RefCell<Option<SettleUndo>>,
+    deleted: RefCell<Option<crate::browser::Deleted>>,
 }
 
 impl Pages {
@@ -376,6 +387,7 @@ impl Pages {
             observer: RefCell::new(None),
             start: Cell::new(None),
             settle_undo: RefCell::new(None),
+            deleted: RefCell::new(None),
         });
         let weak = Rc::downgrade(&pages);
         container.connect_size_allocate(move |container, a| {
@@ -409,6 +421,9 @@ impl Pages {
                 let pages = weak
                     .upgrade()
                     .ok_or_else(|| anyhow::anyhow!("The window was closed."))?;
+                if !pages.read(|b| b.contains_visit(visit))? {
+                    return Ok(());
+                }
                 let result = pages
                     .browser
                     .borrow_mut()
@@ -1400,6 +1415,13 @@ impl Pages {
     }
 
     fn remember_checkpoint(&self, saved: live::Checkpoint) {
+        if saved
+            .entries
+            .iter()
+            .any(|e| !self.read(|b| b.contains_visit(e.visit)).unwrap_or(false))
+        {
+            return;
+        }
         let mut dormant = self.branches.dormant.borrow_mut();
         let index = dormant
             .iter()
@@ -1860,6 +1882,193 @@ impl Pages {
         self.land(landing)
     }
 
+    pub fn delete_trees(&self, trees: &[TreeId]) -> Result<()> {
+        let forest =
+            self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
+        let result = self.browser.borrow_mut().delete_trees(trees)?;
+        let Some((record, mut landing)) = result else {
+            return Ok(());
+        };
+        let id = record.id();
+        let title = record
+            .trees()
+            .first()
+            .and_then(|t| forest.tree(*t))
+            .map(|t| t.title.clone())
+            .unwrap_or_default();
+        let cleanup = (|| -> Result<()> {
+            let belongs = |page: &LivePage| {
+                page.current_visit()
+                    .into_iter()
+                    .chain(page.pending_anchor())
+                    .chain(page.background_visit())
+                    .chain(page.history_visits())
+                    .any(|v| record.holds(v))
+            };
+            self.branches
+                .queued
+                .borrow_mut()
+                .retain(|(_, v)| !record.holds(*v));
+            self.commands.borrow_mut().retain(|c| match c {
+                Command::Go(go, _, _) => match &**go {
+                    Go::Visit(v) | Go::Citation(v) => !record.holds(*v),
+                    Go::Address {
+                        target: NavigationTarget::ChildOf(v),
+                        ..
+                    } => !record.holds(*v),
+                    Go::Tree(t) => !record.holds(t.root()),
+                    _ => true,
+                },
+                Command::Settle(t) => !record.holds(t.head()),
+                Command::Dismiss(v) | Command::Move(v) => !record.holds(*v),
+                _ => true,
+            });
+            let mut removed = vec![];
+            if self
+                .hold
+                .borrow()
+                .as_ref()
+                .is_some_and(|h| belongs(&h.outgoing))
+            {
+                if let Some(hold) = self.hold.borrow_mut().take() {
+                    hold.cancel.cancel();
+                    if let Some(cap) = hold.cap {
+                        cap.remove();
+                    }
+                    removed.push(hold.outgoing);
+                }
+            }
+
+            for list in [&self.branches.hidden, &self.branches.background] {
+                list.borrow_mut().retain(|h| {
+                    if belongs(&h.page) {
+                        removed.push(h.page.clone());
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+            self.retiring.borrow_mut().retain(|p| {
+                if belongs(p) {
+                    removed.push(p.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            if self
+                .branches
+                .candidate
+                .borrow()
+                .as_ref()
+                .is_some_and(|p| belongs(p))
+            {
+                self.cancel_candidate();
+            }
+            if self
+                .branches
+                .live
+                .borrow()
+                .as_ref()
+                .is_some_and(|p| belongs(p))
+            {
+                if landing == Landing::Unchanged {
+                    if let Some(current) = self.browser.borrow().snapshot()?.current {
+                        landing = Landing::Restore(current);
+                    }
+                }
+                if let Some(page) = self.branches.live.borrow_mut().take() {
+                    removed.push(page);
+                }
+                let page = Rc::new(LivePage::new(
+                    &self.container,
+                    self.me.clone(),
+                    &self.context,
+                )?);
+                self.promote(page);
+            }
+            for page in removed {
+                page.discard_deleted();
+            }
+            self.branches
+                .dormant
+                .borrow_mut()
+                .retain(|c| !c.entries.iter().any(|e| record.holds(e.visit)));
+            if self
+                .branches
+                .candidate_saved
+                .borrow()
+                .as_ref()
+                .is_some_and(|(_, c)| c.entries.iter().any(|e| record.holds(e.visit)))
+            {
+                self.branches.candidate_saved.borrow_mut().take();
+            }
+            #[cfg(feature = "gui-smoke")]
+            if self
+                .checkpoint
+                .borrow()
+                .as_ref()
+                .is_some_and(|c| c.entries.iter().any(|e| record.holds(e.visit)))
+            {
+                self.checkpoint.borrow_mut().take();
+            }
+            if self
+                .settle_undo
+                .borrow()
+                .as_ref()
+                .is_some_and(|u| record.holds(u.head) || record.holds(u.reopen))
+            {
+                self.settle_undo.borrow_mut().take();
+            }
+            if self
+                .continuation
+                .borrow()
+                .as_ref()
+                .is_some_and(|c| match c.state {
+                    ContinuationState::Committed { visit, .. }
+                    | ContinuationState::Ready { visit, .. } => record.holds(visit),
+                    _ => false,
+                })
+            {
+                self.cancel_continuation();
+            }
+            Ok(())
+        })();
+        let count = record.trees().len();
+        *self.deleted.borrow_mut() = Some(record);
+        self.receive(PageEvent::Deleted {
+            id: Some(id),
+            text: if count == 1 {
+                format!("Deleted ‘{title}’")
+            } else {
+                format!("Deleted {count} trees")
+            },
+        });
+        self.receive(PageEvent::Changed);
+        cleanup?;
+        self.land(landing)
+    }
+    pub fn undo_delete(&self, id: crate::browser::DeleteId) -> Result<()> {
+        {
+            let deleted = self.deleted.borrow();
+            let Some(record) = deleted.as_ref().filter(|r| r.id() == id) else {
+                return Ok(());
+            };
+            self.browser.borrow_mut().undo_delete(id, record)?;
+        }
+        self.deleted.borrow_mut().take();
+        self.receive(PageEvent::Deleted {
+            id: None,
+            text: String::new(),
+        });
+        self.receive(PageEvent::Changed);
+        Ok(())
+    }
+    pub fn forget_deleted(&self) {
+        self.deleted.borrow_mut().take();
+    }
+
     pub fn settle_branch(&self, head: VisitId) -> Result<()> {
         self.settle(SettleTarget::Branch(head))
     }
@@ -2054,23 +2263,27 @@ impl Pages {
             }
             SettleTarget::Branch(head) => self.browser.borrow_mut().settle_branch(head)?,
         };
-        *self.settle_undo.borrow_mut() = Some(SettleUndo {
-            head,
-            reopen: forest
-                .current()
-                .filter(|id| target.contains(&forest, *id))
-                .unwrap_or_else(|| match target {
-                    SettleTarget::Tree(tree, _) => forest
-                        .trees()
-                        .iter()
-                        .find(|t| t.id == tree)
-                        .map_or(head, |t| t.last_visit),
-                    SettleTarget::Branch(_) => head,
-                }),
-        });
-        self.receive(PageEvent::Settled(format!(
-            "Settled ‘{name}’ · {waiting} waiting kept"
-        )));
+        if matches!(target, SettleTarget::Tree(_, Away::Shelf(_))) {
+            self.receive(PageEvent::Saved(format!("Saved ‘{name}’ for later")));
+        } else {
+            *self.settle_undo.borrow_mut() = Some(SettleUndo {
+                head,
+                reopen: forest
+                    .current()
+                    .filter(|id| target.contains(&forest, *id))
+                    .unwrap_or_else(|| match target {
+                        SettleTarget::Tree(tree, _) => forest
+                            .trees()
+                            .iter()
+                            .find(|t| t.id == tree)
+                            .map_or(head, |t| t.last_visit),
+                        SettleTarget::Branch(_) => head,
+                    }),
+            });
+            self.receive(PageEvent::Settled(format!(
+                "Settled ‘{name}’ · {waiting} waiting kept"
+            )));
+        }
         self.receive(PageEvent::Changed);
         self.land(landing)
     }

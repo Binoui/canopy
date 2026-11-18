@@ -415,7 +415,7 @@ fn main() -> Result<()> {
             })?
             .tree_of(a)
             .unwrap(),
-        crate::browser::Move::History,
+        canopy::browser::Move::History,
     )?;
     common::wait("tree settle undo", || {
         common::visible(&f.ui, "#toast button")

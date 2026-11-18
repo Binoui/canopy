@@ -33,10 +33,10 @@ const ICONS = {
 const $ = (id) => document.getElementById(id);
 const post = (message) => window.ipc.postMessage(JSON.stringify(message));
 /// The old GTK buttons did not take focus from the page.
-const NAVIGATES = new Set(['reload', 'back', 'forward', 'stop', 'restore', 'select-tree', 'settle-tree', 'settle-current', 'open-suggestion', 'open-bookmark', 'open-mail', 'open-inbox', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
+const NAVIGATES = new Set(['reload', 'back', 'forward', 'stop', 'restore', 'settle-current', 'open-suggestion', 'open-bookmark', 'open-mail', 'open-inbox', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
 const intent = (kind, extra = {}) => {
   post({ t: 'intent', kind, ...extra });
-  if (NAVIGATES.has(kind) && !(S.overlay === 'forest' && kind === 'settle-tree')) post({ t: 'focus', target: 'page' });
+  if (NAVIGATES.has(kind)) post({ t: 'focus', target: 'page' });
 };
 const esc = (text) => String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const icon = (name) => `<svg class="icon" viewBox="0 0 24 24">${ICONS[name]}</svg>`;
@@ -212,19 +212,32 @@ function applyTheme() {
 function patchChildren(container, html) {
   const template = document.createElement('template');
   template.innerHTML = html;
-  const kept = new Map([...container.children].map((el) => [el.dataset.key || el.dataset.id, el]));
+  patchInto(container, template.content);
+}
+const keyOf = el => el.dataset.key || el.dataset.id;
+const allKeyed = el => el.childNodes.length > 0 && [...el.childNodes].every(n => n.nodeType === Node.ELEMENT_NODE ? !!keyOf(n) : !n.textContent.trim());
+function patchInto(container, fresh) {
+  const previous = [...container.children], used = new Set();
+  const kept = new Map(previous.filter(el => keyOf(el)).map(el => [keyOf(el), el]));
   let cursor = container.firstElementChild;
-  for (const fresh of [...template.content.children]) {
-    const el = kept.get(fresh.dataset.key || fresh.dataset.id) || fresh;
-    kept.delete(fresh.dataset.key || fresh.dataset.id);
-    if (el !== fresh) {
-      for (const attr of fresh.attributes) if (el.getAttribute(attr.name) !== attr.value) el.setAttribute(attr.name, attr.value);
-      if (el.innerHTML !== fresh.innerHTML) el.innerHTML = fresh.innerHTML;
+  for (const next of [...fresh.children]) {
+    const key = keyOf(next), el = (key && kept.get(key)) || next;
+    if (key) kept.delete(key);
+    used.add(el);
+    if (el !== next) {
+      for (const attr of next.attributes) if (el.getAttribute(attr.name) !== attr.value) el.setAttribute(attr.name, attr.value);
+      for (const attr of [...el.attributes]) if (!next.hasAttribute(attr.name)) el.removeAttribute(attr.name);
+      if (allKeyed(el) && allKeyed(next)) patchInto(el, next);
+      else if (el.innerHTML !== next.innerHTML) el.innerHTML = next.innerHTML;
     }
     if (el !== cursor) container.insertBefore(el, cursor);
     cursor = el.nextElementSibling;
   }
-  for (const el of kept.values()) el.remove();
+  for (const el of previous) if (!used.has(el)) el.remove();
+}
+function treeAct(tree, act) {
+  if (act === 'open') { uncover(); post({t:'focus', target:'page'}); }
+  post({t:'tree', tree, act});
 }
 
 function renderTabs() {
@@ -245,12 +258,11 @@ function renderTabs() {
     const root = visit(tree.id);
     const pages = `${tree.pages} page${tree.pages === 1 ? '' : 's'}`;
     const pending = tree.pending ? `, ${tree.pending} waiting` : '';
-    const pinned = tree.pinned ? ', saved' : '';
+    const pinned = tree.pinned ? ', pinned' : '';
     const key = index < 9 ? ` · Ctrl+${index + 1}` : '';
-    const html = `<button class="tab" role="tab" tabindex="${active ? 0 : -1}" aria-selected="${active}" data-id="${tree.id}" title="${esc(`${tree.title}${sub ? ` · ${sub}` : ''} · ${pages}${pending}${pinned}${key}`)}" aria-label="${esc((sub ? `${tree.name}, on ${sub}` : tree.name) + pending)}">`
+    const html = `<button class="tab${tree.pinned ? ' pinned' : ''}" role="tab" tabindex="${active ? 0 : -1}" aria-selected="${active}" data-id="${tree.id}" title="${esc(`${tree.title}${sub ? ` · ${sub}` : ''} · ${pages}${pending}${pinned}${key}`)}" aria-label="${esc((sub ? `${tree.name}, on ${sub}` : tree.name) + pending)}">`
       + (root ? `<span class="mk">${visitFav(root, 14)}</span>` : '')
       + `<span class="tab-title${sub ? ' two-line' : ''}"><span class="tab-name">${esc(tree.title)}</span>${sub ? `<span class="tab-sub">${esc(sub)}</span>` : ''}</span>`
-      + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Saved">${icon('pinned')}</span>` : '')
       + (tree.pending ? '<i class="unread-dot" aria-hidden="true"></i>' : '')
       + `<span class="tab-settle" data-settle="${tree.id}" title="Settle${active ? ' · Ctrl+W' : ''}" aria-hidden="true">${icon('close')}</span>`
       + '</button>';
@@ -259,6 +271,7 @@ function renderTabs() {
     const fresh = template.content.firstChild;
     const tab = kept.get(tree.id) ?? fresh;
     if (tab !== fresh) {
+      tab.classList.toggle('pinned', tree.pinned);
       tab.setAttribute('aria-selected', String(active));
       setTooltip(tab, fresh.title);
       tab.setAttribute('aria-label', fresh.getAttribute('aria-label'));
@@ -1019,15 +1032,14 @@ function renderPopover() {
   } else if (kind === 'tree') {
     const rows = TREE_MENUS[data.source](data.id);
     if (!rows) { closePopover(false); return; }
-    patchChildren(popover, rows.map((r) => `<button class="menu-row" role="menuitem" data-key="${r.kind}" data-tab-action="${r.kind}">${esc(r.label)}</button>`).join(''));
+    patchChildren(popover, rows.map((r) => `<button class="menu-row" role="menuitem" data-key="${r.act}" data-tab-action="${r.act}">${esc(r.label)}</button>`).join(''));
     popover.querySelectorAll('[data-tab-action]').forEach((el, i) => { el.onclick = () => {
       const row = rows[i], anchor = S.popover.anchor;
       closePopover();
-      if (row.kind === 'rename') {
+      if (row.act === 'rename') {
         openPopover('rename', anchor, { ...data, name: row.name });
         S.popover.field.focus(); S.popover.field.select();
-      } else if (row.kind === 'pin') intent('pin-tree', { id: data.id, pinned: row.pinned });
-      else intent('settle-tree', { id: data.id });
+      } else treeAct(data.id, row.act);
     }; });
   } else if (kind === 'bookmark') {
     popover.innerHTML = '<button class="menu-row" role="menuitem" data-remove-bookmark>Remove bookmark</button>';
@@ -1124,8 +1136,7 @@ function renderPopover() {
       row.className = 'overflow-tree';
       row.dataset.tree = tree.id;
       const html = `<button class="menu-row" data-id="${tree.id}">${root ? visitFav(root, 16) : ''}<span class="grow">${esc(tree.title)}</span>`
-        + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Saved">${icon('pinned')}</span>` : '')
-        + (tree.pending ? `<span class="count" aria-label="${tree.pending} waiting">${tree.pending}</span>` : '') + '</button>'
+          + (tree.pending ? `<span class="count" aria-label="${tree.pending} waiting">${tree.pending}</span>` : '') + '</button>'
         + `<button class="overflow-settle" data-settle="${tree.id}" title="Settle tree" aria-label="Settle ${esc(tree.title)}">${icon('close')}</button>`;
       if (row.dataset.html !== html) {
         row.dataset.html = html;
@@ -1140,10 +1151,10 @@ function renderPopover() {
         row.querySelector('[data-id]').onclick = () => {
           closePopover();
           uncover();
-          intent('select-tree', { id: tree.id });
+          treeAct(tree.id, 'open');
         };
         row.querySelector('[data-settle]').onclick = () => {
-          intent('settle-tree', { id: tree.id });
+          treeAct(tree.id, 'settle');
         };
       }
       return row;
@@ -1389,7 +1400,7 @@ function renderSheet(reveal) {
       if (el !== cursor) container.insertBefore(el, cursor);
       cursor = el.nextElementSibling;
     }
-    for (const el of kept.values()) el.remove();
+    for (const el of previous) if (!used.has(el)) el.remove();
   }
   $('tree-waiting').setAttribute('aria-pressed', String(view.waitingOnly));
   $('tree-empty').hidden = view.rows.length !== 0;
@@ -1638,10 +1649,10 @@ function treeCard(t, attrs) {
 }
 
 function pinnedBand(start) {
-  return '<section>' + bandHead('Saved trees', 'Opens the tree where you left it')
+  return '<section>' + bandHead(start.shelfTitle, start.shelfHint)
     + (start.pinned.length ? '<div class="pinned-row">' + start.pinned.map((t) =>
       treeCard(t, 'data-start="tree"')).join('') + '</div>'
-      : '<div class="hint-line">Save a tree from its tab menu. It stays here and never settles on its own.</div>') + '</section>';
+      : `<div class="hint-line">${esc(start.shelfHint)}</div>`) + '</section>';
 }
 
 function suggestedBand(start) {
@@ -2207,13 +2218,13 @@ $('tab-row').addEventListener('click', (event) => {
   settlePress = null;
   const close = event.target.closest('[data-settle]');
   if (close) {
-    if (close === pressed && event.detail <= 1) intent('settle-tree', { id: close.dataset.settle });
+    if (close === pressed && event.detail <= 1) treeAct(close.dataset.settle, 'settle');
     return;
   }
   const tab = event.target.closest('[data-id]');
   if (!tab) return;
   uncover();
-  intent('select-tree', { id: tab.dataset.id });
+  treeAct(tab.dataset.id, 'open');
 });
 $('tab-row').addEventListener('focusin', (event) => {
   for (const tab of $('tab-row').children) tab.tabIndex = tab === event.target ? 0 : -1;
@@ -2232,7 +2243,7 @@ $('tab-row').addEventListener('mousedown', (event) => {
 });
 $('tab-row').addEventListener('auxclick', (event) => {
   const tab = event.target.closest('[data-id]');
-  if (event.button === 1 && tab) intent('settle-tree', { id: tab.dataset.id });
+  if (event.button === 1 && tab) treeAct(tab.dataset.id, 'settle');
 });
 $('tab-row').addEventListener('contextmenu', (event) => {
   const tab = event.target.closest('[data-id]');

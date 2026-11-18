@@ -1,29 +1,60 @@
 use super::*;
+#[derive(Default)]
+pub(super) struct State {
+    pub query: String,
+}
+#[derive(Debug)]
+pub(in crate::chrome) enum Input {
+    Find(String),
+}
+impl Input {
+    pub fn parse(m: &Value) -> Result<Option<Self>> {
+        Ok(match m["do"].as_str() {
+            Some("trees-find") => Some(Self::Find(
+                m["query"].as_str().context("Missing Find text")?.to_owned(),
+            )),
+            _ => None,
+        })
+    }
+}
+impl State {
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+    pub fn escape(&mut self) -> bool {
+        let changed = !self.query.is_empty();
+        self.query.clear();
+        changed
+    }
 
-pub(super) fn value(forest: &ForestProjection, index: &Index, query: &str) -> Value {
+    pub fn input(&mut self, input: Input, _forest: &ForestProjection) -> Reply {
+        match input {
+            Input::Find(q) => self.query = q,
+        }
+        Reply::Unchanged
+    }
+    pub fn value(&self, forest: &ForestProjection, index: &Index) -> Value {
+        value(forest, index, &self.query)
+    }
+}
+
+fn value(forest: &ForestProjection, index: &Index, query: &str) -> Value {
     let key = query.trim().to_lowercase();
     let current = forest.current().and_then(|id| forest.tree_of(id));
     let mut items = Vec::new();
     for (band, title, trees) in [
-        ("open", "Open", forest.tabs().iter().collect::<Vec<_>>()),
-        ("saved", "Saved", forest.shelf()),
+        ("open", "Tabs", forest.tabs().iter().collect::<Vec<_>>()),
+        ("saved", "Saved for later", forest.shelf()),
     ] {
         items.push(json!({"kind":"band", "key":format!("band-{band}"), "title":title, "detail":plural(trees.len(), "tree")}));
         for tree in trees.iter().filter(|t| index.admits(t.id, &key)) {
-            let place = if band == "open" {
-                Place::OpenBand {
-                    current: current == Some(tree.id),
-                }
-            } else {
-                Place::SavedBand
-            };
-            let mut card = tree_card::card(forest, tree, place);
+            let mut card = tree_card::card(forest, tree, current == Some(tree.id));
             card["kind"] = json!("card");
             card["key"] = json!(format!("{band}-{}", tree.id.root()));
             items.push(card);
         }
         if band == "saved" && trees.is_empty() {
-            items.push(json!({"kind":"hint", "key":"saved-hint", "text":"Save a tree from its menu to keep it here for later."}));
+            items.push(json!({"kind":"hint", "key":"saved-hint", "text":"Choose Save for later in a tab’s menu to keep it here for later."}));
         }
     }
     let empty = (!items.iter().any(|i| i["kind"] == "card") && !key.is_empty())

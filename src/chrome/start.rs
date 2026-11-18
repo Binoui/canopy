@@ -10,11 +10,9 @@ pub(super) fn value(frame: &ChromeFrame, frozen: &[crate::suggest::Suggestion]) 
         .forest
         .shelf()
         .into_iter()
-        .map(|tree| {
-            super::tree_card::card(&frame.forest, tree, super::tree_card::Place::NewTreePage)
-        })
+        .map(|tree| super::tree_card::shelf_card(&frame.forest, tree))
         .collect();
-    json!({"pinned": pinned, "bookmarks": bookmarks(&frame.bookmarks), "suggested": suggested(frame, frozen)})
+    json!({"shelfTitle":"Saved for later","shelfHint":"Save for later in a tab’s menu takes a tree off the bar and keeps it here.","pinned": pinned, "bookmarks": bookmarks(&frame.bookmarks), "suggested": suggested(frame, frozen)})
 }
 
 /// The chips still on offer, each in the place it had when the band was ranked, so the
@@ -289,9 +287,9 @@ pub(super) fn keep(s: &crate::suggest::Suggestion) -> super::ChromeIntent {
             url: url.clone(),
             title: title.clone(),
         },
-        Suggestion::Tree { tree, .. } => super::ChromeIntent::PinTree {
+        Suggestion::Tree { tree, .. } => super::ChromeIntent::PlaceTree {
             tree: *tree,
-            pinned: true,
+            to: crate::browser::Move::Shelf(crate::browser::Slot::First),
         },
         Suggestion::Path { first, .. } => super::ChromeIntent::Bookmark {
             url: first.clone(),

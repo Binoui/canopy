@@ -186,6 +186,13 @@ impl Ui {
                     ui.refresh();
                     ui.chrome.waiting(parent, &label);
                 }
+                PageEvent::Saved(message) => ui.chrome.toast(Toast::Info(message)),
+                PageEvent::Deleted { id, text } => {
+                    ui.chrome.deleted(id, text);
+                    ui.refresh();
+                    ui.chrome.rerank_suggestions();
+                    ui.schedule_refresh();
+                }
                 PageEvent::Settled(message) => ui.chrome.settled(&message),
                 PageEvent::Error(message) => ui.chrome.toast(Toast::Error(message)),
                 PageEvent::Remembered(_) => ui
@@ -450,6 +457,11 @@ impl Ui {
                 }
             });
             return glib::Propagation::Stop;
+        }
+        if matches!(shortcut, Shortcut::PreviousSibling | Shortcut::NextSibling)
+            && self.chrome.forest_open()
+        {
+            return glib::Propagation::Proceed;
         }
         self.pages.cancel_path_continuation();
         match shortcut {
@@ -806,12 +818,16 @@ impl ChromeHost for Ui {
                 self.schedule_refresh();
                 result
             }
-            ChromeIntent::PinTree { tree, pinned } => {
-                let result = self
-                    .pages
-                    .place_tree(tree, crate::browser::Move::Pin(pinned));
+            ChromeIntent::PlaceTree { tree, to } => {
+                let result = self.pages.place_tree(tree, to);
                 self.schedule_refresh();
                 result
+            }
+            ChromeIntent::DeleteTrees(trees) => self.pages.delete_trees(&trees),
+            ChromeIntent::UndoDelete(id) => self.pages.undo_delete(id),
+            ChromeIntent::ForgetDeleted => {
+                self.pages.forget_deleted();
+                Ok(())
             }
             ChromeIntent::RenameTree(tree, name) => {
                 let result = self.pages.rename_tree(tree, &name);
@@ -820,7 +836,10 @@ impl ChromeHost for Ui {
             }
             ChromeIntent::SettleCurrent => {
                 if let Some(tree) = self.chrome.current_tree() {
-                    self.dispatch(ChromeIntent::SettleTree(tree));
+                    self.dispatch(ChromeIntent::PlaceTree {
+                        tree,
+                        to: crate::browser::Move::History,
+                    });
                 }
                 Ok(())
             }
@@ -828,9 +847,6 @@ impl ChromeHost for Ui {
             ChromeIntent::SettleBranch(head) => self.pages.settle_branch(head),
             ChromeIntent::MoveToTree(head) => self.pages.move_to_tree(head),
             ChromeIntent::UndoSettle => self.pages.undo_settle(),
-            ChromeIntent::SettleTree(tree) => {
-                self.pages.place_tree(tree, crate::browser::Move::History)
-            }
             ChromeIntent::SelectTree(tree) => self.pages.go(Go::Tree(tree)),
             ChromeIntent::Restore(visit) => self.pages.go(Go::Visit(visit)),
             ChromeIntent::PageScale(action) => self.pages.page_scale(action),

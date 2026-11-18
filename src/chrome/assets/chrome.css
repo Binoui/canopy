@@ -323,7 +323,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .band-head .grow { flex: 1; }
 .band-head .hint { font-weight: 400; color: var(--muted); }
 .hint-line { padding: 9px 11px; border: 1px dashed var(--tile-border); border-radius: 10px; color: var(--muted); font-size: 12px; }
-.tab-pinned-mark { display: inline-flex; color: var(--green); }
+.tab-pinned-mark { display: inline-flex; color: var(--muted); }
 .tab-pinned-mark svg.icon { width: 10px; height: 12px; }
 #strip-placeholder { position: absolute; left: 12px; top: 12px; height: 28px; padding: 5px 10px; border: 1px dashed var(--faint); border-radius: 9px; color: var(--muted); font-size: 12px; }
 .mt { position: relative; display: block; flex: none; }
@@ -547,3 +547,6 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .error-dot, #settings-button.has-errors::after { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--danger); flex: none; }
 #settings-button.has-errors::after { content: ""; position: absolute; top: 3px; right: 3px; box-shadow: 0 0 0 2px var(--chrome); }
 .errors-head { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; gap: 20px; font-size: 12px; }
+
+.tab.pinned .tab-title, .tab.pinned .tab-settle, .tab.pinned .unread-dot { display:none; }
+.tab.pinned { justify-content:center; padding:0; }

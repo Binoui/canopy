@@ -34,6 +34,7 @@ struct Node {
 pub struct ForestProjection {
     nodes: HashMap<VisitId, Node>,
     trees: Vec<TreeSummary>,
+    by_id: HashMap<TreeId, usize>,
     open: usize,
     shelf: usize,
     current: Option<VisitId>,
@@ -172,7 +173,9 @@ impl ForestProjection {
         trees.sort_by_key(|tree| tree_order[&tree.id]);
         let open = trees.partition_point(|tree| tree.place.is_tab());
         let shelf = trees.partition_point(|tree| !matches!(tree.place, Place::History { .. }));
+        let by_id = trees.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
         Ok(Self {
+            by_id,
             open,
             shelf,
             nodes,
@@ -220,7 +223,7 @@ impl ForestProjection {
         &self.trees[self.shelf..]
     }
     pub fn tree(&self, id: TreeId) -> Option<&TreeSummary> {
-        self.trees.iter().find(|t| t.id == id)
+        self.by_id.get(&id).map(|&i| &self.trees[i])
     }
 
     pub fn current(&self) -> Option<VisitId> {

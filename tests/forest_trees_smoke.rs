@@ -71,10 +71,16 @@ fn main() -> Result<()> {
             .root;
         b.rename_tree(tree, &format!("Project {i}"))?;
         if i >= 4 {
-            b.place_tree(tree, crate::browser::Move::History)?;
+            b.place_tree(tree, canopy::browser::Move::History)?;
         }
-        if i == 0 || i == 4 {
-            b.place_tree(tree, crate::browser::Move::Pin(true))?;
+        if i == 0 {
+            b.place_tree(tree, canopy::browser::Move::Pin(true))?;
+        }
+        if i == 4 {
+            b.place_tree(
+                tree,
+                canopy::browser::Move::Shelf(canopy::browser::Slot::First),
+            )?;
         }
     }
     drop(b);
@@ -87,7 +93,7 @@ fn main() -> Result<()> {
     wait("Trees", || visible(&ui, "#forest-trees .tree-card"))?;
     assert_eq!(
         text(&ui, "#forest-count"),
-        "4 open · 2 saved · 126 in history"
+        "4 tabs · 1 saved for later · 126 in history"
     );
     assert_eq!(
         chrome(
@@ -95,7 +101,7 @@ fn main() -> Result<()> {
             "[...document.querySelectorAll('#forest-trees .tree-card')].map(c=>c.dataset.id)"
         )?,
         serde_json::json!(
-            [roots[0], roots[1], roots[2], roots[3], roots[0], roots[4]].map(|id| id.to_string())
+            [roots[0], roots[1], roots[2], roots[3], roots[4]].map(|id| id.to_string())
         )
     );
     assert!(text(&ui, "#forest-trees").contains("Saved"));

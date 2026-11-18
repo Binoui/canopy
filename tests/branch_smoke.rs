@@ -757,7 +757,7 @@ fn settled_dormant() -> Result<()> {
             .url
             == f.server.url("/root2")
     })?;
-    f.pages.place_tree(tree, crate::browser::Move::History)?;
+    f.pages.place_tree(tree, canopy::browser::Move::History)?;
     f.pages.go(Go::Visit(b))?;
     f.arrived(b)?;
     assert_eq!(

@@ -1,6 +1,6 @@
 mod places;
 pub(crate) use places::Spot;
-pub use places::{Move, Place, Slot};
+pub use places::{DeleteId, Deleted, Move, Place, Slot};
 mod bookmarks;
 mod history;
 mod page_scale;
@@ -874,6 +874,13 @@ ORDER BY {}",
         id.map(|id| id.parse().map_err(Into::into)).transpose()
     }
 
+    pub(crate) fn contains_visit(&self, id: VisitId) -> Result<bool> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM visits WHERE id=?1)",
+            [id.to_string()],
+            |r| r.get(0),
+        )?)
+    }
     pub fn visit(&self, id: VisitId) -> Result<Visit> {
         self.snapshot()?
             .visits

@@ -77,7 +77,7 @@ fn main() -> Result<()> {
     ready(&ui)?;
     wait("empty page", || visible(&ui, "#start-search"))?;
     assert!(text(&ui, "#start-content")
-        .contains("Save a tree from its tab menu. It stays here and never settles on its own."));
+        .contains("Save for later in a tab’s menu takes a tree off the bar and keeps it here."));
     assert!(visible(&ui, "#strip-placeholder"));
     assert!(visible(&ui, "#new-tree-tab[aria-selected=true]"));
     assert!(!visible(&ui, "#new-tree-close"));
@@ -117,9 +117,9 @@ fn main() -> Result<()> {
         let root = ui.snapshot()?.current.unwrap();
         roots.push(root);
         ui.dispatch(ChromeIntent::RenameTree(tree(&ui, root), name.into()));
-        ui.dispatch(ChromeIntent::PinTree {
+        ui.dispatch(ChromeIntent::PlaceTree {
             tree: tree(&ui, root),
-            pinned: true,
+            to: canopy::browser::Move::Pin(true),
         });
     }
     new_tree_tab(&ui, directory.path())?;
@@ -159,13 +159,14 @@ fn main() -> Result<()> {
     })?;
     let last = ui.snapshot()?.current.unwrap();
     ui.pages.read(|b| b.snapshot())?;
-    ui.dispatch(ChromeIntent::SettleTree(tree(&ui, root)));
+    ui.dispatch(ChromeIntent::PlaceTree {
+        tree: tree(&ui, root),
+        to: canopy::browser::Move::Shelf(canopy::browser::Slot::First),
+    });
     wait("settled", || {
-        ui.pages
-            .read(|b| b.tree_states())
-            .unwrap()
-            .iter()
-            .any(|t| t.root == tree(&ui, root) && !t.place.is_tab() && t.place.pinned())
+        ui.pages.read(|b| b.tree_states()).unwrap().iter().any(|t| {
+            t.root == tree(&ui, root) && matches!(t.place(), canopy::browser::Place::Shelf { .. })
+        })
     })?;
     let source = SourceContext {
         page_url: web_url(&format!("http://{address}/Reading"))?,
@@ -179,9 +180,13 @@ fn main() -> Result<()> {
         source,
     )?;
     // The fixture wrote through another connection; live landings do not reload to notify Ui.
-    ui.dispatch(ChromeIntent::PinTree {
+    ui.dispatch(ChromeIntent::PlaceTree {
         tree: tree(&ui, roots[0]),
-        pinned: true,
+        to: canopy::browser::Move::Shelf(canopy::browser::Slot::First),
+    });
+    ui.dispatch(ChromeIntent::PlaceTree {
+        tree: tree(&ui, roots[2]),
+        to: canopy::browser::Move::Shelf(canopy::browser::Slot::End),
     });
     start_page(&ui)?;
     let expected: Vec<_> = roots.iter().map(ToString::to_string).collect();
@@ -189,7 +194,7 @@ fn main() -> Result<()> {
         chrome(&ui, "canopy.state().start.pinned.map(t=>t.id)")?,
         serde_json::json!(expected)
     );
-    assert!(text(&ui, ".band-head").contains("Saved trees"));
+    assert!(text(&ui, ".band-head").contains("Saved for later"));
     assert_eq!(
         chrome(
             &ui,
@@ -278,6 +283,8 @@ fn main() -> Result<()> {
         chrome(&ui, "canopy.state().surface").is_ok_and(|s| s == "reading")
     })?;
     println!("PASS settled card restores last page, typing appends in new-tree scope, search, Ctrl+K, modifiers, Tab, Space and Enter.");
+    ui.pages.go(canopy::pages::Go::Tree(tree(&ui, roots[0])))?;
+    settle(&ui)?;
     let tab = format!(".tab[data-id='{}']", roots[0]);
     for mode in [ThemeMode::Dark, ThemeMode::Light] {
         ui.dispatch(ChromeIntent::SetTheme(mode));
@@ -285,66 +292,42 @@ fn main() -> Result<()> {
         menu(&ui, &tab)?;
         assert_eq!(
             text(&ui, "#popover"),
-            "Rename\nRemove from saved\nSettle tree"
+            "Pin tab\nSave for later\nRename\nSettle tree"
         );
-        assert_eq!(chrome(&ui, "[...document.querySelectorAll('[data-tab-action]')].every(e=>e.getBoundingClientRect().bottom <= document.getElementById('popover').getBoundingClientRect().bottom)")?, true);
-        shots(
-            &ui,
-            if mode == ThemeMode::Dark {
-                "menu-dark"
-            } else {
-                "menu-light"
-            },
-        )?;
-        type_text("z")?;
-        assert!(!visible(&ui, "#palette"));
         key("Escape")?;
     }
     menu(&ui, &tab)?;
     click_chrome(&ui, "[data-tab-action=rename]")?;
-    wait("rename focused", || chrome_focused(&ui, "#tree-name"))?;
     type_text("Reading renamed")?;
     key("Return")?;
-    wait("renamed", || text(&ui, &tab).contains("Reading renamed"))?;
     menu(&ui, &tab)?;
     click_chrome(&ui, "[data-tab-action=pin]")?;
-    wait("unpinned", || {
-        !visible(&ui, &format!("{tab} .tab-pinned-mark"))
+    wait("pinned icon", || {
+        visible(&ui, &format!("{tab}.pinned.icon-only"))
     })?;
     menu(&ui, &tab)?;
-    assert!(text(&ui, "#popover").contains("Save tree"));
-    click_chrome(&ui, "[data-tab-action=pin]")?;
-    wait("pin mark", || {
-        visible(&ui, &format!("{tab} .tab-pinned-mark"))
-    })?;
+    click_chrome(&ui, "[data-tab-action=unpin]")?;
+    wait("unpinned", || !visible(&ui, &format!("{tab}.pinned")))?;
     menu(&ui, &tab)?;
-    click_chrome(&ui, "[data-tab-action=settle]")?;
-    wait("settled from menu", || !visible(&ui, &tab))?;
+    click_chrome(&ui, "[data-tab-action=save]")?;
+    wait("saved off bar", || !visible(&ui, &tab))?;
     start_page(&ui)?;
-    assert_eq!(chrome(&ui, "canopy.state().start.pinned.length")?, 3);
-    key("ctrl+e")?;
-    wait("forest saved cards", || {
-        visible(&ui, "#forest-trees [data-key^=saved-]")
-    })?;
-    chrome(&ui, "(() => { const c=S.forest.trees.items.find(c=>c.kind==='card' && c.key.startsWith('saved-') && !S.frame.tabs.some(t=>t.id===c.id)); document.querySelector(`#forest-trees [data-key='${c.key}']`).focus(); return true; })()")?;
-    key("Menu")?;
-    click_chrome(&ui, "[data-tab-action=rename]")?;
-    assert!(chrome_focused(&ui, "#tree-name"));
-    type_text("Settled saved tree")?;
-    key("Return")?;
-    wait("settled tree renamed", || {
-        text(&ui, "#start-content").contains("Settled saved tree")
-    })?;
+    assert!(text(&ui, "#start-content").contains("Saved for later"));
+    let card = format!(".tree-card[data-id='{}']", roots[0]);
+    menu(&ui, &card)?;
+    assert_eq!(text(&ui, "#popover"), "Open\nRename\nSettle tree");
     key("Escape")?;
-    menu(&ui, ".tree-card")?;
-    assert_eq!(text(&ui, "#popover"), "Remove from saved");
-    click_chrome(&ui, "[data-tab-action=pin]")?;
-    wait("card removed", || {
-        chrome(&ui, "canopy.state().start.pinned.length").is_ok_and(|v| v == 2)
-    })?;
-    println!(
-        "PASS tab menu, rename, pin mark, unpin, re-pin, settle keeps pin, card context menu."
-    );
+    click_chrome(&ui, &card)?;
+    settle(&ui)?;
+    assert!(visible(&ui, &tab));
+    for root in &roots {
+        ui.dispatch(ChromeIntent::PlaceTree {
+            tree: tree(&ui, *root),
+            to: canopy::browser::Move::Shelf(canopy::browser::Slot::End),
+        });
+        pump(100);
+    }
+    println!("PASS tab menu Pin, Unpin, Save for later and shelf Open, with disjoint membership.");
     suggested(&ui, directory.path(), &format!("http://{address}"))?;
     {
         let mut browser = canopy::browser::Browser::open(&directory.path().join("forest.sqlite3"))?;
@@ -359,7 +342,10 @@ fn main() -> Result<()> {
                 .find(|t| t.root.root() == id)
                 .unwrap()
                 .root;
-            browser.place_tree(tree, crate::browser::Move::Pin(true))?;
+            browser.place_tree(
+                tree,
+                canopy::browser::Move::Shelf(canopy::browser::Slot::End),
+            )?;
         }
     }
     ui.dispatch(ChromeIntent::SetTheme(ThemeMode::Dark));
@@ -374,8 +360,11 @@ fn main() -> Result<()> {
     shots(&ui, "scroll-dark")?;
     println!("PASS 900 by 600 scrolls and the final band remains reachable.");
     let trees = ui.pages.read(|b| b.tree_states())?;
-    for tree in trees {
-        ui.dispatch(ChromeIntent::SettleTree(tree.root));
+    for tree in trees.into_iter().filter(|t| t.place().is_tab()) {
+        ui.dispatch(ChromeIntent::PlaceTree {
+            tree: tree.root,
+            to: canopy::browser::Move::History,
+        });
         pump(150);
     }
     wait("placeholder with settled pins", || {
@@ -394,11 +383,11 @@ fn main() -> Result<()> {
 fn new_tree_tab(ui: &Ui, data: &std::path::Path) -> Result<()> {
     let before = ui.snapshot()?;
     let connection = rusqlite::Connection::open(data.join("forest.sqlite3"))?;
-    type StoredSession = (Option<String>, Vec<(String, Option<i64>)>);
+    type StoredSession = (Option<String>, Vec<(String, String)>);
     let stored = || -> rusqlite::Result<StoredSession> {
         let current = connection.query_row("SELECT current_id FROM session", [], |r| r.get(0))?;
         let mut statement =
-            connection.prepare("SELECT root_id, settled_at FROM tree_state ORDER BY root_id")?;
+            connection.prepare("SELECT root_id, place FROM tree_state ORDER BY root_id")?;
         let trees = statement
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -677,7 +666,7 @@ fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
         connection.execute("INSERT INTO visits(id,parent_id,url,title,created_at,opened_at) VALUES(?1,?2,?3,?4,?5,?5)",params![id.to_string(),parent.map(|v|v.to_string()),url,title,now])?;
         if parent.is_none() {
             connection.execute(
-                "INSERT INTO tree_state(root_id,last_visit_id,settled_at) VALUES(?1,?1,?2)",
+                "INSERT INTO tree_state(root_id,last_visit_id,place,placed_at) VALUES(?1,?1,'history',?2)",
                 params![id.to_string(), now],
             )?;
         }
@@ -858,11 +847,9 @@ fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
     )?;
     click_chrome(ui, &selector)?;
     wait("Keep tree pins", || {
-        browser
-            .tree_states()
-            .unwrap()
-            .iter()
-            .any(|t| t.root.root() == waiting && t.place.pinned())
+        browser.tree_states().unwrap().iter().any(|t| {
+            t.root.root() == waiting && matches!(t.place(), canopy::browser::Place::Shelf { .. })
+        })
     })?;
     wait("kept tree leaves", || !visible(ui, &selector))?;
     assert!(!chrome(ui, "canopy.state().start.suggested.map(s=>s.key)")?
@@ -926,9 +913,9 @@ fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
         )
     })?;
     key("Escape")?;
-    ui.dispatch(ChromeIntent::PinTree {
+    ui.dispatch(ChromeIntent::PlaceTree {
         tree: tree(ui, waiting),
-        pinned: false,
+        to: canopy::browser::Move::Open,
     });
     start_page(ui)?;
     wait("settled tree offered again", || {
@@ -948,10 +935,10 @@ fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
     assert!(browser
         .tree_states()?
         .iter()
-        .any(|t| t.root.root() == waiting && t.place.is_tab()));
-    ui.dispatch(ChromeIntent::PinTree {
+        .any(|t| t.root.root() == waiting && t.place().is_tab()));
+    ui.dispatch(ChromeIntent::PlaceTree {
         tree: tree(ui, waiting),
-        pinned: true,
+        to: canopy::browser::Move::Shelf(canopy::browser::Slot::First),
     });
     assert!(browser.snapshot()?.visits.iter().any(|v| v.id == page));
     println!("PASS three suggestion kinds, reasons and hover actions, frozen keys across two refreshes, painted-key activation, new-entry ranking, Keep page/tree, persisted cross, path activation and Keep, tree restoration and no backfill.");

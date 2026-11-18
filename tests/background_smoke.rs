@@ -588,7 +588,8 @@ fn settling_destroys_never_seen_and_pending_loads() -> Result<()> {
         .read(|b| canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?
         .tree_of(source)
         .unwrap();
-    f.ui.pages.place_tree(tree, crate::browser::Move::History)?;
+    f.ui.pages
+        .place_tree(tree, canopy::browser::Move::History)?;
     common::pump(3000);
     assert!(f.ui.pages.loaded_visits().is_empty());
     assert!(f.ui.pages.background_view(q).is_none());

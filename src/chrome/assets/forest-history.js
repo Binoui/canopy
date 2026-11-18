@@ -22,3 +22,21 @@ function historyItemHtml(i) {
     + `<span class="tm">${esc(i.time)}</span><span class="forest-icons">${i.icons.map(n => fav(n.url, true, 16)).join('')}${i.more ? `<span>${esc(i.more)}</span>` : ''}</span>`
     + `<span class="nm">${esc(i.title)}</span><span class="st">${esc(i.sites)}</span><span class="pg">${esc(i.pages)}</span></button>`;
 }
+
+function forestHistoryClick(e) {
+  const el=e.target.closest('[data-forest]'); if(!el) return;
+  const id=el.dataset.id;
+  if(el.dataset.forest === 'row') post({t:'forest',do:'select',tree:id});
+  else if(el.dataset.forest === 'reopen') openForestTree(id);
+  else if(el.dataset.forest === 'more') post({t:'forest',do:'more',seen:Number(el.dataset.seen)});
+  else if(el.dataset.forest === 'save') treeAct(id,'save');
+  else if(el.dataset.forest === 'page') {uncover();intent('restore',{id});}
+}
+$('forest-history').addEventListener('dblclick', e => {const row=e.target.closest('[data-forest="row"]');if(row)openForestTree(row.dataset.id);});
+function forestHistoryKey(e) {
+  const row=e.target.closest('.forest-row');
+  if(row && ['ArrowUp','ArrowDown'].includes(e.key)) post({t:'forest',do:'step',by:e.key==='ArrowUp'?-1:1});
+  else if(row && e.key==='Enter') openForestTree(row.dataset.id);
+  else if(!forestFindKey(e,'find'))return;
+  e.preventDefault();
+}

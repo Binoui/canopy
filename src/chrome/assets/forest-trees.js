@@ -16,3 +16,11 @@ function moveForestCard(card, key) {
   next?.focus();
 }
 
+
+function forestTreesClick(e) { const card=e.target.closest('[data-forest="card"]'); if(card) openForestTree(card.dataset.id); }
+function forestTreesKey(e) {
+  const card=e.target.closest('.tree-card');
+  if (card && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) moveForestCard(card,e.key);
+  else if (!forestFindKey(e,'trees-find')) return;
+  e.preventDefault();
+}

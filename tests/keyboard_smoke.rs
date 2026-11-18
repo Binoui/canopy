@@ -216,15 +216,12 @@ fn main() -> Result<()> {
         chrome(&ui, "canopy.present(S.frame)")?;
         check(&ui, "document.activeElement === window.keptTab")?;
         key("shift+F10")?;
-        check(&ui, "document.activeElement.dataset.tabAction === 'rename'")?;
-        key("Down")?;
         check(&ui, "document.activeElement.dataset.tabAction === 'pin'")?;
         key("Return")?;
         wait("pin state in accessible name", || {
-            chrome(&ui, "document.querySelector('#tab-row [aria-selected=true]').getAttribute('aria-label').includes('saved')").is_ok_and(|v|v==true)
+            chrome(&ui, "document.querySelector('#tab-row [aria-selected=true]').getAttribute('aria-label').includes('pinned')").is_ok_and(|v|v==true)
         })?;
         key("shift+F10")?;
-        key("Down")?;
         key("Return")?;
         ui.window.resize(480, 800);
         wait("tab overflow at narrow width", || {
@@ -417,7 +414,7 @@ fn main() -> Result<()> {
                 })?
                 .tree_of(trees[4].2)
                 .unwrap(),
-            crate::browser::Move::History,
+            canopy::browser::Move::History,
         )?;
         wait("other tree settled", || {
             text(&ui, "#toast").contains("small")
@@ -430,14 +427,11 @@ fn main() -> Result<()> {
         settle(&ui)?;
         key("ctrl+t")?;
         wait("start visible", || visible(&ui, "#start"))?;
-        chrome(
-            &ui,
-            "intent('pin-tree', {id:S.frame.tabs[0].id,pinned:true})",
-        )?;
+        chrome(&ui, "treeAct(S.frame.tabs[0].id,'save')")?;
         wait("pinned card", || visible(&ui, "[data-start=tree]"))?;
         focus(&ui, "[data-start=tree]")?;
         key("Menu")?;
-        check(&ui, "document.activeElement.dataset.tabAction === 'pin'")?;
+        check(&ui, "document.activeElement.dataset.tabAction === 'open'")?;
         capture(&shots, "pinned-menu", theme)?;
         key("Escape")?;
         check(&ui, "document.activeElement.dataset.start === 'tree'")?;

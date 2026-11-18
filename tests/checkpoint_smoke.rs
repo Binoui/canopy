@@ -574,7 +574,7 @@ fn tree_boundary() -> Result<()> {
     settle();
     assert_eq!(f.pages.read(|b| b.snapshot())?.current, Some(other));
     f.pages
-        .place_tree(old_tree, crate::browser::Move::History)?;
+        .place_tree(old_tree, canopy::browser::Move::History)?;
     f.release()?;
     assert!(!f.revive(other)?);
     f.pages.selected_page().native.go_back();
@@ -875,7 +875,7 @@ fn commands_during_release() -> Result<()> {
     );
     assert!(
         f.pages
-            .place_tree(tree, crate::browser::Move::History)
+            .place_tree(tree, canopy::browser::Move::History)
             .is_err(),
         "settle must reject before changing the forest"
     );

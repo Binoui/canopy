@@ -730,7 +730,8 @@ fn chrome_after_changes() -> Result<()> {
         u.ui.pages
             .read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
     for t in trees.tabs() {
-        u.ui.pages.place_tree(t.id, crate::browser::Move::History)?;
+        u.ui.pages
+            .place_tree(t.id, canopy::browser::Move::History)?;
         pump(100);
     }
     geometry(&u)?;
@@ -914,7 +915,8 @@ fn forest_click_survives_frame() -> Result<()> {
             .read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?
             .tree_of(a)
             .unwrap();
-    u.ui.pages.place_tree(tree, crate::browser::Move::History)?;
+    u.ui.pages
+        .place_tree(tree, canopy::browser::Move::History)?;
     wait("last tree settled", || u.cursor().is_none() && !u.loading())?;
     key("ctrl+e")?;
     wait("forest", || visible(&u.ui, "#forest"))?;

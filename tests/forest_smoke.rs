@@ -41,10 +41,16 @@ fn main() -> Result<()> {
             .root;
         b.rename_tree(tree, &format!("Project {i}"))?;
         if i >= 4 {
-            b.place_tree(tree, crate::browser::Move::History)?;
+            b.place_tree(tree, canopy::browser::Move::History)?;
         }
-        if i == 0 || i == 4 {
-            b.place_tree(tree, crate::browser::Move::Pin(true))?;
+        if i == 0 {
+            b.place_tree(tree, canopy::browser::Move::Pin(true))?;
+        }
+        if i == 4 {
+            b.place_tree(
+                tree,
+                canopy::browser::Move::Shelf(canopy::browser::Slot::First),
+            )?;
         }
     }
     drop(b);

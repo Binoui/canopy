@@ -21,3 +21,6 @@
   #forest-views, #forest-find { order: 1; }
   #forest-close { margin-left: auto; }
 }
+
+#forest-undo { flex:none; display:flex; align-items:center; gap:12px; padding:10px 14px; border-top:1px solid var(--border); }
+#forest-undo button { padding:5px 10px; background:var(--hover); border-radius:6px; }

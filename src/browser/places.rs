@@ -273,6 +273,238 @@ pub(super) fn migrate_15(tx: &Transaction) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeleteId(ulid::Ulid);
+impl std::fmt::Display for DeleteId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl std::str::FromStr for DeleteId {
+    type Err = ulid::DecodeError;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        s.parse().map(Self)
+    }
+}
+
+pub struct Deleted {
+    id: DeleteId,
+    trees: Vec<TreeId>,
+    visits: std::collections::HashSet<VisitId>,
+    tables: Vec<Rows>,
+    nulled: Vec<(i64, String)>,
+    declined: Vec<String>,
+}
+impl Deleted {
+    pub fn id(&self) -> DeleteId {
+        self.id
+    }
+    pub fn trees(&self) -> &[TreeId] {
+        &self.trees
+    }
+    pub fn holds(&self, id: VisitId) -> bool {
+        self.visits.contains(&id)
+    }
+}
+struct Rows {
+    table: String,
+    columns: Vec<String>,
+    values: Vec<Vec<rusqlite::types::Value>>,
+}
+impl Rows {
+    fn read(tx: &Transaction, table: &str, predicate: &str) -> Result<Self> {
+        let mut stmt = tx.prepare(&format!(
+            "SELECT rowid,* FROM {table} WHERE {predicate} ORDER BY rowid"
+        ))?;
+        let columns = stmt
+            .column_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        let values = stmt
+            .query_map([], |r| (0..columns.len()).map(|i| r.get(i)).collect())?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(Self {
+            table: table.to_owned(),
+            columns,
+            values,
+        })
+    }
+    fn restore(&self, tx: &Transaction) -> Result<()> {
+        use rusqlite::types::Value;
+        // No foreign key refers to these integer keys. The schema coverage test checks that.
+        let reuse = self
+            .values
+            .iter()
+            .try_fold(false, |taken, row| -> Result<bool> {
+                Ok(taken
+                    || tx.query_row(
+                        &format!("SELECT EXISTS(SELECT 1 FROM {} WHERE rowid=?1)", self.table),
+                        [&row[0]],
+                        |r| r.get::<_, bool>(0),
+                    )?)
+            })?;
+        let integer_id = matches!(
+            self.table.as_str(),
+            "captures" | "downloads" | "visit_events"
+        );
+        let columns = self
+            .columns
+            .iter()
+            .enumerate()
+            .filter(|(i, c)| !reuse || (*i != 0 && !(integer_id && c.as_str() == "id")))
+            .collect::<Vec<_>>();
+        let sql = format!(
+            "INSERT INTO {} ({}) VALUES ({})",
+            self.table,
+            columns
+                .iter()
+                .map(|(_, c)| format!("\"{c}\""))
+                .collect::<Vec<_>>()
+                .join(","),
+            vec!["?"; columns.len()].join(",")
+        );
+        for row in &self.values {
+            let values = columns
+                .iter()
+                .map(|(i, _)| &row[*i])
+                .collect::<Vec<&Value>>();
+            tx.execute(&sql, rusqlite::params_from_iter(values))?;
+        }
+        Ok(())
+    }
+}
+fn visit_references(tx: &Transaction) -> Result<Vec<(String, String, String)>> {
+    let mut stmt=tx.prepare("SELECT m.name,f.\"from\",f.on_delete FROM sqlite_master m,pragma_foreign_key_list(m.name) f WHERE m.type='table' AND f.\"table\"='visits' ORDER BY m.name,f.\"from\"")?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+impl Browser {
+    pub fn delete_trees(&mut self, trees: &[TreeId]) -> Result<Option<(Deleted, Landing)>> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute_batch(
+            "CREATE TEMP TABLE IF NOT EXISTS deleting(id TEXT PRIMARY KEY); DELETE FROM deleting;",
+        )?;
+        let mut roots = vec![];
+        for tree in trees {
+            if !roots.contains(tree)
+                && tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM tree_state WHERE root_id=?1 AND place='history')",
+                    [tree.root().to_string()],
+                    |r| r.get::<_, bool>(0),
+                )?
+            {
+                roots.push(*tree);
+                tx.execute("WITH RECURSIVE branch(id) AS (SELECT ?1 UNION ALL SELECT v.id FROM visits v JOIN branch b ON v.parent_id=b.id) INSERT OR IGNORE INTO deleting SELECT id FROM branch",[tree.root().to_string()])?;
+            }
+        }
+        if roots.is_empty() {
+            return Ok(None);
+        }
+        let visits = tx
+            .prepare("SELECT id FROM deleting")?
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .map(|s| s.parse().map_err(anyhow::Error::from))
+            .collect::<Result<_>>()?;
+        let mut tables = vec![Rows::read(&tx, "visits", "id IN deleting")?];
+        for (table, column, action) in visit_references(&tx)? {
+            match action.as_str() {
+                "CASCADE" => {
+                    tables.push(Rows::read(&tx, &table, &format!("{column} IN deleting"))?)
+                }
+                "SET NULL" if table == "visit_events" && column == "from_visit_id" => {}
+                "NO ACTION"
+                    if matches!(
+                        (table.as_str(), column.as_str()),
+                        ("visits", "parent_id")
+                            | ("tree_state", "root_id")
+                            | ("tree_state", "last_visit_id")
+                            | ("session", "current_id")
+                    ) => {}
+                _ => bail!("Uncovered visit reference {table}.{column}"),
+            }
+        }
+        tables.push(Rows::read(&tx, "tree_state", "root_id IN deleting")?);
+        let nulled=tx.prepare("SELECT id,from_visit_id FROM visit_events WHERE from_visit_id IN deleting AND visit_id NOT IN deleting")?.query_map([],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+        let declined = roots
+            .iter()
+            .map(|t| format!("tree {}", t.root()))
+            .filter(|key| {
+                tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM declined_suggestions WHERE key=?1)",
+                    [key],
+                    |r| r.get::<_, bool>(0),
+                )
+                .unwrap_or(false)
+            })
+            .collect::<Vec<_>>();
+        let landing = land(&tx)?;
+        tx.execute(
+            "UPDATE session SET current_id=NULL WHERE current_id IN deleting",
+            [],
+        )?;
+        tx.execute("DELETE FROM tree_state WHERE root_id IN deleting", [])?;
+        for key in &declined {
+            tx.execute("DELETE FROM declined_suggestions WHERE key=?1", [key])?;
+        }
+        tx.execute("DELETE FROM visits WHERE id IN deleting", [])?;
+        tx.commit()?;
+        Ok(Some((
+            Deleted {
+                id: DeleteId(ulid::Ulid::new()),
+                trees: roots,
+                visits,
+                tables,
+                nulled,
+                declined,
+            },
+            landing,
+        )))
+    }
+    pub fn undo_delete(&mut self, id: DeleteId, deleted: &Deleted) -> Result<()> {
+        if id != deleted.id {
+            return Ok(());
+        }
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute_batch("PRAGMA defer_foreign_keys=ON")?;
+        if deleted.trees.iter().any(|t| {
+            tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM tree_state WHERE root_id=?1)",
+                [t.root().to_string()],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap_or(false)
+        }) {
+            return Ok(());
+        }
+        for table in &deleted.tables {
+            table.restore(&tx)?;
+        }
+        for (row, from) in &deleted.nulled {
+            tx.execute(
+                "UPDATE visit_events SET from_visit_id=?2 WHERE id=?1 AND from_visit_id IS NULL",
+                params![row, from],
+            )?;
+        }
+        for key in &deleted.declined {
+            tx.execute(
+                "INSERT OR IGNORE INTO declined_suggestions(key) VALUES(?1)",
+                [key],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 pub(super) fn legacy_14(c: &rusqlite::Connection) {
     c.execute_batch("DROP TRIGGER tree_state_validate_INSERT; DROP TRIGGER tree_state_validate_UPDATE;
@@ -409,5 +641,183 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn visit_references_are_known_and_integer_keys_have_no_referrers() {
+        let mut b = browser();
+        let tx = b.connection.transaction().unwrap();
+        assert_eq!(
+            visit_references(&tx).unwrap(),
+            vec![
+                ("captures", "visit_id", "CASCADE"),
+                ("downloads", "visit_id", "CASCADE"),
+                ("origins", "visit_id", "CASCADE"),
+                ("session", "current_id", "NO ACTION"),
+                ("tree_state", "last_visit_id", "NO ACTION"),
+                ("tree_state", "root_id", "NO ACTION"),
+                ("visit_events", "from_visit_id", "SET NULL"),
+                ("visit_events", "visit_id", "CASCADE"),
+                ("visits", "parent_id", "NO ACTION")
+            ]
+            .into_iter()
+            .map(|(a, b, c)| (a.into(), b.into(), c.into()))
+            .collect::<Vec<_>>()
+        );
+        assert!(!tx.prepare("SELECT 1 FROM sqlite_master m,pragma_foreign_key_list(m.name) f WHERE m.type='table' AND (f.\"table\" IN ('captures','downloads','visit_events') OR (f.\"table\"='visits' AND f.\"to\"<>'id'))").unwrap().exists([]).unwrap());
+    }
+    fn all_rows(
+        b: &mut Browser,
+        normalize: bool,
+    ) -> Vec<(String, Vec<Vec<rusqlite::types::Value>>)> {
+        let names=b.connection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'captures_fts_%' ORDER BY name").unwrap().query_map([],|r|r.get::<_,String>(0)).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        let tx = b.connection.transaction().unwrap();
+        names
+            .into_iter()
+            .map(|name| {
+                let mut rows = Rows::read(&tx, &name, "1").unwrap();
+                if normalize {
+                    let integer =
+                        matches!(name.as_str(), "captures" | "downloads" | "visit_events");
+                    rows.values = rows
+                        .values
+                        .into_iter()
+                        .map(|r| {
+                            r.into_iter()
+                                .enumerate()
+                                .filter(|(i, _)| *i != 0 && !(integer && rows.columns[*i] == "id"))
+                                .map(|(_, v)| v)
+                                .collect()
+                        })
+                        .collect();
+                    rows.values.sort_by_key(|r| format!("{r:?}"));
+                }
+                (name, rows.values)
+            })
+            .collect()
+    }
+    fn enrich(b: &mut Browser, tree: TreeId, external: TreeId) {
+        let id = tree.root().to_string();
+        let child = ulid::Ulid::new().to_string();
+        let queued = ulid::Ulid::new().to_string();
+        b.connection.execute("INSERT INTO visits(id,parent_id,url,title,created_at,opened_at,scroll_y,branch_settled_at) VALUES(?1,?2,'https://child.test','Child',2,2,32,3)",params![child,id]).unwrap();
+        b.connection.execute("INSERT INTO visits(id,parent_id,url,title,created_at,dismissed_at) VALUES(?1,?2,'https://waiting.test','Waiting',3,4)",params![queued,child]).unwrap();
+        b.connection
+            .execute(
+                "UPDATE tree_state SET last_visit_id=?2 WHERE root_id=?1",
+                params![id, child],
+            )
+            .unwrap();
+        let other = external.root().to_string();
+        b.connection
+            .execute(
+                "INSERT INTO origins VALUES(?1,'https://source.test',NULL,'link','excerpt')",
+                [&id],
+            )
+            .unwrap();
+        b.connection.execute("INSERT INTO captures(visit_id,document_url,title,body,captured_at,kind) VALUES(?1,'https://example.org','Captured','distinctiveword',1,'page')",[&id]).unwrap();
+        b.connection.execute("INSERT INTO downloads(visit_id,path,size,saved_at) VALUES(?1,'/fixture/kept.pdf',12,1)",[&id]).unwrap();
+        b.connection
+            .execute(
+                "INSERT INTO visit_events(visit_id,from_visit_id,kind,at) VALUES(?1,?2,'return',1)",
+                params![other, id],
+            )
+            .unwrap();
+        b.connection
+            .execute(
+                "INSERT INTO visit_events(visit_id,kind,at) VALUES(?1,'new',1)",
+                [&id],
+            )
+            .unwrap();
+        b.connection
+            .execute(
+                "INSERT INTO declined_suggestions VALUES(?1)",
+                [format!("tree {id}")],
+            )
+            .unwrap();
+        b.bookmark(&url::Url::parse("https://example.org").unwrap(), "Kept")
+            .unwrap();
+    }
+    #[test]
+    fn undo_restores_whole_database_and_reused_integer_keys() {
+        for reuse in [false, true] {
+            let mut b = browser();
+            let t = roots(&mut b, 2);
+            enrich(&mut b, t[1], t[0]);
+            b.place_tree(t[1], Move::History).unwrap();
+            let before = all_rows(&mut b, reuse);
+            let (deleted, _) = b.delete_trees(&[t[0], t[1]]).unwrap().unwrap();
+            let id = deleted.id();
+            b.undo_delete(DeleteId(ulid::Ulid::new()), &deleted)
+                .unwrap();
+            assert!(b.visit(t[1].root()).is_err());
+            assert!(b.search("distinctiveword").unwrap().is_empty());
+            assert_eq!(b.bookmarks().unwrap().len(), 1);
+            assert!(b.delete_trees(&[t[1]]).unwrap().is_none());
+            if reuse {
+                let fresh = roots(&mut b, 1)[0];
+                enrich(&mut b, fresh, t[0]);
+                let with_new = all_rows(&mut b, true);
+                b.undo_delete(id, &deleted).unwrap();
+                let restored = all_rows(&mut b, true);
+                let mut expected = with_new.clone();
+                for (table, rows) in &mut expected {
+                    let original = &before.iter().find(|(n, _)| n == table).unwrap().1;
+                    if table == "sqlite_sequence" {
+                        continue;
+                    }
+                    if table == "visit_events" {
+                        for row in rows.iter_mut() {
+                            if row[1] == rusqlite::types::Value::Null {
+                                if let Some(old) = original
+                                    .iter()
+                                    .find(|old| old[0] == row[0] && old[2..] == row[2..])
+                                {
+                                    row[1] = old[1].clone();
+                                }
+                            }
+                        }
+                    }
+                    for row in original {
+                        if table == "captures_fts" || !rows.contains(row) {
+                            rows.push(row.clone());
+                        }
+                    }
+                    rows.sort_by_key(|r| format!("{r:?}"));
+                }
+                assert_eq!(expected, restored);
+            } else {
+                b.undo_delete(id, &deleted).unwrap();
+                assert_eq!(before, all_rows(&mut b, false));
+            }
+            let restored = all_rows(&mut b, reuse);
+            b.undo_delete(id, &deleted).unwrap();
+            assert_eq!(restored, all_rows(&mut b, reuse));
+            assert!(!b.search("distinctiveword").unwrap().is_empty());
+            assert!(!b
+                .connection
+                .prepare("PRAGMA foreign_key_check")
+                .unwrap()
+                .exists([])
+                .unwrap());
+        }
+    }
+    #[test]
+    fn failed_undo_keeps_the_record_and_delete_is_durable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("forest.sqlite3");
+        let mut b = Browser::open(&path).unwrap();
+        let tree = roots(&mut b, 1)[0];
+        b.place_tree(tree, Move::History).unwrap();
+        let (record, _) = b.delete_trees(&[tree]).unwrap().unwrap();
+        b.connection.execute_batch("CREATE TRIGGER reject_restore BEFORE INSERT ON visits BEGIN SELECT RAISE(ABORT,'refused'); END").unwrap();
+        assert!(b.undo_delete(record.id(), &record).is_err());
+        assert!(b.visit(tree.root()).is_err());
+        b.connection
+            .execute_batch("DROP TRIGGER reject_restore")
+            .unwrap();
+        b.undo_delete(record.id(), &record).unwrap();
+        b.delete_trees(&[tree]).unwrap();
+        drop(b);
+        assert!(Browser::open(&path).unwrap().visit(tree.root()).is_err());
     }
 }

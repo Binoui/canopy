@@ -48,13 +48,13 @@ pub(crate) fn frame(
                 "id": tree.id.root().to_string(),
                 "title": tree.title,
                 "subtitle": super::tabs::subtitle(forest, tree),
-                "name": format!("{}, {}{}{}{}", tree.title, plural(tree.page_count, "page"), if tree.pending_count > 0 { format!(", {} waiting", tree.pending_count) } else { String::new() }, if tree.place.pinned() { ", saved" } else { "" }, if frame.live.contains(&tree.last_visit) { ", still open" } else { "" }),
+                "name": format!("{}, {}{}{}{}", tree.title, plural(tree.page_count, "page"), if tree.pending_count > 0 { format!(", {} waiting", tree.pending_count) } else { String::new() }, if tree.place.pinned() { ", pinned" } else { "" }, if frame.live.contains(&tree.last_visit) { ", still open" } else { "" }),
                 "pages": tree.page_count,
                 "live": frame.live.contains(&tree.last_visit),
                 "pending": tree.pending_count,
                 "active": Some(tree.id) == active,
                 "pinned": tree.place.pinned(),
-                "menu": super::tree_card::menu(tree, super::tree_card::Place::Tab),
+                "menu": super::tree_card::menu(tree),
             })
         })
         .collect();
