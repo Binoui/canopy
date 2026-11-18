@@ -4,6 +4,18 @@ use crate::{
     forest::ForestProjection,
 };
 fn fixture(n: usize, two_sites: bool, waiting: bool) -> (ChromeFrame, Vec<VisitId>) {
+    fixture_with_parents(
+        &(0..n).map(|i| i.checked_sub(1)).collect::<Vec<_>>(),
+        two_sites,
+        waiting,
+    )
+}
+fn fixture_with_parents(
+    parents: &[Option<usize>],
+    two_sites: bool,
+    waiting: bool,
+) -> (ChromeFrame, Vec<VisitId>) {
+    let n = parents.len();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db");
     let mut b = Browser::open(&path).unwrap();
@@ -12,13 +24,13 @@ fn fixture(n: usize, two_sites: bool, waiting: bool) -> (ChromeFrame, Vec<VisitI
         .unwrap()[0];
     let db = rusqlite::Connection::open(&path).unwrap();
     let mut ids = vec![root];
-    for i in 1..n {
+    for (i, parent) in parents.iter().enumerate().skip(1) {
         let id: VisitId = ulid::Ulid::new().to_string().parse().unwrap();
         db.execute(
             "INSERT INTO visits(id,parent_id,url,title,created_at,opened_at) VALUES(?,?,?,?,?,?)",
             rusqlite::params![
                 id.to_string(),
-                ids[i - 1].to_string(),
+                parent.map(|p| ids[p].to_string()),
                 format!(
                     "https://{}/{i}",
                     if two_sites { "test.test" } else { "hub.test" }
@@ -40,7 +52,7 @@ fn fixture(n: usize, two_sites: bool, waiting: bool) -> (ChromeFrame, Vec<VisitI
             .unwrap();
         }
     }
-    for _ in 0..5 {
+    for _ in 0..12 {
         db.execute(
             "INSERT INTO visit_events(visit_id,kind,at) VALUES(?,'return',1)",
             [root.to_string()],
@@ -170,7 +182,7 @@ fn size_grows_slowly_and_is_capped_and_tips_report_showings() {
     assert!(i[0].paint(&facts, Level::Middle)["tip"]
         .as_str()
         .unwrap()
-        .contains("shown 5 times"));
+        .contains("shown 12 times"));
     assert!(!i[2].paint(&facts, Level::Middle)["tip"]
         .as_str()
         .unwrap()
@@ -178,9 +190,40 @@ fn size_grows_slowly_and_is_capped_and_tips_report_showings() {
 }
 #[test]
 fn flow_item_boxes_do_not_overlap_and_trees_fit_resting_room() {
-    for n in [7, 90, 500] {
+    let chain = |n| (0..n).map(|i: usize| i.checked_sub(1)).collect::<Vec<_>>();
+    let mut trail = vec![];
+    let mut previous = None;
+    for i in 0..34 {
+        let current = trail.len();
+        trail.push(previous);
+        previous = Some(current);
+        if i % 5 == 4 && i < 30 {
+            trail.push(Some(current));
+            trail.push(Some(current + 1));
+        }
+    }
+    assert_eq!(trail.len(), 46);
+    let cases = [
+        (chain(7), true),
+        (chain(90), false),
+        (chain(500), false),
+        ((0..21).map(|i| (i > 0).then_some(0)).collect(), true),
+        (
+            (0..39)
+                .map(|i| match i {
+                    0 => None,
+                    1..=6 => Some(0),
+                    _ => Some(i - 1),
+                })
+                .collect(),
+            true,
+        ),
+        (trail, true),
+    ];
+    for (parents, two_sites) in cases {
+        let n = parents.len();
         for level in Level::ALL {
-            let (f, ids) = fixture(n, n == 7, false);
+            let (f, ids) = fixture_with_parents(&parents, two_sites, false);
             let facts = Facts {
                 forest: &f.forest,
                 previous: Some(ids[0]),
