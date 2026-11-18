@@ -125,6 +125,21 @@ pub(super) fn shelf_card(forest: &ForestProjection, tree: &TreeSummary) -> Value
     value
 }
 
+pub(super) fn tab_card(forest: &ForestProjection, tree: &TreeSummary, current: bool) -> Value {
+    let mut value = card(forest, tree, current);
+    value["kind"] = json!(if tree.place.pinned() { "line" } else { "card" });
+    value["icon"] = json!(forest.visit(tree.id.root()).unwrap().url.as_str());
+    value["buttons"] = buttons(tree, &[Act::Pin, Act::Unpin, Act::Save, Act::Settle]);
+    value["meta"] = json!(plural(tree.page_count, "page"));
+    value
+}
+pub(super) fn settled_line(forest: &ForestProjection, tree: &TreeSummary, clock: &str) -> Value {
+    json!({"id":tree.id.root().to_string(), "kind":"line", "title":tree.title,
+        "name":format!("{}, settled at {clock}",tree.title), "time":clock,
+        "icon":forest.visit(tree.id.root()).unwrap().url.as_str(), "current":false,
+        "menu":menu(tree), "buttons":buttons(tree,&[Act::Open])})
+}
+
 pub(super) struct Site {
     pub host: String,
     pub sample: url::Url,

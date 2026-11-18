@@ -1,10 +1,40 @@
-#forest-trees { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 240px)); justify-content: start; align-content: start; gap: 9px; }
-#forest-trees .band-head, #forest-trees .hint-line { grid-column: 1 / -1; }
-#forest-trees .band-head { margin: 3px 0 0; gap: 8px; }
-#forest-trees .pc-tree { position: relative; display: flex; align-items: center; justify-content: center; height: 84px; margin: -11px -11px 3px; padding: 10px; background: var(--bg); border-bottom: 1px solid var(--border); }
-#forest-trees .pc-page { padding: 0; }
+.forest-body:has(#forest-trees:not([hidden])) { overflow: hidden; display: flex; flex-direction: column; }
+#forest-trees { display: flex; flex: 1; min-height: 0; gap: 14px; overflow-x: auto; padding: 2px; }
+#forest-trees .forest-lane { display: flex; flex-direction: column; flex: 1 1 0; min-width: 0; border: 1px solid var(--border); border-radius: 10px; padding: 0 10px 10px; background: var(--chrome); }
+.forest-lane header { display: flex; flex-wrap: wrap; flex: none; align-items: center; gap: 4px 9px; min-height: 44px; }
+.forest-lane header b { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
+.forest-lane header span { color: var(--muted); font-size: 11px; }
+.lane-cards { flex: 1; min-height: 0; overflow-y: auto; padding: 3px 2px; }
+#forest-trees .tree-card { position: relative; display: flex; flex-direction: column; min-width: 0; margin-bottom: 8px; padding: 0; border: 1px solid var(--border); border-radius: 10px; background: var(--tile); cursor: grab; user-select: none; overflow: visible; gap: 0; }
 #forest-trees .tree-card:hover { border-color: var(--faint); box-shadow: none; }
 #forest-trees .tree-card[aria-current="true"] { border-color: var(--green); }
-#forest-trees .tree-card { min-height: 150px; }
-#forest-trees .tree-card > span { flex: none; }
-#forest-trees .pc-meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#forest-trees .card-main { position: relative; display: flex; flex-direction: column; min-width: 0; width: 100%; padding: 0; border-radius: 9px; cursor: inherit; text-align: left; }
+#forest-trees .card-art { display: flex; align-items: center; justify-content: center; height: 58px; width: 100%; overflow: hidden; border-bottom: 1px solid var(--border); background: var(--bg); border-radius: 9px 9px 0 0; }
+#forest-trees .card-title, #forest-trees .card-page, #forest-trees .card-meta { display: block; width: 100%; padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#forest-trees .card-title { margin-top: 7px; font-size: 13px; font-weight: 600; }
+#forest-trees .card-page { margin-top: 2px; color: var(--muted); font-size: 11.5px; }
+#forest-trees .card-meta { margin: 3px 0 2px; color: var(--faint); font-size: 11px; }
+#forest-trees .card-waiting { position: absolute; right: 6px; top: 5px; padding: 2px 5px; background: var(--green-soft); color: var(--green-ink); border-radius: 5px; font-size: 10px; }
+#forest-trees .card-acts { display: flex; flex: none; justify-content: flex-end; gap: 2px; padding: 2px 4px 4px; }
+#forest-trees .card-action, .lane-history { height: 26px; padding: 0 7px; border-radius: 6px; color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+#forest-trees .card-action:hover, .lane-history:hover { background: var(--hover); color: var(--text); }
+#forest-trees .card-action[data-act="open"] { border: 1px solid var(--border); }
+#forest-trees .line { flex-direction: row; align-items: center; min-height: 38px; }
+#forest-trees .line .card-main { flex: 1; flex-direction: row; align-items: center; padding: 6px 8px; gap: 8px; }
+#forest-trees .line .card-title { flex: 1; width: 0; margin: 0; padding: 0; font-size: 12px; }
+#forest-trees .card-icon { flex: none; display: flex; }
+#forest-trees .card-time { color: var(--faint); font-size: 10px; }
+#forest-trees .line .card-acts { padding: 3px; }
+.lane-history { flex: none; align-self: flex-start; margin-top: 6px; border: 1px solid var(--border); }
+#forest-trees .hint-line { padding: 10px 4px; color: var(--faint); }
+#forest-trees img, #forest-trees svg { -webkit-user-drag: none; pointer-events: none; }
+#forest-trees .dragging { opacity: .3; }
+#forest-trees .drop-here { outline: 1px dashed var(--text); outline-offset: -2px; }
+#forest-trees .drop-before::before, #forest-trees .drop-end .lane-cards::after { content: ""; display: block; height: 2px; background: var(--text); border-radius: 1px; }
+#forest-trees .drop-before::before { position: absolute; top: -5px; left: 0; right: 0; }
+@container (max-width: 620px) {
+  #forest-trees { gap: 10px; }
+  #forest-trees .forest-lane { flex: none; width: 300px; }
+}
+
+#forest-trees [data-lane="settled"] .lane-cards { flex: 0 1 auto; }

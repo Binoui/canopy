@@ -2219,7 +2219,8 @@ function clearTabDrop() {
 
 function finishTabDrag() {
   clearTabDrop();
-  for (const tab of $('tab-row').children) tab.classList.remove('dragging');
+  clearForestDrop();
+  for (const card of document.querySelectorAll('#tab-row .dragging,#forest-trees .dragging')) card.classList.remove('dragging');
   tabDrag = null;
   // A native drag can finish outside chrome without delivering mouseup.
   releaseRefresh();
@@ -2230,7 +2231,7 @@ function tabDropAt(x) {
   const visible = [...row.children].filter(tab => !tab.hidden);
   const before = visible.find(tab => x < tab.getBoundingClientRect().left + tab.offsetWidth / 2);
   const anchor = before ?? visible[visible.length - 1];
-  if (!anchor) return null;
+  if (!anchor) return {before: null, x: 0};
   const r = anchor.getBoundingClientRect();
   const tabs = S.frame.tabs;
   const gap = tabs.findIndex(t => t.id === anchor.dataset.id) + (before ? 0 : 1);
@@ -2267,11 +2268,14 @@ $('tab-row').addEventListener('dragleave', event => {
 });
 $('tab-row').addEventListener('drop', event => {
   const id = event.dataTransfer.getData(treeDragType);
-  if (!tabDrag || id !== tabDrag || !S.frame.tabs.some(tab => tab.id === id)) return;
+  if (!tabDrag || id !== tabDrag) return;
   event.preventDefault();
   const drop = tabDropAt(event.clientX);
   finishTabDrag();
-  if (drop) intent('place-tree', { id, place: 'tabs', before: drop.before });
+  if (drop) {
+    if (S.overlay === 'forest') post({t:'forest',do:'drop',tree:id,lane:'tabs',before:drop.before});
+    else intent('place-tree', { id, place: 'tabs', before: drop.before });
+  }
 });
 $('tab-row').addEventListener('dragend', finishTabDrag);
 
