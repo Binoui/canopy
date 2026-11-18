@@ -271,6 +271,54 @@ fn neighbours_choose_directional_nearest_and_include_tree_names() {
     assert_eq!(nav[1][0], Some(3));
 }
 #[test]
+fn value_carries_targets_menus_and_correspondence_at_every_level() {
+    let (f, ids) = fixture(7, true, false);
+    let mut state = State::default();
+    for (request, level) in Level::ALL.into_iter().enumerate() {
+        state.input(
+            Input::Zoom {
+                request: request as u64 + 1,
+                level,
+                anchor: Some(ids[5]),
+            },
+            &f,
+        );
+        let v = state.value(
+            &f,
+            Room {
+                width: 1196.,
+                height: 600.,
+            },
+        );
+        let i = v["place"]["anchor"].as_u64().unwrap() as usize;
+        assert!(v["items"][i]["pages"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(ids[5].to_string())));
+        assert!(v["items"][0]["menu"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["act"] == "save"));
+        assert_eq!(
+            state.value(
+                &f,
+                Room {
+                    width: 1196.,
+                    height: 600.
+                }
+            ),
+            v
+        );
+    }
+    assert!(matches!(state.input(Input::Go(ids[6]), &f), Reply::Return));
+    assert!(
+        matches!(state.input(Input::Go(ids[0]),&f),Reply::Go(ChromeIntent::Restore(id)) if id==ids[0])
+    );
+    let _ = TreeId(ids[0]);
+}
+
+#[test]
 fn aggregate_memory_and_current_previous_marks_are_independent() {
     let (mut f, ids) = fixture(7, true, false);
     f.forest.show_current(ids[0]);

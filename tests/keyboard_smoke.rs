@@ -364,7 +364,10 @@ fn main() -> Result<()> {
         check(&ui, "document.activeElement.id === 'zoom-pin'")?;
         focus(&ui, "#forest-button")?;
         key("Return")?;
-        check(&ui, "document.activeElement.matches('.tree-card')")?;
+        check(
+            &ui,
+            "document.activeElement.matches('.canopy-item[data-current=true][data-page]')",
+        )?;
         key("shift+Tab")?;
         check(&ui, "document.activeElement.closest('#forest') !== null")?;
         capture(&shots, "forest", theme)?;

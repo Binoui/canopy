@@ -122,10 +122,6 @@ pub enum ChromeIntent {
     },
     Stop,
     SelectTree(TreeId),
-    StepTree {
-        tree: TreeId,
-        next: bool,
-    },
     PlaceTree {
         tree: TreeId,
         to: crate::browser::Move,
@@ -828,6 +824,12 @@ impl Inner {
                     host.focus_page();
                 }
             }
+            forest_pane::Reply::Return => {
+                self.call("navigated", &[]);
+                if let Some(host) = self.host() {
+                    host.focus_page();
+                }
+            }
             forest_pane::Reply::Close => self.call("escape", &[json!("overlay")]),
             forest_pane::Reply::Show(value) => self.call("forest", &[value]),
         }
@@ -1207,10 +1209,6 @@ impl Inner {
                     _ => return None,
                 },
             },
-            "step-tree" => ChromeIntent::StepTree {
-                tree: TreeId(id("id")?),
-                next: message["next"].as_bool()?,
-            },
             "settle-current" => ChromeIntent::SettleCurrent,
             "rename-tree" => {
                 ChromeIntent::RenameTree(TreeId(id("id")?), message["name"].as_str()?.to_owned())
@@ -1288,14 +1286,14 @@ const FOREST_ASSETS: &[(&str, &str, &[u8])] = &[
         include_bytes!("assets/forest.css"),
     ),
     (
-        "/forest-trees.js",
+        "/forest-canopy.js",
         "text/javascript",
-        include_bytes!("assets/forest-trees.js"),
+        include_bytes!("assets/forest-canopy.js"),
     ),
     (
-        "/forest-trees.css",
+        "/forest-canopy.css",
         "text/css",
-        include_bytes!("assets/forest-trees.css"),
+        include_bytes!("assets/forest-canopy.css"),
     ),
     (
         "/forest-history.js",

@@ -87,31 +87,6 @@ fn main() -> Result<()> {
         chrome(&ui, &format!("document.querySelector(\"{tab}\").draggable"))?,
         true
     );
-    key("ctrl+e")?;
-    wait("Trees cards", || visible(&ui, "#forest-trees .tree-card"))?;
-    chrome(
-        &ui,
-        &format!(
-            "(document.querySelector(\"#forest-trees .tree-card[data-id='{}']\").focus(),true)",
-            ids[0]
-        ),
-    )?;
-    key("alt+Down")?;
-    wait("Alt Down reorders the focused card", || {
-        ui.pages.read(|b| b.tree_states()).is_ok_and(|states| {
-            states[..3].iter().map(|s| s.root).collect::<Vec<_>>() == [trees[2], trees[1], trees[0]]
-        })
-    })?;
-    key("alt+Up")?;
-    wait("Alt Up restores the order", || {
-        ui.pages.read(|b| b.tree_states()).is_ok_and(|states| {
-            states[..3].iter().map(|s| s.root).collect::<Vec<_>>() == [trees[2], trees[0], trees[1]]
-        })
-    })?;
-    assert!(visible(&ui, "#forest"));
-    assert_eq!(ui.snapshot()?.current, Some(ids[2]));
-    key("Escape")?;
-    println!("PASS Alt Up and Alt Down move the focused forest card through stored tab order without changing the page.");
     std::fs::create_dir_all(".cache/shots/tree-places")?;
     for theme in [ThemeMode::Dark, ThemeMode::Light] {
         ui.dispatch(ChromeIntent::SetTheme(theme));
@@ -142,37 +117,6 @@ fn main() -> Result<()> {
         .iter()
         .any(|s| s.root == trees[2] && matches!(s.place(), Place::Shelf { .. })));
     assert!(toast_text(&ui).is_some_and(|t| t.contains("Saved ‘Place 2’ for later")));
-    let kept_page = ui.snapshot()?.current;
-    key("ctrl+e")?;
-    wait("shelf in Trees", || {
-        visible(&ui, "#forest-trees [data-key^=saved-]")
-    })?;
-    chrome(
-        &ui,
-        &format!(
-            r##"(document.querySelector("#forest-trees [data-id='{}']").focus(),globalThis.altKeys=[],$('forest').addEventListener('keydown',e=>{{if(e.altKey && ['ArrowUp','ArrowDown'].includes(e.key))altKeys.push(e.key)}}),true)"##,
-            ids[2]
-        ),
-    )?;
-    key("alt+Up")?;
-    key("alt+Down")?;
-    assert_eq!(
-        chrome(&ui, "altKeys")?,
-        serde_json::json!(["ArrowUp", "ArrowDown"])
-    );
-    key("alt+Return")?;
-    wait("Alt Enter opens while keeping the page", || {
-        visible(&ui, &tab) && visible(&ui, "#forest")
-    })?;
-    assert_eq!(ui.snapshot()?.current, kept_page);
-    let card = format!("#forest-trees .tree-card[data-id='{}']", ids[2]);
-    hover_chrome(&ui, &card)?;
-    xdo(&["click", "3"])?;
-    click_chrome(&ui, "[data-tab-action=save]")?;
-    wait("save keeps forest open", || {
-        !visible(&ui, &tab) && visible(&ui, "#forest")
-    })?;
-    key("Escape")?;
     key("ctrl+t")?;
     wait("shelf on start", || visible(&ui, "[data-start=tree]"))?;
     assert!(text(&ui, "#start-content").contains("Saved for later"));
@@ -238,7 +182,7 @@ fn main() -> Result<()> {
             &ui,
             &format!(".cache/shots/tree-places/history-{theme}.png"),
         )?;
-        click_chrome(&ui, "#forest-views [data-view=trees]")?;
+        click_chrome(&ui, "#forest-views [data-view=canopy]")?;
         pump(150);
         save_window(&ui, &format!(".cache/shots/tree-places/trees-{theme}.png"))?;
         click_chrome(&ui, "#forest-views [data-view=history]")?;

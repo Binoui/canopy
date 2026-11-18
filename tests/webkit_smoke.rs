@@ -576,7 +576,7 @@ fn main() -> Result<()> {
     key("ctrl+e")?;
     wait("forest open", || visible(&ui, "#forest"))?;
     pump(200);
-    let forest_node = |id| format!("#forest-trees [data-id='{id}']");
+    let forest_node = |id| format!("#forest-canopy [data-id='{id}']");
     let root_node = forest_node(hidden_root);
     assert!(
         rect(&ui, &root_node)?.2 > 140.,
@@ -595,9 +595,13 @@ fn main() -> Result<()> {
         .find(|t| t.root.root() == other.id)
         .unwrap()
         .last_visit;
-    click_chrome(&ui, &forest_node(other.id))?;
+    chrome(
+        &ui,
+        &format!("(focusItem(canopyValue().items.find(i=>i.pages?.includes('{last}')).k),true)"),
+    )?;
+    click_chrome(&ui, &format!("#forest-canopy [data-page='{last}']"))?;
     wait(
-        "forest card restores another tree and closes overlay",
+        "Canopy page restores another tree and closes overlay",
         || {
             !visible(&ui, "#forest")
                 && ui.snapshot().unwrap().current == Some(last)
@@ -678,14 +682,14 @@ fn main() -> Result<()> {
         key("ctrl+e")?;
         pump(250);
         if let Some(dir) = &shots {
-            save_window(&ui, &format!("{dir}/forest-trees-{theme}.png"))?;
+            save_window(&ui, &format!("{dir}/forest-canopy-{theme}.png"))?;
         }
         click_chrome(&ui, "#forest-views [data-view=history]")?;
         pump(150);
         if let Some(dir) = &shots {
             save_window(&ui, &format!("{dir}/forest-icons-{theme}.png"))?;
         }
-        click_chrome(&ui, "#forest-views [data-view=trees]")?;
+        click_chrome(&ui, "#forest-views [data-view=canopy]")?;
         key("Escape")?;
         key("ctrl+t")?;
         if let Some(dir) = &shots {

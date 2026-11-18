@@ -1,6 +1,6 @@
 // ---------- forest view ----------
 
-function toggleForest(view = 'trees', fromChrome = true) {
+function toggleForest(view = 'canopy', fromChrome = true) {
   if (S.overlay !== 'forest') {
     S.forestWants = view;
     toggleOverlay('forest');
@@ -10,9 +10,9 @@ function toggleForest(view = 'trees', fromChrome = true) {
 }
 function focusForest() {
   post({ t: 'focus', target: 'chrome' });
-  const target = S.forest?.view === 'trees' ? forestTreesFocus() : forestHistoryFocus();
+  const target = S.forest?.view === 'canopy' ? canopyFocus() : forestHistoryFocus();
   (target ?? $('forest-close')).focus({preventScroll:true});
-  target?.scrollIntoView({ block: 'nearest' });
+  if (S.forest?.view !== 'canopy') target?.scrollIntoView({ block: 'nearest' });
 }
 function renderForest() {
   const f = S.forest;
@@ -23,17 +23,20 @@ function renderForest() {
   $('forest-count').textContent = f.count;
   if (document.activeElement !== $('forest-find') || !f.query) $('forest-find').value = f.query;
   for (const b of $('forest-views').children) b.setAttribute('aria-pressed', String(b.dataset.view === f.view));
-  $('forest-trees').hidden = f.view !== 'trees';
+  $('forest-canopy').hidden = f.view !== 'canopy';
+  for (const id of ['canopy-zoom','canopy-legend']) $(id).hidden = f.view !== 'canopy';
+  $('canopy-back').hidden = f.view !== 'canopy' || !f.canopy?.back;
+  $('forest-find').hidden = f.view !== 'history';
   $('forest-history').hidden = f.view !== 'history';
-  if (f.view === 'trees') renderForestTrees(f.trees);
+  if (f.view === 'canopy') renderCanopy(f.canopy);
   else renderHistory(f.history);
-  const empty = f.view === 'trees' ? f.trees.empty : f.history.empty;
+  const empty = f.view === 'canopy' ? null : f.history.empty;
   $('forest-empty').hidden = !empty;
   $('forest-empty').textContent = empty ?? '';
   if (within && (!$('forest').contains(document.activeElement) || !document.activeElement.getClientRects().length)) focusForest();
 }
 function openForestTree(id) { treeAct(id, 'open'); }
-$('forest').addEventListener('click', e => { if (S.forest?.view === 'trees') forestTreesClick(e); else forestHistoryClick(e); });
+$('forest').addEventListener('click', e => { if (S.forest?.view === 'canopy') canopyClick(e); else forestHistoryClick(e); });
 $('forest').addEventListener('contextmenu', (e) => {
   const el = e.target.closest('[data-tree-menu]');
   if (!el) return;
@@ -46,22 +49,12 @@ $('forest-views').addEventListener('click', (e) => {
   const b = e.target.closest('[data-view]');
   if (b) post({ t: 'forest', do: 'show', view: b.dataset.view });
 });
-$('forest-find').addEventListener('input', () => post({t:'forest',do:S.forest?.view === 'trees' ? 'trees-find' : 'find',query:$('forest-find').value}));
+$('forest-find').addEventListener('input', () => post({t:'forest',do:'find',query:$('forest-find').value}));
 $('forest-close').addEventListener('click', closeOverlay);
 $('forest').querySelector('.scrim').addEventListener('mousedown', closeOverlay);
 $('forest').addEventListener('keydown', (e) => {
-  if (e.altKey && ['ArrowUp', 'ArrowDown'].includes(e.key)) {
-    const card = e.target.closest('[data-id]');
-    if (card) { intent('step-tree', {id: card.dataset.id, next: e.key === 'ArrowDown'}); e.preventDefault(); }
-    return;
-  }
-  if (e.altKey && e.key === 'Enter') {
-    const card = e.target.closest('[data-id]');
-    if (card) { post({t:'forest',do:'act',tree:card.dataset.id,act:'open-keep'}); e.preventDefault(); }
-    return;
-  }
   if (S.popover || e.ctrlKey || e.altKey || e.metaKey || e.isComposing) return;
-  if (S.forest?.view === 'trees') forestTreesKey(e); else forestHistoryKey(e);
+  if (S.forest?.view === 'canopy') canopyKey(e); else forestHistoryKey(e);
 
 });
 
@@ -77,4 +70,4 @@ function forestFindKey(e, action) {
   return false;
 }
 
-function forestMenu(id) { return S.forest?.view === 'trees' ? forestTreesMenu(id) : forestHistoryMenu(id); }
+function forestMenu(id) { return S.forest?.view === 'canopy' ? S.forest.canopy.items.find(i => i.id === id)?.menu : forestHistoryMenu(id); }

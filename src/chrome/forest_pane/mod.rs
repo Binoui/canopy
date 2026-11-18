@@ -1,9 +1,7 @@
-#[cfg_attr(not(test), allow(dead_code))]
 mod canopy;
 mod days;
 mod history;
 mod index;
-mod trees;
 
 use super::{
     tree_card::{self, Act},
@@ -15,25 +13,45 @@ use days::{Calendar, LocalCalendar};
 use index::Index;
 use serde_json::{json, Value};
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Room {
+    width: f64,
+    height: f64,
+}
+impl Room {
+    fn parse(m: &Value) -> Result<Self> {
+        let dimension = |key| {
+            m[key]
+                .as_f64()
+                .filter(|v| v.is_finite() && *v >= 1.)
+                .context("Missing map room")
+        };
+        Ok(Self {
+            width: dimension("width")?,
+            height: dimension("height")?,
+        })
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
-    Trees,
+    Canopy,
     History,
 }
 impl View {
     pub fn name(self) -> &'static str {
         match self {
-            Self::Trees => "trees",
+            Self::Canopy => "canopy",
             Self::History => "history",
         }
     }
 }
 #[derive(Debug)]
 pub(super) enum Input {
-    Open(View),
+    Open { view: View, room: Room },
+    Room(Room),
     Close,
     Show(View),
-    Trees(trees::Input),
+    Canopy(canopy::Input),
     History(history::Input),
     Escape,
     Toggle(View),
@@ -43,7 +61,7 @@ pub(super) enum Input {
 impl Input {
     pub fn parse(m: &Value) -> Result<Self> {
         let view = || match m["view"].as_str() {
-            Some("trees") => Ok(View::Trees),
+            Some("canopy") => Ok(View::Canopy),
             Some("history") => Ok(View::History),
             _ => bail!("Unknown forest view"),
         };
@@ -62,14 +80,18 @@ impl Input {
                     .context("Missing delete identity")?
                     .parse()?,
             ),
-            Some("open") => Self::Open(view()?),
+            Some("open") => Self::Open {
+                view: view()?,
+                room: Room::parse(m)?,
+            },
+            Some("room") => Self::Room(Room::parse(m)?),
             Some("close") => Self::Close,
             Some("show") => Self::Show(view()?),
             Some("toggle") => Self::Toggle(view()?),
             Some("escape") => Self::Escape,
             _ => {
-                if let Some(i) = trees::Input::parse(m)? {
-                    Self::Trees(i)
+                if let Some(i) = canopy::Input::parse(m)? {
+                    Self::Canopy(i)
                 } else if let Some(i) = history::Input::parse(m)? {
                     Self::History(i)
                 } else {
@@ -85,6 +107,7 @@ pub(super) enum Reply {
     Close,
     Act(super::ChromeIntent),
     Go(super::ChromeIntent),
+    Return,
 }
 pub(super) struct ForestPane {
     calendar: Box<dyn Calendar>,
@@ -96,29 +119,30 @@ enum State {
 }
 struct Open {
     shown: Shown,
+    room: Room,
     sent: Option<Value>,
     undo: Option<(crate::browser::DeleteId, String)>,
 }
 enum Shown {
-    Trees(trees::State),
+    Canopy(canopy::State),
     History(Box<history::State>),
 }
 impl Shown {
     fn new(view: View) -> Self {
         match view {
-            View::Trees => Self::Trees(trees::State::default()),
+            View::Canopy => Self::Canopy(canopy::State::default()),
             View::History => Self::History(Box::default()),
         }
     }
     fn query(&self) -> &str {
         match self {
-            Self::Trees(t) => t.query(),
+            Self::Canopy(_) => "",
             Self::History(h) => h.query(),
         }
     }
     fn view(&self) -> View {
         match self {
-            Self::Trees(_) => View::Trees,
+            Self::Canopy(_) => View::Canopy,
             Self::History(_) => View::History,
         }
     }
@@ -161,14 +185,15 @@ impl ForestPane {
                 self.state = State::Closed;
                 return Reply::Act(super::ChromeIntent::ForgetDeleted);
             }
-            Input::Open(view) if matches!(self.state, State::Closed) => {
+            Input::Open { view, room } if matches!(self.state, State::Closed) => {
                 self.state = State::Open(Open {
                     shown: Shown::new(view),
+                    room,
                     sent: None,
                     undo: None,
                 })
             }
-            Input::Open(_) => {}
+            Input::Open { .. } => {}
             _ => {
                 if let State::Open(open) = &mut self.state {
                     match input {
@@ -177,23 +202,24 @@ impl ForestPane {
                                 open.shown = Shown::new(view);
                             }
                         }
-                        Input::Toggle(view) => match (view, &open.shown) {
-                            (View::History, Shown::Trees(_)) => {
-                                open.shown = Shown::new(View::History)
+                        Input::Room(room) => open.room = room,
+                        Input::Toggle(view) => {
+                            if view == open.shown.view() {
+                                return Reply::Close;
                             }
-                            _ => return Reply::Close,
-                        },
+                            open.shown = Shown::new(view);
+                        }
                         Input::Escape => {
                             if !match &mut open.shown {
-                                Shown::Trees(t) => t.escape(),
+                                Shown::Canopy(_) => false,
                                 Shown::History(h) => h.escape(),
                             } {
                                 return Reply::Close;
                             }
                         }
-                        Input::Trees(i) => {
-                            if let Shown::Trees(t) = &mut open.shown {
-                                let reply = t.input(i, &frame.forest, &*self.calendar);
+                        Input::Canopy(i) => {
+                            if let Shown::Canopy(t) = &mut open.shown {
+                                let reply = t.input(i, frame);
                                 if !matches!(reply, Reply::Unchanged) {
                                     return reply;
                                 }
@@ -227,12 +253,24 @@ impl ForestPane {
         let State::Open(open) = &mut self.state else {
             return Reply::Unchanged;
         };
-        let index = Index::build(&frame.forest, &*self.calendar);
+        let index = matches!(open.shown, Shown::History(_))
+            .then(|| Index::build(&frame.forest, &*self.calendar));
+        let count = index.as_ref().map_or_else(
+            || format!("{} open trees", frame.forest.tabs().len()),
+            |index| {
+                format!(
+                    "{} tabs · {} saved for later · {} in history",
+                    frame.forest.tabs().len(),
+                    frame.forest.shelf().len(),
+                    index.history.len()
+                )
+            },
+        );
         let value = json!({ "view": open.shown.view().name(), "query": open.shown.query(),
             "undo":open.undo.as_ref().map(|(id,text)|json!({"id":id.to_string(),"text":text,"label":"Undo"})),
-            "count": format!("{} tabs · {} saved for later · {} in history", frame.forest.tabs().len(), frame.forest.shelf().len(), index.history.len()),
-            "trees": match &open.shown {Shown::Trees(t)=>Some(t.value(&frame.forest,&index,&*self.calendar)),_=>None},
-            "history": match &mut open.shown { Shown::History(c) => Some(c.value(&frame.forest, &index, &*self.calendar)), _ => None } });
+            "count": count,
+            "canopy": match &open.shown {Shown::Canopy(t)=>Some(t.value(frame,open.room)),_=>None},
+            "history": match &mut open.shown { Shown::History(c) => Some(c.value(&frame.forest, index.as_ref().unwrap(), &*self.calendar)), _ => None } });
         if open.sent.as_ref() == Some(&value) {
             return Reply::Unchanged;
         }
@@ -376,23 +414,32 @@ mod tests {
         }
     }
     #[test]
-    fn forest_shortcuts_switch_to_history_and_otherwise_close() {
+    fn canopy_shortcuts_switch_between_views_and_otherwise_close() {
         let f = fixture(3, 1);
         let mut p = ForestPane::default();
-        p.input(Input::Open(View::Trees), &f);
+        p.input(
+            Input::Open {
+                view: View::Canopy,
+                room: Room {
+                    width: 1196.,
+                    height: 600.,
+                },
+            },
+            &f,
+        );
         let v = value(p.input(Input::Toggle(View::History), &f));
         assert_eq!(v["view"], "history");
         assert!(matches!(
             p.input(Input::Toggle(View::History), &f),
             Reply::Close
         ));
+        assert_eq!(
+            value(p.input(Input::Toggle(View::Canopy), &f))["view"],
+            "canopy"
+        );
+        p.input(Input::Show(View::Canopy), &f);
         assert!(matches!(
-            p.input(Input::Toggle(View::Trees), &f),
-            Reply::Close
-        ));
-        p.input(Input::Show(View::Trees), &f);
-        assert!(matches!(
-            p.input(Input::Toggle(View::Trees), &f),
+            p.input(Input::Toggle(View::Canopy), &f),
             Reply::Close
         ));
     }

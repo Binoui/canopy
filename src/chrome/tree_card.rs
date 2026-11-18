@@ -20,7 +20,6 @@ pub(super) enum Act {
     Rename,
     Settle,
     Open,
-    OpenKeep,
     Delete,
 }
 impl Act {
@@ -32,7 +31,6 @@ impl Act {
             "rename" => Self::Rename,
             "settle" => Self::Settle,
             "open" => Self::Open,
-            "open-keep" => Self::OpenKeep,
             "delete" => Self::Delete,
             _ => return None,
         })
@@ -45,7 +43,6 @@ impl Act {
             Self::Rename => "rename",
             Self::Settle => "settle",
             Self::Open => "open",
-            Self::OpenKeep => "open-keep",
             Self::Delete => "delete",
         }
     }
@@ -57,7 +54,7 @@ impl Act {
             (Self::Rename, _) => "Rename",
             (Self::Settle, _) => "Settle tree",
             (Self::Open, Place::History { .. }) => "Reopen",
-            (Self::Open | Self::OpenKeep, _) => "Open",
+            (Self::Open, _) => "Open",
             (Self::Delete, _) => "Delete",
         }
     }
@@ -77,7 +74,7 @@ pub(super) fn buttons(tree: &TreeSummary, keep: &[Act]) -> Value {
     json!(acts(tree.place).iter().filter(|a|keep.contains(a)).map(|a|json!({"act":a.name(),"label":a.label(tree.place),"name":tree.title,"go":*a==Act::Open})).collect::<Vec<_>>())
 }
 pub(super) fn intent(tree: &TreeSummary, act: Act) -> Option<ChromeIntent> {
-    if !matches!(act, Act::Open | Act::OpenKeep) && !acts(tree.place).contains(&act) {
+    if !matches!(act, Act::Open) && !acts(tree.place).contains(&act) {
         return None;
     }
     Some(match act {
@@ -98,10 +95,6 @@ pub(super) fn intent(tree: &TreeSummary, act: Act) -> Option<ChromeIntent> {
             to: Move::History,
         },
         Act::Open => ChromeIntent::SelectTree(tree.id),
-        Act::OpenKeep => ChromeIntent::PlaceTree {
-            tree: tree.id,
-            to: Move::Open,
-        },
         Act::Delete => ChromeIntent::DeleteTrees(vec![tree.id]),
         Act::Rename => return None,
     })
@@ -213,10 +206,6 @@ mod tests {
             assert!(matches!(
                 intent(&tree, Act::Open),
                 Some(ChromeIntent::SelectTree(_))
-            ));
-            assert!(matches!(
-                intent(&tree, Act::OpenKeep),
-                Some(ChromeIntent::PlaceTree { to: Move::Open, .. })
             ));
             assert_eq!(
                 intent(&tree, Act::Delete).is_some(),

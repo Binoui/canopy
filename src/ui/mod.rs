@@ -675,7 +675,7 @@ impl Shortcut {
             (
                 Modifiers::CONTROL,
                 key::e,
-                Self::Forest(crate::chrome::ForestView::Trees),
+                Self::Forest(crate::chrome::ForestView::Canopy),
             ),
             (
                 Modifiers::CONTROL,
@@ -839,7 +839,6 @@ impl ChromeHost for Ui {
                 self.schedule_refresh();
                 result
             }
-            ChromeIntent::StepTree { tree, next } => self.pages.step_tree(tree, next),
             ChromeIntent::PlaceTree { tree, to } => {
                 let result = self.pages.place_tree(tree, to);
                 self.schedule_refresh();
@@ -1089,7 +1088,7 @@ mod shortcut_tests {
             (
                 key::e,
                 Modifiers::CONTROL,
-                Shortcut::Forest(crate::chrome::ForestView::Trees),
+                Shortcut::Forest(crate::chrome::ForestView::Canopy),
             ),
             (
                 key::h,

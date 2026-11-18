@@ -127,7 +127,7 @@ fn forest_closed(ui: &Ui, surface: &str) -> Result<()> {
 }
 
 fn forest_popin(ui: &Ui) -> Result<()> {
-    assert_eq!(text(ui, "#forest-button"), "Forest");
+    assert_eq!(text(ui, "#forest-button"), "Canopy");
     assert_eq!(
         chrome(ui, "document.querySelectorAll('#forest-button').length")?,
         1
@@ -177,7 +177,10 @@ fn forest_popin(ui: &Ui) -> Result<()> {
     ui.window.resize(1240, 800);
     pump(300);
     let id = ui.snapshot()?.current.unwrap();
-    click_chrome(ui, ".tree-card[aria-current='true']")?;
+    click_chrome(
+        ui,
+        "#forest-canopy .canopy-item[data-current=true][data-page]",
+    )?;
     forest_closed(ui, "reading")?;
     assert_eq!(ui.snapshot()?.current, Some(id));
     wait("card returns page focus", || {

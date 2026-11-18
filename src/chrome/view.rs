@@ -413,7 +413,7 @@ fn size_text(bytes: u64) -> String {
     }
 }
 
-fn visit_value(
+pub(super) fn visit_value(
     forest: &ForestProjection,
     visit: &Visit,
     loaded: &HashSet<VisitId>,

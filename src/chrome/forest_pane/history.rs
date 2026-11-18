@@ -410,7 +410,16 @@ mod tests {
         p.input(super::super::Input::History(i), f)
     }
     fn open(p: &mut ForestPane, f: &ChromeFrame) -> Value {
-        value(p.input(super::super::Input::Open(View::History), f))
+        value(p.input(
+            super::super::Input::Open {
+                view: View::History,
+                room: super::Room {
+                    width: 1196.,
+                    height: 600.,
+                },
+            },
+            f,
+        ))
     }
     fn id(v: &Value, n: usize) -> TreeId {
         TreeId(rows(v)[n]["id"].as_str().unwrap().parse().unwrap())

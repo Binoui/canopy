@@ -286,7 +286,7 @@ harness = false
 required-features = ["gui-smoke"]
 
 [[test]]
-name = "forest_trees_smoke"
+name = "canopy_smoke"
 harness = false
 required-features = ["gui-smoke"]
 
