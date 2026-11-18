@@ -65,6 +65,16 @@ pub(super) struct Placed {
     pub items: Vec<Vec<Point>>,
 }
 impl Layout {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Flow => "flow",
+        }
+    }
+    pub fn edge(self) -> &'static str {
+        match self {
+            Self::Flow => "curve",
+        }
+    }
     pub fn place(self, level: Level, trees: &[Vec<Item>], room: Room) -> Placed {
         let m = level.metrics();
         let shapes: Vec<_> = trees
@@ -86,10 +96,7 @@ impl Layout {
                 y += row_h + m.gap;
                 row_h = 0.;
             }
-            placed.trees.push(Point {
-                x: x + m.width / 2.,
-                y,
-            });
+            placed.trees.push(Point { x: x + 90., y });
             placed.items.push(
                 shape
                     .at

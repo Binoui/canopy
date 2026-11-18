@@ -143,7 +143,7 @@ fn main() -> Result<()> {
     open(&ui)?;
     level(&ui, "near")?;
     assert_eq!(chrome(&ui,"canopyValue().items.filter(i=>i.pages?.length).filter(i=>i.pages.includes(S.frame.current)).length")?.as_u64(),Some(1));
-    let current = page(&ui, ids[6])?;
+    page(&ui, ids[6])?;
     for button in ["5", "4"] {
         for _ in 0..12 {
             chrome(
@@ -166,7 +166,76 @@ fn main() -> Result<()> {
         }
     }
     println!("PASS real wheel keeps an off-centre page point within 1 CSS px across both thresholds both ways.");
-    let _ = current;
+
+    level(&ui, "middle")?;
+    page(&ui, ids[6])?;
+    chrome(
+        &ui,
+        &format!(
+            r#"(()=>{{const i=canopyValue().items.find(i=>i.pages?.includes('{}')),r=mapView.nodes.get(i.k).el.getBoundingClientRect(),v=$('forest-canopy').getBoundingClientRect();globalThis.proof={{page:'{}',f:[.58,.47],at:[r.left-v.left+r.width*.58,r.top-v.top+r.height*.47]}};return true;}})()"#,
+            ids[6], ids[6]
+        ),
+    )?;
+    let at = chrome(&ui, "proof.at")?;
+    let viewport = rect(&ui, "#forest-canopy")?;
+    move_to(
+        (viewport.0 + at[0].as_f64().unwrap()).round() as i32,
+        (viewport.1 + at[1].as_f64().unwrap()).round() as i32,
+    )?;
+    eval(
+        &ui,
+        "setTimeout(()=>{document.title='A refreshed test page'},40);true",
+    )?;
+    xdo(&["click", "--repeat", "12", "--delay", "8", "4"])?;
+    wait("continuous wheel Near", || {
+        chrome(&ui, "mapView.drawn === 'near' && mapView.asked === null").is_ok_and(|v| v == true)
+    })?;
+    wait("incoming page title", || {
+        ui.snapshot().is_ok_and(|s| {
+            s.visits
+                .iter()
+                .any(|v| v.id == ids[6] && v.title == "A refreshed test page")
+        })
+    })?;
+    assert!(
+        chrome(
+            &ui,
+            r#"(()=>{const i=canopyValue().items.find(i=>i.pages?.includes(proof.page)),r=mapView.nodes.get(i.k).el.getBoundingClientRect(),v=$('forest-canopy').getBoundingClientRect();return Math.hypot(r.left-v.left+r.width*proof.f[0]-proof.at[0],r.top-v.top+r.height*proof.f[1]-proof.at[1])<=1;})()"#
+        )? == true
+    );
+    xdo(&["click", "--repeat", "20", "--delay", "8", "5"])?;
+    wait("continuous wheel Far", || {
+        chrome(&ui, "mapView.drawn === 'far' && mapView.asked === null").is_ok_and(|v| v == true)
+    })?;
+    assert!(
+        chrome(
+            &ui,
+            r#"(()=>{const i=canopyValue().items.find(i=>i.pages?.includes(proof.page)),r=mapView.nodes.get(i.k).el.getBoundingClientRect(),v=$('forest-canopy').getBoundingClientRect();return Math.hypot(r.left-v.left+r.width*proof.f[0]-proof.at[0],r.top-v.top+r.height*proof.f[1]-proof.at[1])<=1;})()"#
+        )? == true
+    );
+    level(&ui, "middle")?;
+    let viewport = rect(&ui, "#forest-canopy")?;
+    move_to(
+        (viewport.0 + viewport.2 - 16.) as i32,
+        (viewport.1 + viewport.3 - 16.) as i32,
+    )?;
+    xdo(&["mousedown", "1"])?;
+    wait("held background", || {
+        chrome(&ui, "canopy.state().buttons").is_ok_and(|v| v == 1)
+    })?;
+    xdo(&["click", "--repeat", "5", "--delay", "8", "4"])?;
+    wait("pending Near reply", || {
+        chrome(&ui, "mapView.asked === 'near'").is_ok_and(|v| v == true)
+    })?;
+    let request = chrome(&ui, "mapView.request")?.as_u64().unwrap();
+    xdo(&["click", "--repeat", "5", "--delay", "8", "5"])?;
+    assert!(chrome(&ui, "mapView.request")?.as_u64().unwrap() > request);
+    xdo(&["mouseup", "1"])?;
+    wait("reversal supersedes held reply", || {
+        chrome(&ui, "mapView.drawn === 'middle' && mapView.asked === null").is_ok_and(|v| v == true)
+    })?;
+    assert!(visible(&ui, "#forest"));
+    println!("PASS continuous real wheel, title refresh and reversal of a held threshold reply preserve the page anchor.");
     level(&ui, "middle")?;
     let target = page(&ui, ids[6])?;
     let (x, y) = chrome_point(&ui, &target)?;
@@ -231,6 +300,8 @@ fn main() -> Result<()> {
         ui.window.resize(width, 900);
         pump(200);
         for mode in [ThemeMode::Dark, ThemeMode::Light] {
+            key("Escape")?;
+            open(&ui)?;
             ui.dispatch(ChromeIntent::SetTheme(mode));
             pump(100);
             for zoom in ["far", "middle", "near"] {

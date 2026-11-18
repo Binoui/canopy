@@ -20,7 +20,7 @@ function renderForest() {
   const within = $('forest').contains(document.activeElement);
   $('forest-undo').hidden = !f.undo;
   patchChildren($('forest-undo'), f.undo ? `<span data-key="text">${esc(f.undo.text)}</span><button data-key="undo" data-delete-id="${f.undo.id}">${esc(f.undo.label)}</button>` : '');
-  $('forest-count').textContent = f.count;
+  $('forest-count').textContent = f.canopy?.hint ?? f.count;
   if (document.activeElement !== $('forest-find') || !f.query) $('forest-find').value = f.query;
   for (const b of $('forest-views').children) b.setAttribute('aria-pressed', String(b.dataset.view === f.view));
   $('forest-canopy').hidden = f.view !== 'canopy';

@@ -178,6 +178,16 @@ cmd_drag() {
   sleep 0.8
 }
 
+cmd_wheel() {
+  load
+  [ $# -ge 3 ] && [ $# -le 4 ] || die "wheel X Y up|down [COUNT]"
+  local button
+  case $3 in up) button=4 ;; down) button=5 ;; *) die "wheel direction must be up or down" ;; esac
+  xdo windowfocus --sync "$(window)" mousemove --sync "$1" "$2"
+  xdo click --repeat "${4:-1}" --delay 80 "$button"
+  sleep 0.3
+}
+
 cmd_shot() {
   load
   [ -n "${1:-}" ] || die "shot NAME"
@@ -236,6 +246,6 @@ cmd_cleanup() {
 cmd=${1:-help}
 shift || true
 case $cmd in
-  launch|doctor|key|type|hover|click|drag|resize|shot|db|url|open|quit|start|log|env|cleanup) "cmd_$cmd" "$@" ;;
-  *) echo "usage: canopy-verify launch|doctor|key|type|hover|click|drag|resize|shot|db|url|open|quit|start|log|env|cleanup. See $SKILL/SKILL.md" >&2; exit 2 ;;
+  launch|doctor|key|type|hover|click|drag|wheel|resize|shot|db|url|open|quit|start|log|env|cleanup) "cmd_$cmd" "$@" ;;
+  *) echo "usage: canopy-verify launch|doctor|key|type|hover|click|drag|wheel|resize|shot|db|url|open|quit|start|log|env|cleanup. See $SKILL/SKILL.md" >&2; exit 2 ;;
 esac

@@ -1,11 +1,12 @@
 let mapView = null;
+let mapRequest = 0;
 function resetCanopy() {
   if (mapView) clearTimeout(mapView.tipTimer);
   mapView = null;
   $('canopy-tip').hidden = true;
 }
 function acceptCanopy(value) {
-  return !mapView || value.place.request === mapView.request;
+  return mapView ? value.place.request === mapView.request : value.place.request === 0;
 }
 const canopyValue = () => mapView?.value;
 const band = level => canopyValue().levels.find(l => l.level === level);
@@ -52,6 +53,7 @@ function reanchor(witness) {
     witness.at[1]-node.y*scaleNow()-(witness.fraction[1]-.5)*r.height];
 }
 function renderCanopy(value) {
+  if (!acceptCanopy(value)) return;
   const first = !mapView;
   if (first) mapView = { k:value.place.k,pan:[...value.place.pan],drawn:value.level,request:0,
     asked:null,nodes:new Map([...$('forest-canopy').querySelector('.canopy-items').children].map(el => [el.dataset.key,{el,sig:null,x:NaN,y:NaN}])),edges:new Map([...$('forest-canopy').querySelector('.canopy-edges g').children].map(el => [el.dataset.key,el])),focus:null,drag:null,moved:false,tipTimer:0,room:null,witness:null,value };
@@ -118,7 +120,7 @@ function patchEdges(value) {
   value.items.forEach(item => {
     if (item.up === null || item.up === undefined) return;
     const a=value.items[item.up], mx=(a.x+item.x)/2;
-    const d=`M${a.x} ${a.y}C${mx} ${a.y} ${mx} ${item.y} ${item.x} ${item.y}`;
+    const d=value.edge === 'line' ? `M${a.x} ${a.y}L${item.x} ${item.y}` : `M${a.x} ${a.y}C${mx} ${a.y} ${mx} ${item.y} ${item.x} ${item.y}`;
     let path=mapView.edges.get(item.k);
     if (!path) {path=document.createElementNS('http://www.w3.org/2000/svg','path');path.dataset.key=item.k;host.append(path);mapView.edges.set(item.k,path);}
     if (path.getAttribute('d') !== d) path.setAttribute('d',d);
@@ -147,7 +149,7 @@ function zoomAround(at,k,focused=false) {
   // A reversal to the still-drawn level must supersede an outstanding request too.
   if (want === (mapView.asked ?? mapView.drawn)) return;
   mapView.asked=want;
-  post({t:'forest',do:'zoom',level:want,request:++mapView.request,anchor:witness.page ?? null});
+  post({t:'forest',do:'zoom',level:want,request:(mapView.request=++mapRequest),anchor:witness.page ?? null});
 }
 function centre() {const r=$('forest-canopy').getBoundingClientRect();return [r.width/2,r.height/2];}
 function focusedPoint() {const el=canopyFocus(), node=el && mapView.nodes.get(el.dataset.key);return node ? screenOf(node) : centre();}

@@ -315,7 +315,6 @@ fn value_carries_targets_menus_and_correspondence_at_every_level() {
     assert!(
         matches!(state.input(Input::Go(ids[0]),&f),Reply::Go(ChromeIntent::Restore(id)) if id==ids[0])
     );
-    let _ = TreeId(ids[0]);
 }
 
 #[test]

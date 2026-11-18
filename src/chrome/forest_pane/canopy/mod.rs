@@ -205,7 +205,7 @@ impl State {
             .previous
             .and_then(|id| forest.visit(id))
             .map(|v| json!({"id":v.id.to_string(),"label":"Back to","title":v.label()}));
-        json!({"level":self.level.name(),"layout":"flow","hint":self.level.hint(),"items":values,"visits":visits,"back":back,"edge":"curve",
+        json!({"level":self.level.name(),"layout":self.layout.name(),"hint":self.level.hint(),"items":values,"visits":visits,"back":back,"edge":self.layout.edge(),
             "css":self.level.metrics().css(),"levels":Level::ALL.map(|l|{let b=l.band();json!({"level":l.name(),"label":l.label(),"min":b.min,"max":b.max,"rest":b.rest})}),
             "legend":[["current","you are here"],["previous","where you were"],["open","still open"],["visited","visited"],["waiting","waiting"]],
             "help":"wheel zooms · drag moves · a click goes to the page",
