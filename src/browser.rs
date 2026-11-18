@@ -703,7 +703,7 @@ ORDER BY r.created_at, r.rowid",
                 [],
                 |r| r.get(0),
             )?;
-            let next = next.checked_add(1).context("Too many pinned trees.")?;
+            let next = next.checked_add(1).context("Too many saved trees.")?;
             tx.execute(
                 "UPDATE tree_state SET pin_order=?2 WHERE root_id=?1 AND pin_order IS NULL",
                 params![tree.root().to_string(), next],

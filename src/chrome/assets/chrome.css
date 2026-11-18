@@ -299,7 +299,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 /* ---------- surfaces: new tree, forest ---------- */
 .overlay { position: absolute; left: 0; right: 0; top: var(--header); bottom: 0; }
 .forest-pop {
-  position: absolute; left: 50%; top: 22px; bottom: 22px; width: min(1180px, calc(100% - 44px)); transform: translateX(-50%);
+  position: absolute; inset: 22px;
   overflow: hidden; background: var(--bg); border: 1px solid var(--border); border-radius: 13px;
   box-shadow: 0 1px 2px var(--shadow), 0 10px 30px var(--shadow);
 }
@@ -333,11 +333,11 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .mt-node { position: absolute; display: grid; }
 .mt-node.waiting .fav { opacity: .45; }
 .mt-node.last .fav { box-shadow: 0 0 0 1px var(--bg), 0 0 0 2.5px var(--green); }
-.pinned-card .mt-node.last .fav { box-shadow: 0 0 0 1px var(--tile), 0 0 0 2.5px var(--green); }
+.tree-card .mt-node.last .fav { box-shadow: 0 0 0 1px var(--tile), 0 0 0 2.5px var(--green); }
 
 .pinned-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.pinned-card { display: flex; flex-direction: column; align-items: stretch; gap: 3px; min-width: 0; overflow: hidden; padding: 11px 11px 9px; border: 1px solid var(--tile-border); border-radius: 11px; background: var(--tile); text-align: left; }
-.pinned-card:hover { border-color: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+.tree-card { display: flex; flex-direction: column; align-items: stretch; gap: 3px; min-width: 0; overflow: hidden; padding: 11px 11px 9px; border: 1px solid var(--tile-border); border-radius: 11px; background: var(--tile); text-align: left; }
+.tree-card:hover { border-color: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
 .pc-tree { height: 58px; margin-bottom: 6px; }
 .pc-foot { display: flex; align-items: center; gap: 6px; }
 .pc-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }

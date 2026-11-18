@@ -77,7 +77,7 @@ fn main() -> Result<()> {
     ready(&ui)?;
     wait("empty page", || visible(&ui, "#start-search"))?;
     assert!(text(&ui, "#start-content")
-        .contains("Pin a tree from its tab menu. It stays here and never settles on its own."));
+        .contains("Save a tree from its tab menu. It stays here and never settles on its own."));
     assert!(visible(&ui, "#strip-placeholder"));
     assert!(visible(&ui, "#new-tree-tab[aria-selected=true]"));
     assert!(!visible(&ui, "#new-tree-close"));
@@ -189,25 +189,22 @@ fn main() -> Result<()> {
         chrome(&ui, "canopy.state().start.pinned.map(t=>t.id)")?,
         serde_json::json!(expected)
     );
-    assert!(text(&ui, ".band-head").contains("Pinned trees"));
+    assert!(text(&ui, ".band-head").contains("Saved trees"));
     assert_eq!(
         chrome(
             &ui,
-            "new Set([...document.querySelectorAll('.pinned-card')].map(e=>e.offsetTop)).size"
+            "new Set([...document.querySelectorAll('.tree-card')].map(e=>e.offsetTop)).size"
         )?,
         1
     );
     assert!(
-        text(&ui, ".pinned-card .count").contains('1'),
+        text(&ui, ".tree-card .count").contains('1'),
         "waiting count text={}",
-        text(&ui, ".pinned-card .count")
+        text(&ui, ".tree-card .count")
     );
-    assert!(text(&ui, ".pinned-card .pc-meta").contains("pages"));
+    assert!(text(&ui, ".tree-card .pc-meta").contains("pages"));
     assert_eq!(
-        chrome(
-            &ui,
-            "document.querySelectorAll('.pinned-card .last').length"
-        )?,
+        chrome(&ui, "document.querySelectorAll('.tree-card .last').length")?,
         3
     );
     for mode in [ThemeMode::Dark, ThemeMode::Light] {
@@ -224,7 +221,7 @@ fn main() -> Result<()> {
     }
     println!("PASS empty page, placeholder, headings, pin order, three columns, waiting count and last-page rings.");
     let other = *roots.iter().find(|id| **id != root).unwrap();
-    let (x, y) = chrome_point(&ui, &format!(".pinned-card[data-id='{root}']"))?;
+    let (x, y) = chrome_point(&ui, &format!(".tree-card[data-id='{root}']"))?;
     move_to(x, y)?;
     xdo(&["mousedown", "1"])?;
     wait("chrome received the held card press", || {
@@ -269,7 +266,7 @@ fn main() -> Result<()> {
     key("ctrl+x")?;
     assert!(!visible(&ui, "#palette"));
     key("Tab")?;
-    assert!(chrome_focused(&ui, ".pinned-card"));
+    assert!(chrome_focused(&ui, ".tree-card"));
     key("space")?;
     wait("Space activates card", || {
         chrome(&ui, "canopy.state().surface").is_ok_and(|s| s == "reading")
@@ -286,7 +283,10 @@ fn main() -> Result<()> {
         ui.dispatch(ChromeIntent::SetTheme(mode));
         pump(200);
         menu(&ui, &tab)?;
-        assert_eq!(text(&ui, "#popover"), "Rename\nUnpin tree\nSettle tree");
+        assert_eq!(
+            text(&ui, "#popover"),
+            "Rename\nRemove from saved\nSettle tree"
+        );
         assert_eq!(chrome(&ui, "[...document.querySelectorAll('[data-tab-action]')].every(e=>e.getBoundingClientRect().bottom <= document.getElementById('popover').getBoundingClientRect().bottom)")?, true);
         shots(
             &ui,
@@ -312,7 +312,7 @@ fn main() -> Result<()> {
         !visible(&ui, &format!("{tab} .tab-pinned-mark"))
     })?;
     menu(&ui, &tab)?;
-    assert!(text(&ui, "#popover").contains("Pin tree"));
+    assert!(text(&ui, "#popover").contains("Save tree"));
     click_chrome(&ui, "[data-tab-action=pin]")?;
     wait("pin mark", || {
         visible(&ui, &format!("{tab} .tab-pinned-mark"))
@@ -322,8 +322,15 @@ fn main() -> Result<()> {
     wait("settled from menu", || !visible(&ui, &tab))?;
     start_page(&ui)?;
     assert_eq!(chrome(&ui, "canopy.state().start.pinned.length")?, 3);
-    menu(&ui, ".pinned-card")?;
-    assert_eq!(text(&ui, "#popover"), "Unpin tree");
+    chrome(&ui, "(() => { const c=S.frame.start.pinned.find(c=>!S.frame.tabs.some(t=>t.id===c.id)); const anchor=document.querySelector(`[data-start=tree][data-id='${c.id}']`); openPopover('rename',anchor,{source:'start',id:c.id,name:c.title}); S.popover.field.focus(); S.popover.field.select(); canopy.present(S.frame); return true; })()")?;
+    assert!(chrome_focused(&ui, "#tree-name"));
+    type_text("Settled saved tree")?;
+    key("Return")?;
+    wait("settled tree renamed", || {
+        text(&ui, "#start-content").contains("Settled saved tree")
+    })?;
+    menu(&ui, ".tree-card")?;
+    assert_eq!(text(&ui, "#popover"), "Remove from saved");
     click_chrome(&ui, "[data-tab-action=pin]")?;
     wait("card removed", || {
         chrome(&ui, "canopy.state().start.pinned.length").is_ok_and(|v| v == 2)
@@ -369,7 +376,7 @@ fn main() -> Result<()> {
     })?;
     chrome(&ui, "document.getElementById('start').scrollTop=0")?;
     pump(100);
-    click_chrome(&ui, ".pinned-card")?;
+    click_chrome(&ui, ".tree-card")?;
     wait("placeholder leaves", || !visible(&ui, "#strip-placeholder"))?;
     println!("PASS all-settled placeholder clears on card click.");
     chrome_fill(&ui, directory.path())?;

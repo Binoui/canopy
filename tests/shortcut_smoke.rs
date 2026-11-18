@@ -169,6 +169,16 @@ fn forest_popin(ui: &Ui) -> Result<()> {
     }
     forest_open(ui)?;
     assert!(visible(ui, "#forest-count"));
+    for width in [1240, 1920] {
+        ui.window.resize(width, 800);
+        pump(300);
+        assert_eq!(chrome(ui, "(() => { const r=document.querySelector('.forest-pop').getBoundingClientRect(); return [r.left, innerWidth-r.right]; })()")?, serde_json::json!([22, 22]));
+        chrome(ui, "document.querySelector('#forest-fit').click()")?;
+        pump(300);
+        assert!(chrome(ui, "Math.abs(S.camera.zoom - Math.max(0.3, Math.min(1, (document.querySelector('#forest-canvas').clientWidth - 20) / Math.max(S.frame.forest.labels.width, 1)))) < 0.00001")? == true);
+    }
+    ui.window.resize(1240, 800);
+    pump(300);
     let id = ui.snapshot()?.current.unwrap();
     let node = format!(".forest-node[data-id='{id}']");
     let scale = || {

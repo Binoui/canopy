@@ -25,6 +25,10 @@ Preconditions:
 - **Forest.** Run `$V key ctrl+e`, `sleep 2`, `$V shot settle-forest`. The header counts one more settled tree than before (4 settled on the stress seed), and the current tree is listed first.
 - **Undo.** Right after the settle, run `$V key ctrl+shift+t`, `sleep 2`, `$V shot settle-undo`. The tab returns on the page it was on, and the same query, saved as `settle-undo-row`, returns 0.
 
+## Saved trees
+
+Tab menus offer Rename, Save tree (or Remove from saved), and Settle tree. Saved trees keep their pushpin mark, including in the overflow list. Saving and settling are independent: a settled saved tree stays on the new-tree page under Saved trees and its card restores the last page. The card menu offers Remove from saved. Saved state survives a restart. The forest canvas sits 22 px from each window edge with no width cap; Fit still fits it to the available width.
+
 ## Gotchas
 
 - After settling, Canopy moves to another open tree. Do not assume which one.

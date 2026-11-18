@@ -165,7 +165,7 @@ fn main() -> Result<()> {
     wait("pinned card", || {
         visible(&ui, &format!("[data-start=tree][data-id='{beta}']"))
     })?;
-    assert_eq!(chrome(&ui, "(() => { const saved=S.frame.start; const visits=S.frame.visits; S.frame.visits={}; const cards=BANDS.map(b=>b(saved)).join(''); S.frame.visits=visits; uncover(); canopy.start({start:saved}); canopy.newTree(); return cards.includes('pinned-card') && !document.querySelector('#start-content').children.length && S.frame.start===null; })()")?, true);
+    assert_eq!(chrome(&ui, "(() => { const saved=S.frame.start; const visits=S.frame.visits; S.frame.visits={}; const cards=BANDS.map(b=>b(saved)).join(''); S.frame.visits=visits; uncover(); canopy.start({start:saved}); canopy.newTree(); return cards.includes('tree-card') && !document.querySelector('#start-content').children.length && S.frame.start===null; })()")?, true);
     wait("fresh pinned card after reopen", || {
         visible(&ui, &format!("[data-start=tree][data-id='{beta}']"))
     })?;
