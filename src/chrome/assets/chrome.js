@@ -1400,7 +1400,7 @@ function renderSheet(reveal) {
       if (el !== cursor) container.insertBefore(el, cursor);
       cursor = el.nextElementSibling;
     }
-    for (const el of previous) if (!used.has(el)) el.remove();
+    for (const el of kept.values()) el.remove();
   }
   $('tree-waiting').setAttribute('aria-pressed', String(view.waitingOnly));
   $('tree-empty').hidden = view.rows.length !== 0;

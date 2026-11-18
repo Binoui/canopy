@@ -197,7 +197,7 @@ fn main() -> Result<()> {
     })?;
     println!("PASS settle in the overflow removes its tree.");
     ui.window.resize(820, 800);
-    chrome(&ui, "(() => { const keep = S.frame.tabs.slice(0,4).map(t => t.id); for (const t of S.frame.tabs.slice(4)) intent('settle-tree', {id:t.id}); intent('rename-tree', {id:keep[0], name:'GTK documentation and application development'}); intent('select-tree', {id:keep[0]}); return true; })()")?;
+    chrome(&ui, "(() => { const keep = S.frame.tabs.slice(0,4).map(t => t.id); for (const t of S.frame.tabs.slice(4)) treeAct(t.id,'settle'); intent('rename-tree', {id:keep[0], name:'GTK documentation and application development'}); treeAct(keep[0],'open'); return true; })()")?;
     wait("four trees", || {
         chrome(&ui, "S.frame.tabs.length").is_ok_and(|v| v == 4)
     })?;
@@ -282,7 +282,7 @@ fn review_regressions(ui: &Ui) -> Result<()> {
         true
     );
     println!("PASS 7 active class and titled fit change in the same presentation call.");
-    assert_eq!(chrome(ui, "(() => { const cross = document.querySelector('.tab[aria-selected=true] .tab-settle'); const original = window.ipc.postMessage; let settled = false; window.ipc.postMessage = (message) => { settled ||= JSON.parse(message).kind === 'settle-tree'; }; const r = cross.getBoundingClientRect(); const event = (type, detail, x = r.x+12) => cross.dispatchEvent(new MouseEvent(type, {bubbles:true, button:0, detail, clientX:x, clientY:r.y+12})); cross.style.opacity = '0'; event('mousedown',1); cross.style.opacity = '1'; event('mouseup',1); event('click',1); event('mousedown',2); event('mouseup',2); event('click',2); event('mousedown',1,r.x-1); event('mouseup',1); event('click',1); window.ipc.postMessage = original; cross.style.opacity = ''; return !settled; })()")?, true);
+    assert_eq!(chrome(ui, "(() => { const cross = document.querySelector('.tab[aria-selected=true] .tab-settle'); const original = window.ipc.postMessage; let settled = false; window.ipc.postMessage = (message) => { settled ||= JSON.parse(message).act === 'settle'; }; const r = cross.getBoundingClientRect(); const event = (type, detail, x = r.x+12) => cross.dispatchEvent(new MouseEvent(type, {bubbles:true, button:0, detail, clientX:x, clientY:r.y+12})); cross.style.opacity = '0'; event('mousedown',1); cross.style.opacity = '1'; event('mouseup',1); event('click',1); event('mousedown',2); event('mouseup',2); event('click',2); event('mousedown',1,r.x-1); event('mouseup',1); event('click',1); window.ipc.postMessage = original; cross.style.opacity = ''; return !settled; })()")?, true);
     println!("PASS 1 invisible-at-press cross and second double-click cannot settle.");
     assert_eq!(
         chrome(

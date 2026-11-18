@@ -200,6 +200,8 @@ fn main() -> Result<()> {
         pump(250);
         focus(&ui, "#tab-row [aria-selected=true]")?;
         key("Menu")?;
+        key("Down")?;
+        key("Down")?;
         check(&ui, "document.activeElement.dataset.tabAction === 'rename'")?;
         capture(&shots, "tab-menu", theme)?;
         key("Return")?;
