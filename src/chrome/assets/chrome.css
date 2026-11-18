@@ -335,7 +335,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .mt-node.last .fav { box-shadow: 0 0 0 1px var(--bg), 0 0 0 2.5px var(--green); }
 .tree-card .mt-node.last .fav { box-shadow: 0 0 0 1px var(--tile), 0 0 0 2.5px var(--green); }
 
-.pinned-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.shelf-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .tree-card { display: flex; flex-direction: column; align-items: stretch; gap: 3px; min-width: 0; overflow: hidden; padding: 11px 11px 9px; border: 1px solid var(--tile-border); border-radius: 11px; background: var(--tile); text-align: left; }
 .tree-card:hover { border-color: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
 .pc-tree { height: 58px; margin-bottom: 6px; }

@@ -191,7 +191,7 @@ fn main() -> Result<()> {
     start_page(&ui)?;
     let expected: Vec<_> = roots.iter().map(ToString::to_string).collect();
     assert_eq!(
-        chrome(&ui, "canopy.state().start.pinned.map(t=>t.id)")?,
+        chrome(&ui, "canopy.state().start.shelf.map(t=>t.id)")?,
         serde_json::json!(expected)
     );
     assert!(text(&ui, ".band-head").contains("Saved for later"));
@@ -358,7 +358,7 @@ fn main() -> Result<()> {
     ui.dispatch(ChromeIntent::SetTheme(ThemeMode::Dark));
     start_page(&ui)?;
     wait("extra cards", || {
-        chrome(&ui, "canopy.state().start.pinned.length").is_ok_and(|v| v == 15)
+        chrome(&ui, "canopy.state().start.shelf.length").is_ok_and(|v| v == 15)
     })?;
     assert_eq!(chrome(&ui, "document.getElementById('start').scrollHeight > document.getElementById('start').clientHeight")?, true);
     chrome(&ui, "document.getElementById('start').scrollTop=10000")?;

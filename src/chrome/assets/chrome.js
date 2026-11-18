@@ -236,6 +236,7 @@ function patchInto(container, fresh) {
   for (const el of previous) if (!used.has(el)) el.remove();
 }
 function treeAct(tree, act) {
+  if (S.overlay === 'forest') { post({t:'forest',do:'act',tree,act}); return; }
   const navigates = act === 'open';
   const lands = ['save','settle'].includes(act) && S.overlay !== 'forest' && S.surface !== 'start';
   if (navigates) uncover();
@@ -1640,7 +1641,7 @@ function miniHtml(mini) {
 const TREE_MENUS = {
   forest: (id) => forestMenu(id),
   tab: (id) => S.frame?.tabs.find((t) => t.id === id)?.menu,
-  start: (id) => S.frame?.start?.pinned.find((c) => c.id === id)?.menu,
+  start: (id) => S.frame?.start?.shelf.find((c) => c.id === id)?.menu,
 };
 
 function treeCard(t, attrs) {
@@ -1651,9 +1652,9 @@ function treeCard(t, attrs) {
     + `</span>${t.page ? `<span class="pc-page">${esc(t.page)}</span>` : ''}<span class="pc-meta">${esc(t.meta)}</span></button>`;
 }
 
-function pinnedBand(start) {
+function shelfBand(start) {
   return '<section>' + bandHead(start.shelfTitle, start.shelfHint)
-    + (start.pinned.length ? '<div class="pinned-row">' + start.pinned.map((t) =>
+    + (start.shelf.length ? '<div class="shelf-row">' + start.shelf.map((t) =>
       treeCard(t, 'data-start="tree"')).join('') + '</div>'
       : `<div class="hint-line">${esc(start.shelfHint)}</div>`) + '</section>';
 }
@@ -1688,7 +1689,7 @@ function togglePopover(kind, anchor, data) {
   $('popover').querySelector('button')?.focus();
 }
 
-const BANDS = [pinnedBand, bookmarksBand, suggestedBand];
+const BANDS = [shelfBand, bookmarksBand, suggestedBand];
 const START = {
   bookmark: { open: (id) => { closePopover(false); uncoverForPage(); intent('open-bookmark', { id: Number(id) }); }, menu: 'bookmark' },
   folder: { open: (name, el) => togglePopover('folder', el, { folder: name }) },
@@ -1806,6 +1807,7 @@ function renderPageScale() {
 }
 
 window.canopy = {
+  navigated() { uncover(); },
   pageScale(value) { S.pageScale = value; renderPageScale(); },
   viewport(height) { S.windowHeight = height; document.documentElement.style.setProperty('--window-height', `${height}px`); positionList(); syncLayer(); },
   start(value, initial = false) {

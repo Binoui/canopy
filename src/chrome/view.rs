@@ -74,7 +74,7 @@ pub(crate) fn frame(
     visible.extend(surfaces.palette);
     visible.extend(forest.tabs().iter().map(|t| t.id.root()));
     if let Some(start) = &start {
-        for mini in start["pinned"]
+        for mini in start["shelf"]
             .as_array()
             .into_iter()
             .flatten()
@@ -1007,7 +1007,7 @@ mod tests {
                 palette: None,
             },
         );
-        assert_eq!(start["start"]["pinned"].as_array().unwrap().len(), 1);
+        assert_eq!(start["start"]["shelf"].as_array().unwrap().len(), 1);
         assert!(start["visits"][roots[1].to_string()].is_object());
     }
 
