@@ -576,39 +576,12 @@ fn main() -> Result<()> {
     key("ctrl+e")?;
     wait("forest open", || visible(&ui, "#forest"))?;
     pump(200);
-    let forest_node = |id| format!("#forest-nodes [data-id='{id}']");
+    let forest_node = |id| format!("#forest-trees [data-id='{id}']");
     let root_node = forest_node(hidden_root);
     assert!(
         rect(&ui, &root_node)?.2 > 140.,
         "the first forest view fits after allocation"
     );
-    let before_zoom = rect(&ui, &root_node)?.2;
-    let (x, y) = chrome_point(&ui, "#forest-canvas")?;
-    move_to(x, y)?;
-    xdo(&["keydown", "ctrl", "click", "5", "keyup", "ctrl"])?;
-    pump(80);
-    assert!(rect(&ui, &root_node)?.2 < before_zoom);
-    click_chrome(&ui, "#forest-fit")?;
-    pump(300);
-    let before_pan = rect(&ui, &root_node)?;
-    move_to(x, y)?;
-    xdo(&["click", "5"])?;
-    pump(80);
-    assert!(rect(&ui, &root_node)?.1 < before_pan.1);
-    xdo(&[
-        "mousedown",
-        "1",
-        "mousemove_relative",
-        "--sync",
-        "40",
-        "20",
-        "mouseup",
-        "1",
-    ])?;
-    pump(80);
-    assert!(rect(&ui, &root_node)?.0 > before_pan.0);
-    click_chrome(&ui, "#forest-fit")?;
-    pump(300);
     let other = ui
         .snapshot()?
         .visits
@@ -698,14 +671,14 @@ fn main() -> Result<()> {
         key("ctrl+e")?;
         pump(250);
         if let Some(dir) = &shots {
-            save_window(&ui, &format!("{dir}/forest-titles-{theme}.png"))?;
+            save_window(&ui, &format!("{dir}/forest-trees-{theme}.png"))?;
         }
-        click_chrome(&ui, "#forest-titles")?;
+        click_chrome(&ui, "#forest-views [data-view=history]")?;
         pump(150);
         if let Some(dir) = &shots {
             save_window(&ui, &format!("{dir}/forest-icons-{theme}.png"))?;
         }
-        click_chrome(&ui, "#forest-titles")?;
+        click_chrome(&ui, "#forest-views [data-view=trees]")?;
         key("Escape")?;
         key("ctrl+t")?;
         if let Some(dir) = &shots {

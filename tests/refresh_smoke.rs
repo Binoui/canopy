@@ -216,7 +216,10 @@ fn main() -> Result<()> {
         "refresh must preserve every held click and defer painting"
     );
     pump(400);
-    assert_eq!(chrome(&ui, "S.frame.forest === null")?, true);
+    assert_eq!(
+        chrome(&ui, "!('forest' in S.frame) && S.forest === null")?,
+        true
+    );
     chrome(&ui, "(() => { globalThis.__node=document.querySelector('#strip-nodes .node'); globalThis.__edge=document.querySelector('#strip-edges path'); canopy.present(S.frame); return true; })()")?;
     assert_eq!(chrome(&ui, "!strip.anim && __node === document.querySelector('#strip-nodes .node') && __edge === document.querySelector('#strip-edges path')")?, true);
     println!("PASS unchanged frame preserves strip nodes and edges without animation.");
@@ -244,31 +247,31 @@ fn main() -> Result<()> {
     println!("PASS open zoomed-tree icon updates immediately.");
     chrome(&ui, "(() => { canopy.toggleForest(); return true; })()")?;
     wait("on-demand forest", || {
-        chrome(&ui, "S.frame.forest?.labels.nodes.length > 0").is_ok_and(|v| v == true)
+        chrome(&ui, "S.forest?.view === 'trees'").is_ok_and(|v| v == true)
     })?;
     assert_eq!(chrome(&ui, "window.innerHeight === S.windowHeight && document.querySelector('#forest').getBoundingClientRect().height > 94")?, true);
-    chrome(&ui, "(() => { globalThis.__forestNode=document.querySelector('#forest-nodes [data-id]'); canopy.toggleForest(); return true; })()")?;
+    chrome(&ui, "(() => { globalThis.__forestNode=document.querySelector('#forest-trees [data-id]'); canopy.toggleForest(); return true; })()")?;
     pump(100);
     chrome(&ui, "(() => { canopy.toggleForest(); return true; })()")?;
     wait("unchanged forest reopened", || {
-        visible(&ui, "#forest-nodes [data-id]")
+        visible(&ui, "#forest-trees [data-id]")
     })?;
     assert_eq!(
         chrome(
             &ui,
-            "__forestNode === document.querySelector('#forest-nodes [data-id]')"
+            "__forestNode === document.querySelector('#forest-trees [data-id]')"
         )?,
         true
     );
     println!("PASS forest first appears at window height and unchanged reopen keeps its nodes.");
     rename(&ui, gamma, "Forest changed while open");
     wait("forest change", || {
-        text(&ui, "#forest-nodes").contains("Forest changed while open")
+        text(&ui, "#forest-trees").contains("Forest changed while open")
     })?;
     chrome(&ui, "(() => { canopy.toggleForest(); return true; })()")?;
     rename(&ui, gamma, "Forest closed again");
     wait("closed forest frame", || {
-        chrome(&ui, "S.frame.forest === null").is_ok_and(|v| v == true)
+        chrome(&ui, "!('forest' in S.frame) && S.forest === null").is_ok_and(|v| v == true)
     })?;
     println!("PASS forest is requested on open, follows changes, and leaves closed frames.");
 
@@ -328,7 +331,7 @@ fn main() -> Result<()> {
             "strip" => "#strip-nodes",
             "list" => "#strip-list",
             "tree" => "#tree-sheet",
-            _ => "#forest-nodes",
+            _ => "#forest-trees",
         };
         let check = format!("(() => {{ const shown=[...document.querySelectorAll('{selector} .fav img')]; const images=[...document.querySelectorAll('.fav img')].filter(i=>new URL(i.src).searchParams.get('u').startsWith('{origin}/')); return shown.length >= 3 && images.length >= 3 && images.every(i=>i.complete && i.naturalWidth>0 && i.style.visibility!=='hidden'); }})()");
         wait("all site fallback images loaded", || {

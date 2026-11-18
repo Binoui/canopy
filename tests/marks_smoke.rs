@@ -147,8 +147,7 @@ impl Fixture {
     }
 }
 fn marked(f: &Fixture, id: canopy::browser::VisitId) -> bool {
-    common::chrome(&f.ui, &format!("S.frame.visits['{id}']?.live === true"))
-        .is_ok_and(|v| v == true)
+    f.ui.pages.hidden_visits().contains(&id)
 }
 fn strip_marked(f: &Fixture, id: canopy::browser::VisitId) -> bool {
     common::visible(
@@ -290,12 +289,7 @@ fn marks_share_surfaces_without_moving_nodes() -> Result<()> {
         )?;
         common::pump(400);
         shot(&f, &format!("{theme}-strip"))?;
-        common::chrome(&f.ui, "(canopy.toggleForest(),true)")?;
-        common::wait("forest live mark", || {
-            common::visible(&f.ui, &format!(".forest-node[data-id='{root}'] .live-dot"))
-        })?;
-        shot(&f, &format!("{theme}-forest"))?;
-        common::chrome(&f.ui, "(canopy.toggleForest(),canopy.toggleTree(),true)")?;
+        common::chrome(&f.ui, "(canopy.toggleTree(),true)")?;
         common::wait("sheet live mark", || {
             common::visible(&f.ui, &format!(".tree-tile[data-id='{root}'] .live-dot"))
         })?;

@@ -139,7 +139,7 @@ body[data-find] #search-pill :is(span, kbd) { display: none; }
 .pill-site { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pending-dot { position: absolute; border-radius: 50%; background: var(--bg); box-shadow: inset 0 0 0 1.5px var(--green), 0 0 0 2px var(--chrome); pointer-events: none; }
 .pending-dot.loaded { background: var(--green); box-shadow: 0 0 0 2px var(--chrome); }
-.mk, .forest-node .mk { position: relative; display: inline-grid; flex: none; overflow: visible; }
+.mk { position: relative; display: inline-grid; flex: none; overflow: visible; }
 .mk .pending-dot { right: -4px; top: -4px; width: 9px; height: 9px; }
 .mk:has(.pending-dot:not(.loaded)) .fav { opacity: .5; }
 .node::after { content: ""; position: absolute; top: 100%; left: -1px; right: -1px; height: calc(20px - 50%); }
@@ -370,26 +370,46 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .start-tile .glyph { width: 38px; height: 38px; border-radius: 11px; border: 1px solid var(--tile-border); background: var(--tile); display: grid; place-items: center; }
 .start-tile .label { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.forest-toolbar { position: relative; z-index: 1; display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--bg); }
+.forest-pop { display: flex; flex-direction: column; container-type: inline-size; }
+.forest-toolbar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
 .forest-toolbar strong { font-size: 14px; font-weight: 600; }
-.forest-toolbar .action[aria-pressed="true"] { background: var(--green-soft); color: var(--green-ink); border-color: transparent; }
-#forest-canvas { position: absolute; left: 0; right: 0; top: 49px; bottom: 0; overflow: hidden; cursor: grab; }
-#forest-canvas.dragging { cursor: grabbing; }
-#forest-layer { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
-#forest-edges { position: absolute; left: 0; top: 0; overflow: visible; }
-#forest-edges path { fill: none; stroke: var(--line); stroke-width: 1.2; }
-#forest-edges path.path { stroke: var(--green); stroke-width: 1.8; }
-#forest-edges path.pending { stroke-dasharray: 4 4; }
-.forest-head { text-align: left; position: absolute; left: 34px; white-space: nowrap; }
-.forest-head b { display: block; font-size: 15px; font-weight: 700; }
-.forest-head span { display: block; font-size: 11.5px; color: var(--muted); margin-top: 3px; }
-.forest-node { position: absolute; display: flex; align-items: center; gap: 6px; padding: 0 7px; border: 1px solid var(--tile-border); border-radius: 8px; background: var(--tile); overflow: hidden; }
-.forest-node.icon-only { justify-content: center; padding: 0; }
-.forest-node:hover { border-color: var(--faint); }
-.forest-node.path { border-color: var(--green); background: var(--green-soft); }
-.forest-node.pending { border-style: dashed; background: transparent; }
-.forest-node.pending.loaded { border-style: solid; }
-.forest-node span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+#forest-views { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+#forest-views button { padding: 5px 11px; color: var(--muted); }
+#forest-views [aria-pressed="true"] { background: var(--green-soft); color: var(--green-ink); }
+.forest-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px 18px; }
+#forest-trees { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 240px)); justify-content: start; align-content: start; gap: 9px; }
+#forest-trees .band-head, #forest-trees .hint-line { grid-column: 1 / -1; }
+#forest-trees .band-head { margin: 3px 0 0; gap: 8px; }
+.tree-card[aria-current="true"] { border-color: var(--green); }
+.tree-card .pc-page { display: block; color: var(--muted); padding: 0 9px 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
+.tree-card .badge { position: absolute; right: 6px; top: 5px; background: var(--hover); color: var(--muted); border-radius: 4px; padding: 2px 5px; font-size: 10px; }
+.forest-split { display: flex; gap: 16px; overflow: hidden; }
+#forest-list { flex: 0 1 720px; min-width: 0; overflow: auto; }
+#forest-preview { flex: 1 1 380px; min-width: 0; overflow: auto; background: var(--tile); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+.forest-day { display: flex; gap: 8px; position: sticky; top: 0; z-index: 1; background: var(--bg); color: var(--muted); padding: 9px 2px; font-size: 11px; }
+.forest-day b { color: var(--text); font-weight: 500; }
+.forest-row { display: flex; align-items: center; width: 100%; gap: 10px; height: 38px; border: 1px solid transparent; border-radius: 8px; padding: 0 8px; text-align: left; }
+.forest-row:hover { background: var(--hover); }
+.forest-row[aria-selected="true"] { border-color: var(--green); }
+.forest-row .tm, .forest-row .pg, .forest-row .st { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.forest-row .tm { flex: none; width: 34px; }
+.forest-row .sg { display: flex; align-items: center; gap: 3px; width: 65px; flex: none; font-size: 10px; color: var(--muted); }
+.forest-row .nm { flex: 1 1 auto; min-width: 55px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.forest-row .st { flex: 0 1000 180px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.forest-row .pg { flex: none; }
+#forest-empty { margin: 0 14px 14px; }
+@container (max-width: 700px) {
+  .forest-split { flex-direction: column; }
+  #forest-preview { flex: none; max-height: 240px; order: -1; }
+  #forest-list { flex: 1; }
+  .forest-row .st { display: none; }
+  .forest-toolbar #forest-count { flex: 1; }
+}
+#forest-trees .pc-tree { position: relative; display: flex; align-items: center; justify-content: center; height: 84px; margin: -11px -11px 3px; padding: 10px; background: var(--bg); border-bottom: 1px solid var(--border); }
+#forest-trees .pc-page { padding: 0; }
+#forest-trees .tree-card:hover { border-color: var(--faint); box-shadow: none; }
+#forest-trees .tree-card[aria-current="true"] { border-color: var(--green); }
+
 
 /* ---------- reader ---------- */
 .reader-box {
@@ -422,10 +442,6 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .tab-settle::before { content: ""; position: absolute; left: 4px; top: 4px; width: 16px; height: 16px; border-radius: 4px; }
 .tab-settle:hover::before { background: var(--hover); }
 .tab-settle svg { position: relative; }
-.forest-head.settled, .forest-node.settled { opacity: .55; }
-.forest-head.settled:hover, .forest-node.settled:hover { opacity: 1; }
-.forest-divider { position: absolute; left: 34px; white-space: nowrap; display: flex; gap: 12px; align-items: baseline; color: var(--muted); font-size: 12px; }
-.forest-divider b { font-weight: 500; }
 
 #form-return { position: absolute; inset: 94px 0 0; z-index: 100; }
 .form-return-box {
@@ -447,7 +463,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 /* Download leaves own the bottom-left corner; the dot moves up the left edge. */
 .node > .live-dot.above-leaves { bottom: 9px; }
 
-.tree-tile > .live-dot, .forest-node > .live-dot { left: 2px; bottom: 2px; }
+.tree-tile > .live-dot { left: 2px; bottom: 2px; }
 
 .node.parent .fav, .node.run .fav, .node.root.named .fav { width: var(--item-icon) !important; height: var(--item-icon) !important; }
 .node.parent, .node.root.named { font-size: 12.5px; }

@@ -9,7 +9,6 @@ use std::{
 use serde_json::{json, Value};
 
 use super::{
-    forest_layout,
     graph::{self, EdgeKind, StripItem},
     palette::{Group, PaletteItem},
     pins, tree_view,
@@ -17,9 +16,7 @@ use super::{
     ChromeFrame, PageFile,
 };
 use crate::{
-    browser::{
-        Capture, CaptureKind, Lifecycle, ThemeMode, Visit, VisitId, VisitPreview, VisitState,
-    },
+    browser::{Capture, CaptureKind, ThemeMode, Visit, VisitId, VisitPreview, VisitState},
     forest::ForestProjection,
 };
 
@@ -29,7 +26,6 @@ const ACCESSORY: f64 = 22.;
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Surfaces {
     pub start: bool,
-    pub forest: bool,
     pub palette: Option<VisitId>,
 }
 
@@ -39,7 +35,6 @@ pub(crate) fn frame(
     viewport: (f64, f64),
     workbench: &tree_view::Workbench,
     surfaces: Surfaces,
-    forest_layout: Option<&Value>,
 ) -> Value {
     let width = viewport.0;
     let forest = &frame.forest;
@@ -68,7 +63,7 @@ pub(crate) fn frame(
         .then(|| super::start::value(frame, suggested));
     let mut visible = HashSet::new();
     for tree in forest.trees() {
-        if surfaces.forest || Some(tree.id) == active {
+        if Some(tree.id) == active {
             let mut stack = vec![tree.id.root()];
             while let Some(id) = stack.pop() {
                 visible.insert(id);
@@ -129,7 +124,6 @@ pub(crate) fn frame(
         "treeView": tree_view_value(forest, workbench, viewport),
         "waiting": { "name": waiting_name, "order": WaitingOrder::CHOSEN.label(), "ids": waiting_pages.iter().map(|v| v.id.to_string()).collect::<Vec<_>>() },
         "files": files_value(&frame.files),
-        "forest": surfaces.forest.then(|| forest_layout.cloned().unwrap_or_else(|| forest_frame(forest))),
         "captureEnabled": frame.capture_enabled,
         "mail": mail_value(&frame.mail),
         "treesHelp": frame.trees_help,
@@ -139,19 +133,6 @@ pub(crate) fn frame(
             ThemeMode::Dark => "dark",
         },
         "start": start,
-    })
-}
-
-pub(crate) fn forest_frame(forest: &ForestProjection) -> Value {
-    let pages: usize = forest.trees().iter().map(|tree| tree.page_count).sum();
-    json!({
-            "count": if forest.settled().is_empty() {
-                format!("{} · {}", plural(forest.trees().len(), "tree"), plural(pages, "page"))
-            } else {
-                format!("{} open · {} settled · {}", forest.open().len(), forest.settled().len(), plural(pages, "page"))
-            },
-            "labels": forest_value(forest, true),
-            "icons": forest_value(forest, false),
     })
 }
 
@@ -423,40 +404,6 @@ fn size_text(bytes: u64) -> String {
     }
 }
 
-fn forest_value(forest: &ForestProjection, labels: bool) -> Value {
-    let layout = forest_layout::layout(forest, labels, |text| text_width(text, 12.5, 0.55));
-    let current_tree = forest.current().and_then(|id| forest.tree_of(id));
-    let settled: HashSet<_> = forest.settled().iter().map(|tree| tree.id).collect();
-    json!({
-        "width": layout.current_width,
-        "divider": layout.divider.map(|y| json!({
-            "y": y, "title": "Settled", "detail": plural(forest.settled().len(), "tree"),
-        })),
-        "nodes": layout.nodes.iter().map(|(id, r)| json!({
-            "settled": forest.tree_of(*id).is_some_and(|tree| settled.contains(&tree)),
-            "id": id.to_string(), "x": r.x, "y": r.y, "w": r.w, "s": r.s,
-        })).collect::<Vec<_>>(),
-        "heads": layout.heads.iter().map(|&(index, y)| {
-            let tree = &forest.trees()[index];
-            json!({
-                "y": y,
-                "id": tree.last_visit.to_string(),
-                "title": tree.title,
-                "settled": !tree.lifecycle.is_open(),
-                "detail": format!(
-                    "{} · {}{}",
-                    plural(tree.page_count, "page"),
-                    match tree.lifecycle {
-                        Lifecycle::Open => format!("{} waiting", tree.pending_count),
-                        Lifecycle::Settled { since } => format!("settled {}", ago(since)),
-                    },
-                    if Some(tree.id) == current_tree { " · Current tree" } else { "" },
-                ),
-            })
-        }).collect::<Vec<_>>(),
-    })
-}
-
 fn visit_value(
     forest: &ForestProjection,
     visit: &Visit,
@@ -723,6 +670,7 @@ pub(crate) fn ago(timestamp_ms: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::browser::Lifecycle;
     #[test]
     fn branch_names_omit_zero_counts_and_repeat_no_state() {
         assert_eq!(super::branch_name("Leaf", 0, 0, false), "Leaf");
@@ -968,7 +916,6 @@ mod tests {
             (1240., 800.),
             &tree_view::Workbench::default(),
             Surfaces::default(),
-            None,
         );
         assert!(closed["forest"].is_null());
         assert!(closed["start"].is_null());
@@ -982,7 +929,6 @@ mod tests {
                 palette: Some(roots[1]),
                 ..Surfaces::default()
             },
-            None,
         );
         assert!(scoped["visits"][roots[1].to_string()].is_object());
         let start = super::frame(
@@ -992,30 +938,11 @@ mod tests {
             &tree_view::Workbench::default(),
             Surfaces {
                 start: true,
-                forest: false,
                 palette: None,
             },
-            None,
         );
         assert_eq!(start["start"]["pinned"].as_array().unwrap().len(), 1);
         assert!(start["visits"][roots[1].to_string()].is_object());
-        let open = super::frame(
-            &frame,
-            &[],
-            (1240., 800.),
-            &tree_view::Workbench::default(),
-            Surfaces {
-                start: false,
-                forest: true,
-                palette: None,
-            },
-            None,
-        );
-        assert_eq!(
-            open["forest"]["labels"]["nodes"].as_array().unwrap().len(),
-            2
-        );
-        assert_eq!(open["visits"].as_object().unwrap().len(), 2);
     }
 
     #[test]
@@ -1042,10 +969,8 @@ mod tests {
             &tree_view::Workbench::default(),
             Surfaces {
                 start: true,
-                forest: true,
                 palette: None,
             },
-            None,
         );
         assert_eq!(value["visits"][ids[2].to_string()]["when"], "");
         assert_eq!(value["waiting"]["ids"], json!([ids[2].to_string()]));
@@ -1062,10 +987,8 @@ mod tests {
             &tree_view::Workbench::default(),
             Surfaces {
                 start: true,
-                forest: true,
                 palette: None,
             },
-            None,
         );
         assert_eq!(
             value["visits"][ids[2].to_string()]["a11yState"],
@@ -1161,10 +1084,8 @@ mod tests {
             &tree_view::Workbench::default(),
             Surfaces {
                 start: true,
-                forest: true,
                 palette: None,
             },
-            None,
         );
         let tabs = value["tabs"].as_array().unwrap();
         assert_eq!(tabs.len(), 1);
@@ -1173,7 +1094,7 @@ mod tests {
     }
 
     #[test]
-    fn settled_pages_stay_in_the_visits_map_so_search_and_the_forest_can_open_them() {
+    fn settled_current_pages_stay_scoped_during_a_navigation() {
         let (forest, ids) = chain_with_lifecycle(Lifecycle::Settled { since: 1 });
         let frame = ChromeFrame {
             mail: crate::mail::Mail::default(),
@@ -1196,21 +1117,12 @@ mod tests {
             &tree_view::Workbench::default(),
             Surfaces {
                 start: true,
-                forest: true,
                 palette: None,
             },
-            None,
         );
         assert_eq!(value["tabs"], json!([]));
         assert_eq!(value["current"], ids[1].to_string());
         assert_eq!(value["visits"].as_object().unwrap().len(), 3);
-        assert_eq!(value["forest"]["labels"]["heads"][0]["settled"], true);
-        assert!(value["forest"]["labels"]["nodes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|n| n["settled"] == true));
-        assert_eq!(value["forest"]["labels"]["divider"]["detail"], "1 tree");
     }
     #[test]
     fn the_frame_carries_every_visit_and_the_folded_strip() {
@@ -1236,10 +1148,8 @@ mod tests {
             &tree_view::Workbench::default(),
             Surfaces {
                 start: true,
-                forest: true,
                 palette: None,
             },
-            None,
         );
         assert_eq!(value["current"], ids[1].to_string());
         assert_eq!(value["visits"].as_object().unwrap().len(), 3);
@@ -1259,7 +1169,7 @@ mod tests {
         assert_eq!(pill["id"], ids[1].to_string());
         assert_eq!(value["theme"], "dark");
         assert!(value["mail"]["pin"].is_null());
-        assert_eq!(value["forest"]["count"], "1 tree · 3 pages");
+        assert!(value.get("forest").is_none());
     }
 
     #[test]
@@ -1307,10 +1217,8 @@ mod tests {
             &tree_view::Workbench::default(),
             Surfaces {
                 start: true,
-                forest: true,
                 palette: None,
             },
-            None,
         );
         let files = value["files"].as_object().unwrap();
         assert_eq!(files.len(), 2);
@@ -1408,10 +1316,8 @@ mod tests {
             &tree_view::Workbench::default(),
             Surfaces {
                 start: true,
-                forest: true,
                 palette: None,
             },
-            None,
         );
         assert_eq!(value["waiting"]["ids"], json!([]));
         assert_eq!(value["visits"][ids[2].to_string()]["queued"], false);

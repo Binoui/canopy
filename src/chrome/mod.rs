@@ -10,7 +10,8 @@
 mod favicon;
 mod feedback;
 mod find;
-mod forest_layout;
+mod forest_pane;
+pub use forest_pane::View as ForestView;
 pub(crate) mod graph;
 mod loading;
 mod page_scale;
@@ -252,10 +253,8 @@ struct Inner {
     tab_room: Cell<f64>,
     suggested: RefCell<Vec<crate::suggest::Suggestion>>,
     start: Cell<bool>,
-    forest_open: Cell<bool>,
-    forest_revision: Cell<u64>,
+    forest: RefCell<forest_pane::ForestPane>,
     palette_scope: Cell<Option<VisitId>>,
-    forest_layout: RefCell<Value>,
     /// The last palette results, so Enter runs exactly the row the view showed.
     palette: RefCell<Option<ShownPalette>>,
     workbench: RefCell<tree_view::Workbench>,
@@ -314,10 +313,8 @@ impl HtmlChrome {
             tab_room: Cell::new(0.),
             suggested: RefCell::new(Vec::new()),
             start: Cell::new(false),
-            forest_open: Cell::new(false),
-            forest_revision: Cell::new(0),
+            forest: RefCell::new(forest_pane::ForestPane::default()),
             palette_scope: Cell::new(None),
-            forest_layout: RefCell::new(Value::Null),
             palette: RefCell::new(None),
             workbench: RefCell::default(),
         });
@@ -356,26 +353,6 @@ impl HtmlChrome {
 
     pub fn present(&self, frame: ChromeFrame) {
         let inner = &self.inner;
-        let changed = !inner.forest_layout.borrow().is_null()
-            && inner
-                .frame
-                .borrow()
-                .as_ref()
-                .is_none_or(|old| old.forest != frame.forest);
-        if inner
-            .frame
-            .borrow()
-            .as_ref()
-            .is_none_or(|old| changed || old.loaded != frame.loaded || old.live != frame.live)
-        {
-            inner.forest_revision.set(inner.forest_revision.get() + 1);
-        }
-        if changed {
-            *inner.forest_layout.borrow_mut() = Value::Null;
-        }
-        if inner.forest_open.get() && inner.forest_layout.borrow().is_null() {
-            *inner.forest_layout.borrow_mut() = view::forest_frame(&frame.forest);
-        }
         let mut value = view::frame(
             &frame,
             &inner.suggested.borrow(),
@@ -383,13 +360,13 @@ impl HtmlChrome {
             &inner.workbench.borrow(),
             view::Surfaces {
                 start: inner.start.get(),
-                forest: inner.forest_open.get(),
                 palette: inner.palette_scope.get(),
             },
-            Some(&inner.forest_layout.borrow()),
         );
         value["tabFit"] = tabs::layout(&frame.forest, inner.tab_room.get(), inner.start.get());
+        let reply = inner.forest.borrow_mut().present(&frame);
         inner.call("present", &[value]);
+        inner.forest_reply(reply);
         *inner.frame.borrow_mut() = Some(frame);
         inner.present_error();
     }
@@ -789,6 +766,13 @@ impl Inner {
         }
     }
 
+    fn forest_reply(&self, reply: forest_pane::Reply) {
+        match reply {
+            forest_pane::Reply::Unchanged => {}
+            forest_pane::Reply::Show(value) => self.call("forest", &[value]),
+        }
+    }
+
     fn handle(self: &Rc<Self>, body: &str) -> Result<()> {
         let message: Value = serde_json::from_str(body)?;
         match message["t"].as_str().unwrap_or_default() {
@@ -805,37 +789,10 @@ impl Inner {
                     .set(message["id"].as_str().map(str::parse).transpose()?);
             }
             "forest" => {
-                self.forest_open
-                    .set(message["open"].as_bool().unwrap_or(false));
-                if self.forest_open.get() {
-                    if let Some(frame) = self.frame.borrow().as_ref() {
-                        if self.forest_layout.borrow().is_null() {
-                            *self.forest_layout.borrow_mut() = view::forest_frame(&frame.forest);
-                        }
-                        self.call(
-                            "forest",
-                            &[
-                                if message["revision"].as_u64() == Some(self.forest_revision.get())
-                                {
-                                    Value::Null
-                                } else {
-                                    view::frame(
-                                        frame,
-                                        &self.suggested.borrow(),
-                                        self.size.get(),
-                                        &self.workbench.borrow(),
-                                        view::Surfaces {
-                                            start: self.start.get(),
-                                            forest: true,
-                                            palette: self.palette_scope.get(),
-                                        },
-                                        Some(&self.forest_layout.borrow()),
-                                    )
-                                },
-                                json!(self.forest_revision.get()),
-                            ],
-                        );
-                    }
+                let input = forest_pane::Input::parse(&message)?;
+                if let Some(frame) = self.frame.borrow().as_ref() {
+                    let reply = self.forest.borrow_mut().input(input, frame);
+                    self.forest_reply(reply);
                 }
             }
             "suggestions" => {
@@ -1109,10 +1066,8 @@ impl Inner {
                     &self.workbench.borrow(),
                     view::Surfaces {
                         start: true,
-                        forest: self.forest_open.get(),
                         palette: self.palette_scope.get(),
                     },
-                    Some(&self.forest_layout.borrow()),
                 ),
                 json!(true),
             ],
