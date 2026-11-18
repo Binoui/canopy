@@ -188,9 +188,14 @@ impl Ui {
                 }
                 PageEvent::Saved(message) => ui.chrome.toast(Toast::Info(message)),
                 PageEvent::Deleted { id, text } => {
+                    if let Ok(forest) = ui
+                        .pages
+                        .read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))
+                    {
+                        ui.chrome.rerank_suggestions(&forest);
+                    }
                     ui.chrome.deleted(id, text);
                     ui.refresh();
-                    ui.chrome.rerank_suggestions();
                     ui.schedule_refresh();
                 }
                 PageEvent::Settled(message) => ui.chrome.settled(&message),

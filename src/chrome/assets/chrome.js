@@ -236,8 +236,11 @@ function patchInto(container, fresh) {
   for (const el of previous) if (!used.has(el)) el.remove();
 }
 function treeAct(tree, act) {
-  if (act === 'open') { uncover(); post({t:'focus', target:'page'}); }
+  const navigates = act === 'open';
+  const lands = ['save','settle'].includes(act) && S.overlay !== 'forest' && S.surface !== 'start';
+  if (navigates) uncover();
   post({t:'tree', tree, act});
+  if (navigates || lands) post({t:'focus', target:'page'});
 }
 
 function renderTabs() {

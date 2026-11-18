@@ -382,7 +382,10 @@ fn visit_references(tx: &Transaction) -> Result<Vec<(String, String, String)>> {
     Ok(rows)
 }
 impl Browser {
-    pub fn delete_trees(&mut self, trees: &[TreeId]) -> Result<Option<(Deleted, Landing)>> {
+    pub fn delete_trees(
+        &mut self,
+        trees: &[TreeId],
+    ) -> Result<Option<(DeleteId, Deleted, Landing)>> {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -455,9 +458,11 @@ impl Browser {
         }
         tx.execute("DELETE FROM visits WHERE id IN deleting", [])?;
         tx.commit()?;
+        let id = DeleteId(ulid::Ulid::new());
         Ok(Some((
+            id,
             Deleted {
-                id: DeleteId(ulid::Ulid::new()),
+                id,
                 trees: roots,
                 visits,
                 tables,
@@ -625,20 +630,19 @@ mod tests {
     }
     #[test]
     fn pin_after_drop_table() {
-        for was in [false, true] {
-            for left in [None, Some(false), Some(true)] {
-                for right in [None, Some(false), Some(true)] {
-                    assert_eq!(
-                        pin_after_drop(left, right, was),
-                        if right == Some(true) {
-                            true
-                        } else if left == Some(false) {
-                            false
-                        } else {
-                            was
-                        }
-                    );
-                }
+        for (left, right, expected) in [
+            (None, None, [false, true]),
+            (None, Some(false), [false, true]),
+            (None, Some(true), [true, true]),
+            (Some(false), None, [false, false]),
+            (Some(false), Some(false), [false, false]),
+            (Some(false), Some(true), [true, true]),
+            (Some(true), None, [false, true]),
+            (Some(true), Some(false), [false, true]),
+            (Some(true), Some(true), [true, true]),
+        ] {
+            for (i, was) in [false, true].into_iter().enumerate() {
+                assert_eq!(pin_after_drop(left, right, was), expected[i]);
             }
         }
     }
@@ -745,8 +749,7 @@ mod tests {
             enrich(&mut b, t[1], t[0]);
             b.place_tree(t[1], Move::History).unwrap();
             let before = all_rows(&mut b, reuse);
-            let (deleted, _) = b.delete_trees(&[t[0], t[1]]).unwrap().unwrap();
-            let id = deleted.id();
+            let (id, deleted, _) = b.delete_trees(&[t[0], t[1]]).unwrap().unwrap();
             b.undo_delete(DeleteId(ulid::Ulid::new()), &deleted)
                 .unwrap();
             assert!(b.visit(t[1].root()).is_err());
@@ -808,7 +811,7 @@ mod tests {
         let mut b = Browser::open(&path).unwrap();
         let tree = roots(&mut b, 1)[0];
         b.place_tree(tree, Move::History).unwrap();
-        let (record, _) = b.delete_trees(&[tree]).unwrap().unwrap();
+        let (_, record, _) = b.delete_trees(&[tree]).unwrap().unwrap();
         b.connection.execute_batch("CREATE TRIGGER reject_restore BEFORE INSERT ON visits BEGIN SELECT RAISE(ABORT,'refused'); END").unwrap();
         assert!(b.undo_delete(record.id(), &record).is_err());
         assert!(b.visit(tree.root()).is_err());

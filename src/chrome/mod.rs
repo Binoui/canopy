@@ -458,10 +458,9 @@ impl HtmlChrome {
     pub fn deleted(&self, id: Option<crate::browser::DeleteId>, text: String) {
         self.inner.forest.borrow_mut().deleted(id, text);
     }
-    pub fn rerank_suggestions(&self) {
-        if let (Some(frame), Some(host)) = (self.inner.frame.borrow().as_ref(), self.inner.host()) {
-            *self.inner.suggested.borrow_mut() =
-                host.suggestions(&frame.forest).unwrap_or_default();
+    pub fn rerank_suggestions(&self, forest: &crate::forest::ForestProjection) {
+        if let Some(host) = self.inner.host() {
+            *self.inner.suggested.borrow_mut() = host.suggestions(forest).unwrap_or_default();
             self.inner.palette.borrow_mut().take();
         }
     }
@@ -821,6 +820,7 @@ impl Inner {
                 self.call("navigated", &[]);
                 if let Some(host) = self.host() {
                     host.dispatch(intent);
+                    host.focus_page();
                 }
             }
             forest_pane::Reply::Close => self.call("escape", &[json!("overlay")]),

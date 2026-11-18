@@ -1628,6 +1628,21 @@ impl Pages {
     }
 
     pub fn go(&self, go: Go) -> Result<()> {
+        let target = match &go {
+            Go::Visit(v) | Go::Citation(v) => Some(*v),
+            Go::Tree(t) => Some(t.root()),
+            Go::Address {
+                target: NavigationTarget::ChildOf(v),
+                ..
+            } => Some(*v),
+            _ => None,
+        };
+        if let Some(visit) = target {
+            if !self.read(|b| b.contains_visit(visit))? {
+                return Ok(());
+            }
+        }
+
         if self.has_form_return() {
             self.answer_form_return(false);
             let weak = self.me.clone();
@@ -1886,10 +1901,9 @@ impl Pages {
         let forest =
             self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
         let result = self.browser.borrow_mut().delete_trees(trees)?;
-        let Some((record, mut landing)) = result else {
+        let Some((id, record, mut landing)) = result else {
             return Ok(());
         };
-        let id = record.id();
         let title = record
             .trees()
             .first()

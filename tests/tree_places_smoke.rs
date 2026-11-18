@@ -157,6 +157,7 @@ fn main() -> Result<()> {
         !visible(&ui, &row) && visible(&ui, "[data-delete-id]")
     })?;
     assert!(ui.pages.read(|b| b.search("erasedcontent"))?.is_empty());
+    ui.pages.go(canopy::pages::Go::Visit(ids[4]))?;
     assert!(file.exists());
     assert_eq!(ui.pages.read(|b| b.bookmarks())?.len(), 1);
     click_chrome(&ui, "[data-delete-id]")?;
