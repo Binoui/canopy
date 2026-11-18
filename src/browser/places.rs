@@ -823,4 +823,53 @@ mod tests {
         drop(b);
         assert!(Browser::open(&path).unwrap().visit(tree.root()).is_err());
     }
+    #[test]
+    fn a_deleted_tree_feeds_no_suggestion() {
+        use crate::{
+            forest::ForestProjection,
+            suggest::{self, Inputs, Suggestion},
+        };
+        let mut b = browser();
+        let tree = roots(&mut b, 1)[0];
+        b.queue_link(
+            tree.root(),
+            url::Url::parse("https://waiting.test").unwrap(),
+            super::super::SourceContext {
+                page_url: url::Url::parse("https://example.org/0").unwrap(),
+                citation_url: None,
+                link_text: "Waiting".into(),
+                excerpt: String::new(),
+            },
+        )
+        .unwrap();
+        b.connection
+            .execute(
+                "INSERT INTO visit_events(visit_id,kind,at) VALUES(?1,'return',1)",
+                [tree.root().to_string()],
+            )
+            .unwrap();
+        b.place_tree(tree, Move::History).unwrap();
+        let rank = |b: &Browser| {
+            let forest =
+                ForestProjection::from_snapshot(b.snapshot().unwrap(), b.tree_states().unwrap())
+                    .unwrap();
+            let arrivals = b.arrivals(&forest, 0).unwrap();
+            suggest::rank(
+                &Inputs {
+                    forest: &forest,
+                    bookmarks: &[],
+                    declined: &Default::default(),
+                    arrivals: &arrivals,
+                    chrome: &[],
+                    left: None,
+                },
+                2 * suggest::DAY,
+            )
+        };
+        assert!(rank(&b)
+            .iter()
+            .any(|s| matches!(s,Suggestion::Tree {tree:t,..} if *t==tree)));
+        b.delete_trees(&[tree]).unwrap();
+        assert!(rank(&b).is_empty());
+    }
 }

@@ -56,7 +56,6 @@ fn main() -> Result<()> {
         let mut b = Browser::open(&data.join("forest.sqlite3"))?;
         for tree in b.tree_states()? {
             b.rename_tree(tree.root, "A tree title long enough to shrink")?;
-            b.place_tree(tree.root, canopy::browser::Move::Pin(true))?;
             let page = b
                 .snapshot()?
                 .visits
@@ -120,7 +119,7 @@ fn main() -> Result<()> {
     println!("PASS Ctrl+Shift+Tab alternates between previously shown trees.");
     chrome(
         &ui,
-        "(intent('select-tree', {id: S.frame.tabs[S.frame.tabs.length-1].id}), true)",
+        "(treeAct(S.frame.tabs[S.frame.tabs.length-1].id,'open'), true)",
     )?;
     wait("last tree active", || {
         chrome(&ui, "S.frame.tabs[S.frame.tabs.length-1].active").is_ok_and(|v| v == true)
@@ -235,20 +234,11 @@ fn main() -> Result<()> {
 fn review_regressions(ui: &Ui) -> Result<()> {
     ui.window.resize(820, 800);
     pump(400);
-    chrome(
-        ui,
-        "(intent('select-tree', {id: S.frame.tabs[0].id}), true)",
-    )?;
+    chrome(ui, "(treeAct(S.frame.tabs[0].id,'open'), true)")?;
     pump(400);
-    chrome(
-        ui,
-        "(intent('select-tree', {id: S.frame.tabs[1].id}), true)",
-    )?;
+    chrome(ui, "(treeAct(S.frame.tabs[1].id,'open'), true)")?;
     pump(500);
-    chrome(
-        ui,
-        "(intent('select-tree', {id: S.frame.tabs[0].id}), true)",
-    )?;
+    chrome(ui, "(treeAct(S.frame.tabs[0].id,'open'), true)")?;
     pump(500);
     chrome(ui, "(() => { window.reviewFrames = []; const present = canopy.present; canopy.present = (...args) => { present(...args); const on = document.querySelector('.tab[aria-selected=true]'); window.reviewFrames.push(!on.classList.contains('icon-only') && on.offsetWidth >= 110 && [...document.querySelectorAll('.tab:not([aria-selected=true])')].every(t => t.hidden || t.classList.contains('icon-only'))); }; return true; })()")?;
     let target = chrome(
@@ -302,7 +292,7 @@ fn review_regressions(ui: &Ui) -> Result<()> {
         assert_eq!(chrome(ui, "(() => { const tab = document.querySelector('.tab[aria-selected=true]'); return tab.offsetWidth >= 200 && tab.offsetWidth <= 280 && tab.querySelector('.tab-title').clientWidth >= 110; })()")?, true, "active natural title at {width}px");
     }
     println!("PASS 2 active title keeps 200 to 280px at 820, 560 and 480px.");
-    chrome(ui, "(intent('select-tree', {id:S.frame.tabs[0].id}), true)")?;
+    chrome(ui, "(treeAct(S.frame.tabs[0].id,'open'), true)")?;
     pump(300);
     ui.window.resize(1240, 800);
     pump(400);

@@ -82,6 +82,20 @@ fn main() -> Result<()> {
     xdo(&["click", "3"])?;
     click_chrome(&ui, "[data-tab-action=pin]")?;
     wait("pinned again", || visible(&ui, &format!("{tab}.pinned")))?;
+    let order = ui.pages.read(|b| b.tree_states())?;
+    let from = chrome_point(&ui, &tab)?;
+    let to = chrome_point(&ui, &format!(".tab[data-id='{}']", ids[1]))?;
+    move_to(from.0, from.1)?;
+    xdo(&["mousedown", "1"])?;
+    for step in 1..=10 {
+        move_to(
+            from.0 + (to.0 - from.0) * step / 10,
+            from.1 + (to.1 - from.1) * step / 10,
+        )?;
+    }
+    xdo(&["mouseup", "1"])?;
+    pump(100);
+    assert_eq!(order, ui.pages.read(|b| b.tree_states())?);
     std::fs::create_dir_all(".cache/shots/tree-places")?;
     for theme in [ThemeMode::Dark, ThemeMode::Light] {
         ui.dispatch(ChromeIntent::SetTheme(theme));
@@ -112,6 +126,37 @@ fn main() -> Result<()> {
         .iter()
         .any(|s| s.root == trees[2] && matches!(s.place(), Place::Shelf { .. })));
     assert!(toast_text(&ui).is_some_and(|t| t.contains("Saved ‘Place 2’ for later")));
+    let kept_page = ui.snapshot()?.current;
+    key("ctrl+e")?;
+    wait("shelf in Trees", || {
+        visible(&ui, "#forest-trees [data-key^=saved-]")
+    })?;
+    chrome(
+        &ui,
+        &format!(
+            r##"(document.querySelector("#forest-trees [data-id='{}']").focus(),globalThis.altKeys=[],$('forest').addEventListener('keydown',e=>{{if(e.altKey && ['ArrowUp','ArrowDown'].includes(e.key))altKeys.push(e.key)}}),true)"##,
+            ids[2]
+        ),
+    )?;
+    key("alt+Up")?;
+    key("alt+Down")?;
+    assert_eq!(
+        chrome(&ui, "altKeys")?,
+        serde_json::json!(["ArrowUp", "ArrowDown"])
+    );
+    key("alt+Return")?;
+    wait("Alt Enter opens while keeping the page", || {
+        visible(&ui, &tab) && visible(&ui, "#forest")
+    })?;
+    assert_eq!(ui.snapshot()?.current, kept_page);
+    let card = format!("#forest-trees .tree-card[data-id='{}']", ids[2]);
+    hover_chrome(&ui, &card)?;
+    xdo(&["click", "3"])?;
+    click_chrome(&ui, "[data-tab-action=save]")?;
+    wait("save keeps forest open", || {
+        !visible(&ui, &tab) && visible(&ui, "#forest")
+    })?;
+    key("Escape")?;
     key("ctrl+t")?;
     wait("shelf on start", || visible(&ui, "[data-start=tree]"))?;
     assert!(text(&ui, "#start-content").contains("Saved for later"));
@@ -158,11 +203,13 @@ fn main() -> Result<()> {
     })?;
     assert!(ui.pages.read(|b| b.search("erasedcontent"))?.is_empty());
     ui.pages.go(canopy::pages::Go::Visit(ids[4]))?;
+    assert!(ui.pages.read(|b| b.downloads())?.is_empty());
     assert!(file.exists());
     assert_eq!(ui.pages.read(|b| b.bookmarks())?.len(), 1);
     click_chrome(&ui, "[data-delete-id]")?;
     wait("Undo restores row", || visible(&ui, &row))?;
     assert!(!ui.pages.read(|b| b.search("erasedcontent"))?.is_empty());
+    assert_eq!(ui.pages.read(|b| b.downloads())?.len(), 1);
     for theme in [ThemeMode::Dark, ThemeMode::Light] {
         ui.dispatch(ChromeIntent::SetTheme(theme));
         pump(200);

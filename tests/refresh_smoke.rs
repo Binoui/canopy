@@ -140,9 +140,9 @@ fn main() -> Result<()> {
     hover_chrome(&ui, &format!(".tab[data-id='{beta}']"))?;
     xdo(&["click", "3"])?;
     wait("tab menu", || {
-        visible(&ui, "#popover [data-tab-action='pin']")
+        visible(&ui, "#popover [data-tab-action='save']")
     })?;
-    press(&ui, "#popover [data-tab-action='pin']")?;
+    press(&ui, "#popover [data-tab-action='save']")?;
     rename(&ui, gamma, "Menu refresh");
     held_back(&ui)?;
     release()?;

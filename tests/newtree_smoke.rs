@@ -224,7 +224,7 @@ fn main() -> Result<()> {
             },
         )?;
     }
-    println!("PASS empty page, placeholder, headings, pin order, three columns, waiting count and last-page rings.");
+    println!("PASS empty page, placeholder, headings, shelf order, three columns, waiting count and last-page rings.");
     let other = *roots.iter().find(|id| **id != root).unwrap();
     let (x, y) = chrome_point(&ui, &format!(".tree-card[data-id='{root}']"))?;
     move_to(x, y)?;
@@ -328,6 +328,10 @@ fn main() -> Result<()> {
         pump(100);
     }
     println!("PASS tab menu Pin, Unpin, Save for later and shelf Open, with disjoint membership.");
+    ui.dispatch(ChromeIntent::PlaceTree {
+        tree: tree(&ui, roots[2]),
+        to: canopy::browser::Move::History,
+    });
     suggested(&ui, directory.path(), &format!("http://{address}"))?;
     {
         let mut browser = canopy::browser::Browser::open(&directory.path().join("forest.sqlite3"))?;
@@ -367,7 +371,7 @@ fn main() -> Result<()> {
         });
         pump(150);
     }
-    wait("placeholder with settled pins", || {
+    wait("placeholder with trees on the shelf", || {
         visible(&ui, "#strip-placeholder")
     })?;
     chrome(&ui, "document.getElementById('start').scrollTop=0")?;
@@ -846,7 +850,7 @@ fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
         &format!("[data-start=suggestion][data-id='{tree_key}']"),
     )?;
     click_chrome(ui, &selector)?;
-    wait("Keep tree pins", || {
+    wait("Keep tree saves for later", || {
         browser.tree_states().unwrap().iter().any(|t| {
             t.root.root() == waiting && matches!(t.place(), canopy::browser::Place::Shelf { .. })
         })
@@ -915,7 +919,7 @@ fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
     key("Escape")?;
     ui.dispatch(ChromeIntent::PlaceTree {
         tree: tree(ui, waiting),
-        to: canopy::browser::Move::Open,
+        to: canopy::browser::Move::History,
     });
     start_page(ui)?;
     wait("settled tree offered again", || {

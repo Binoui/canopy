@@ -1188,7 +1188,6 @@ impl Inner {
             "undo-settle" => ChromeIntent::UndoSettle,
 
             "settle-current" => ChromeIntent::SettleCurrent,
-            "select-tree" => ChromeIntent::SelectTree(TreeId(id("id")?)),
             "rename-tree" => {
                 ChromeIntent::RenameTree(TreeId(id("id")?), message["name"].as_str()?.to_owned())
             }
