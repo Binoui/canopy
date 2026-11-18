@@ -147,6 +147,25 @@ fn main() -> Result<()> {
     click_chrome(&ui, "#forest-undo button")?;
     wait("Undo day", || count(&ui) == 131)?;
     println!("PASS History settle-day groups and complete day counts, one-page trails, independent selection/folds, retained row/action/outline nodes, Delete and Undo, full Delete day and Undo.");
+    click_chrome(&ui, ".forest-row[aria-selected=true]")?;
+    key("Left")?;
+    chrome(
+        &ui,
+        "($('forest-list').scrollTop=$('forest-list').scrollHeight,true)",
+    )?;
+    wait("older rows load without pulling back selection", || {
+        chrome(&ui,"document.querySelectorAll('.forest-row').length>=120 && $('forest-list').scrollTop>100").is_ok_and(|v|v==true)
+    })?;
+    key("p")?;
+    type_text("roject")?;
+    wait("Find starts at the first result", || {
+        chrome(
+            &ui,
+            "S.forest.query==='project' && $('forest-list').scrollTop<50",
+        )
+        .is_ok_and(|v| v == true)
+    })?;
+    key("Escape")?;
     key("z")?;
     wait("typing starts Find", || {
         text(&ui, "#forest-empty").contains("matches")

@@ -28,6 +28,9 @@ function renderHistory(h) {
   const list = $('forest-list');
   const focused = list.contains(document.activeElement);
   const focusKey = focused ? document.activeElement.dataset.key : null;
+  const previousSelection = list.querySelector('.forest-row[aria-selected="true"]')?.dataset.id;
+  const criteria=JSON.stringify([h.query,h.site]);
+  const filtering=list.dataset.criteria!==criteria;
   const reveal = h.reveal && JSON.stringify(h.reveal);
   const jumping = reveal && reveal !== list.dataset.reveal;
   const witness = [...list.querySelectorAll('.history-item')].find(el => el.getBoundingClientRect().bottom > list.getBoundingClientRect().top);
@@ -57,15 +60,20 @@ function renderHistory(h) {
   if(jumping) {
     const row=list.querySelector(`.forest-row[data-id="${h.reveal.id}"]`);
     (row?.closest('.history-item')?.previousElementSibling ?? row)?.scrollIntoView({block:'start'});
+  } else if(filtering) {
+    list.scrollTop=0;
   } else if(witnessKey) {
     const kept = [...list.children].find(el=>el.dataset.key===witnessKey);
     if(kept) list.scrollTop += kept.getBoundingClientRect().top-offset;
   }
   list.dataset.reveal = reveal || '';
+  list.dataset.criteria=criteria;
   if(focused) {
     const selected = list.querySelector('.forest-row[aria-selected="true"]');
     const retained = document.activeElement !== document.body && document.activeElement.dataset.key===focusKey && document.activeElement.isConnected;
-    if(!retained || focusKey==='row') {selected?.focus({preventScroll:true});selected?.scrollIntoView({block:'nearest'});}
+    const changed=selected?.dataset.id!==previousSelection;
+    if(!retained || (focusKey==='row' && changed)) selected?.focus({preventScroll:true});
+    if(changed || (!retained && focusKey?.startsWith('page-'))) selected?.scrollIntoView({block:'nearest'});
   }
 }
 function historyLoadEdge() {
