@@ -183,7 +183,10 @@ fn main() -> Result<()> {
     f.select(peach)?;
     assert!(f.ui.pages.live_visits().contains(&c));
     let moved_view = f.ui.pages.selected_page().native.clone();
-    f.ui.pages.move_to_tree(b)?;
+    f.ui.pages.move_branch(
+        b,
+        canopy::browser::MoveTo::OwnTree(canopy::browser::TabPlacement::End),
+    )?;
     common::wait("moved tree tab selected", || {
         common::chrome(
             &f.ui,
@@ -570,7 +573,10 @@ fn main() -> Result<()> {
         || f.ui.snapshot().is_ok_and(|s| s.current == Some(older)),
     )?;
     f.select(nav_root)?;
-    f.ui.pages.move_to_tree(settled)?;
+    f.ui.pages.move_branch(
+        settled,
+        canopy::browser::MoveTo::OwnTree(canopy::browser::TabPlacement::End),
+    )?;
     common::wait("moved settled branch is an open tree", || {
         common::chrome(
             &f.ui,

@@ -44,8 +44,8 @@ use palette::{Group, PaletteItem};
 
 use crate::{
     browser::{
-        Capture, Download, ImportedPage, NavigationTarget, SearchHit, ThemeMode, TreeId, Visit,
-        VisitId, VisitPreview,
+        Capture, Download, ImportedPage, MoveTo, NavigationTarget, SearchHit, TabPlacement,
+        ThemeMode, TreeId, Visit, VisitId, VisitPreview,
     },
     forest::ForestProjection,
 };
@@ -92,6 +92,20 @@ pub struct ChromeFrame {
     pub pending: Option<crate::browser::PendingTarget>,
 }
 
+fn parse_move_to(to: &Value) -> Option<MoveTo> {
+    let id = |key: &str| to[key].as_str()?.parse::<VisitId>().ok();
+    Some(match to["kind"].as_str()? {
+        "page" => MoveTo::Page(id("id")?),
+        "tree" => MoveTo::Tree(TreeId(id("id")?)),
+        "own-tree" => MoveTo::OwnTree(match to["place"]["kind"].as_str()? {
+            "end" => TabPlacement::End,
+            "before" => TabPlacement::Before(TreeId(to["place"]["tree"].as_str()?.parse().ok()?)),
+            _ => return None,
+        }),
+        _ => return None,
+    })
+}
+
 /// A file downloaded from a page, and whether it is still where it was saved.
 pub struct PageFile {
     pub download: Download,
@@ -128,7 +142,10 @@ pub enum ChromeIntent {
     SettleTree(TreeId),
     Dismiss(VisitId),
     SettleBranch(VisitId),
-    MoveToTree(VisitId),
+    MoveBranch {
+        head: VisitId,
+        to: MoveTo,
+    },
     UndoSettle,
     SettleCurrent,
     /// Name a tree; an empty name goes back to the automatic one.
@@ -817,6 +834,29 @@ impl Inner {
                     self.view.evaluate_script(&script)?;
                 }
             }
+            "branch-move-choices" => {
+                if let (Some(request), Some(head)) = (
+                    message["request"].as_u64(),
+                    message["head"]
+                        .as_str()
+                        .and_then(|s| s.parse::<VisitId>().ok()),
+                ) {
+                    let reply = self.frame.borrow().as_ref().map(|frame| {
+                        let choices = frame.forest.branch_move_choices(head);
+                        let own_tree = choices.own_tree.map(|own| match own {
+                            crate::browser::OwnTreeMove::Detach => json!({"kind":"detach"}),
+                            crate::browser::OwnTreeMove::Reorder(tree) => json!({"kind":"reorder","tree":tree.root().to_string()}),
+                        });
+                        json!({"request":request,"head":head.to_string(),
+                            "parents":choices.parents.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                            "trees":choices.trees.iter().map(|t| json!({"id":t.tree.root().to_string(),"title":t.title})).collect::<Vec<_>>(),
+                            "ownTree":own_tree,"warning":choices.warning})
+                    });
+                    if let Some(reply) = reply {
+                        self.call("branchMoveChoices", &[reply]);
+                    }
+                }
+            }
             "paletteScope" => {
                 self.palette_scope
                     .set(message["id"].as_str().map(str::parse).transpose()?);
@@ -1142,7 +1182,14 @@ impl Inner {
             "stop" => ChromeIntent::Stop,
             "dismiss" => ChromeIntent::Dismiss(id("id")?),
             "settle-branch" => ChromeIntent::SettleBranch(id("id")?),
-            "move-to-tree" => ChromeIntent::MoveToTree(id("id")?),
+            "move-to-tree" => ChromeIntent::MoveBranch {
+                head: id("id")?,
+                to: MoveTo::OwnTree(TabPlacement::End),
+            },
+            "move-branch" => ChromeIntent::MoveBranch {
+                head: id("head")?,
+                to: parse_move_to(&message["to"])?,
+            },
             "undo-settle" => ChromeIntent::UndoSettle,
             "settle-tree" => ChromeIntent::SettleTree(TreeId(id("id")?)),
             "settle-current" => ChromeIntent::SettleCurrent,

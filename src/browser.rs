@@ -4,6 +4,7 @@ mod moves;
 mod page_scale;
 pub use bookmarks::{Bookmark, BookmarkId, BookmarkToggle, ImportedBookmark};
 pub use history::{Arrival, ArrivalKind};
+pub(crate) use moves::OwnTreeMove;
 pub use moves::{MoveOutcome, MoveTo, TabPlacement};
 pub use page_scale::PageScale;
 use std::{

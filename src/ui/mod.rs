@@ -159,6 +159,10 @@ impl Ui {
                 PageEvent::FormReturn(open) => ui.chrome.form_return(open),
                 PageEvent::PageScale(value) => ui.chrome.page_scale(value),
                 PageEvent::Selected => ui.refresh(),
+                PageEvent::BranchMoved => {
+                    ui.chrome.toast(Toast::Info("Moved branch".into()));
+                    ui.schedule_refresh();
+                }
                 PageEvent::Changed | PageEvent::Loading(false) => ui.schedule_refresh(),
                 PageEvent::Loading(true) => {}
                 PageEvent::LoadState(value) => {
@@ -815,7 +819,7 @@ impl ChromeHost for Ui {
             }
             ChromeIntent::Dismiss(head) => self.pages.dismiss(head),
             ChromeIntent::SettleBranch(head) => self.pages.settle_branch(head),
-            ChromeIntent::MoveToTree(head) => self.pages.move_to_tree(head),
+            ChromeIntent::MoveBranch { head, to } => self.pages.move_branch(head, to),
             ChromeIntent::UndoSettle => self.pages.undo_settle(),
             ChromeIntent::MoveTree { tree, to_index } => {
                 let result = self.pages.move_tree(tree, to_index);
