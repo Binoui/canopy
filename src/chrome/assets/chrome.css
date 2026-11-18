@@ -57,11 +57,14 @@ svg.icon { width: 14px; height: 14px; flex: none; fill: none; stroke: currentCol
 .save-actions .action:first-child { background: var(--green-soft); color: var(--green-ink); border-color: transparent; font-weight: 600; }
 #login-chip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tabs-divider { align-self: center; flex: none; width: 1px; height: 18px; margin: 0 5px 0 6px; background: var(--border); }
-#tab-row { display: flex; align-items: flex-end; gap: 2px; min-width: 0; height: 100%; }
+#tab-row { position: relative; display: flex; align-items: flex-end; gap: 2px; min-width: 0; height: 100%; }
 .tab {
   position: relative; display: flex; align-items: center; gap: 7px; height: 32px; max-width: 280px;
   padding: 0 4px 0 8px; min-width: 0; overflow: hidden; border-radius: 9px 9px 0 0; color: var(--muted); flex: none;
 }
+.tab img { -webkit-user-drag: none; }
+.tab.dragging { opacity: .45; }
+#tab-row.drop-target::after { content: ""; position: absolute; z-index: 10; pointer-events: none; left: var(--tab-drop-x); top: 7px; bottom: 3px; width: 2px; border-radius: 1px; background: var(--green); }
 .tab:hover { background: var(--hover); color: var(--text); }
 .tab[aria-selected="true"] { background: var(--bg); color: var(--text); box-shadow: inset 1px 0 var(--border), inset -1px 0 var(--border), inset 0 1px var(--border); }
 .tab[aria-selected="true"]::before { content: ""; position: absolute; left: 8px; right: 8px; top: 0; height: 2px; border-radius: 2px; background: var(--green); }

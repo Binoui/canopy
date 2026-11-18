@@ -121,6 +121,10 @@ pub enum ChromeIntent {
     },
     Stop,
     SelectTree(TreeId),
+    MoveTree {
+        tree: TreeId,
+        to_index: usize,
+    },
     SettleTree(TreeId),
     Dismiss(VisitId),
     SettleBranch(VisitId),
@@ -1143,6 +1147,10 @@ impl Inner {
             "settle-tree" => ChromeIntent::SettleTree(TreeId(id("id")?)),
             "settle-current" => ChromeIntent::SettleCurrent,
             "select-tree" => ChromeIntent::SelectTree(TreeId(id("id")?)),
+            "move-tree" => ChromeIntent::MoveTree {
+                tree: TreeId(id("id")?),
+                to_index: usize::try_from(message["index"].as_u64()?).ok()?,
+            },
             "rename-tree" => {
                 ChromeIntent::RenameTree(TreeId(id("id")?), message["name"].as_str()?.to_owned())
             }
