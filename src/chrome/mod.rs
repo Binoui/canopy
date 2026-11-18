@@ -18,6 +18,7 @@ mod palette;
 mod pins;
 mod start;
 mod tabs;
+mod tree_card;
 mod tree_view;
 mod view;
 mod waiting;

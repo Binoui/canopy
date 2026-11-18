@@ -221,7 +221,7 @@ fn main() -> Result<()> {
         check(&ui, "document.activeElement.dataset.tabAction === 'pin'")?;
         key("Return")?;
         wait("pin state in accessible name", || {
-            chrome(&ui, "document.querySelector('#tab-row [aria-selected=true]').getAttribute('aria-label').includes('pinned')").is_ok_and(|v|v==true)
+            chrome(&ui, "document.querySelector('#tab-row [aria-selected=true]').getAttribute('aria-label').includes('saved')").is_ok_and(|v|v==true)
         })?;
         key("shift+F10")?;
         key("Down")?;

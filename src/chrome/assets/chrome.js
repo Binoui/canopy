@@ -241,12 +241,12 @@ function renderTabs() {
     const root = visit(tree.id);
     const pages = `${tree.pages} page${tree.pages === 1 ? '' : 's'}`;
     const pending = tree.pending ? `, ${tree.pending} waiting` : '';
-    const pinned = tree.pinned ? ', pinned' : '';
+    const pinned = tree.pinned ? ', saved' : '';
     const key = index < 9 ? ` · Ctrl+${index + 1}` : '';
     const html = `<button class="tab" role="tab" tabindex="${active ? 0 : -1}" aria-selected="${active}" data-id="${tree.id}" title="${esc(`${tree.title}${sub ? ` · ${sub}` : ''} · ${pages}${pending}${pinned}${key}`)}" aria-label="${esc((sub ? `${tree.name}, on ${sub}` : tree.name) + pending)}">`
       + (root ? `<span class="mk">${visitFav(root, 14)}</span>` : '')
       + `<span class="tab-title${sub ? ' two-line' : ''}"><span class="tab-name">${esc(tree.title)}</span>${sub ? `<span class="tab-sub">${esc(sub)}</span>` : ''}</span>`
-      + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Pinned">${icon('pinned')}</span>` : '')
+      + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Saved">${icon('pinned')}</span>` : '')
       + (tree.pending ? '<i class="unread-dot" aria-hidden="true"></i>' : '')
       + `<span class="tab-settle" data-settle="${tree.id}" title="Settle${active ? ' · Ctrl+W' : ''}" aria-hidden="true">${icon('close')}</span>`
       + '</button>';
@@ -988,8 +988,8 @@ function renderPopover() {
   const { kind, data } = S.popover;
   if (['errors', 'settings'].includes(kind) && popover.dataset.kind !== kind) popover.replaceChildren();
   popover.dataset.kind = kind;
-  popover.setAttribute('role', ['node', 'tab', 'unpin', 'bookmark'].includes(kind) ? 'menu' : 'dialog');
-  popover.setAttribute('aria-label', kind === 'node' ? 'Page actions' : kind === 'tab' ? 'Tree actions' : kind === 'memory' ? 'Saved text' : kind === 'errors' ? 'Recent errors' : kind.replaceAll('-', ' '));
+  popover.setAttribute('role', ['node', 'tree', 'bookmark'].includes(kind) ? 'menu' : 'dialog');
+  popover.setAttribute('aria-label', kind === 'node' ? 'Page actions' : kind === 'tree' ? 'Tree actions' : kind === 'memory' ? 'Saved text' : kind === 'errors' ? 'Recent errors' : kind.replaceAll('-', ' '));
   popover.classList.toggle('waiting', kind === 'waiting');
   popover.classList.toggle('mail', kind === 'mail');
   if (kind !== 'node') delete popover.dataset.nodeHtml;
@@ -1011,22 +1011,19 @@ function renderPopover() {
         else intent(action, { id: data });
       };
     }
-  } else if (kind === 'tab' || kind === 'unpin') {
-    const tab = S.frame.tabs.find((t) => t.id === data);
-    const menu = kind === 'unpin' ? { label: 'Unpin tree', pinned: false } : tab?.pinMenu;
-    if (!menu) { closePopover(false); return; }
-    popover.innerHTML = (kind === 'tab' ? '<button class="menu-row" role="menuitem" data-tab-action="rename">Rename</button>' : '')
-      + `<button class="menu-row" role="menuitem" data-tab-action="pin">${esc(menu.label)}</button>`
-      + (kind === 'tab' ? '<button class="menu-row" role="menuitem" data-tab-action="settle">Settle tree</button>' : '');
-    popover.querySelectorAll('[data-tab-action]').forEach((row) => row.addEventListener('click', () => {
-      const anchor = S.popover.anchor;
-      const action = row.dataset.tabAction;
+  } else if (kind === 'tree') {
+    const rows = TREE_MENUS[data.source](data.id);
+    if (!rows) { closePopover(false); return; }
+    patchChildren(popover, rows.map((r) => `<button class="menu-row" role="menuitem" data-key="${r.kind}" data-tab-action="${r.kind}">${esc(r.label)}</button>`).join(''));
+    popover.querySelectorAll('[data-tab-action]').forEach((el, i) => { el.onclick = () => {
+      const row = rows[i], anchor = S.popover.anchor;
       closePopover();
-      if (action === 'rename') {
-        openPopover('rename', anchor, data);
+      if (row.kind === 'rename') {
+        openPopover('rename', anchor, { ...data, name: row.name });
         S.popover.field.focus(); S.popover.field.select();
-      } else intent(action === 'pin' ? 'pin-tree' : 'settle-tree', { id: data, pinned: menu.pinned });
-    }));
+      } else if (row.kind === 'pin') intent('pin-tree', { id: data.id, pinned: row.pinned });
+      else intent('settle-tree', { id: data.id });
+    }; });
   } else if (kind === 'bookmark') {
     popover.innerHTML = '<button class="menu-row" role="menuitem" data-remove-bookmark>Remove bookmark</button>';
     popover.querySelector('button').addEventListener('click', () => { closePopover(); intent('remove-bookmark', { id: Number(data) }); });
@@ -1122,7 +1119,7 @@ function renderPopover() {
       row.className = 'overflow-tree';
       row.dataset.tree = tree.id;
       const html = `<button class="menu-row" data-id="${tree.id}">${root ? visitFav(root, 16) : ''}<span class="grow">${esc(tree.title)}</span>`
-        + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Pinned">${icon('pinned')}</span>` : '')
+        + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Saved">${icon('pinned')}</span>` : '')
         + (tree.pending ? `<span class="count" aria-label="${tree.pending} waiting">${tree.pending}</span>` : '') + '</button>'
         + `<button class="overflow-settle" data-settle="${tree.id}" title="Settle tree" aria-label="Settle ${esc(tree.title)}">${icon('close')}</button>`;
       if (row.dataset.html !== html) {
@@ -1151,7 +1148,7 @@ function renderPopover() {
   } else if (kind === 'rename') {
     // A frame that arrives while a name is being typed must not reset the field.
     if (S.popover.field) return;
-    const title = (S.frame?.tabs ?? []).find((tree) => tree.id === data)?.title ?? '';
+    const title = data.name;
     popover.innerHTML = '<div class="menu-heading">Tree name</div>'
       + `<input id="tree-name" class="menu-input" value="${esc(title)}" maxlength="80" spellcheck="false" aria-label="Tree name">`
       + '<div class="menu-hint">Leave it empty to name the tree after its pages.</div>';
@@ -1160,7 +1157,7 @@ function renderPopover() {
       if (event.key !== 'Enter') return;
       event.preventDefault();
       // Enter on the name as it was changes nothing: it stays automatic if it was.
-      if (field.value.trim() !== title) intent('rename-tree', { id: data, name: field.value });
+      if (field.value.trim() !== title) intent('rename-tree', { id: data.id, name: field.value });
       closePopover();
     });
   } else if (kind === 'files') {
@@ -1608,14 +1605,23 @@ function miniHtml(mini) {
     + mini.nodes.map((n) => `<span class="mt-node${n.last ? ' last' : ''}${n.waiting ? ' waiting' : ''}" style="left:${n.x}px;top:${n.y}px">${fav(n.url ?? visit(n.id)?.url ?? '', !n.waiting, mini.s)}</span>`).join('') + '</span>';
 }
 
+const TREE_MENUS = {
+  tab: (id) => S.frame?.tabs.find((t) => t.id === id)?.menu,
+  start: (id) => S.frame?.start?.pinned.find((c) => c.id === id)?.menu,
+};
+
+function treeCard(t, attrs) {
+  return `<button class="tree-card" ${attrs} data-id="${t.id}" aria-label="${esc(t.name)}" title="${esc(t.tip)}">`
+    + `<span class="pc-tree">${miniHtml(t.mini)}</span><span class="pc-foot"><span class="pc-name">${esc(t.title)}</span>`
+    + (t.waiting ? `<span class="count" title="${t.waiting} waiting">${t.waiting}</span>` : '')
+    + `</span><span class="pc-meta">${esc(t.meta)}</span></button>`;
+}
+
 function pinnedBand(start) {
-  return '<section>' + bandHead('Pinned trees', 'Opens the tree where you left it')
+  return '<section>' + bandHead('Saved trees', 'Opens the tree where you left it')
     + (start.pinned.length ? '<div class="pinned-row">' + start.pinned.map((t) =>
-      `<button class="pinned-card" data-start="tree" data-id="${t.id}" title="${esc(t.tip)}">`
-      + `<span class="pc-tree">${miniHtml(t.mini)}</span><span class="pc-foot"><span class="pc-name">${esc(t.title)}</span>`
-      + (t.waiting ? `<span class="count" title="${t.waiting} waiting">${t.waiting}</span>` : '')
-      + `</span><span class="pc-meta">${esc(t.meta)}</span></button>`).join('') + '</div>'
-      : '<div class="hint-line">Pin a tree from its tab menu. It stays here and never settles on its own.</div>') + '</section>';
+      treeCard(t, 'data-start="tree"')).join('') + '</div>'
+      : '<div class="hint-line">Save a tree from its tab menu. It stays here and never settles on its own.</div>') + '</section>';
 }
 
 function suggestedBand(start) {
@@ -1654,7 +1660,7 @@ const START = {
   folder: { open: (name, el) => togglePopover('folder', el, { folder: name }) },
   more: { open: (_, el) => togglePopover('folder', el, { more: true }) },
   folders: { open: (_, el) => togglePopover('folder', el, { hidden: true }) },
-  tree: { open: (id) => { uncover(); intent('select-tree', { id }); }, menu: 'unpin' },
+  tree: { open: (id) => { uncover(); intent('select-tree', { id }); }, menu: 'tree' },
   suggestion: { open: (key) => { intent('open-suggestion', { key }); uncover(); } },
   keep: { open: (key) => intent('keep-suggestion', { key }) },
   decline: { open: (key) => intent('decline-suggestion', { key }) },
@@ -1940,7 +1946,7 @@ window.canopy = {
       if (S.surface !== 'reading' && !(S.surface === 'start' && sameTree)) setSurface('reading');
     }
     if (!frame.tabs.length && S.surface === 'reading') setSurface('start');
-    if (S.popover?.kind === 'rename' && !frame.tabs.some((tree) => tree.id === S.popover.data)) closePopover();
+    if (S.popover?.kind === 'rename' && !TREE_MENUS[S.popover.data.source](S.popover.data.id)) closePopover();
     renderTabs();
     renderPageScale();
     animateStrip(previous === null && strip.shown.nodes.size === 0 ? 0 : MOVE);
@@ -2238,7 +2244,7 @@ for (const container of [$('start-content'), $('popover')]) {
     const menu = el && START[el.dataset.start]?.menu;
     if (!menu) return;
     event.preventDefault();
-    openPopover(menu, el, el.dataset.id);
+    openPopover(menu, el, menu === 'tree' ? { source: 'start', id: el.dataset.id } : el.dataset.id);
     post({ t: 'focus', target: 'chrome' });
     $('popover').querySelector('button')?.focus();
   });
@@ -2325,7 +2331,7 @@ $('tab-row').addEventListener('contextmenu', (event) => {
   const tab = event.target.closest('[data-id]');
   if (!tab) return;
   event.preventDefault();
-  openPopover('tab', tab, tab.dataset.id);
+  openPopover('tree', tab, { source: 'tab', id: tab.dataset.id });
   post({ t: 'focus', target: 'chrome' });
   $('popover').querySelector('button')?.focus();
 });

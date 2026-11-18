@@ -2,7 +2,6 @@ use serde_json::{json, Value};
 
 use super::{
     tree_view::{self, Fit},
-    view::{ago, plural},
     ChromeFrame,
 };
 
@@ -12,16 +11,7 @@ pub(super) fn value(frame: &ChromeFrame, frozen: &[crate::suggest::Suggestion]) 
         .pinned()
         .into_iter()
         .map(|tree| {
-            let pages = plural(tree.page_count, "page");
-            let meta = tree
-                .last_event_at
-                .map_or_else(|| pages.clone(), |at| format!("{pages} · {}", ago(at)));
-            json!({
-                "id": tree.id.root().to_string(), "title": tree.title,
-                "tip": format!("{}\n{}", tree.title, frame.forest.visit(tree.id.root()).unwrap().url),
-                "waiting": tree.pending_count, "meta": meta,
-                "mini": mini_value(&frame.forest, &tree_view::miniature(&frame.forest, tree, Fit::CARD)),
-            })
+            super::tree_card::card(&frame.forest, tree, super::tree_card::Place::NewTreePage)
         })
         .collect();
     json!({"pinned": pinned, "bookmarks": bookmarks(&frame.bookmarks), "suggested": suggested(frame, frozen)})
@@ -42,12 +32,6 @@ fn suggested(frame: &ChromeFrame, frozen: &[crate::suggest::Suggestion]) -> Vec<
             chip
         })
         .collect()
-}
-
-fn mini_value(forest: &crate::forest::ForestProjection, mini: &tree_view::Miniature) -> Value {
-    json!({ "w": mini.width, "h": mini.height, "s": mini.icon, "cut": mini.cut,
-        "nodes": mini.nodes.iter().map(|n| json!({"id": n.id.to_string(), "url": forest.visit(n.id).map(|v| v.url.as_str()), "x": n.x, "y": n.y, "last": n.last, "waiting": n.waiting})).collect::<Vec<_>>(),
-        "edges": mini.edges.iter().map(|e| json!({"c": e.curve, "wait": e.kind == super::graph::EdgeKind::Pending})).collect::<Vec<_>>() })
 }
 
 #[cfg(test)]
@@ -259,7 +243,7 @@ pub(super) fn chip(
                 "tree",
                 t.title.clone(),
                 format!("{}\n{}", t.title, forest.visit(tree.root()).unwrap().url),
-                json!({"mini":mini_value(forest, &tree_view::miniature(forest,t,Fit::CHIP))}),
+                json!({"mini":super::tree_card::mini_value(forest, &tree_view::miniature(forest,t,Fit::CHIP))}),
             )
         }
         Suggestion::Path { first, second, .. } => (
