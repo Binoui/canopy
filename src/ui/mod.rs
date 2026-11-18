@@ -430,6 +430,12 @@ impl Ui {
         self.schedule_refresh();
     }
 
+    fn control_held(&self) -> bool {
+        gdk::Keymap::for_display(&self.window.display()).is_some_and(|keymap| {
+            keymap.modifier_state() & gdk::ModifierType::CONTROL_MASK.bits() != 0
+        })
+    }
+
     fn end_switcher(&self, open: bool) {
         self.switching.set(false);
         self.chrome.end_switcher(open);
@@ -519,7 +525,10 @@ impl Ui {
                         .read(|browser| browser.recent_pages(forest, limit))
                 });
                 match opened {
-                    Ok(()) => self.switching.set(true),
+                    // A shortcut replayed after the form question can arrive with Control
+                    // already up; it then acts as a quick press.
+                    Ok(()) if self.control_held() => self.switching.set(true),
+                    Ok(()) => self.chrome.end_switcher(true),
                     Err(error) => self.report(Err(error)),
                 }
             }
