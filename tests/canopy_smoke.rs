@@ -325,6 +325,84 @@ fn main() -> Result<()> {
             }
         }
     }
+    ui.window.resize(1240, 800);
+    pump(150);
+    level(&ui, "near")?;
+    let current = page(&ui, ids[6])?;
+    let before = ui.pages.read(|b| b.showings())?.times(ids[6]);
+    click_chrome(&ui, &current)?;
+    wait("current click closes", || !visible(&ui, "#forest"))?;
+    assert_eq!(ui.pages.read(|b| b.showings())?.times(ids[6]), before);
+    open(&ui)?;
+    let current = page(&ui, ids[6])?;
+    hover_chrome(&ui, &current)?;
+    key("Menu")?;
+    click_chrome(&ui, "[data-node-action=copy]")?;
+    assert!(visible(&ui, "#forest"));
+    chrome(&ui, &format!("(focusItem('t:{}'),true)", roots[0]))?;
+    key("Menu")?;
+    click_chrome(&ui, "[data-tab-action=rename]")?;
+    type_text("Messenger map")?;
+    key("Return")?;
+    wait("map renamed", || {
+        text(&ui, "#forest-canopy")
+            .to_lowercase()
+            .contains("messenger map")
+    })?;
+    chrome(&ui, &format!("(focusItem('t:{}'),true)", roots[0]))?;
+    key("Menu")?;
+    click_chrome(&ui, "[data-tab-action=unpin]")?;
+    assert!(visible(&ui, "#forest"));
+    chrome(&ui, &format!("(focusItem('t:{}'),true)", roots[2]))?;
+    click_chrome(&ui, &format!("#forest-canopy [data-id='{}']", roots[2]))?;
+    wait("tree name resumes its page", || {
+        !visible(&ui, "#forest") && ui.snapshot().is_ok_and(|s| s.current == Some(roots[2]))
+    })?;
+    open(&ui)?;
+    assert!(!visible(&ui, "#canopy-back"));
+    let deep = page(&ui, ids[6])?;
+    click_chrome(&ui, &deep)?;
+    wait("return from another tree", || !visible(&ui, "#forest"))?;
+    open(&ui)?;
+    for (id, action) in [(roots[1], "save"), (roots[2], "settle")] {
+        chrome(&ui, &format!("(focusItem('t:{id}'),true)"))?;
+        key("Menu")?;
+        click_chrome(&ui, &format!("[data-tab-action={action}]"))?;
+        wait("tree leaves open map", || {
+            chrome(&ui, &format!("!canopyValue().items.some(i=>i.id==='{id}')"))
+                .is_ok_and(|v| v == true)
+        })?;
+        assert!(visible(&ui, "#forest"));
+    }
+    level(&ui, "near")?;
+    page(&ui, ids[7])?;
+    key("Menu")?;
+    click_chrome(&ui, "[data-node-action=dismiss]")?;
+    wait("dismissed waiting leaves map", || {
+        chrome(
+            &ui,
+            &format!(
+                "!canopyValue().items.some(i=>i.pages?.includes('{}'))",
+                ids[7]
+            ),
+        )
+        .is_ok_and(|v| v == true)
+    })?;
+    page(&ui, ids[5])?;
+    key("Menu")?;
+    click_chrome(&ui, "[data-node-action=settle-branch]")?;
+    wait("put-away branch leaves map", || {
+        chrome(
+            &ui,
+            &format!(
+                "!canopyValue().items.some(i=>i.pages?.includes('{}'))",
+                ids[5]
+            ),
+        )
+        .is_ok_and(|v| v == true)
+    })?;
+    assert!(visible(&ui, "#forest"));
+    println!("PASS current activation adds no showing; tree names resume pages; absent Back, Copy, Rename, Unpin, Save, Settle, Dismiss and Settle branch work in the map.");
     key("Escape")?;
     assert!(!visible(&ui, "#forest"));
     key("ctrl+h")?;

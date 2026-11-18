@@ -2,9 +2,9 @@
 
 A tree is in Tabs, Saved for later or History. Pins belong only to Tabs. Leaving Tabs retires its pages and clears its pin. Ctrl+W settles even pinned tabs. Settle keeps its existing toast Undo and Ctrl+Shift+T recovery.
 
-## Trees
+## Canopy
 
-See [Trees](../../../../docs/forest-trees.md). Drive Pin and Unpin from the tab menu, Save for later, the shelf on the new-tree page and Open from it. Check stored order across a restart and Ctrl+1 through Ctrl+9. Open Trees with Ctrl+E, check Tabs and Saved for later, card activation and Alt+Enter keeping the page. Alt+Up and Alt+Down reach the forest rather than the window’s sibling shortcuts.
+See [Canopy](../../../../docs/canopy.md). Open with Ctrl+E and the Canopy button. From a deep linked page, click the hub, reopen and return through Back to or a folded site. Check all three zooms, current and previous marks, waiting and visited state, showing sizes, hover text, wheel anchoring, native stepped drag, arrows, Enter, Tab containment, Escape and both menus. Non-navigation menu actions keep the map open. Saved trees reopen from the new-tree shelf. Check stored tab order across a restart.
 
 ## History
 
@@ -12,4 +12,4 @@ See [History](../../../../docs/forest-history.md). Drive Ctrl+H and select a row
 
 ## Verification
 
-Use a private stress launch and doctor. Check 390 px and at least 1920 px widths, both themes and English dates under LC_TIME=fr_FR.UTF-8. Run tree_places_smoke for the shared model, forest_trees_smoke for cards and forest_history_smoke for History rows and in-place outlines. Check schema 16 with tree_state(place,position,pinned,placed_at). Never open the real forest. Copy the schema-14 timing fixture before migrating it.
+Use a private stress launch and doctor. Check 390 px and at least 1920 px widths, both themes and English dates under LC_TIME=fr_FR.UTF-8. Run tree_places_smoke for the shared model, canopy_smoke for the map and forest_history_smoke for History rows and in-place outlines. Check schema 16 with tree_state(place,position,pinned,placed_at). Never open the real forest. Copy the schema-14 timing fixture before migrating it.

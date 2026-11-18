@@ -1367,6 +1367,16 @@ fn rect(x: f64, y: f64, width: f64, height: f64) -> Rect {
 
 #[cfg(test)]
 mod forest_asset_tests {
+    #[test]
+    fn chrome_markup_calls_the_map_canopy() {
+        assert!(INDEX.contains("title=\"Canopy · Ctrl+E\""));
+        assert!(INDEX.contains("aria-label=\"Canopy\""));
+        assert!(INDEX.contains("data-view=\"canopy\">Canopy"));
+        assert!(!INDEX.contains("forest-trees"));
+        assert!(!INDEX.contains(">Forest<"));
+        assert!(!SCRIPT.contains("<span>Forest</span>"));
+    }
+
     use super::*;
     #[test]
     fn split_assets_are_served_and_ready_waits_for_all_scripts() {

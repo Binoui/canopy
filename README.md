@@ -110,7 +110,7 @@ Every picture here is the real window, taken by the test suite while it browses 
         <source media="(prefers-color-scheme: dark)" srcset="docs/assets/shots/forest-dark.webp">
         <img src="docs/assets/shots/forest-light.webp" width="418" alt="A part of the forest canvas, with tree names, page counts and titled pages connected by their branches">
       </picture>
-      <br><sub><b>The forest.</b> Every tree on one canvas. Pan, zoom, and click a page to return to it.</sub>
+      <br><sub><b>Canopy.</b> Open trees on one map. Pan, zoom, and click a page to return to it.</sub>
     </td>
     <td width="50%" align="center">
       <picture>
@@ -148,7 +148,7 @@ Each heading links to its part of the [guide](docs/guide.md).
 - The strip folds same-site runs and names the parent. Hover or focus an item to list its pages and other branches.
 - **New branch here** starts from the page named in the list without loading it. Right-click a page, or press **Shift+F10** to open its page and branch actions.
 - **Ctrl+Shift+E** opens the current-tree workbench, with folding, a name filter and **Waiting only**.
-- **Ctrl+E** opens the forest, with every tree on one canvas.
+- **Ctrl+E** opens Canopy on the current tree. Zoom out to see the other open trees.
 - **Ctrl+W** settles the current tree. It leaves the tabs and keeps every page. On the **New tree** tab, **Ctrl+W** closes that tab and returns to your page. **Undo** or **Ctrl+Shift+T** reopens it. Pinned trees stay on the new-tree page.
 
 ### [Read now, read later](docs/guide.md#resume-reading)
@@ -199,7 +199,7 @@ Each heading links to its part of the [guide](docs/guide.md).
 | **Ctrl+1** to **Ctrl+9** | Switch to a tree. |
 | **Ctrl+Shift+PageUp**, **Ctrl+Shift+PageDown** | Move the active tab left or right. |
 | **Ctrl+W** | Close the New tree tab, or settle the current tree while reading. |
-| **Ctrl+E** | The forest: every tree. |
+| **Ctrl+E** | Canopy, the map of open trees. |
 | **Ctrl+Shift+E** | The current tree in a larger view. |
 | **Alt+Left**, **Alt+Right** | Back to the parent, or forward to the child shown most recently. Mouse Back and Forward, and the arrows at the left of the strip, do the same. |
 | **Alt+Up**, **Alt+Down** | Previous or next sibling. |

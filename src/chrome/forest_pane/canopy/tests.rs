@@ -342,3 +342,16 @@ fn aggregate_memory_and_current_previous_marks_are_independent() {
     assert_eq!(folded[1].appearance.memory, items::Memory::Open);
     assert!(folded[1].appearance.previous);
 }
+
+#[test]
+fn back_is_absent_in_a_tree_with_only_one_read_page() {
+    let (f, _) = fixture(1, false, false);
+    assert!(State::default().value(
+        &f,
+        Room {
+            width: 1196.,
+            height: 600.
+        }
+    )["back"]
+        .is_null());
+}
