@@ -160,7 +160,7 @@ impl State {
             (Lane::Settled, "Settled today", settled, "Nothing settled today."),
         ].into_iter().map(|(lane,title,mut cards,empty)| {
             for c in &mut cards { c["key"] = json!(format!("tree-{}", c["id"].as_str().unwrap())); }
-            json!({"key":format!("lane-{}",lane.name()),"lane":lane.name(),"title":title,"count":plural(cards.len(),if lane == Lane::Tabs {"tab"}else{"tree"}),"accepts":accepts(lane),"ordered":lane != Lane::Settled,"cards":cards,"empty":empty,"foot":(lane==Lane::Settled).then(||json!({"label":"All of History","view":"history"}))})
+            json!({"key":if lane == Lane::Shelf { "saved-lane".to_owned() } else { format!("lane-{}",lane.name()) },"lane":lane.name(),"title":title,"count":plural(cards.len(),if lane == Lane::Tabs {"tab"}else{"tree"}),"accepts":accepts(lane),"ordered":lane != Lane::Settled,"cards":cards,"empty":empty,"foot":(lane==Lane::Settled).then(||json!({"label":"All of History","view":"history"}))})
         }).collect::<Vec<_>>();
         json!({"lanes":lanes})
     }

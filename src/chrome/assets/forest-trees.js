@@ -1,15 +1,15 @@
 function treesCardHtml(c) {
   const line = c.kind === 'line';
-  const main = `<button class="card-main" data-key="main" data-main title="${esc(c.tip ?? c.title)}" aria-label="${esc(c.name)}">`
+  const main = `<button class="card-main" data-key="main" data-main tabindex="-1" title="${esc(c.tip ?? c.title)}" aria-label="${esc(c.name)}">`
     + (line ? `<span class="card-icon">${fav(c.icon, true, 16)}</span>` : `<span class="card-art">${miniHtml(c.mini)}</span>`)
     + `<span class="card-title">${esc(c.title)}</span>`
     + (!line && c.page ? `<span class="card-page">${esc(c.page)}</span>` : '')
     + (c.time ? `<span class="card-time">${esc(c.time)}</span>` : '')
     + (!line && c.meta ? `<span class="card-meta">${esc(c.meta)}</span>` : '')
-    + (!line && c.waiting ? `<span class="card-waiting" title="${esc(c.waitingTip)}">${esc(c.waitingTip)}</span>` : '') + '</button>';
+    + (!line && c.waiting ? `<span class="card-waiting count" title="${esc(c.waitingTip)}" aria-label="${esc(c.waitingTip)}">${esc(c.waiting)}</span>` : '') + '</button>';
   const glyph = {pin:icon('pinned'), unpin:icon('pinned'), save:icon('bookmark'), settle:'✓'};
   const buttons = c.buttons.map(b => `<button data-key="${b.act}" data-act="${b.act}" class="card-action" title="${esc(b.label)}" aria-label="${esc(b.label)}">${glyph[b.act] ?? esc(b.label)}</button>`).join('');
-  return `<div class="tree-card ${c.kind}" data-key="${c.key}" data-id="${c.id}" data-forest="card" data-tree-menu draggable="true" aria-current="${!!c.current}">${main}<span class="card-acts" data-key="acts">${buttons}</span></div>`;
+  return `<div class="tree-card ${c.kind}" data-key="${c.key}" data-id="${c.id}" data-forest="card" data-tree-menu draggable="true" tabindex="0" role="group" aria-label="${esc(c.name)}" aria-current="${!!c.current}">${main}<span class="card-acts" data-key="acts">${buttons}</span></div>`;
 }
 function treesLaneHtml(l) {
   return `<section class="forest-lane" data-key="${l.key}" data-lane="${l.lane}" aria-label="${esc(l.title)}">`
@@ -21,9 +21,9 @@ function renderForestTrees(value) {
   $('forest-find').hidden = true;
   const focused = document.activeElement.closest('#forest-trees [data-id]')?.dataset.id;
   patchChildren($('forest-trees'), value.lanes.map(treesLaneHtml).join(''));
-  if (focused && document.activeElement === document.body) $('forest-trees').querySelector(`[data-id="${focused}"] [data-main]`)?.focus();
+  if (focused && document.activeElement === document.body) $('forest-trees').querySelector(`[data-id="${focused}"]`)?.focus();
 }
-function forestTreesFocus() { return $('forest-trees').querySelector('[aria-current="true"] [data-main]') ?? $('forest-trees').querySelector('[data-main]') ?? $('forest-trees').querySelector('[data-show-view]'); }
+function forestTreesFocus() { return $('forest-trees').querySelector('.tree-card[aria-current="true"]') ?? $('forest-trees').querySelector('.tree-card') ?? $('forest-trees').querySelector('[data-show-view]'); }
 function forestTreesMenu(id) { return S.forest?.trees?.lanes.flatMap(l => l.cards).find(c => c.id === id)?.menu; }
 function forestTreesClick(e) {
   const view = e.target.closest('[data-show-view]');
@@ -36,17 +36,18 @@ function forestTreesClick(e) {
 }
 function forestTreesKey(e) {
   const card = e.target.closest('#forest-trees [data-id]');
-  if (!card || !e.target.matches('[data-main]')) return;
+  if (!card || !(e.target === card || e.target.matches('[data-main]'))) return;
+  if (e.target === card && e.key === 'Enter') { openForestTree(card.dataset.id); e.preventDefault(); return; }
   const lane = card.closest('[data-lane]');
   let next;
   if (['ArrowUp','ArrowDown'].includes(e.key)) {
     const cards = [...lane.querySelectorAll('[data-id]')];
-    next = cards[clamp(cards.indexOf(card) + (e.key === 'ArrowDown' ? 1 : -1), 0, cards.length - 1)]?.querySelector('[data-main]');
+    next = cards[clamp(cards.indexOf(card) + (e.key === 'ArrowDown' ? 1 : -1), 0, cards.length - 1)];
   } else if (['ArrowLeft','ArrowRight'].includes(e.key)) {
     const lanes = [...$('forest-trees').children];
     const target = lanes[lanes.indexOf(lane) + (e.key === 'ArrowRight' ? 1 : -1)];
     const y = card.getBoundingClientRect().top;
-    next = [...target?.querySelectorAll('[data-id]') ?? []].sort((a,b) => Math.abs(a.getBoundingClientRect().top-y)-Math.abs(b.getBoundingClientRect().top-y))[0]?.querySelector('[data-main]') ?? target?.querySelector('[data-show-view]');
+    next = [...target?.querySelectorAll('[data-id]') ?? []].sort((a,b) => Math.abs(a.getBoundingClientRect().top-y)-Math.abs(b.getBoundingClientRect().top-y))[0] ?? target?.querySelector('[data-show-view]');
   } else return;
   next?.focus();
   e.preventDefault();
