@@ -151,6 +151,7 @@ cmd_doctor() {
 }
 
 cmd_key() { load; xdo windowfocus --sync "$(window)" key --clearmodifiers "$@"; sleep 0.4; }
+cmd_resize() { load; xdo windowsize --sync "$(window)" "$1" "$2"; sleep 0.4; }
 cmd_type() { load; xdo windowfocus --sync "$(window)" type --delay 30 -- "$*"; sleep 0.4; }
 cmd_hover() { load; xdo mousemove --sync "$1" "$2"; sleep "${3:-1.2}"; }
 cmd_click() {
@@ -219,6 +220,6 @@ cmd_cleanup() {
 cmd=${1:-help}
 shift || true
 case $cmd in
-  launch|doctor|key|type|hover|click|shot|db|url|open|quit|start|log|env|cleanup) "cmd_$cmd" "$@" ;;
-  *) echo "usage: canopy-verify launch|doctor|key|type|hover|click|shot|db|url|open|quit|start|log|env|cleanup. See $SKILL/SKILL.md" >&2; exit 2 ;;
+  launch|doctor|key|type|hover|click|resize|shot|db|url|open|quit|start|log|env|cleanup) "cmd_$cmd" "$@" ;;
+  *) echo "usage: canopy-verify launch|doctor|key|type|hover|click|resize|shot|db|url|open|quit|start|log|env|cleanup. See $SKILL/SKILL.md" >&2; exit 2 ;;
 esac

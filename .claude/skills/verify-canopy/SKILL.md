@@ -66,6 +66,7 @@ Pointer positions in the default 1240x800 window, measured on `78dbbd1`. Check a
 ## Evidence
 
 ```sh
+$V resize 1920 1000                       # resize the private window
 $V shot 03-after-fork                       # PNG of the whole display
 $V db "SELECT title FROM visits ORDER BY created_at DESC LIMIT 3" 04-rows   # read-only query, saved as text
 ```

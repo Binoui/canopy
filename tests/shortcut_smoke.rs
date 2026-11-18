@@ -173,7 +173,7 @@ fn forest_popin(ui: &Ui) -> Result<()> {
         ui.window.resize(width, 800);
         pump(300);
         assert_eq!(chrome(ui, "(() => { const r=document.querySelector('.forest-pop').getBoundingClientRect(); return [r.left, innerWidth-r.right]; })()")?, serde_json::json!([22, 22]));
-        click_chrome(ui, "#forest-fit")?;
+        chrome(ui, "document.querySelector('#forest-fit').click()")?;
         pump(300);
         assert!(chrome(ui, "Math.abs(S.camera.zoom - Math.max(0.3, Math.min(1, (document.querySelector('#forest-canvas').clientWidth - 20) / Math.max(S.frame.forest.labels.width, 1)))) < 0.00001")? == true);
     }

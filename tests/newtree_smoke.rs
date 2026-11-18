@@ -77,7 +77,7 @@ fn main() -> Result<()> {
     ready(&ui)?;
     wait("empty page", || visible(&ui, "#start-search"))?;
     assert!(text(&ui, "#start-content")
-        .contains("Pin a tree from its tab menu. It stays here and never settles on its own."));
+        .contains("Save a tree from its tab menu. It stays here and never settles on its own."));
     assert!(visible(&ui, "#strip-placeholder"));
     assert!(visible(&ui, "#new-tree-tab[aria-selected=true]"));
     assert!(!visible(&ui, "#new-tree-close"));
@@ -322,6 +322,13 @@ fn main() -> Result<()> {
     wait("settled from menu", || !visible(&ui, &tab))?;
     start_page(&ui)?;
     assert_eq!(chrome(&ui, "canopy.state().start.pinned.length")?, 3);
+    chrome(&ui, "(() => { const c=S.frame.start.pinned.find(c=>!S.frame.tabs.some(t=>t.id===c.id)); const anchor=document.querySelector(`[data-start=tree][data-id='${c.id}']`); openPopover('rename',anchor,{source:'start',id:c.id,name:c.title}); S.popover.field.focus(); S.popover.field.select(); canopy.present(S.frame); return true; })()")?;
+    assert!(chrome_focused(&ui, "#tree-name"));
+    type_text("Settled saved tree")?;
+    key("Return")?;
+    wait("settled tree renamed", || {
+        text(&ui, "#start-content").contains("Settled saved tree")
+    })?;
     menu(&ui, ".tree-card")?;
     assert_eq!(text(&ui, "#popover"), "Remove from saved");
     click_chrome(&ui, "[data-tab-action=pin]")?;

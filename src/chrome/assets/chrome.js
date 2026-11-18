@@ -986,7 +986,7 @@ function refreshPopover() {
 function renderPopover() {
   const popover = $('popover');
   const { kind, data } = S.popover;
-  if (['errors', 'settings'].includes(kind) && popover.dataset.kind !== kind) popover.replaceChildren();
+  if (['errors', 'settings', 'tree'].includes(kind) && popover.dataset.kind !== kind) popover.replaceChildren();
   popover.dataset.kind = kind;
   popover.setAttribute('role', ['node', 'tree', 'bookmark'].includes(kind) ? 'menu' : 'dialog');
   popover.setAttribute('aria-label', kind === 'node' ? 'Page actions' : kind === 'tree' ? 'Tree actions' : kind === 'memory' ? 'Saved text' : kind === 'errors' ? 'Recent errors' : kind.replaceAll('-', ' '));
