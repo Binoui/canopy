@@ -173,6 +173,7 @@ impl Fixture {
 fn main() -> Result<()> {
     let directory = tempfile::tempdir()?;
     common::start(directory.path())?;
+    page_move_picker()?;
     let f = Fixture::new()?;
     let a = f.root("/garden")?;
     let b = f.child(a, "/orchard")?;
@@ -636,5 +637,119 @@ fn main() -> Result<()> {
         .is_some());
     resumed.window.close();
     println!("PASS restart during a branch landing keeps the branch put away.");
+    Ok(())
+}
+
+fn page_move_picker() -> Result<()> {
+    let f = Fixture::new()?;
+    let source = f.root("/move-source")?;
+    let head = f.child(source, "/move-head")?;
+    let leaf = f.child(head, "/move-leaf")?;
+    let target = f.root("/move-target")?;
+    f.select(leaf)?;
+    let view = f.ui.pages.selected_page().native.clone();
+    let hits = f.hits("/move-leaf");
+    f.menu(&format!("#strip-nodes [data-page='{head}']"))?;
+    common::click_chrome(&f.ui, "[data-node-action='choose-move-tree']")?;
+    common::wait("tree picker destination", || {
+        common::visible(&f.ui, &format!("[data-move-tree='{target}']"))
+    })?;
+    common::key("Home")?;
+    common::key("Return")?;
+    common::wait("picker moves branch", || {
+        f.ui.snapshot().is_ok_and(|s| {
+            s.visits
+                .iter()
+                .any(|v| v.id == head && v.parent == Some(target))
+        })
+    })?;
+    assert_eq!(f.ui.snapshot()?.current, Some(leaf));
+    assert_eq!(f.ui.pages.selected_page().native, view);
+    assert_eq!(f.hits("/move-leaf"), hits);
+    let db = rusqlite::Connection::open(f._directory.path().join("forest.sqlite3"))?;
+    let parent: String = db.query_row(
+        "SELECT parent_id FROM visits WHERE id=?1",
+        [head.to_string()],
+        |r| r.get(0),
+    )?;
+    assert_eq!(parent, target.to_string());
+    let last: String = db.query_row(
+        "SELECT last_visit_id FROM tree_state WHERE root_id=?1",
+        [target.to_string()],
+        |r| r.get(0),
+    )?;
+    assert_eq!(last, leaf.to_string());
+    f.select(source)?;
+    f.menu("#strip-nodes .pill")?;
+    assert_eq!(
+        common::text(&f.ui, "[data-node-action='choose-move-tree']"),
+        "Merge into tree…"
+    );
+    common::click_chrome(&f.ui, "[data-node-action='choose-move-tree']")?;
+    common::wait("Rust merge warning", || {
+        common::text(&f.ui, "#popover").contains("saved state and tab")
+    })?;
+    common::key("Home")?;
+    common::key("Return")?;
+    common::wait("picker merges root", || {
+        f.ui.snapshot().is_ok_and(|s| {
+            s.visits
+                .iter()
+                .any(|v| v.id == source && v.parent == Some(target))
+        })
+    })?;
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM tree_state WHERE root_id=?1",
+            [source.to_string()],
+            |r| r.get::<_, usize>(0)
+        )?,
+        0
+    );
+    f.ui.window.close();
+    common::pump(200);
+    let restarted = canopy::ui::Ui::new(f._directory.path())?;
+    restarted.window.show_all();
+    common::ready(&restarted)?;
+    restarted.resume(&[])?;
+    common::wait("moved tree survives restart", || {
+        restarted
+            .snapshot()
+            .is_ok_and(|s| s.current == Some(source))
+    })?;
+    let snapshot = restarted.snapshot()?;
+    assert_eq!(
+        snapshot
+            .visits
+            .iter()
+            .find(|v| v.id == source)
+            .unwrap()
+            .parent,
+        Some(target)
+    );
+    assert_eq!(
+        snapshot
+            .visits
+            .iter()
+            .find(|v| v.id == head)
+            .unwrap()
+            .parent,
+        Some(target)
+    );
+    assert_eq!(
+        snapshot
+            .visits
+            .iter()
+            .find(|v| v.id == leaf)
+            .unwrap()
+            .parent,
+        Some(head)
+    );
+    restarted.pages.read(|b| {
+        canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)
+    })?;
+    restarted.window.close();
+    common::pump(100);
+    println!("PASS keyboard tree picker moves a live branch, merges a root, persists parent edges and tree state across restart.");
     Ok(())
 }
