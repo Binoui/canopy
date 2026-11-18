@@ -177,7 +177,7 @@ impl State {
                 let mut value = item.paint(&facts, self.level);
                 value["x"] = json!(p.x);
                 value["y"] = json!(p.y);
-                value["w"] = json!(self.level.metrics().width);
+                value["w"] = json!(item.width(self.level));
                 value["h"] = json!(item.height(self.level));
                 value["up"] = json!(item.parent.map(|p| p + offset));
                 for id in &item.pages {
@@ -209,7 +209,7 @@ impl State {
             "css":self.level.metrics().css(),"levels":Level::ALL.map(|l|{let b=l.band();json!({"level":l.name(),"label":l.label(),"min":b.min,"max":b.max,"rest":b.rest})}),
             "legend":[["current","you are here"],["previous","where you were"],["open","still open"],["visited","visited"],["waiting","waiting"]],
             "help":"wheel zooms · drag moves · a click goes to the page",
-            "place":{"request":self.request,"anchor":anchor,"page":self.anchor.map(|id|id.to_string()),"pan":place::camera(&placed,home,room,b.rest/b.min),"k":b.rest}})
+            "place":{"request":self.request,"anchor":anchor,"page":self.anchor.map(|id|id.to_string()),"pan":place::camera(&placed,home,room,1.),"k":b.rest}})
     }
 }
 

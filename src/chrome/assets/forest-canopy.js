@@ -12,7 +12,7 @@ const canopyValue = () => mapView?.value;
 const band = level => canopyValue().levels.find(l => l.level === level);
 const levelOf = k => canopyValue().levels.find(l => k >= l.min && k < l.max)?.level
   ?? (k < canopyValue().levels[0].min ? 'far' : 'near');
-const scaleNow = () => mapView.k / band(mapView.drawn).min;
+const scaleNow = () => mapView.k / band(mapView.drawn).rest;
 function applyTransform() {
   const world = $('forest-canopy').querySelector('.canopy-world');
   world.style.setProperty('--s', scaleNow());
@@ -212,7 +212,13 @@ function showTip(el) {
 function hideTip() {if (mapView) {clearTimeout(mapView.tipTimer);mapView.tipKey=null;}$('canopy-tip').hidden=true;}
 $('forest-canopy').addEventListener('pointerover',e => {const el=e.target.closest('.canopy-item');if (el && !el.contains(e.relatedTarget)) showTip(el);});
 $('forest-canopy').addEventListener('pointerout',e => {const el=e.target.closest('.canopy-item');if (el && !el.contains(e.relatedTarget)) hideTip();});
-$('forest-canopy').addEventListener('focusin',e => {const el=e.target.closest('.canopy-item');if (el) {mapView.focus=el.dataset.key;const item=canopyValue().items[+el.dataset.index];mapView.focusPage=item.anchorPage ?? item.go ?? null;showTip(el);}});
+$('forest-canopy').addEventListener('focusin',e => {const el=e.target.closest('.canopy-item');if (el) {mapView.focus=el.dataset.key;const item=canopyValue().items[+el.dataset.index];mapView.focusPage=item.anchorPage ?? item.go ?? null;}});
+$('forest').addEventListener('keydown',e => {
+  if (e.key === 'Tab') queueMicrotask(() => {
+    const el=document.activeElement.closest('.canopy-item');
+    if (el && mapView) showTip(el);
+  });
+});
 const CANOPY_STEP={ArrowLeft:0,ArrowRight:1,ArrowUp:2,ArrowDown:3};
 function canopyKey(e) {
   if (!mapView) return false;
@@ -231,6 +237,7 @@ function focusItem(key) {
   for (const [i,p,extent,limit] of [[0,x,box.width/2,r.width],[1,y,box.height/2,r.height]])
     mapView.pan[i]+=Math.max(0,extent+8-p)-Math.max(0,p+extent+8-limit);
   applyTransform();
+  showTip(node.el);
 }
 function canopyFocus() {return mapView?.nodes.get(mapView.focus ?? homeKey(canopyValue()))?.el;}
 function canopyRoom() {

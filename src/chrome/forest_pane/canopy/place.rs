@@ -13,10 +13,8 @@ pub(super) struct Point {
 }
 #[derive(Clone, Copy)]
 pub(super) struct Metrics {
-    pub width: f64,
-    pub height: f64,
     pub icon: f64,
-    step: (f64, f64),
+    step: f64,
     gap: f64,
     label: f64,
 }
@@ -24,26 +22,20 @@ impl Level {
     pub(super) fn metrics(self) -> Metrics {
         match self {
             Self::Far => Metrics {
-                width: 76.,
-                height: 60.,
                 icon: 15.,
-                step: (82., 64.),
+                step: 58.,
                 gap: 34.,
                 label: 26.,
             },
             Self::Middle => Metrics {
-                width: 132.,
-                height: 106.,
                 icon: 20.,
-                step: (138., 110.),
+                step: 116.,
                 gap: 42.,
                 label: 26.,
             },
             Self::Near => Metrics {
-                width: 236.,
-                height: 82.,
                 icon: 18.,
-                step: (258., 90.),
+                step: 258.,
                 gap: 46.,
                 label: 26.,
             },
@@ -52,7 +44,7 @@ impl Level {
 }
 impl Metrics {
     pub fn css(self) -> Value {
-        json!({"--item-w":self.width,"--item-h":self.height,"--label-w":124,"--card-w":236,"--card-h":46})
+        json!({"--label-w":124,"--card-w":236,"--card-h":46})
     }
 }
 struct Shape {
@@ -84,9 +76,8 @@ impl Layout {
                 Self::Flow => flow(items, m, level),
             })
             .collect();
-        let band = level.band();
-        let limit = (room.width - 32.) * band.min / band.rest;
-        let (mut x, mut y, mut row_h) = (0., 0., 0_f64);
+        let limit = room.width - 48.;
+        let mut occupied: Vec<(f64, f64, f64, f64)> = vec![];
         let mut placed = Placed {
             trees: vec![],
             items: vec![],
@@ -94,11 +85,38 @@ impl Layout {
         };
         for shape in shapes {
             placed.bounds.push((shape.width, shape.height));
-            if x > 0. && (level == Level::Near || x + shape.width > limit) {
-                x = 0.;
-                y += row_h + m.gap;
-                row_h = 0.;
-            }
+            let (x, y) = if level == Level::Near {
+                (
+                    0.,
+                    occupied.last().map_or(0., |&(_, y, _, h)| y + h + m.gap),
+                )
+            } else {
+                let mut xs = vec![0.];
+                let mut ys = vec![0.];
+                for &(x, y, w, h) in &occupied {
+                    xs.push(x + w + m.gap);
+                    ys.push(y + h + m.gap);
+                }
+                ys.sort_by(f64::total_cmp);
+                xs.sort_by(f64::total_cmp);
+                ys.into_iter()
+                    .find_map(|y| {
+                        xs.iter()
+                            .copied()
+                            .find(|&x| {
+                                (x == 0. || x + shape.width <= limit)
+                                    && occupied.iter().all(|&(a, b, w, h)| {
+                                        x + shape.width + m.gap <= a
+                                            || a + w + m.gap <= x
+                                            || y + shape.height + m.gap <= b
+                                            || b + h + m.gap <= y
+                                    })
+                            })
+                            .map(|x| (x, y))
+                    })
+                    .unwrap()
+            };
+            occupied.push((x, y, shape.width, shape.height));
             placed.trees.push(Point { x: x + 90., y });
             placed.items.push(
                 shape
@@ -110,13 +128,13 @@ impl Layout {
                     })
                     .collect(),
             );
-            x += shape.width + m.gap;
-            row_h = row_h.max(shape.height);
         }
         placed
     }
 }
-fn flow(items: &[Item], mut m: Metrics, level: Level) -> Shape {
+fn flow(items: &[Item], m: Metrics, level: Level) -> Shape {
+    let clearance = level.band().rest / level.band().min;
+    let gap = if level == Level::Far { 4. } else { 8. };
     let mut children = vec![Vec::new(); items.len()];
     let mut depth = vec![0; items.len()];
     for (i, item) in items.iter().enumerate() {
@@ -125,49 +143,73 @@ fn flow(items: &[Item], mut m: Metrics, level: Level) -> Shape {
             depth[i] = depth[parent] + 1;
         }
     }
-    if level == Level::Far {
-        let mut counts = vec![0; depth.iter().max().map_or(0, |d| d + 1)];
-        for &d in &depth {
-            counts[d] += 1;
-        }
-        m.height = items.iter().map(|i| i.height(level)).fold(25_f64, f64::max);
-        m.step.1 = items
-            .iter()
-            .zip(&depth)
-            .filter(|(_, d)| counts[**d] > 1)
-            .map(|(i, _)| i.height(level))
-            .fold(25_f64, f64::max);
+    let columns = depth.iter().max().map_or(0, |d| d + 1);
+    let mut widths = vec![0_f64; columns];
+    for (item, &d) in items.iter().zip(&depth) {
+        widths[d] = widths[d].max(item.width(level));
+    }
+    let mut xs = vec![0.; columns];
+    for d in 0..columns {
+        xs[d] = if d == 0 {
+            widths[d] / 2. * clearance
+        } else {
+            xs[d - 1]
+                + m.step
+                    .max(((widths[d - 1] + widths[d]) / 2. + gap) * clearance)
+        };
     }
     let mut at = vec![Point::default(); items.len()];
-    let mut leaf = 0;
+    let mut contours: Vec<Vec<(f64, f64)>> = vec![vec![]; items.len()];
     for i in (0..items.len()).rev() {
-        let y = if children[i].is_empty() {
-            let y = leaf as f64 * m.step.1;
-            leaf += 1;
-            y
-        } else {
-            (at[children[i][0]].y + at[*children[i].last().unwrap()].y) / 2.
-                - m.label
-                - m.height / 2.
-        };
-        at[i] = Point {
-            x: m.width / 2. + depth[i] as f64 * m.step.0,
-            y: y + m.label + m.height / 2.,
-        };
+        let mut contour: Vec<(f64, f64)> = vec![];
+        for &child in &children[i] {
+            let shift = contours[child]
+                .iter()
+                .zip(&contour)
+                .map(|(&(top, _), &(_, bottom))| bottom + gap - top)
+                .fold(0_f64, f64::max);
+            let mut stack = vec![child];
+            while let Some(node) = stack.pop() {
+                at[node].y += shift;
+                stack.extend(&children[node]);
+            }
+            for (d, &(top, bottom)) in contours[child].iter().enumerate() {
+                if d == contour.len() {
+                    contour.push((top + shift, bottom + shift));
+                } else {
+                    contour[d].0 = contour[d].0.min(top + shift);
+                    contour[d].1 = contour[d].1.max(bottom + shift);
+                }
+            }
+        }
+        let y = children[i].first().map_or(0., |&first| {
+            (at[first].y + at[*children[i].last().unwrap()].y) / 2.
+        });
+        at[i] = Point { x: xs[depth[i]], y };
+        let (above, below) = items[i].extent(level);
+        contour.insert(0, (y - above * clearance, y + below * clearance));
+        contours[i] = contour;
     }
-    // Reverse postorder assigns leaves bottom to top; reflect to retain creation order.
-    let height = (leaf.max(1) - 1) as f64 * m.step.1 + m.label + m.height;
-    let bottom = at.iter().map(|p| p.y).fold(0_f64, f64::max);
+    let top = at
+        .iter()
+        .zip(items)
+        .map(|(p, i)| p.y - i.extent(level).0)
+        .fold(0_f64, f64::min);
+    let bottom = at
+        .iter()
+        .zip(items)
+        .map(|(p, i)| p.y + i.extent(level).1)
+        .fold(0_f64, f64::max);
     for p in &mut at {
-        p.y = bottom - p.y + m.label + m.height / 2.;
+        p.y += m.label + 16. - top;
     }
     Shape {
-        width: depth
-            .into_iter()
-            .max()
-            .map_or(m.width, |d| d as f64 * m.step.0 + m.width)
-            .max(180.),
-        height,
+        width: xs
+            .last()
+            .zip(widths.last())
+            .map_or(180., |(x, w)| x + w / 2.)
+            .max(180. * clearance),
+        height: bottom - top + m.label + 16.,
         at,
     }
 }

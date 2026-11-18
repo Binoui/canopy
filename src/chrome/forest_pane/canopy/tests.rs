@@ -207,6 +207,7 @@ fn flow_item_boxes_do_not_overlap_and_trees_fit_resting_room() {
         (chain(7), true),
         (chain(90), false),
         (chain(500), false),
+        ((0..500).map(|i| (i > 0).then_some(0)).collect(), false),
         ((0..21).map(|i| (i > 0).then_some(0)).collect(), true),
         (
             (0..39)
@@ -231,7 +232,7 @@ fn flow_item_boxes_do_not_overlap_and_trees_fit_resting_room() {
                 shown: &f.shown,
             };
             let folded = vec![items::fold(&facts, &f.forest.tabs()[0], level)];
-            for width in [390., 728., 1920.] {
+            for width in [390., 728., 1440., 1920.] {
                 let placed = Layout::Flow.place(
                     level,
                     &folded,
@@ -240,14 +241,16 @@ fn flow_item_boxes_do_not_overlap_and_trees_fit_resting_room() {
                         height: 800.,
                     },
                 );
-                let m = level.metrics();
+                let scale = level.band().min / level.band().rest;
                 for (i, a) in placed.items[0].iter().enumerate() {
                     for (j, b) in placed.items[0].iter().enumerate().skip(i + 1) {
                         assert!(
-                            (a.x - b.x).abs() >= m.width
-                                || (a.y - b.y).abs()
-                                    >= (folded[0][i].height(level) + folded[0][j].height(level))
-                                        / 2.,
+                            (a.x - b.x).abs() * scale
+                                >= (folded[0][i].width(level) + folded[0][j].width(level)) / 2.
+                                || a.y * scale + folded[0][i].extent(level).1
+                                    <= b.y * scale - folded[0][j].extent(level).0
+                                || b.y * scale + folded[0][j].extent(level).1
+                                    <= a.y * scale - folded[0][i].extent(level).0,
                             "overlapping boxes {n} {level:?}"
                         );
                     }
@@ -265,10 +268,9 @@ fn flow_item_boxes_do_not_overlap_and_trees_fit_resting_room() {
                         width,
                         height: 800.,
                     },
-                    level.band().rest / level.band().min,
+                    1.,
                 );
-                assert!((0. ..width)
-                    .contains(&(home.x * level.band().rest / level.band().min + pan[0])));
+                assert!((0. ..width).contains(&(home.x + pan[0])));
             }
         }
     }
@@ -293,12 +295,12 @@ fn flow_item_boxes_do_not_overlap_and_trees_fit_resting_room() {
         } else {
             assert!(p.trees[1].x > p.trees[0].x);
         }
-        let s = l.band().rest / l.band().min;
         if l != Level::Near {
-            for t in &p.items {
+            for (t, items) in p.items.iter().zip(&trees) {
                 assert!(
                     t.iter()
-                        .map(|v| v.x * s + l.metrics().width / 2.)
+                        .zip(items)
+                        .map(|(v, item)| v.x + item.width(l) / 2.)
                         .fold(0_f64, f64::max)
                         <= room.width
                 );

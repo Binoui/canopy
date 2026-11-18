@@ -148,17 +148,42 @@ pub(super) fn size(shown: u32, base: f64) -> f64 {
     (base * (1. + 0.3 * f64::from(shown.max(1)).log2()).min(2.1)).round()
 }
 impl Item {
+    pub fn width(&self, level: Level) -> f64 {
+        match level {
+            Level::Near => 236.,
+            Level::Far if self.appearance.current => 80.,
+            Level::Far => {
+                size(self.shown, level.metrics().icon)
+                    + (19. + self.pages.len().to_string().len() as f64 * 6.).max(30.)
+            }
+            Level::Middle if self.appearance.current || self.appearance.previous => 170.,
+            Level::Middle if self.named || self.pages.len() > 1 => 124.,
+            _ => size(self.shown, level.metrics().icon) + 30.,
+        }
+    }
     pub fn height(&self, level: Level) -> f64 {
-        if level != Level::Far {
-            return level.metrics().height;
-        }
-        if self.appearance.current {
-            72.
+        if level == Level::Near {
+            46.
         } else {
-            size(self.shown, level.metrics().icon)
-                + 10.
-                + if self.appearance.previous { 8. } else { 0. }
+            size(self.shown, level.metrics().icon) + 10.
         }
+    }
+    pub fn extent(&self, level: Level) -> (f64, f64) {
+        let half = self.height(level) / 2.;
+        let tagged = self.appearance.current || (self.appearance.previous && level != Level::Far);
+        let above = if tagged {
+            if level == Level::Near {
+                52.
+            } else if level == Level::Far {
+                40.
+            } else {
+                50.
+            }
+        } else {
+            half
+        };
+        let labelled = level == Level::Middle && (self.named || self.pages.len() > 1);
+        (above, if labelled { 53. } else { half })
     }
 
     pub fn key(&self) -> String {

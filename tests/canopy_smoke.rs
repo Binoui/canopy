@@ -116,6 +116,12 @@ fn main() -> Result<()> {
         chrome(&ui, "document.activeElement.dataset.current")?,
         "true"
     );
+    pump(600);
+    assert!(!visible(&ui, "#canopy-tip"));
+    key("Left")?;
+    pump(600);
+    assert!(visible(&ui, "#canopy-tip"));
+    println!("PASS initial focus has no tooltip; keyboard movement shows it.");
     println!("PASS Canopy opens at Middle, current first, tabs only, named counts, current focus.");
     let hub = page(&ui, roots[0])?;
     click_chrome(&ui, &hub)?;

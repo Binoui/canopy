@@ -64,3 +64,6 @@
 .canopy-item[data-current=true] .mk { opacity:1; }
 
 #forest-canopy[data-level=far] .canopy-item .tags { bottom:calc(50% + 20px); }
+
+#forest-canopy[data-level=middle] .canopy-item[data-current=true] .lb,
+#forest-canopy[data-level=middle] .canopy-item[data-previous=true] .lb { width:170px; }
