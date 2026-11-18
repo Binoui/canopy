@@ -25,7 +25,8 @@ $V launch --bin ~/.local/bin/canopy   # the installed build instead of the check
 
 `launch` creates a run folder `~/.cache/canopy-test-rt/v-<id>/` with a private `XDG_RUNTIME_DIR` (`rt/`) and data folder (`data/`), picks a free X display from `:200` up, starts the fixture site on a free port, and starts Canopy. With `--seed stress` (the default) it starts Canopy once to create the database, quits it with Ctrl+Q, runs `fixtures/seed.py`, and starts it again. Ready means the Canopy window is visible on the run's display, 2 s after it first appears. The run is recorded in `.cache/verify/current`, so later commands find it without arguments. Set `CANOPY_RUN=<run folder>` to address a different run.
 
-The stress seed is 129 pages in 16 open trees and 3 settled ones. Ctrl+1 is "Tokio tutorial" (one site, a straight path with one side branch), Ctrl+2 is "best 75% mechanical keyboard" (a fan-out with 9 waiting pages), Ctrl+3 is "Bonsai" (a 46-page trail), Ctrl+4 is "Ask HN" (pinned, 14 waiting pages under the root). The other tabs are filler so the tab row overflows. Canopy starts on the Tokio tree.
+The stress seed is 129 pages in 16 Tabs and 3 History trees. The pinned Ask HN and Canopy pull-request tabs come first. Ctrl+3 is Tokio tutorial, Ctrl+4 is the keyboard research tree with 9 waiting pages, and Ctrl+5 is Bonsai with a 46-page trail. Ask HN has 14 waiting pages under its root. Other tabs fill the row so it overflows. Canopy starts on Tokio.
+
 
 ## Doctor
 
