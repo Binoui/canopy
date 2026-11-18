@@ -239,7 +239,7 @@ fn main() -> Result<()> {
         wait("forest waiting count", || visible(&ui, ".tree-card .count"))?;
         assert_eq!(
             text(&ui, ".tree-card[aria-current=true] .count"),
-            waiting(&ui)?.len().to_string()
+            format!("{} waiting", waiting(&ui)?.len())
         );
         assert!(visible(&ui, ".tree-card[aria-current=true] .mt-node.last"));
         chrome(&ui, "(canopy.toggleForest(), true)")?;
