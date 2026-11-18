@@ -221,6 +221,12 @@ impl LivePage {
         self.state.adopted.set(true);
         self.native.set_is_muted(false);
     }
+    /// Undoes [`Self::adopt`] when the page goes back to the background list unseen: muted again,
+    /// counted in a load slot and subject to the background time limit.
+    pub(super) fn unadopt(&self) {
+        self.state.adopted.set(false);
+        self.native.set_is_muted(true);
+    }
     pub(super) fn background(&self, visit: VisitId) -> Result<()> {
         self.state.never_seen.set(Some(visit));
         self.native.set_is_muted(true);
@@ -254,6 +260,9 @@ impl LivePage {
     }
     pub(super) fn pending_anchor(&self) -> Option<VisitId> {
         self.state.navigation.borrow().pending_anchor()
+    }
+    pub(super) fn pending_target(&self) -> Option<crate::browser::PendingTarget> {
+        self.state.navigation.borrow().pending_target()
     }
     pub(super) fn pending_visit(&self) -> Option<VisitId> {
         self.state.navigation.borrow().pending_restore()

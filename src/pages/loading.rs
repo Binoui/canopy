@@ -1,6 +1,6 @@
 use super::{Issue, LivePage, NativeState};
 use crate::{
-    browser::{LoadTicket, VisitId},
+    browser::{LoadTicket, PendingTarget, VisitId},
     pages::{Command, PageEvent, Pages},
 };
 use std::rc::Rc;
@@ -150,6 +150,16 @@ impl Pages {
             .or_else(|| self.branches.live.borrow().clone())
     }
 
+    /// Where the page on screen is headed, while that load has not committed. A page held
+    /// behind the form question is not on its way yet.
+    pub fn pending_target(&self) -> Option<PendingTarget> {
+        if self.has_form_return() {
+            return None;
+        }
+        self.foreground_load()
+            .and_then(|page| page.pending_target())
+    }
+
     fn queued_navigation(&self) -> bool {
         self.commands
             .borrow()
@@ -161,13 +171,20 @@ impl Pages {
         let status = self
             .foreground_load()
             .map_or(LoadStatus::Idle, |p| p.state.load_status());
-        LoadingReadout {
-            page: self
+        // The chrome shows a page it is opening as current before it commits, so its
+        // progress belongs to that page.
+        let page = match self.pending_target() {
+            Some(PendingTarget::Visit(visit)) => Some(visit),
+            Some(PendingTarget::NewTree(_)) => None,
+            None => self
                 .branches
                 .live
                 .borrow()
                 .as_ref()
                 .and_then(|p| p.current_visit()),
+        };
+        LoadingReadout {
+            page,
             status: if status == LoadStatus::Idle && self.queued_navigation() {
                 LoadStatus::Busy(LoadProgress::Waiting)
             } else {

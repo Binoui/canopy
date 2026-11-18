@@ -231,6 +231,10 @@ function renderTabs() {
   const start = S.surface === 'start';
   $('new-tree-tab').hidden = !start;
   $('new-tree-tab').setAttribute('aria-selected', String(start));
+  // A new tree that is still loading shows its site on the tab it will replace.
+  const opening = S.frame?.newTree?.title;
+  $('new-tree-tab').querySelector('.tab-title').textContent = opening ?? 'New tree';
+  $('new-tree-tab').setAttribute('aria-label', opening ? `${opening}, loading` : 'New tree');
   $('new-tree-close').hidden = !current();
   const row = $('tab-row');
   const trees = S.frame?.tabs ?? [];
@@ -620,6 +624,7 @@ function positionList() {
 }
 
 function currentLoading() {
+  if (S.surface === 'start') return !!S.frame?.newTree && S.loading?.page == null && S.loading?.state === 'busy';
   return S.loading?.page === current() && S.loading.state === 'busy';
 }
 
@@ -1315,7 +1320,7 @@ function runPalette(index, newTree) {
   post({ t: 'run', q: query, item: row ? row.item : null, newTree, scope: palette.scope });
   const reading = row?.kind !== 'saved';
   closePalette(reading);
-  if (reading) uncover();
+  if (reading) uncoverForPage();
 }
 
 $('palette-input').addEventListener('input', () => {
@@ -1505,6 +1510,7 @@ const pageShows = () => S.surface === 'reading' && !S.overlay;
 function setSurface(surface) {
   if (S.surface === surface) return;
   S.surface = surface;
+  S.startForNewTree = false;
   post({ t: 'surface', start: surface === 'start' });
   if (surface === 'start') { if (S.frame) S.frame.start = null; S.startPaint = null; $('start-content').replaceChildren(); if (S.overlay !== 'forest') focusStart(); }
   renderTabs();
@@ -1580,6 +1586,18 @@ function uncover() {
   hideList();
   setOverlay(null);
   setSurface('reading');
+}
+
+// The new tree page stays up until the next frame says whether the page asked for opens a
+// new tree: then the page stays until it commits, as a browser's new tab page does.
+function uncoverForPage() {
+  if (S.surface !== 'start') { uncover(); return; }
+  S.leaveStart = true;
+  closeReader(false);
+  closePalette(false);
+  closePopover(false);
+  hideList();
+  setOverlay(null);
 }
 
 function focusStart() {
@@ -1658,12 +1676,12 @@ function togglePopover(kind, anchor, data) {
 
 const BANDS = [pinnedBand, bookmarksBand, suggestedBand];
 const START = {
-  bookmark: { open: (id) => { closePopover(false); uncover(); intent('open-bookmark', { id: Number(id) }); }, menu: 'bookmark' },
+  bookmark: { open: (id) => { closePopover(false); uncoverForPage(); intent('open-bookmark', { id: Number(id) }); }, menu: 'bookmark' },
   folder: { open: (name, el) => togglePopover('folder', el, { folder: name }) },
   more: { open: (_, el) => togglePopover('folder', el, { more: true }) },
   folders: { open: (_, el) => togglePopover('folder', el, { hidden: true }) },
   tree: { open: (id) => { uncover(); intent('select-tree', { id }); }, menu: 'tree' },
-  suggestion: { open: (key) => { intent('open-suggestion', { key }); uncover(); } },
+  suggestion: { open: (key) => { intent('open-suggestion', { key }); uncoverForPage(); } },
   keep: { open: (key) => intent('keep-suggestion', { key }) },
   decline: { open: (key) => intent('decline-suggestion', { key }) },
 };
@@ -1923,6 +1941,8 @@ window.canopy = {
   present(frame) {
     const previous = current();
     const previousTree = S.frame?.tabs.find((tab) => tab.active)?.id;
+    const previousNewTree = S.frame?.newTree?.url ?? null;
+    const previousCommitted = S.frame?.committed ?? null;
     S.frame = { ...frame, start: frame.start ?? S.frame?.start };
     visibleMailAccounts(S.frame.mail);
     applyStrip(frame.strip);
@@ -1930,11 +1950,26 @@ window.canopy = {
     renderWaitingPin();
     renderMailPin();
     applyTheme();
+    // Overlays stay over the old page until the new one commits, as they always have.
+    if (frame.committed !== previousCommitted && !['tree', 'forest'].includes(S.overlay)) setOverlay(null);
     if (frame.current !== previous) {
       hideList();
-      if (!['tree', 'forest'].includes(S.overlay)) setOverlay(null);
       const sameTree = previousTree && previousTree === frame.tabs.find((tab) => tab.active)?.id;
       if (S.surface !== 'reading' && !(S.surface === 'start' && sameTree)) setSurface('reading');
+    }
+    if (S.leaveStart) {
+      S.leaveStart = false;
+      if (!frame.newTree && S.surface === 'start') setSurface('reading');
+    }
+    // A new tree is shown from the moment it is asked for, on the new tree page. If the
+    // reader came from a page, a load that ends without a page takes them back to it.
+    if (frame.newTree && frame.newTree.url !== previousNewTree && S.surface !== 'start') {
+      setSurface('start');
+      S.startForNewTree = true;
+    }
+    if (!frame.newTree && S.startForNewTree) {
+      S.startForNewTree = false;
+      if (S.surface === 'start' && current()) setSurface('reading');
     }
     if (!frame.tabs.length && S.surface === 'reading') setSurface('start');
     if (S.popover?.kind === 'rename' && !TREE_MENUS[S.popover.data.source](S.popover.data.id)) closePopover();
@@ -2096,6 +2131,8 @@ window.canopy = {
         break;
       case 'overlay': closeOverlay(); break;
       case 'start':
+        // Leaving a new tree that is still loading gives it up.
+        if (S.frame?.newTree) intent('stop');
         setSurface('reading');
         post({ t: 'focus', target: 'page' });
         break;
