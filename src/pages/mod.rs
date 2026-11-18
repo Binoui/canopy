@@ -1879,7 +1879,10 @@ impl Pages {
             self.end_hold();
             return Ok(());
         }
-        self.browser.borrow_mut().move_to_tree(head)?;
+        self.browser.borrow_mut().move_branch(
+            head,
+            crate::browser::MoveTo::OwnTree(crate::browser::TabPlacement::End),
+        )?;
         self.receive(PageEvent::Changed);
         Ok(())
     }

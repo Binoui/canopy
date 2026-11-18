@@ -815,43 +815,6 @@ impl Browser {
         Ok(())
     }
 
-    pub fn move_to_tree(&mut self, head: VisitId) -> Result<TreeId> {
-        let forest =
-            crate::forest::ForestProjection::from_snapshot(self.snapshot()?, self.tree_states()?)?;
-        anyhow::ensure!(
-            self.visit(head)?.parent.is_some(),
-            "This page is already a root."
-        );
-        let old = forest.tree_of(head).context("Missing tree.")?;
-        let tx = self.connection.transaction()?;
-        let newest = |inside: bool| -> Result<VisitId> {
-            let id: String = tx.query_row(
-                "WITH RECURSIVE branch(id) AS (SELECT ?1 UNION ALL SELECT v.id FROM visits v JOIN branch b ON v.parent_id=b.id),
-                 tree(id) AS (SELECT ?2 UNION ALL SELECT v.id FROM visits v JOIN tree t ON v.parent_id=t.id)
-                 SELECT v.id FROM visits v JOIN tree t ON v.id=t.id WHERE v.opened_at IS NOT NULL
-                 AND (v.id IN (SELECT id FROM branch))=?3
-                 ORDER BY (SELECT MAX(e.id) FROM visit_events e WHERE e.visit_id=v.id) DESC, v.opened_at DESC, v.rowid DESC LIMIT 1",
-                params![head.to_string(),old.root().to_string(),inside], |r|r.get(0))?;
-            Ok(id.parse()?)
-        };
-        let target = newest(true).context("The branch has no opened page.")?;
-        let old_target = newest(false)?;
-        tx.execute(
-            "UPDATE visits SET parent_id=NULL, branch_settled_at=NULL WHERE id=?1",
-            [head.to_string()],
-        )?;
-        tx.execute(
-            "UPDATE tree_state SET last_visit_id=?2 WHERE root_id=?1",
-            params![old.root().to_string(), old_target.to_string()],
-        )?;
-        tx.execute(
-            "INSERT INTO tree_state(root_id,last_visit_id,tab_order) VALUES(?1,?2,(SELECT COALESCE(MAX(tab_order), -1)+1 FROM tree_state))",
-            params![head.to_string(), target.to_string()],
-        )?;
-        tx.commit()?;
-        Ok(TreeId(head))
-    }
-
     pub fn forward(&self, current: VisitId) -> Result<Option<VisitId>> {
         let id: Option<String> = self
             .connection
@@ -2440,7 +2403,9 @@ mod tests {
         b.undo_settle(a.root()).unwrap();
         assert_eq!(tab_roots(&b), [a, c]);
         let added = b.add_roots(&[url("added"), url("another")]).unwrap();
-        let detached = b.move_to_tree(child).unwrap();
+        b.move_branch(child, MoveTo::OwnTree(TabPlacement::End))
+            .unwrap();
+        let detached = TreeId(child);
         assert_eq!(
             tab_roots(&b),
             [a, c, TreeId(added[0]), TreeId(added[1]), detached]
@@ -4087,7 +4052,11 @@ mod tests {
         let head = b
             .queue_link(root, url("waiting"), source("queued"))
             .unwrap();
-        assert!(b.move_to_tree(head).is_err());
+        assert_eq!(
+            b.move_branch(head, MoveTo::OwnTree(TabPlacement::End))
+                .unwrap(),
+            MoveOutcome::Unchanged
+        );
         b.restore(head).unwrap();
         let u = b.visit(head).unwrap().url;
         b.started(u.clone()).unwrap();
@@ -4097,7 +4066,8 @@ mod tests {
         let u = b.visit(root).unwrap().url;
         b.started(u.clone()).unwrap();
         b.committed(u).unwrap();
-        b.move_to_tree(head).unwrap();
+        b.move_branch(head, MoveTo::OwnTree(TabPlacement::End))
+            .unwrap();
         assert_eq!(b.visit(head).unwrap().parent, None);
         assert_eq!(b.visit(leaf).unwrap().parent, Some(head));
         assert_eq!(b.tree_target(TreeId(root)).unwrap(), root);
@@ -4141,7 +4111,8 @@ mod tests {
             .unwrap();
         let leaf = VisitId(Ulid::new());
         b.connection.execute("INSERT INTO visits(id,parent_id,url,title,created_at,opened_at) VALUES(?1,?2,?3,'Seen child',1,1)",params![leaf.to_string(),head.to_string(),url("leaf").as_str()]).unwrap();
-        b.move_to_tree(head).unwrap();
+        b.move_branch(head, MoveTo::OwnTree(TabPlacement::End))
+            .unwrap();
         assert_eq!(b.visit(head).unwrap().opened_at, None);
         assert_eq!(b.tree_target(TreeId(head)).unwrap(), leaf);
         assert_eq!(b.tree_target(TreeId(root)).unwrap(), root);
