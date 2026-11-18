@@ -331,7 +331,21 @@ fn preview(forest: &ForestProjection, entry: &Entry, today: &days::Civil) -> Val
     let mut stack = vec![(tree.id.root(), 0usize)];
     while let Some((id, depth)) = stack.pop() {
         let v = forest.visit(id).unwrap();
-        outline.push(json!({"id":id.to_string(), "depth":depth, "url":v.url.as_str(), "name":super::graph::short_name(forest,id), "last":id==tree.last_visit, "waiting":forest.is_waiting(id)}));
+        let name = super::graph::short_name(forest, id);
+        let label = format!(
+            "{name}, depth {depth}{}{}",
+            if id == tree.last_visit {
+                ", last page"
+            } else {
+                ""
+            },
+            if forest.is_waiting(id) {
+                ", waiting"
+            } else {
+                ""
+            }
+        );
+        outline.push(json!({"id":id.to_string(), "depth":depth, "url":v.url.as_str(), "name":name, "label":label, "last":id==tree.last_visit, "waiting":forest.is_waiting(id)}));
         if outline.len() == OUTLINE_MAX {
             break;
         }

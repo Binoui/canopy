@@ -1614,7 +1614,7 @@ const TREE_MENUS = {
 function treeCard(t, attrs) {
   return `<button class="tree-card" ${attrs} data-id="${t.id}" aria-label="${esc(t.name)}" title="${esc(t.tip)}">`
     + `<span class="pc-tree">${miniHtml(t.mini)}${t.badge ? `<span class="badge">${esc(t.badge)}</span>` : ''}</span><span class="pc-foot"><span class="pc-name">${esc(t.title)}</span>`
-    + (t.waiting ? `<span class="count" title="${t.waiting} waiting">${t.waiting}</span>` : '')
+    + (t.waiting ? `<span class="count" title="${esc(t.waitingTip)}">${t.waiting}</span>` : '')
     + `</span>${t.page ? `<span class="pc-page">${esc(t.page)}</span>` : ''}<span class="pc-meta">${esc(t.meta)}</span></button>`;
 }
 
@@ -1766,7 +1766,7 @@ function forestPreviewHtml(p) {
   return `<div class="pv-art" data-key="${p.key}-art">${miniHtml(p.mini)}</div>`
     + `<div class="pv-title" data-key="${p.key}-title"><b>${esc(p.title)}</b><span>${esc(p.meta)}</span></div>`
     + p.actions.map(a => `<button class="action pv-action" data-key="${p.key}-${a.kind}" data-forest="${a.kind}" data-id="${p.id}">${esc(a.label)}</button>`).join('')
-    + p.outline.map(r => `<button class="pv-row${r.last ? ' last' : ''}${r.waiting ? ' waiting' : ''}" data-key="${p.key}-${r.id}" data-forest="page" data-id="${r.id}" aria-label="${esc(r.name)}, depth ${r.depth}${r.last ? ', last page' : ''}${r.waiting ? ', waiting' : ''}" style="padding-left:${Math.min(r.depth,6)*16}px">${fav(r.url,!r.waiting,14)}<span>${esc(r.name)}</span></button>`).join('')
+    + p.outline.map(r => `<button class="pv-row${r.last ? ' last' : ''}${r.waiting ? ' waiting' : ''}" data-key="${p.key}-${r.id}" data-forest="page" data-id="${r.id}" aria-label="${esc(r.label)}" style="padding-left:${Math.min(r.depth,6)*16}px">${fav(r.url,!r.waiting,14)}<span>${esc(r.name)}</span></button>`).join('')
     + (p.cut ? `<div class="pv-cut" data-key="${p.key}-cut">${esc(p.cut)}</div>` : '');
 }
 function historyItemHtml(i) {

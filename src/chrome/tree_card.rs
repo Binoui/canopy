@@ -54,7 +54,7 @@ pub(super) fn card(forest: &ForestProjection, tree: &TreeSummary, place: Place) 
         "current": matches!(place, Place::OpenBand { current: true }),
         "badge": match place { Place::OpenBand { .. } if tree.pin.is_some() => Some("Saved"), Place::SavedBand if tree.lifecycle.is_open() => Some("Open"), _ => None },
         "page": (place != Place::NewTreePage).then(|| super::graph::short_name(forest, tree.last_visit)),
-        "waiting": tree.pending_count, "meta": meta,
+        "waiting": tree.pending_count, "waitingTip": format!("{} waiting", tree.pending_count), "meta": meta,
         "mini": mini_value(forest, &tree_view::miniature(forest, tree, Fit::CARD)),
         "menu": menu(tree, place),
     })
