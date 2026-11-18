@@ -407,3 +407,102 @@ fn back_is_absent_in_a_tree_with_only_one_read_page() {
     )["back"]
         .is_null());
 }
+
+#[test]
+fn islands_boxes_clear_at_minimum_and_rest_and_chains_stay_compact() {
+    let chain = |n| (0..n).map(|i: usize| i.checked_sub(1)).collect::<Vec<_>>();
+    for parents in [
+        chain(90),
+        chain(500),
+        (0..500).map(|i| (i > 0).then_some(0)).collect(),
+        (0..80)
+            .map(|i| if i == 0 { None } else { Some((i - 1) / 3) })
+            .collect(),
+    ] {
+        let (f, ids) = fixture_with_parents(&parents, false, false);
+        let facts = Facts {
+            forest: &f.forest,
+            previous: Some(ids[0]),
+            live: &f.live,
+            shown: &f.shown,
+        };
+        for level in Level::ALL {
+            // Different sites prevent the low zooms from hiding geometry behind folding.
+            let mut folded = items::fold(&facts, &f.forest.tabs()[0], Level::Near);
+            for item in &mut folded {
+                item.named = true;
+            }
+            for width in [390., 728., 1920.] {
+                let p = Layout::Islands.place(
+                    level,
+                    std::slice::from_ref(&folded),
+                    Room {
+                        width,
+                        height: 800.,
+                    },
+                );
+                for scale in [level.band().min / level.band().rest, 1.] {
+                    for (i, a) in p.items[0].iter().enumerate() {
+                        for (j, b) in p.items[0].iter().enumerate().skip(i + 1) {
+                            assert!(
+                                (a.x - b.x).abs() * scale
+                                    >= (folded[i].width(level) + folded[j].width(level)) / 2.
+                                    || a.y * scale + folded[i].extent(level).1
+                                        <= b.y * scale - folded[j].extent(level).0
+                                    || b.y * scale + folded[j].extent(level).1
+                                        <= a.y * scale - folded[i].extent(level).0,
+                                "Islands overlap {} {level:?} {i} {j}",
+                                parents.len()
+                            );
+                        }
+                    }
+                }
+                if parents[2] == Some(1) {
+                    let root = p.items[0][0];
+                    let max = p.items[0]
+                        .iter()
+                        .map(|v| (v.x - root.x).hypot(v.y - root.y))
+                        .fold(0_f64, f64::max);
+                    let unit = folded
+                        .iter()
+                        .map(|i| {
+                            let (a, b) = i.extent(level);
+                            i.width(level).hypot(2. * a.max(b)) + 20.
+                        })
+                        .fold(1_f64, f64::max)
+                        * level.band().rest
+                        / level.band().min;
+                    assert!(max <= 15. * unit, "chain became a spoke");
+                    assert!(p.items[0].iter().any(|p| p.x < root.x));
+                    assert!(p.items[0].iter().any(|p| p.x > root.x));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn islands_wraps_trees_at_every_resting_zoom() {
+    let (f, _) = fixture(1, false, false);
+    let facts = Facts {
+        forest: &f.forest,
+        previous: None,
+        live: &f.live,
+        shown: &f.shown,
+    };
+    for level in Level::ALL {
+        let trees = (0..20)
+            .map(|_| items::fold(&facts, &f.forest.tabs()[0], level))
+            .collect::<Vec<_>>();
+        let p = Layout::Islands.place(
+            level,
+            &trees,
+            Room {
+                width: 1920.,
+                height: 800.,
+            },
+        );
+        assert!(p.trees[1].x > p.trees[0].x);
+        assert!(p.trees.last().unwrap().y > p.trees[0].y);
+    }
+}

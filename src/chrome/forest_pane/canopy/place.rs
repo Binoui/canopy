@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 pub(super) enum Layout {
     #[default]
     Flow,
+    Islands,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(super) struct Point {
@@ -61,11 +62,13 @@ impl Layout {
     pub fn name(self) -> &'static str {
         match self {
             Self::Flow => "flow",
+            Self::Islands => "islands",
         }
     }
     pub fn edge(self) -> &'static str {
         match self {
             Self::Flow => "curve",
+            Self::Islands => "line",
         }
     }
     pub fn place(self, level: Level, trees: &[Vec<Item>], room: Room) -> Placed {
@@ -74,6 +77,7 @@ impl Layout {
             .iter()
             .map(|items| match self {
                 Self::Flow => flow(items, m, level),
+                Self::Islands => islands(items, m, level),
             })
             .collect();
         let limit = room.width - 48.;
@@ -85,7 +89,7 @@ impl Layout {
         };
         for shape in shapes {
             placed.bounds.push((shape.width, shape.height));
-            let (x, y) = if level == Level::Near {
+            let (x, y) = if self == Self::Flow && level == Level::Near {
                 (
                     0.,
                     occupied.last().map_or(0., |&(_, y, _, h)| y + h + m.gap),
@@ -211,6 +215,92 @@ fn flow(items: &[Item], m: Metrics, level: Level) -> Shape {
             .max(180. * clearance),
         height: bottom - top + m.label + 16.,
         at,
+    }
+}
+fn islands(items: &[Item], m: Metrics, level: Level) -> Shape {
+    use std::f64::consts::PI;
+    let clearance = level.band().rest / level.band().min;
+    let diameter = items
+        .iter()
+        .map(|i| {
+            let (above, below) = i.extent(level);
+            i.width(level).hypot(2. * above.max(below)) + 20.
+        })
+        .fold(1_f64, f64::max)
+        * clearance;
+    let mut children = vec![vec![]; items.len()];
+    let mut weight = vec![1; items.len()];
+    for i in (1..items.len()).rev() {
+        if let Some(p) = items[i].parent {
+            weight[p] += weight[i];
+        }
+    }
+    for (i, item) in items.iter().enumerate() {
+        if let Some(p) = item.parent {
+            children[p].push(i);
+        }
+    }
+    let mut at = vec![Point::default(); items.len()];
+    let mut start = -0.92 * PI;
+    for &child in children.first().into_iter().flatten() {
+        let span = 1.84 * PI * weight[child] as f64 / (items.len() - 1) as f64;
+        let mut ring = (1. / (2. * (span / 2.).min(PI / 2.).sin())).ceil().max(1.) as usize;
+        let mut used = 0;
+        let mut stack = vec![child];
+        while let Some(i) = stack.pop() {
+            let (delta, capacity) = loop {
+                let delta = 2. * (1. / (2. * ring as f64)).asin();
+                let capacity = (span / delta).floor() as usize;
+                if used < capacity {
+                    break (delta, capacity);
+                }
+                ring += 1;
+                used = 0;
+            };
+            let slot = if ring % 2 == 0 {
+                capacity - used - 1
+            } else {
+                used
+            };
+            let angle = start + (span - capacity as f64 * delta) / 2. + (slot as f64 + 0.5) * delta;
+            let radius = ring as f64 * diameter;
+            at[i] = Point {
+                x: radius * angle.cos(),
+                y: radius * angle.sin(),
+            };
+            used += 1;
+            stack.extend(children[i].iter().rev());
+        }
+        start += span;
+    }
+    let left = at
+        .iter()
+        .zip(items)
+        .map(|(p, i)| p.x - i.width(level) / 2. * clearance)
+        .fold(0_f64, f64::min);
+    let right = at
+        .iter()
+        .zip(items)
+        .map(|(p, i)| p.x + i.width(level) / 2. * clearance)
+        .fold(180. * clearance, f64::max);
+    let top = at
+        .iter()
+        .zip(items)
+        .map(|(p, i)| p.y - i.extent(level).0 * clearance)
+        .fold(0_f64, f64::min);
+    let bottom = at
+        .iter()
+        .zip(items)
+        .map(|(p, i)| p.y + i.extent(level).1 * clearance)
+        .fold(0_f64, f64::max);
+    for p in &mut at {
+        p.x -= left;
+        p.y += m.label + 16. - top;
+    }
+    Shape {
+        at,
+        width: right - left,
+        height: bottom - top + m.label + 16.,
     }
 }
 pub(super) fn neighbours(points: &[Point]) -> Vec<[Option<usize>; 4]> {
