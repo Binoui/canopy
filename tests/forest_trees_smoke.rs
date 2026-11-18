@@ -229,6 +229,24 @@ fn main() -> Result<()> {
     println!("PASS three counted lanes, all fourteen settled today, pinned lines, no Find and responsive independent scrolling.");
 
     let t = &trees;
+    click_chrome(&ui, &main_button(t[0]))?;
+    wait("loaded page before lane moves", || {
+        ui.snapshot().is_ok_and(|s| s.current == Some(t[0].root()))
+    })?;
+    key("ctrl+e")?;
+    wait("Trees over a loaded page", || {
+        visible(&ui, "[data-lane=tabs]")
+    })?;
+    assert_eq!(
+        chrome(
+            &ui,
+            &format!(
+                "document.querySelector({:?}).getAttribute('aria-current')",
+                card(t[0])
+            )
+        )?,
+        "true"
+    );
     drop_card(&ui, t[3], "tabs", Some(t[2]))?;
     assert!(
         order(&ui, false).iter().position(|x| *x == t[3])
@@ -251,6 +269,7 @@ fn main() -> Result<()> {
     drop_card(&ui, t[9], "settled", None)?;
     assert!(matches!(place(&ui, t[9]), Place::History { .. }));
     let current = ui.pages.read(|b| b.snapshot())?.current;
+    assert_eq!(current, Some(t[0].root()));
     drop_card(&ui, t[8], "tabs", Some(t[2]))?;
     assert!(place(&ui, t[8]).is_tab());
     assert_eq!(ui.pages.read(|b| b.snapshot())?.current, current);
@@ -370,6 +389,7 @@ fn main() -> Result<()> {
     key("alt+Return")?;
     pump(250);
     assert!(place(&ui, t[1]).is_tab());
+    assert_eq!(ui.pages.read(|b| b.snapshot())?.current, current);
     assert!(visible(&ui, "#forest"));
     for (tree, labels) in [
         (t[0], "Unpin tab|Save for later|Rename|Settle tree"),
@@ -428,6 +448,9 @@ fn main() -> Result<()> {
         &format!("window.heldCardButton=document.querySelector({selector:?})"),
     )?;
     xdo(&["mousedown", "1"])?;
+    wait("nested action pressed", || {
+        chrome(&ui, "canopy.state().buttons").is_ok_and(|v| v == 1)
+    })?;
     ui.dispatch(ChromeIntent::RenameTree(
         t[3],
         "Refresh during button press".into(),
@@ -444,13 +467,18 @@ fn main() -> Result<()> {
     );
     xdo(&["mouseup", "1"])?;
     pump(250);
+    wait("pressed action saves the tree", || {
+        matches!(place(&ui, t[0]), Place::Shelf { .. })
+    })?;
     assert!(matches!(place(&ui, t[0]), Place::Shelf { .. }));
     assert!(visible(&ui, "#forest"));
     let before = order(&ui, true);
     reveal(&ui, t[0])?;
     let end = target(&ui, "tabs", None)?;
     drag(&ui, &main_button(t[0]), end, || {
-        key("Escape")?;
+        xdo(&["key", "Escape"])?;
+        pump(150);
+        assert_eq!(chrome(&ui, "tabDrag")?, serde_json::Value::Null);
         Ok(())
     })?;
     assert_eq!(order(&ui, true), before);
