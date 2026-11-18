@@ -1,7 +1,9 @@
 const PAGE: usize = 60;
 
 mod days;
+mod history;
 mod index;
+mod trees;
 
 use super::{
     tree_card::{self, Place},
@@ -237,8 +239,8 @@ impl ForestPane {
         }
         let value = json!({ "view": open.shown.view().name(), "query": open.query,
             "count": format!("{} open · {} saved · {} in history", frame.forest.open().len(), frame.forest.pinned().len(), index.history.len()),
-            "trees": matches!(open.shown, Shown::Trees).then(|| trees(&frame.forest, &index, &open.query)),
-            "history": match &open.shown { Shown::History(c) => Some(history(&frame.forest, &index, &rows, c, &*self.calendar)), _ => None } });
+            "trees": matches!(open.shown, Shown::Trees).then(|| trees::value(&frame.forest, &index, &open.query)),
+            "history": match &open.shown { Shown::History(c) => Some(history::value(&frame.forest, &index, &rows, c, &*self.calendar)), _ => None } });
         if open.sent.as_ref() == Some(&value) {
             return Reply::Unchanged;
         }
@@ -266,98 +268,6 @@ fn resolve(anchor: Option<Anchor>, rows: &[&Entry]) -> Option<usize> {
             .unwrap_or(a.at.min(rows.len() - 1))
     }))
 }
-fn trees(forest: &ForestProjection, index: &Index, query: &str) -> Value {
-    let key = query.trim().to_lowercase();
-    let current = forest.current().and_then(|id| forest.tree_of(id));
-    let mut items = Vec::new();
-    for (band, title, trees) in [
-        ("open", "Open", forest.open().iter().collect::<Vec<_>>()),
-        ("saved", "Saved", forest.pinned()),
-    ] {
-        items.push(json!({"kind":"band", "key":format!("band-{band}"), "title":title, "detail":plural(trees.len(), "tree")}));
-        for tree in trees.iter().filter(|t| index.admits(t.id, &key)) {
-            let place = if band == "open" {
-                Place::OpenBand {
-                    current: current == Some(tree.id),
-                }
-            } else {
-                Place::SavedBand
-            };
-            let mut card = tree_card::card(forest, tree, place);
-            card["kind"] = json!("card");
-            card["key"] = json!(format!("{band}-{}", tree.id.root()));
-            items.push(card);
-        }
-        if band == "saved" && trees.is_empty() {
-            items.push(json!({"kind":"hint", "key":"saved-hint", "text":"Save a tree from its menu to keep it here for later."}));
-        }
-    }
-    let empty = (!items.iter().any(|i| i["kind"] == "card") && !key.is_empty())
-        .then_some("No open or saved tree matches.");
-    json!({"items":items, "empty":empty})
-}
-fn history(
-    forest: &ForestProjection,
-    index: &Index,
-    rows: &[&Entry],
-    cursor: &Cursor,
-    calendar: &dyn Calendar,
-) -> Value {
-    let today = calendar.now();
-    let mut items = Vec::new();
-    let shown = &rows[..cursor.reach.min(rows.len())];
-    for run in shown.chunk_by(|a, b| a.at.date == b.at.date) {
-        let e = run[0];
-        items.push(json!({"kind":"day", "key":format!("day-{}",e.at.date), "label":e.at.label(&today), "count":plural(rows.iter().filter(|r| r.at.date == e.at.date).count(), "tree")}));
-        for e in run {
-            let tree = forest.trees().iter().find(|t| t.id == e.tree).unwrap();
-            let sites = &index.facts[&e.tree].sites;
-            let selected = cursor.anchor.is_some_and(|a| a.tree == e.tree);
-            items.push(json!({"kind":"row", "key":format!("row-{}",e.tree.root()), "id":e.tree.root().to_string(), "time":e.at.clock,
-                "title":tree.title, "icons":sites.iter().take(3).map(|s| json!({"url":s.sample.as_str()})).collect::<Vec<_>>(),
-                "more": (sites.len()>3).then(|| format!("+{}",sites.len()-3)), "sites":tree_card::sites_line(sites,3),
-                "pages":plural(tree.page_count,"page"), "selected":selected,
-                "name":format!("{}, {}, {}",tree.title,plural(tree.page_count,"page"),e.at.when(&today)), "menu":tree_card::menu(tree,Place::History)}));
-        }
-    }
-    json!({"items":items, "more":(shown.len()<rows.len()).then(|| json!({"seen":shown.len(), "label":format!("Show {} older trees",rows.len()-shown.len())})), "preview":cursor.anchor.and_then(|a| rows.iter().find(|e| e.tree == a.tree)).map(|e| preview(forest,e,&today)),
-        "empty":rows.is_empty().then_some(if index.history.is_empty() { "No settled trees yet. A tree you settle waits here." } else { "No settled tree matches." })})
-}
-
-const OUTLINE_MAX: usize = 40;
-fn preview(forest: &ForestProjection, entry: &Entry, today: &days::Civil) -> Value {
-    let tree = forest.trees().iter().find(|t| t.id == entry.tree).unwrap();
-    let mut outline = Vec::new();
-    let mut stack = vec![(tree.id.root(), 0usize)];
-    while let Some((id, depth)) = stack.pop() {
-        let v = forest.visit(id).unwrap();
-        let name = super::graph::short_name(forest, id);
-        let label = format!(
-            "{name}, depth {depth}{}{}",
-            if id == tree.last_visit {
-                ", last page"
-            } else {
-                ""
-            },
-            if forest.is_waiting(id) {
-                ", waiting"
-            } else {
-                ""
-            }
-        );
-        outline.push(json!({"id":id.to_string(), "depth":depth, "url":v.url.as_str(), "name":name, "label":label, "last":id==tree.last_visit, "waiting":forest.is_waiting(id)}));
-        if outline.len() == OUTLINE_MAX {
-            break;
-        }
-        stack.extend(forest.children(id).iter().rev().map(|&c| (c, depth + 1)));
-    }
-    json!({"id":tree.id.root().to_string(), "key":format!("pv-{}",tree.id.root()), "title":tree.title,
-        "meta":format!("{} · last used {}",plural(tree.page_count,"page"),entry.at.when(today)),
-        "mini":tree_card::mini_value(forest,&tree_view::miniature(forest,tree,Fit::PREVIEW)),
-        "actions":[{"kind":"reopen","label":"Reopen"},{"kind":"save","label":"Save"}],
-        "cut":(tree.page_count>outline.len()).then(||format!("{} more pages",tree.page_count-outline.len())), "outline":outline})
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -510,7 +420,7 @@ mod tests {
         let v = value(p.input(Input::Open(View::History), &f));
         let preview = &v["history"]["preview"];
         let outline = preview["outline"].as_array().unwrap();
-        assert_eq!(outline.len(), OUTLINE_MAX);
+        assert_eq!(outline.len(), history::OUTLINE_MAX);
         assert_eq!(outline[0]["depth"], 0);
         assert_eq!(outline[39]["depth"], 39);
         assert_eq!(preview["cut"], "40 more pages");

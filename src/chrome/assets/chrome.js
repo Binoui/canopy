@@ -1731,127 +1731,6 @@ function renderStart() {
   }
 }
 
-// ---------- forest view ----------
-
-function toggleForest(view = 'trees', fromChrome = true) {
-  if (S.overlay !== 'forest') {
-    S.forestWants = view;
-    toggleOverlay('forest');
-    if (!fromChrome && S.overlay === 'forest') rememberFocus('overlay', document.body);
-  } else if (!S.forest) closeOverlay();
-  else post({ t: 'forest', do: 'toggle', view });
-}
-function focusForest() {
-  post({ t: 'focus', target: 'chrome' });
-  const target = S.forest?.view === 'trees'
-    ? $('forest-trees').querySelector('.tree-card[aria-current="true"]') ?? $('forest-trees').querySelector('.tree-card')
-    : $('forest-list').querySelector('[aria-selected="true"]');
-  (target ?? $('forest-find')).focus({ preventScroll: true });
-  target?.scrollIntoView({ block: 'nearest' });
-}
-function renderForest() {
-  const f = S.forest;
-  if (!f || S.overlay !== 'forest') return;
-  const within = $('forest').contains(document.activeElement);
-  $('forest-count').textContent = f.count;
-  if (document.activeElement !== $('forest-find') || !f.query) $('forest-find').value = f.query;
-  for (const b of $('forest-views').children) b.setAttribute('aria-pressed', String(b.dataset.view === f.view));
-  $('forest-trees').hidden = f.view !== 'trees';
-  $('forest-history').hidden = f.view !== 'history';
-  if (f.view === 'trees') patchChildren($('forest-trees'), f.trees.items.map(treesItemHtml).join(''));
-  else renderHistory(f.history);
-  const empty = f.view === 'trees' ? f.trees.empty : f.history.empty;
-  $('forest-empty').hidden = !empty;
-  $('forest-empty').textContent = empty ?? '';
-  if (within && (!$('forest').contains(document.activeElement) || !document.activeElement.getClientRects().length)) focusForest();
-}
-function treesItemHtml(i) {
-  if (i.kind === 'band') return `<div class="band-head" data-key="${i.key}"><span>${esc(i.title)}</span><span class="hint">${esc(i.detail)}</span></div>`;
-  if (i.kind === 'hint') return `<div class="hint-line" data-key="${i.key}">${esc(i.text)}</div>`;
-  return treeCard(i, `data-key="${i.key}" data-id="${i.id}" data-forest="card" data-tree-menu aria-current="${i.current}"`);
-}
-function renderHistory(h) {
-  const list = $('forest-list');
-  const inList = list.contains(document.activeElement);
-  patchChildren(list, h.items.map(historyItemHtml).join('') + (h.more ? `<button class="forest-more" data-key="more" data-forest="more" data-seen="${h.more.seen}">${esc(h.more.label)}</button>` : ''));
-  patchChildren($('forest-preview'), h.preview ? forestPreviewHtml(h.preview) : '');
-  $('forest-preview').hidden = !h.preview;
-  if (inList) {
-    const row = list.querySelector('[aria-selected="true"]');
-    row?.focus({ preventScroll: true }); row?.scrollIntoView({ block: 'nearest' });
-  }
-}
-function forestPreviewHtml(p) {
-  return `<div class="pv-art" data-key="${p.key}-art">${miniHtml(p.mini)}</div>`
-    + `<div class="pv-title" data-key="${p.key}-title"><b>${esc(p.title)}</b><span>${esc(p.meta)}</span></div>`
-    + p.actions.map(a => `<button class="action pv-action" data-key="${p.key}-${a.kind}" data-forest="${a.kind}" data-id="${p.id}">${esc(a.label)}</button>`).join('')
-    + p.outline.map(r => `<button class="pv-row${r.last ? ' last' : ''}${r.waiting ? ' waiting' : ''}" data-key="${p.key}-${r.id}" data-forest="page" data-id="${r.id}" aria-label="${esc(r.label)}" style="padding-left:${Math.min(r.depth,6)*16}px">${fav(r.url,!r.waiting,14)}<span>${esc(r.name)}</span></button>`).join('')
-    + (p.cut ? `<div class="pv-cut" data-key="${p.key}-cut">${esc(p.cut)}</div>` : '');
-}
-function historyItemHtml(i) {
-  if (i.kind === 'day') return `<div class="forest-day" data-key="${i.key}" role="presentation"><b>${esc(i.label)}</b><span>${esc(i.count)}</span></div>`;
-  return `<button class="forest-row" role="option" data-key="${i.key}" data-id="${i.id}" data-forest="row" data-tree-menu aria-selected="${i.selected}" tabindex="${i.selected ? 0 : -1}" aria-label="${esc(i.name)}">`
-    + `<span class="tm">${esc(i.time)}</span><span class="forest-icons">${i.icons.map(n => fav(n.url, true, 16)).join('')}${i.more ? `<span>${esc(i.more)}</span>` : ''}</span>`
-    + `<span class="nm">${esc(i.title)}</span><span class="st">${esc(i.sites)}</span><span class="pg">${esc(i.pages)}</span></button>`;
-}
-function openForestTree(id) { uncover(); intent('select-tree', { id }); }
-$('forest').addEventListener('click', (e) => {
-  const el = e.target.closest('[data-forest]');
-  if (!el) return;
-  const id = el.dataset.id;
-  if (el.dataset.forest === 'card') openForestTree(id);
-  else if (el.dataset.forest === 'row') post({ t: 'forest', do: 'select', tree: id });
-  else if (el.dataset.forest === 'reopen') openForestTree(id);
-  else if (el.dataset.forest === 'more') post({ t: 'forest', do: 'more', seen: Number(el.dataset.seen) });
-  else if (el.dataset.forest === 'save') intent('pin-tree', { id, pinned: true });
-  else if (el.dataset.forest === 'page') { uncover(); intent('restore', { id }); }
-});
-$('forest').addEventListener('contextmenu', (e) => {
-  const el = e.target.closest('[data-tree-menu]');
-  if (!el) return;
-  e.preventDefault();
-  openPopover('tree', el, { source: 'forest', id: el.dataset.id });
-  post({ t: 'focus', target: 'chrome' });
-  $('popover').querySelector('button')?.focus();
-});
-$('forest').addEventListener('dblclick', (e) => {
-  const row = e.target.closest('[data-forest="row"]');
-  if (row) openForestTree(row.dataset.id);
-});
-$('forest-views').addEventListener('click', (e) => {
-  const b = e.target.closest('[data-view]');
-  if (b) post({ t: 'forest', do: 'show', view: b.dataset.view });
-});
-$('forest-find').addEventListener('input', () => post({ t: 'forest', do: 'find', query: $('forest-find').value }));
-$('forest-close').addEventListener('click', closeOverlay);
-$('forest').querySelector('.scrim').addEventListener('mousedown', closeOverlay);
-$('forest').addEventListener('keydown', (e) => {
-  if (S.popover || e.ctrlKey || e.altKey || e.metaKey || e.isComposing) return;
-  const field = e.target === $('forest-find');
-  const row = e.target.closest('.forest-row'), card = e.target.closest('.tree-card');
-  if (!field && [...e.key].length === 1 && e.key !== ' ') {
-    $('forest-find').focus(); $('forest-find').value += e.key;
-    post({ t: 'forest', do: 'find', query: $('forest-find').value });
-  } else if (field && e.key === 'ArrowDown') focusForest();
-  else if (row && ['ArrowUp', 'ArrowDown'].includes(e.key)) post({ t: 'forest', do: 'step', by: e.key === 'ArrowUp' ? -1 : 1 });
-  else if (row && e.key === 'Enter') openForestTree(row.dataset.id);
-  else if (card && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) moveForestCard(card, e.key);
-  else return;
-  e.preventDefault();
-});
-function moveForestCard(card, key) {
-  const cards = [...$('forest-trees').querySelectorAll('.tree-card')];
-  let next;
-  if (key === 'ArrowLeft' || key === 'ArrowRight') next = cards[clamp(cards.indexOf(card) + (key === 'ArrowRight' ? 1 : -1), 0, cards.length - 1)];
-  else {
-    const a = card.getBoundingClientRect(), down = key === 'ArrowDown';
-    next = cards.map(c => [c, c.getBoundingClientRect()])
-      .filter(([,r]) => down ? r.top > a.bottom - 1 : r.bottom < a.top + 1)
-      .sort(([,r],[,s]) => (down ? r.top - s.top : s.bottom - r.bottom) || Math.abs(r.left-a.left)-Math.abs(s.left-a.left))[0]?.[0];
-  }
-  next?.focus();
-}
-
 // ---------- reader ----------
 
 function showReader(html, list) {
@@ -2424,7 +2303,7 @@ document.addEventListener('mousedown', (event) => {
 new ResizeObserver(() => fitTabs()).observe($('tabs'));
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
 
-post({ t: 'ready' });
+document.addEventListener('DOMContentLoaded', () => post({ t: 'ready' }));
 
 function answerFormReturn(proceed, focusPage = true) {
   if (!S.formReturn) return;

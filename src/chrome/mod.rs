@@ -1226,6 +1226,30 @@ fn serve(request: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
         ),
         "/chrome.css" => respond("text/css", Cow::Borrowed(CSS.as_bytes())),
         "/chrome.js" => respond("text/javascript", Cow::Borrowed(SCRIPT.as_bytes())),
+        "/forest.js" => respond(
+            "text/javascript",
+            Cow::Borrowed(include_bytes!("assets/forest.js")),
+        ),
+        "/forest.css" => respond(
+            "text/css",
+            Cow::Borrowed(include_bytes!("assets/forest.css")),
+        ),
+        "/forest-trees.js" => respond(
+            "text/javascript",
+            Cow::Borrowed(include_bytes!("assets/forest-trees.js")),
+        ),
+        "/forest-trees.css" => respond(
+            "text/css",
+            Cow::Borrowed(include_bytes!("assets/forest-trees.css")),
+        ),
+        "/forest-history.js" => respond(
+            "text/javascript",
+            Cow::Borrowed(include_bytes!("assets/forest-history.js")),
+        ),
+        "/forest-history.css" => respond(
+            "text/css",
+            Cow::Borrowed(include_bytes!("assets/forest-history.css")),
+        ),
         "/inter.ttf" => respond("font/ttf", Cow::Borrowed(INTER)),
         "/icon" => {
             let query = request.uri().query().unwrap_or_default();
