@@ -1606,6 +1606,7 @@ function miniHtml(mini) {
 }
 
 const TREE_MENUS = {
+  forest: (id) => S.forest?.trees?.items.find(i => i.id === id)?.menu ?? S.forest?.history?.items.find(i => i.id === id)?.menu,
   tab: (id) => S.frame?.tabs.find((t) => t.id === id)?.menu,
   start: (id) => S.frame?.start?.pinned.find((c) => c.id === id)?.menu,
 };
@@ -1785,6 +1786,14 @@ $('forest').addEventListener('click', (e) => {
   else if (el.dataset.forest === 'save') intent('pin-tree', { id, pinned: true });
   else if (el.dataset.forest === 'page') { uncover(); intent('restore', { id }); }
 });
+$('forest').addEventListener('contextmenu', (e) => {
+  const el = e.target.closest('[data-tree-menu]');
+  if (!el) return;
+  e.preventDefault();
+  openPopover('tree', el, { source: 'forest', id: el.dataset.id });
+  post({ t: 'focus', target: 'chrome' });
+  $('popover').querySelector('button')?.focus();
+});
 $('forest').addEventListener('dblclick', (e) => {
   const row = e.target.closest('[data-forest="row"]');
   if (row) openForestTree(row.dataset.id);
@@ -1899,6 +1908,7 @@ window.canopy = {
     $('forest').hidden = false;
     renderForest();
     if (first) focusForest();
+    if (S.popover?.data?.source === 'forest') refreshPopover();
   },
   loading(value) {
     const previous = S.loading;
