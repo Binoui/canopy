@@ -1613,7 +1613,8 @@ const TREE_MENUS = {
 
 function treeCard(t, attrs) {
   return `<button class="tree-card" ${attrs} data-id="${t.id}" aria-label="${esc(t.name)}" title="${esc(t.tip)}">`
-    + `<span class="pc-tree">${miniHtml(t.mini)}${t.badge ? `<span class="badge">${esc(t.badge)}</span>` : ''}</span><span class="pc-foot"><span class="pc-name">${esc(t.title)}</span>`
+    + `<span class="pc-tree">${miniHtml(t.mini)}</span><span class="pc-foot"><span class="pc-name">${esc(t.title)}</span>`
+    + (t.badge ? `<span class="badge">${esc(t.badge)}</span>` : '')
     + (t.waiting ? `<span class="count" title="${esc(t.waitingTip)}">${t.waiting}</span>` : '')
     + `</span>${t.page ? `<span class="pc-page">${esc(t.page)}</span>` : ''}<span class="pc-meta">${esc(t.meta)}</span></button>`;
 }

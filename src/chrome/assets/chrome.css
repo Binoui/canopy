@@ -382,7 +382,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 #forest-trees .band-head { margin: 3px 0 0; gap: 8px; }
 .tree-card[aria-current="true"] { border-color: var(--green); }
 .tree-card .pc-page { display: block; color: var(--muted); padding: 0 9px 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
-.tree-card .badge { position: absolute; right: 6px; top: 5px; background: var(--hover); color: var(--muted); border-radius: 4px; padding: 2px 5px; font-size: 10px; }
+.tree-card .badge { flex: none; background: var(--hover); color: var(--muted); border-radius: 4px; padding: 2px 5px; font-size: 10px; }
 .forest-split { display: flex; gap: 16px; overflow: hidden; }
 #forest-list { flex: 0 1 720px; min-width: 0; overflow: auto; }
 #forest-preview { flex: 1 1 380px; min-width: 0; overflow: auto; background: var(--tile); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
