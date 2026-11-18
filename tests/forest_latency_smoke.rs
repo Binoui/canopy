@@ -86,7 +86,10 @@ fn main() -> Result<()> {
         );
         println!(
             "payload {} bytes, rows {}",
-            chrome(&ui, "JSON.stringify(S.forest).length")?,
+            chrome(
+                &ui,
+                "new TextEncoder().encode(JSON.stringify(S.forest)).length"
+            )?,
             chrome(&ui, "document.querySelectorAll('.forest-row').length")?
         );
         if round == 0 && std::env::var_os("FOREST_FIND").is_some() {
