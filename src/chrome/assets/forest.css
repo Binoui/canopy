@@ -24,3 +24,5 @@
 
 #forest-undo { flex:none; display:flex; align-items:center; gap:12px; padding:10px 14px; border-top:1px solid var(--border); }
 #forest-undo button { padding:5px 10px; background:var(--hover); border-radius:6px; }
+
+@container (max-width: 700px) { .forest-toolbar #forest-count { flex:1; } }

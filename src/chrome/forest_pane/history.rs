@@ -1,4 +1,10 @@
+use super::super::{
+    tree_view::{self, Fit},
+    view::plural,
+};
+use super::index::Entry;
 use super::*;
+use crate::forest::ForestProjection;
 #[derive(Debug)]
 pub(in crate::chrome) enum Input {
     Select(TreeId),
@@ -66,7 +72,13 @@ impl State {
             .filter(|e| index.admits(e.tree, &key))
             .collect()
     }
-    pub fn input(&mut self, input: Input, index: &Index, _forest: &ForestProjection) -> Reply {
+    pub fn input(
+        &mut self,
+        input: Input,
+        index: &Index,
+        _forest: &ForestProjection,
+        _calendar: &dyn Calendar,
+    ) -> Reply {
         match input {
             Input::Find(query) => {
                 if query != self.query {

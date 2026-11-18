@@ -1,4 +1,6 @@
+use super::super::view::plural;
 use super::*;
+use crate::forest::ForestProjection;
 #[derive(Default)]
 pub(super) struct State {
     pub query: String,
@@ -27,13 +29,23 @@ impl State {
         changed
     }
 
-    pub fn input(&mut self, input: Input, _forest: &ForestProjection) -> Reply {
+    pub fn input(
+        &mut self,
+        input: Input,
+        _forest: &ForestProjection,
+        _calendar: &dyn Calendar,
+    ) -> Reply {
         match input {
             Input::Find(q) => self.query = q,
         }
         Reply::Unchanged
     }
-    pub fn value(&self, forest: &ForestProjection, index: &Index) -> Value {
+    pub fn value(
+        &self,
+        forest: &ForestProjection,
+        index: &Index,
+        _calendar: &dyn Calendar,
+    ) -> Value {
         value(forest, index, &self.query)
     }
 }

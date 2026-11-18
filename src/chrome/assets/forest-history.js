@@ -1,4 +1,5 @@
 function renderHistory(h) {
+  $('forest-find').hidden = false;
   const list = $('forest-list');
   const inList = list.contains(document.activeElement);
   patchChildren(list, h.items.map(historyItemHtml).join('') + (h.more ? `<button class="forest-more" data-key="more" data-forest="more" data-seen="${h.more.seen}">${esc(h.more.label)}</button>` : ''));
@@ -40,3 +41,6 @@ function forestHistoryKey(e) {
   else if(!forestFindKey(e,'find'))return;
   e.preventDefault();
 }
+
+function forestHistoryFocus() { return $('forest-list').querySelector('[aria-selected="true"]') ?? $('forest-find'); }
+function forestHistoryMenu(id) { return S.forest?.history?.items?.find(i=>i.id===id)?.menu; }

@@ -17,7 +17,6 @@
   #forest-preview { flex: none; max-height: 240px; order: -1; }
   #forest-list { flex: 1; }
   .forest-row .st { display: none; }
-  .forest-toolbar #forest-count { flex: 1; }
 }
 .pv-art { display: flex; align-items: center; justify-content: center; height: 150px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 10px; }
 .pv-title { display: flex; flex-wrap: wrap; gap: 7px; align-items: baseline; margin-bottom: 8px; }

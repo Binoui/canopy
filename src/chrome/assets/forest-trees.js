@@ -24,3 +24,7 @@ function forestTreesKey(e) {
   else if (!forestFindKey(e,'trees-find')) return;
   e.preventDefault();
 }
+
+function renderForestTrees(value) { $('forest-find').hidden = false; patchChildren($('forest-trees'),value.items.map(treesItemHtml).join('')); }
+function forestTreesFocus() { return $('forest-trees').querySelector('.tree-card[aria-current="true"]') ?? $('forest-trees').querySelector('.tree-card') ?? $('forest-find'); }
+function forestTreesMenu(id) { return S.forest?.trees?.items?.find(i=>i.id===id)?.menu; }

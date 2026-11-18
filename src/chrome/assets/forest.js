@@ -10,10 +10,8 @@ function toggleForest(view = 'trees', fromChrome = true) {
 }
 function focusForest() {
   post({ t: 'focus', target: 'chrome' });
-  const target = S.forest?.view === 'trees'
-    ? $('forest-trees').querySelector('.tree-card[aria-current="true"]') ?? $('forest-trees').querySelector('.tree-card')
-    : $('forest-list').querySelector('[aria-selected="true"]');
-  (target ?? $('forest-find')).focus({ preventScroll: true });
+  const target = S.forest?.view === 'trees' ? forestTreesFocus() : forestHistoryFocus();
+  (target ?? $('forest-close')).focus({preventScroll:true});
   target?.scrollIntoView({ block: 'nearest' });
 }
 function renderForest() {
@@ -27,7 +25,7 @@ function renderForest() {
   for (const b of $('forest-views').children) b.setAttribute('aria-pressed', String(b.dataset.view === f.view));
   $('forest-trees').hidden = f.view !== 'trees';
   $('forest-history').hidden = f.view !== 'history';
-  if (f.view === 'trees') patchChildren($('forest-trees'), f.trees.items.map(treesItemHtml).join(''));
+  if (f.view === 'trees') renderForestTrees(f.trees);
   else renderHistory(f.history);
   const empty = f.view === 'trees' ? f.trees.empty : f.history.empty;
   $('forest-empty').hidden = !empty;
@@ -73,3 +71,5 @@ function forestFindKey(e, action) {
   if(field && e.key==='ArrowDown') {focusForest();return true;}
   return false;
 }
+
+function forestMenu(id) { return S.forest?.view === 'trees' ? forestTreesMenu(id) : forestHistoryMenu(id); }

@@ -1638,7 +1638,7 @@ function miniHtml(mini) {
 }
 
 const TREE_MENUS = {
-  forest: (id) => S.forest?.trees?.items.find(i => i.id === id)?.menu ?? S.forest?.history?.items.find(i => i.id === id)?.menu,
+  forest: (id) => forestMenu(id),
   tab: (id) => S.frame?.tabs.find((t) => t.id === id)?.menu,
   start: (id) => S.frame?.start?.pinned.find((c) => c.id === id)?.menu,
 };

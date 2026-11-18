@@ -7,14 +7,12 @@ mod trees;
 
 use super::{
     tree_card::{self, Act},
-    tree_view::{self, Fit},
-    view::plural,
     ChromeFrame,
 };
-use crate::{browser::TreeId, forest::ForestProjection};
+use crate::browser::TreeId;
 use anyhow::{bail, Context, Result};
 use days::{Calendar, LocalCalendar};
-use index::{Entry, Index};
+use index::Index;
 use serde_json::{json, Value};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,7 +193,7 @@ impl ForestPane {
                         }
                         Input::Trees(i) => {
                             if let Shown::Trees(t) = &mut open.shown {
-                                let reply = t.input(i, &frame.forest);
+                                let reply = t.input(i, &frame.forest, &*self.calendar);
                                 if !matches!(reply, Reply::Unchanged) {
                                     return reply;
                                 }
@@ -204,7 +202,7 @@ impl ForestPane {
                         Input::History(i) => {
                             if let Shown::History(h) = &mut open.shown {
                                 let index = Index::build(&frame.forest, &*self.calendar);
-                                let reply = h.input(i, &index, &frame.forest);
+                                let reply = h.input(i, &index, &frame.forest, &*self.calendar);
                                 if !matches!(reply, Reply::Unchanged) {
                                     return reply;
                                 }
@@ -233,7 +231,7 @@ impl ForestPane {
         let value = json!({ "view": open.shown.view().name(), "query": open.shown.query(),
             "undo":open.undo.as_ref().map(|(id,text)|json!({"id":id.to_string(),"text":text,"label":"Undo"})),
             "count": format!("{} tabs · {} saved for later · {} in history", frame.forest.tabs().len(), frame.forest.shelf().len(), index.history.len()),
-            "trees": match &open.shown {Shown::Trees(t)=>Some(t.value(&frame.forest,&index)),_=>None},
+            "trees": match &open.shown {Shown::Trees(t)=>Some(t.value(&frame.forest,&index,&*self.calendar)),_=>None},
             "history": match &mut open.shown { Shown::History(c) => Some(c.value(&frame.forest, &index, &*self.calendar)), _ => None } });
         if open.sent.as_ref() == Some(&value) {
             return Reply::Unchanged;
@@ -246,6 +244,7 @@ impl ForestPane {
 mod tests {
     use super::*;
     use crate::browser::{Browser, Snapshot, TreeState, VisitId};
+    use crate::forest::ForestProjection;
     pub(super) fn fixture(count: usize, pages: usize) -> ChromeFrame {
         let dir = tempfile::tempdir().unwrap();
         let mut b = Browser::open(&dir.path().join("db")).unwrap();
