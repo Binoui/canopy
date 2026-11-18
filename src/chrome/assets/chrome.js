@@ -150,7 +150,7 @@ function cancel(name) {
 }
 
 function enterNode(key) {
-  if (S.layer !== 'none' || S.overlay) return;
+  if (nativeDrag || S.layer !== 'none' || S.overlay) return;
   S.hovered = key;
   cancel('hideList');
   schedule('showList', 250, () => { if (S.hovered === key) showList(key, 'pointer'); });
@@ -160,6 +160,7 @@ function listHasKeyboardFocus() {
     || strip.elements.get(S.list.key) === document.activeElement);
 }
 function leaveNode(event) {
+  if (nativeDrag) return;
   S.hovered = null;
   cancel('showList');
   if (event.relatedTarget?.closest('#strip-list')) return;
@@ -406,6 +407,7 @@ function buildStrip(layout) {
     el.style.transformOrigin = '0 0';
     if (!['run', 'earlier', 'after'].includes(n.kind)) el.dataset.page = n.page;
     else delete el.dataset.page;
+    el.draggable = !!el.dataset.page;
     el.className = `node ${n.kind}` + (n.named ? ' named' : '') + markClass(v) + (el.classList.contains('waiting-pulse') ? ' waiting-pulse' : '');
     el.setAttribute('aria-label', n.name);
     el.setAttribute('aria-current', n.kind === 'pill' ? 'page' : 'false');
@@ -582,6 +584,7 @@ let previewSeq = 0;
 const listItem = () => strip.target?.nodes.find((n) => n.id === S.list?.key);
 
 function showList(key, origin = inputOrigin) {
+  if (nativeDrag) return;
   if (S.layer !== 'none' || S.overlay || S.surface !== 'reading') return;
   cancel('hideList');
   cancel('showList');
@@ -602,6 +605,7 @@ function requestListPreview() {
 }
 
 function hideList() {
+  if (nativeDrag) return;
   cancel('showList');
   cancel('hideList');
   S.list = null;
@@ -711,6 +715,7 @@ function renderList() {
     cursor = el.nextElementSibling;
   }
   for (const el of [...list.children]) if (!kept.has(el.dataset.key)) el.remove();
+  for (const el of list.querySelectorAll('.bl-head, .menu-row[data-id]')) el.draggable = !!(el.dataset.page || el.dataset.id);
   list.dataset.item = item.id;
   list.hidden = false;
   positionList();
@@ -1937,6 +1942,10 @@ let nextMoveRequest = 0;
 
 window.canopy = {
   branchMoveChoices(reply) {
+    if (pagePress?.request === reply.request && pagePress.head === reply.head) {
+      pagePress.choices = { parents: new Set(reply.parents), trees: new Set(reply.trees.map(tree => tree.id)), ownTree: reply.ownTree, warning: reply.warning };
+      return;
+    }
     const picker = S.popover;
     if (picker?.kind !== 'move-tree' || picker.data.request !== reply.request || picker.data.head !== reply.head) return;
     picker.data.choices = reply;
@@ -2254,7 +2263,7 @@ window.canopy = {
 // A release must finish dispatching its click before any pressed element is replaced.
 const refresh = { buttons: 0, pending: new Map(), release: null };
 function rebuild(kind, apply, args) {
-  if (!refresh.buttons) { apply(...args); return; }
+  if (!refresh.buttons && !nativeDrag) { apply(...args); return; }
   const key = kind === 'icons' ? `icons:${args[0]}` : kind;
   refresh.pending.delete(key);
   refresh.pending.set(key, { apply, args });
@@ -2263,6 +2272,7 @@ function releaseRefresh() {
   clearTimeout(refresh.release);
   refresh.release = setTimeout(() => {
     refresh.buttons = 0;
+    if (nativeDrag) return;
     const pending = [...refresh.pending.values()];
     refresh.pending.clear();
     for (const { apply, args } of pending) apply(...args);
@@ -2280,7 +2290,8 @@ for (const type of ['mousedown', 'mouseup', 'mousemove', 'mouseover']) {
     } else if (refresh.buttons) releaseRefresh();
   }, true);
 }
-window.addEventListener('blur', () => { releaseRefresh(); hideList(); });
+window.addEventListener('blur', () => { releaseRefresh(); if (!nativeDrag) hideList(); });
+window.addEventListener('mouseup', () => { if (!nativeDrag) pagePress = null; }, true);
 document.addEventListener('focusout', (event) => {
   if (!S.list || S.popover) return;
   const next = event.relatedTarget;
@@ -2345,70 +2356,169 @@ $('find-next').addEventListener('click', () => findIntent('next'));
 $('find-close').addEventListener('click', () => findIntent('close'));
 
 const treeDragType = 'application/x-canopy-tree';
-let tabDrag = null;
+const pageDragType = 'application/x-canopy-page';
+const PAGE_DRAG_NODES = '#strip-nodes .node[data-page], #strip-list .bl-head[data-page], #strip-list .menu-row[data-id]';
+let pagePress = null;
+let nativeDrag = null;
 
-function clearTabDrop() {
-  $('tab-row').classList.remove('drop-target');
-  $('tab-row').style.removeProperty('--tab-drop-x');
+function pageElement(target) {
+  if (S.overlay || S.popover || S.palette || S.reader || S.formReturn
+      || target.closest('[data-act], [data-files], .leaves, input, textarea, [contenteditable]')) return null;
+  const el = target.closest(PAGE_DRAG_NODES);
+  return el?.getClientRects().length ? el : null;
 }
 
-function finishTabDrag() {
-  clearTabDrop();
-  for (const tab of $('tab-row').children) tab.classList.remove('dragging');
-  tabDrag = null;
-  // A native drag can finish outside chrome without delivering mouseup.
+document.addEventListener('mousedown', event => {
+  if (nativeDrag) return;
+  pagePress = null;
+  const source = event.button === 0 && pageElement(event.target);
+  if (!source) return;
+  const head = source.dataset.page || source.dataset.id;
+  pagePress = { kind: 'page', head, source, request: ++nextMoveRequest, choices: null };
+  post({ t: 'branch-move-choices', request: pagePress.request, head });
+}, true);
+
+function clearDragCue() {
+  $('tab-row').classList.remove('drop-target');
+  $('tab-row').style.removeProperty('--tab-drop-x');
+  for (const el of document.querySelectorAll('.page-drop-allowed, .page-drop-refused')) el.classList.remove('page-drop-allowed', 'page-drop-refused');
+  $('page-drag-warning').hidden = true;
+}
+
+function finishNativeDrag() {
+  clearDragCue();
+  for (const el of document.querySelectorAll('.dragging')) el.classList.remove('dragging');
+  nativeDrag?.image?.remove();
+  nativeDrag = null;
+  pagePress = null;
+  cancel('showList');
+  cancel('hideList');
+  // Native drag can finish outside chrome without delivering mouseup.
   releaseRefresh();
 }
 
-function tabDropAt(x) {
-  const row = $('tab-row');
-  const visible = [...row.children].filter(tab => !tab.hidden);
+function tabPlacementAt(x, excludedRoot = null) {
+  const tabs = S.frame.tabs.filter(tab => tab.id !== excludedRoot);
+  const visible = [...$('tab-row').children].filter(tab => !tab.hidden && tab.dataset.id !== excludedRoot);
   const before = visible.find(tab => x < tab.getBoundingClientRect().left + tab.offsetWidth / 2);
-  const anchor = before ?? visible[visible.length - 1];
-  if (!anchor) return null;
+  const last = visible[visible.length - 1];
+  const anchor = before ?? last;
+  if (!anchor) return { place: { kind: 'end' }, x: 0, index: tabs.length };
+  const index = tabs.findIndex(tab => tab.id === anchor.dataset.id) + (before ? 0 : 1);
+  const next = tabs[index];
   const r = anchor.getBoundingClientRect();
-  const tabs = S.frame.tabs;
-  const gap = tabs.findIndex(t => t.id === anchor.dataset.id) + (before ? 0 : 1);
-  const from = tabs.findIndex(t => t.id === tabDrag);
-  return { index: gap - Number(from < gap), x: (before ? r.left - 1 : r.right + 1) - row.getBoundingClientRect().left };
+  return { place: next ? { kind: 'before', tree: next.id } : { kind: 'end' },
+    x: (before ? r.left - 1 : r.right + 1) - $('tab-row').getBoundingClientRect().left, index };
 }
 
-$('tab-row').addEventListener('dragstart', event => {
-  const tab = event.target.closest('.tab');
-  if (!tab || event.target.closest('[data-settle]')) {
+function paintGap(drop) {
+  $('tab-row').style.setProperty('--tab-drop-x', `${drop.x}px`);
+  $('tab-row').classList.add('drop-target');
+}
+
+function pageDropAt(event) {
+  const choices = nativeDrag.choices;
+  const tab = event.target.closest('#tab-row .tab');
+  if (tab) return { element: tab, to: choices?.trees.has(tab.dataset.id) ? { kind: 'tree', id: tab.dataset.id } : null };
+  const page = pageElement(event.target);
+  if (page) {
+    const id = page.dataset.page || page.dataset.id;
+    return { element: page, to: choices?.parents.has(id) ? { kind: 'page', id } : null };
+  }
+  // Aggregates and controls must never fall through to the empty-strip target.
+  const blankStrip = ['strip', 'strip-bg', 'strip-clip', 'strip-canvas', 'strip-nodes', 'strip-edges', 'glow'].includes(event.target.id)
+    || !!event.target.closest('#strip-edges');
+  const blankTabs = event.target === $('tab-row');
+  if (!blankStrip && !blankTabs) return { element: event.target.closest('.node, button, #strip-list'), to: null };
+  if (!choices?.ownTree) return { element: blankTabs ? $('tab-row') : $('strip-bg'), to: null };
+  const gap = blankTabs ? tabPlacementAt(event.clientX, choices.ownTree.kind === 'reorder' ? choices.ownTree.tree : null)
+    : tabPlacementAt(Infinity, choices.ownTree.kind === 'reorder' ? choices.ownTree.tree : null);
+  // Empty strip always means the end, including when some tabs are overflow-hidden.
+  const place = blankTabs ? gap.place : { kind: 'end' };
+  return { to: { kind: 'own-tree', place }, gap };
+}
+
+function localDrag(event) {
+  return nativeDrag && [...event.dataTransfer.types].includes(nativeDrag.kind === 'tree' ? treeDragType : pageDragType);
+}
+
+document.addEventListener('dragstart', event => {
+  const tab = event.target.closest('#tab-row .tab');
+  const page = pageElement(event.target);
+  if (tab && !event.target.closest('[data-settle]')) {
+    nativeDrag = { kind: 'tree', tree: tab.dataset.id, source: tab };
+    pagePress = null;
+    event.dataTransfer.setData(treeDragType, nativeDrag.tree);
+  } else if (page && pagePress?.source === page) {
+    nativeDrag = pagePress;
+    const image = document.createElement('div');
+    image.className = 'page-drag-image';
+    image.textContent = visit(nativeDrag.head).label;
+    document.body.appendChild(image);
+    nativeDrag.image = image;
+    event.dataTransfer.setDragImage(image, 16, 16);
+    event.dataTransfer.setData(pageDragType, JSON.stringify({ head: nativeDrag.head, gesture: nativeDrag.request }));
+  } else {
     event.preventDefault();
     return;
   }
   settlePress = null;
-  tabDrag = tab.dataset.id;
-  event.dataTransfer.setData(treeDragType, tabDrag);
+  cancel('showList');
+  cancel('hideList');
+  previewSeq += 1;
+  clearTimeout(refresh.release);
   event.dataTransfer.effectAllowed = 'move';
-  requestAnimationFrame(() => { if (tabDrag === tab.dataset.id) tab.classList.add('dragging'); });
+  const drag = nativeDrag;
+  requestAnimationFrame(() => { if (nativeDrag === drag) drag.source.classList.add('dragging'); });
 });
-function tabDragOver(event) {
-  if (!tabDrag || ![...event.dataTransfer.types].includes(treeDragType)) return;
-  const drop = tabDropAt(event.clientX);
-  if (!drop) return;
+
+function nativeDragOver(event) {
+  if (!localDrag(event)) return;
+  clearDragCue();
+  event.stopPropagation();
+  if (nativeDrag.kind === 'tree') {
+    if (!event.target.closest('#tab-row')) { event.dataTransfer.dropEffect = 'none'; return; }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    paintGap(tabPlacementAt(event.clientX, nativeDrag.tree));
+    return;
+  }
+  const drop = pageDropAt(event);
+  event.dataTransfer.dropEffect = drop.to ? 'move' : 'none';
+  drop.element?.classList.add(drop.to ? 'page-drop-allowed' : 'page-drop-refused');
+  if (!drop.to) return;
   event.preventDefault();
-  event.dataTransfer.dropEffect = 'move';
-  $('tab-row').style.setProperty('--tab-drop-x', `${drop.x}px`);
-  $('tab-row').classList.add('drop-target');
+  if (drop.gap) paintGap(drop.gap);
+  if (nativeDrag.choices.warning && drop.to.kind !== 'own-tree') {
+    $('page-drag-warning').textContent = nativeDrag.choices.warning;
+    $('page-drag-warning').hidden = false;
+  }
 }
-$('tab-row').addEventListener('dragenter', tabDragOver);
-$('tab-row').addEventListener('dragover', tabDragOver);
-$('tab-row').addEventListener('dragleave', event => {
-  const r = $('tab-row').getBoundingClientRect();
-  if (event.clientX < r.left || event.clientX >= r.right || event.clientY < r.top || event.clientY >= r.bottom) clearTabDrop();
+document.addEventListener('dragenter', nativeDragOver);
+document.addEventListener('dragover', nativeDragOver);
+document.addEventListener('dragleave', event => {
+  if (!nativeDrag) return;
+  if (!event.relatedTarget || !document.body.contains(event.relatedTarget)) clearDragCue();
 });
-$('tab-row').addEventListener('drop', event => {
-  const id = event.dataTransfer.getData(treeDragType);
-  if (!tabDrag || id !== tabDrag || !S.frame.tabs.some(tab => tab.id === id)) return;
+document.addEventListener('drop', event => {
+  if (!localDrag(event)) return;
   event.preventDefault();
-  const drop = tabDropAt(event.clientX);
-  finishTabDrag();
-  if (drop) intent('move-tree', { id, index: drop.index });
+  event.stopPropagation();
+  const drag = nativeDrag;
+  if (drag.kind === 'tree') {
+    const drop = event.target.closest('#tab-row') && event.dataTransfer.getData(treeDragType) === drag.tree
+      ? tabPlacementAt(event.clientX, drag.tree) : null;
+    finishNativeDrag();
+    if (drop) intent('move-tree', { id: drag.tree, index: drop.index });
+    return;
+  }
+  let payload;
+  try { payload = JSON.parse(event.dataTransfer.getData(pageDragType)); } catch { finishNativeDrag(); return; }
+  const drop = payload.head === drag.head && payload.gesture === drag.request ? pageDropAt(event) : null;
+  finishNativeDrag();
+  if (drop?.to) intent('move-branch', { head: drag.head, to: drop.to });
 });
-$('tab-row').addEventListener('dragend', finishTabDrag);
+document.addEventListener('dragend', finishNativeDrag);
 
 let settlePress = null;
 window.addEventListener('mousedown', (event) => {
@@ -2502,6 +2612,7 @@ $('memory-dot').addEventListener('click', (event) => {
 const listEl = $('strip-list');
 listEl.addEventListener('mouseenter', () => { cancel('hideList'); cancel('showList'); });
 listEl.addEventListener('mouseleave', (event) => {
+  if (nativeDrag) return;
   if (event.relatedTarget?.closest('#strip-nodes')) return;
   schedule('hideList', 220, () => { if (!listHasKeyboardFocus()) hideList(); });
 });
