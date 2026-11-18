@@ -427,7 +427,6 @@ fn islands_boxes_clear_at_minimum_and_rest_and_chains_stay_compact() {
             shown: &f.shown,
         };
         for level in Level::ALL {
-            // Different sites prevent the low zooms from hiding geometry behind folding.
             let mut folded = items::fold(&facts, &f.forest.tabs()[0], Level::Near);
             for item in &mut folded {
                 item.named = true;

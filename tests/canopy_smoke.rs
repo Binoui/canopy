@@ -31,6 +31,8 @@ fn page(ui: &Ui, id: VisitId) -> Result<String> {
 }
 fn main() -> Result<()> {
     let _runtime = private_runtime()?;
+    let layout = std::env::var("CANOPY_TEST_LAYOUT").unwrap_or_else(|_| "islands".into());
+    assert!(matches!(layout.as_str(), "flow" | "islands"));
     let dir = tempfile::tempdir()?;
     use std::{
         io::{Read, Write},
@@ -101,7 +103,7 @@ fn main() -> Result<()> {
     })?;
     open(&ui)?;
     assert_eq!(chrome(&ui, "canopyValue().layout")?, "flow");
-    for layout in ["islands", "flow", "islands"] {
+    for layout in ["islands", "flow", layout.as_str()] {
         click_chrome(&ui, &format!("#canopy-layout [data-layout={layout}]"))?;
         wait("layout switch", || {
             chrome(&ui, "canopyValue().layout").is_ok_and(|v| v == layout)
@@ -110,9 +112,17 @@ fn main() -> Result<()> {
     }
     assert_eq!(
         std::fs::read_to_string(dir.path().join("canopy-layout"))?.trim(),
-        "islands"
+        layout
     );
-    println!("PASS layout switch keeps the current page visible and writes Islands.");
+    key("ctrl+e")?;
+    open(&ui)?;
+    println!("PASS layout switch keeps the current page visible and writes the choice.");
+    assert_eq!(chrome(&ui, "typeof canopy.canopyPinch")?, "function");
+    let before = chrome(&ui, "mapView.k")?.as_f64().unwrap();
+    chrome(&ui,"(()=>{const r=$('forest-canopy').getBoundingClientRect();canopy.canopyPinch(1.02,r.left+r.width/2,r.top+r.height/2);return true;})()")?;
+    assert!((chrome(&ui, "mapView.k")?.as_f64().unwrap() - before * 1.02).abs() < 1e-9);
+    chrome(&ui,"(()=>{const r=$('forest-canopy').getBoundingClientRect();canopy.canopyPinch(1/1.02,r.left+r.width/2,r.top+r.height/2);return true;})()")?;
+    println!("PASS pinch bridge applies incremental scale; physical delivery remains unproven.");
     assert_eq!(text(&ui, "#forest-button"), "Canopy");
     assert_eq!(chrome(&ui, "mapView.drawn")?, "middle");
     assert_eq!(
@@ -342,7 +352,7 @@ fn main() -> Result<()> {
                 save_window(
                     &ui,
                     &format!(
-                        ".cache/shots/canopy-islands/smoke-{width}-{}-{zoom}.png",
+                        ".cache/shots/canopy-islands/smoke-{layout}-{width}-{}-{zoom}.png",
                         if mode == ThemeMode::Dark {
                             "dark"
                         } else {
@@ -449,9 +459,9 @@ fn main() -> Result<()> {
     restarted.window.resize(1240, 800);
     pump(200);
     open(&restarted)?;
-    assert_eq!(chrome(&restarted, "canopyValue().layout")?, "islands");
+    assert_eq!(chrome(&restarted, "canopyValue().layout")?, layout);
     assert_eq!(chrome(&restarted, "mapView.drawn")?, "middle");
-    println!("PASS restarted app restores Islands at Middle.");
+    println!("PASS restarted app restores the chosen layout at Middle.");
     restarted.window.close();
     Ok(())
 }

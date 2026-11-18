@@ -263,9 +263,9 @@ $('canopy-layout').addEventListener('click',e => {
   const b=e.target.closest('[data-layout]');
   if (b && mapView) post({t:'forest',do:'layout',layout:b.dataset.layout});
 });
-function canopyPinch(factor,x,y) {
+window.canopy.canopyPinch = (factor,x,y) => {
   if (!mapView || S.overlay !== 'forest' || S.forest?.view !== 'canopy') return;
   const r=$('forest-canopy').getBoundingClientRect();
   if (x < r.left || y < r.top || x > r.right || y > r.bottom) return;
   zoomAround([x-r.left,y-r.top],mapView.k*factor);
-}
+};
