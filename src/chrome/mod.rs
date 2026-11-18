@@ -86,6 +86,9 @@ pub struct ChromeFrame {
     pub back: Option<VisitId>,
     /// The child of the current page that Forward opens: the one shown most recently.
     pub forward: Option<VisitId>,
+    /// Where the page on screen is headed before it commits. The chrome shows that page,
+    /// or a new tree's tab, as soon as the load is asked for.
+    pub pending: Option<crate::browser::PendingTarget>,
 }
 
 /// A file downloaded from a page, and whether it is still where it was saved.
@@ -354,8 +357,17 @@ impl HtmlChrome {
         *self.inner.host.borrow_mut() = Some(host);
     }
 
-    pub fn present(&self, frame: ChromeFrame) {
+    pub fn present(&self, mut frame: ChromeFrame) {
         let inner = &self.inner;
+        let committed = frame.forest.current();
+        // A settled tree's page waits for its tree to reopen at commit; drawn earlier, it
+        // would be current with no tab to stand under.
+        if let Some(crate::browser::PendingTarget::Visit(visit)) = &frame.pending {
+            let tree = frame.forest.tree_of(*visit);
+            if frame.forest.open().iter().any(|t| Some(t.id) == tree) {
+                frame.forest.show_current(*visit);
+            }
+        }
         let changed = !inner.forest_layout.borrow().is_null()
             && inner
                 .frame
@@ -389,6 +401,8 @@ impl HtmlChrome {
             Some(&inner.forest_layout.borrow()),
         );
         value["tabFit"] = tabs::layout(&frame.forest, inner.tab_room.get(), inner.start.get());
+        // The page the window really shows, while `current` may already name the one opening.
+        value["committed"] = json!(committed.map(|id| id.to_string()));
         inner.call("present", &[value]);
         *inner.frame.borrow_mut() = Some(frame);
         inner.present_error();
