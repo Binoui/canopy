@@ -833,8 +833,10 @@ function showSwitcher() {
   closePopover(false);
   hideList();
   S.switcher.shown = true;
-  renderSwitcher();
+  // The view is only as tall as the strip until this list makes it reach further down.
+  $('switcher').style.maxHeight = `${Math.max(120, Math.min(520, (S.windowHeight ?? window.innerHeight) - 130))}px`;
   $('switcher').hidden = false;
+  renderSwitcher();
   syncLayer();
 }
 
