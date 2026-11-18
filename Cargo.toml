@@ -279,3 +279,8 @@ required-features = ["gui-smoke"]
 name = "forest_smoke"
 harness = false
 required-features = ["gui-smoke"]
+
+[[test]]
+name = "forest_latency_smoke"
+harness = false
+required-features = ["gui-smoke"]

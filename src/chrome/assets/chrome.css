@@ -599,3 +599,5 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .pv-row.last { color: var(--green-ink); }
 .pv-row.waiting .fav { outline: 1px dashed var(--green); outline-offset: 2px; }
 @container (max-width: 700px) { .pv-art { height: 80px; } }
+
+.forest-more { width: 100%; padding: 14px; color: var(--muted); border: 1px solid var(--border); border-radius: 8px; margin-top: 8px; }

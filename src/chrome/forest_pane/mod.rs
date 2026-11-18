@@ -1,3 +1,5 @@
+const PAGE: usize = 60;
+
 mod days;
 mod index;
 
@@ -33,6 +35,7 @@ pub(super) enum Input {
     Show(View),
     Select(TreeId),
     Step(i8),
+    More { seen: usize },
 }
 impl Input {
     pub fn parse(m: &Value) -> Result<Self> {
@@ -45,6 +48,9 @@ impl Input {
             Some("open") => Self::Open(view()?),
             Some("close") => Self::Close,
             Some("show") => Self::Show(view()?),
+            Some("more") => Self::More {
+                seen: usize::try_from(m["seen"].as_u64().context("Missing row count")?)?,
+            },
             Some("select") => {
                 Self::Select(TreeId(m["tree"].as_str().context("Missing tree")?.parse()?))
             }
@@ -93,7 +99,7 @@ impl Shown {
             View::Trees => Self::Trees,
             View::History => Self::History(Cursor {
                 anchor: None,
-                reach: usize::MAX,
+                reach: PAGE,
             }),
         }
     }
@@ -135,11 +141,23 @@ impl ForestPane {
                                 open.shown = Shown::new(view);
                             }
                         }
+                        Input::More { seen } => {
+                            if let Shown::History(c) = &mut open.shown {
+                                if seen == c.reach {
+                                    c.reach = c.reach.saturating_add(PAGE);
+                                }
+                            }
+                        }
                         Input::Select(tree) => {
                             let index = Index::build(&frame.forest, &*self.calendar);
                             let rows = open.rows(&index);
                             if let Shown::History(c) = &mut open.shown {
-                                if let Some(at) = rows.iter().position(|e| e.tree == tree) {
+                                if let Some(at) =
+                                    rows.iter().take(c.reach).position(|e| e.tree == tree)
+                                {
+                                    if at + 1 >= c.reach && c.reach < rows.len() {
+                                        c.reach += PAGE;
+                                    }
                                     c.anchor = Some(Anchor { tree, at });
                                 }
                             }
@@ -154,6 +172,9 @@ impl ForestPane {
                                     } else {
                                         (at + 1).min(rows.len() - 1)
                                     };
+                                    if at + 1 >= c.reach && c.reach < rows.len() {
+                                        c.reach += PAGE;
+                                    }
                                     c.anchor = Some(Anchor {
                                         tree: rows[at].tree,
                                         at,
@@ -179,6 +200,9 @@ impl ForestPane {
                 tree: rows[at].tree,
                 at,
             });
+            if let Some(a) = c.anchor {
+                c.reach = c.reach.max((a.at / PAGE + 1) * PAGE);
+            }
         }
         let value = json!({ "view": open.shown.view().name(), "query": open.query,
             "count": format!("{} open · {} saved · {} in history", frame.forest.open().len(), frame.forest.pinned().len(), index.history.len()),
@@ -265,7 +289,7 @@ fn history(
                 "name":format!("{}, {}, {}",tree.title,plural(tree.page_count,"page"),e.at.when(&today)), "menu":tree_card::menu(tree,Place::History)}));
         }
     }
-    json!({"items":items, "more":Value::Null, "preview":cursor.anchor.and_then(|a| rows.iter().find(|e| e.tree == a.tree)).map(|e| preview(forest,e,&today)),
+    json!({"items":items, "more":(shown.len()<rows.len()).then(|| json!({"seen":shown.len(), "label":format!("Show {} older trees",rows.len()-shown.len())})), "preview":cursor.anchor.and_then(|a| rows.iter().find(|e| e.tree == a.tree)).map(|e| preview(forest,e,&today)),
         "empty":rows.is_empty().then_some("No settled trees yet. A tree you settle waits here.")})
 }
 
@@ -512,5 +536,42 @@ mod tests {
             .unwrap();
         assert_eq!(saved["id"], selected);
         assert!(saved["badge"].is_null());
+    }
+    #[test]
+    fn two_thousand_trees_send_sixty_rows_and_one_preview_without_hidden_visits() {
+        let f = fixture(2001, 10);
+        let mut p = ForestPane::default();
+        let v = value(p.input(Input::Open(View::History), &f));
+        assert_eq!(rows(&v).len(), PAGE);
+        assert_eq!(
+            v["history"]["preview"]["outline"].as_array().unwrap().len(),
+            10
+        );
+        assert!(v.to_string().len() < 64 * 1024);
+        let base = super::super::view::frame(
+            &f,
+            &[],
+            (1240., 900.),
+            &tree_view::Workbench::default(),
+            Default::default(),
+        );
+        assert!(base.get("forest").is_none());
+        assert_eq!(base["visits"].as_object().unwrap().len(), 10);
+        let v = value(p.input(Input::More { seen: 60 }, &f));
+        assert_eq!(rows(&v).len(), 120);
+        assert!(matches!(
+            p.input(Input::More { seen: 60 }, &f),
+            Reply::Unchanged
+        ));
+        for _ in 0..119 {
+            p.input(Input::Step(1), &f);
+        }
+        let State::Open(open) = &p.state else {
+            panic!()
+        };
+        let Shown::History(c) = &open.shown else {
+            panic!()
+        };
+        assert_eq!(c.reach, 180);
     }
 }

@@ -1751,7 +1751,7 @@ function treesItemHtml(i) {
 function renderHistory(h) {
   const list = $('forest-list');
   const inList = list.contains(document.activeElement);
-  patchChildren(list, h.items.map(historyItemHtml).join(''));
+  patchChildren(list, h.items.map(historyItemHtml).join('') + (h.more ? `<button class="forest-more" data-key="more" data-forest="more" data-seen="${h.more.seen}">${esc(h.more.label)}</button>` : ''));
   patchChildren($('forest-preview'), h.preview ? forestPreviewHtml(h.preview) : '');
   $('forest-preview').hidden = !h.preview;
   if (inList) {
@@ -1780,6 +1780,7 @@ $('forest').addEventListener('click', (e) => {
   if (el.dataset.forest === 'card') openForestTree(id);
   else if (el.dataset.forest === 'row') post({ t: 'forest', do: 'select', tree: id });
   else if (el.dataset.forest === 'reopen') openForestTree(id);
+  else if (el.dataset.forest === 'more') post({ t: 'forest', do: 'more', seen: Number(el.dataset.seen) });
   else if (el.dataset.forest === 'save') intent('pin-tree', { id, pinned: true });
   else if (el.dataset.forest === 'page') { uncover(); intent('restore', { id }); }
 });
