@@ -797,7 +797,10 @@ fn drag_branch(f: &Fixture, source: &str, end: (i32, i32), cue: &str, escape: bo
     assert_eq!(common::chrome(&f.ui, "nativeDrag?.kind")?, "page");
     assert_eq!(common::chrome(&f.ui, cue)?, true);
     assert_eq!(
-        common::chrome(&f.ui, "!!document.querySelector('.dragging')")?,
+        common::chrome(
+            &f.ui,
+            "Number(getComputedStyle(document.querySelector('.dragging')).opacity) < 1"
+        )?,
         true
     );
     // Neither blur nor a zero-button event can release the native drag latch.
