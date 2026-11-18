@@ -2184,7 +2184,7 @@ window.canopy = {
       + `<div class="reader-meta">${c.kind} remembered on ${esc(when(c.at))} · ${esc(c.url)}</div>${source}`
       + '<div class="card-actions" style="margin-top:0">'
       + '<button class="action" data-act="live">Open the page</button>'
-      + `<button class="action" data-act="source" id="capture-restore-source"${c.parent ? '' : ' disabled'}>Back to source</button>`
+      + `<button class="action" data-act="source" id="capture-restore-source"${c.parent ? '' : ' disabled'}>${esc(c.returnLabel)}</button>`
       + `<button class="action" data-act="citation"${c.citation ? '' : ' disabled'}>Open source comment</button></div>`
       + `<div class="reader-text" id="capture-text">${esc(c.text)}</div>`, false);
     $('reader-box').querySelectorAll('[data-act]').forEach((button) => button.addEventListener('click', () => {

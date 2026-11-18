@@ -640,8 +640,9 @@ impl HtmlChrome {
     }
 
     /// Shows one saved text in the reader.
-    pub fn read(&self, capture: &Capture, visit: &Visit) {
-        self.inner.call("reader", &[view::capture(capture, visit)]);
+    pub fn read(&self, capture: &Capture, visit: &Visit, forest: &ForestProjection) {
+        self.inner
+            .call("reader", &[view::capture(capture, visit, forest)]);
         let _ = self.inner.view.focus();
     }
 

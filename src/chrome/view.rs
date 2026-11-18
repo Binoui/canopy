@@ -324,9 +324,9 @@ pub(crate) fn strip(forest: &ForestProjection, mail: &crate::mail::Mail, width: 
             actions.push(json!({ "kind": if id == current { "reload" } else { "open" }, "label": if id == current { "Reload" } else { "Open" } }));
             actions.push(json!({ "kind": "branch", "label": "New branch here" }));
             if id == current {
-                if let Some(source) = &v.source {
-                    if v.parent.is_some() { actions.push(json!({ "kind": "source", "label": "Back to source" })); }
-                    if source.citation_url.is_some() { actions.push(json!({ "kind": "comment", "label": "Open comment" })); }
+                if v.source.is_some() {
+                    if v.parent.is_some() { actions.push(json!({ "kind": "source", "label": if forest.source_parent_matches(id) { "Back to source" } else { "Back to parent" } })); }
+                    if forest.citation_parent_matches(id) { actions.push(json!({ "kind": "comment", "label": "Open comment" })); }
                 }
             }
         }
@@ -450,7 +450,7 @@ fn visit_value(
             } else {
                 format!("From {host} · {}", source.link_text)
             },
-            "citation": source.citation_url.is_some(),
+            "citation": forest.citation_parent_matches(visit.id),
         })
     });
     let detail = visit
@@ -607,12 +607,13 @@ pub(crate) fn preview(forest: &ForestProjection, id: VisitId, preview: &VisitPre
 }
 
 /// One saved text for the reader, with what its actions can reach.
-pub(crate) fn capture(capture: &Capture, visit: &Visit) -> Value {
+pub(crate) fn capture(capture: &Capture, visit: &Visit, forest: &ForestProjection) -> Value {
     json!({
         "capture": capture.id,
         "visit": visit.id.to_string(),
         "parent": visit.parent.map(|id| id.to_string()),
-        "citation": visit.source.as_ref().and_then(|s| s.citation_url.as_ref()).is_some(),
+        "citation": forest.citation_parent_matches(visit.id),
+        "returnLabel": if forest.source_parent_matches(visit.id) { "Back to source" } else { "Back to parent" },
         "title": capture.title,
         "kind": if capture.kind == CaptureKind::Selection { "Selection" } else { "Page" },
         "at": capture.captured_at,

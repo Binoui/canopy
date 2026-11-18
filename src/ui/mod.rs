@@ -885,12 +885,16 @@ impl ChromeHost for Ui {
 
 impl Ui {
     fn read_capture(&self, id: i64) -> Result<()> {
-        let (capture, visit) = self.pages.read(|browser| -> Result<_> {
+        let (capture, visit, forest) = self.pages.read(|browser| -> Result<_> {
             let capture = browser.capture(id)?;
             let visit = browser.visit(capture.visit)?;
-            Ok((capture, visit))
+            Ok((
+                capture,
+                visit,
+                ForestProjection::from_snapshot(browser.snapshot()?, browser.tree_states()?)?,
+            ))
         })?;
-        self.chrome.read(&capture, &visit);
+        self.chrome.read(&capture, &visit, &forest);
         Ok(())
     }
 

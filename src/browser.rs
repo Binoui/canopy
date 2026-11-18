@@ -1281,6 +1281,9 @@ impl Browser {
         navigation: &mut Navigation,
         child: VisitId,
     ) -> Result<Option<Url>> {
+        if !forest_on(&self.connection)?.citation_parent_matches(child) {
+            return Ok(None);
+        }
         let visit = self.visit(child)?;
         let Some(parent) = visit.parent else {
             return Ok(None);
@@ -4408,5 +4411,27 @@ mod tests {
                 .execute("UPDATE tree_state SET last_visit_id=last_visit_id", [])
                 .unwrap();
         }
+    }
+    #[test]
+    fn moving_a_cited_branch_hides_stale_source_actions() {
+        let mut b = memory();
+        let a = follow(&mut b, "a", NavigationTarget::Root);
+        let mut origin = source("citation");
+        origin.page_url = b.visit(a).unwrap().url;
+        origin.citation_url = Some(url("comment"));
+        let request = b.follow_link(a, url("child"), origin.clone()).unwrap();
+        b.started(request.clone()).unwrap();
+        b.committed(request).unwrap();
+        let child = b.current_id().unwrap().unwrap();
+        assert!(forest_on(&b.connection)
+            .unwrap()
+            .citation_parent_matches(child));
+        let t = follow(&mut b, "t", NavigationTarget::Root);
+        b.move_branch(child, MoveTo::Page(t)).unwrap();
+        assert!(!forest_on(&b.connection)
+            .unwrap()
+            .source_parent_matches(child));
+        assert_eq!(b.open_citation(child).unwrap(), None);
+        assert_eq!(b.visit(child).unwrap().source, Some(origin));
     }
 }
