@@ -68,6 +68,8 @@ struct Running {
     origin: url::Origin,
     linger: Duration,
     stage: Cell<Stage>,
+    /// The page replaced its own load. That load's end is not the document's.
+    superseded: Cell<bool>,
     timer: RefCell<Option<glib::SourceId>>,
     signals: Vec<glib::SignalHandlerId>,
     done: Option<Done>,
@@ -239,14 +241,21 @@ impl Errands {
             ) && !view.uri().is_some_and(|uri| owner.stays(id, &uri))
             {
                 owner.end(id, ErrandEnd::Strayed);
-            } else if event == webkit2gtk::LoadEvent::Finished {
+            } else if event == webkit2gtk::LoadEvent::Started {
+                owner.superseded(id, false);
+            } else if event == webkit2gtk::LoadEvent::Finished && !owner.superseded(id, false) {
                 owner.loaded(id);
             }
         }));
         let weak = self.me.clone();
-        signals.push(view.connect_load_failed(move |_, _, _, _| {
+        signals.push(view.connect_load_failed(move |_, _, _, error| {
             if let Some(owner) = weak.upgrade() {
-                owner.load_failed(id);
+                // A page that navigates from script before its first load ends cancels that load.
+                if error.matches(webkit2gtk::NetworkError::Cancelled) {
+                    owner.superseded(id, true);
+                } else {
+                    owner.load_failed(id);
+                }
             }
             true
         }));
@@ -286,6 +295,7 @@ impl Errands {
             origin: queued.url.origin(),
             linger: queued.linger,
             stage: Cell::new(Stage::Loading),
+            superseded: Cell::new(false),
             timer: RefCell::new(Some(timer)),
             signals,
             done: Some(queued.done),
@@ -297,6 +307,14 @@ impl Errands {
             .borrow()
             .as_ref()
             .is_some_and(|r| r.id == id && stays(&r.origin, uri))
+    }
+
+    fn superseded(&self, id: u64, now: bool) -> bool {
+        self.running
+            .borrow()
+            .as_ref()
+            .filter(|r| r.id == id)
+            .is_some_and(|r| r.superseded.replace(now))
     }
 
     fn load_failed(&self, id: u64) {

@@ -42,6 +42,7 @@ enum Conversation {
     Inert,
     Marks,
     Never,
+    Restarts,
     Strays,
     Stalls,
 }
@@ -219,8 +220,16 @@ impl Fixture {
                                 .leak(),
                                 String::new(),
                             ),
-                            (Conversation::Marks | Conversation::Never, Some(id)) => {
-                                let script = if matches!(conversation, Conversation::Marks) {
+                            (Conversation::Restarts, Some(_))
+                                if !url.query_pairs().any(|(k, _)| k == "again") =>
+                            {
+                                ("200 OK", "Cache-Control: no-store\r\n", "<title>Restarting</title><img src=\"/stall\"><script>location.replace(location.href + '&again=1')</script>".to_owned())
+                            }
+                            (
+                                Conversation::Marks | Conversation::Never | Conversation::Restarts,
+                                Some(id),
+                            ) => {
+                                let script = if !matches!(conversation, Conversation::Never) {
                                     format!("setTimeout(() => fetch('/mark/{n}/{id}?v=' + document.visibilityState), 700);")
                                 } else {
                                     String::new()
@@ -584,6 +593,24 @@ fn mark_scenario(ui: &Ui, fixture: &Fixture, data: &std::path::Path) -> Result<(
     );
     pump(600);
     recheck(ui)?;
+
+    reset_marks(ui, fixture, Conversation::Restarts)?;
+    click_chrome(ui, &mark_button("111"))?;
+    wait(
+        "a page that restarts its own load still marks the mail",
+        || {
+            fixture
+                .seen
+                .lock()
+                .unwrap()
+                .read
+                .contains(&(0, "111".into()))
+        },
+    )?;
+    pump(600);
+    recheck(ui)?;
+    assert!(!visible(ui, ".mail-unmarked"));
+    assert!(!visible(ui, ".mail-row[data-id=\"111\"]"));
 
     reset_marks(ui, fixture, Conversation::Never)?;
     click_chrome(ui, &mark_button("111"))?;
