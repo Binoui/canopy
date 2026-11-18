@@ -124,7 +124,7 @@ fn main() -> Result<()> {
     println!("PASS initial focus has no tooltip; keyboard movement shows it.");
     println!("PASS Canopy opens at Middle, current first, tabs only, named counts, current focus.");
     let hub = page(&ui, roots[0])?;
-    click_chrome(&ui, &hub)?;
+    click_chrome(&ui, &format!("{hub} .lb"))?;
     wait("hub click", || {
         !visible(&ui, "#forest") && ui.snapshot().is_ok_and(|s| s.current == Some(roots[0]))
     })?;

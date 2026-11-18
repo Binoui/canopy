@@ -23,7 +23,7 @@
 .canopy-item .tags { position:absolute; left:50%; bottom:calc(50% + 30px); transform:translateX(-50%); display:flex; gap:3px; white-space:nowrap; }
 .canopy-item .tag { padding:2px 7px; border-radius:6px; background:var(--green); color:var(--bg); font-style:normal; font-size:10px; font-weight:700; }
 .canopy-item .tag.back { background:var(--text); }
-.canopy-item .lb { position:absolute; left:50%; top:calc(50% + 25px); transform:translateX(-50%); display:flex; flex-direction:column; align-items:center; width:var(--label-w); pointer-events:none; }
+.canopy-item .lb { position:absolute; left:50%; top:calc(50% + 25px); transform:translateX(-50%); display:flex; flex-direction:column; align-items:center; width:var(--label-w); }
 .canopy-item .lb b { max-width:100%; font-size:11px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .canopy-item .lb em { max-width:100%; overflow:hidden; text-overflow:ellipsis; font-style:normal; font-size:10px; color:var(--muted); white-space:nowrap; }
 .canopy-item[data-kind=run] .mk { padding:4px 6px; border:1px solid var(--line); border-radius:9px; background:var(--tile); }
