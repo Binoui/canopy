@@ -21,8 +21,8 @@ pub(super) enum Place {
 pub(super) fn menu(tree: &TreeSummary, place: Place) -> Value {
     let pin = json!({
         "kind": "pin",
-        "label": if tree.pin.is_some() { "Remove from saved" } else { "Save tree" },
-        "pinned": tree.pin.is_none(),
+        "label": if tree.place.pinned() { "Remove from saved" } else { "Save tree" },
+        "pinned": !tree.place.pinned(),
     });
     if place == Place::NewTreePage {
         return json!([pin]);
@@ -31,7 +31,7 @@ pub(super) fn menu(tree: &TreeSummary, place: Place) -> Value {
         json!({"kind": "rename", "label": "Rename", "name": tree.title}),
         pin,
     ];
-    if tree.lifecycle.is_open() {
+    if tree.place.is_tab() {
         rows.push(json!({"kind": "settle", "label": "Settle tree"}));
     }
     json!(rows)
@@ -50,9 +50,9 @@ pub(super) fn card(forest: &ForestProjection, tree: &TreeSummary, place: Place) 
         "id": tree.id.root().to_string(), "title": tree.title,
         "tip": format!("{}\n{}", tree.title, forest.visit(tree.id.root()).unwrap().url),
         "name": format!("{}, {}{}{}", tree.title, pages,
-            if tree.pending_count > 0 { format!(", {} waiting", tree.pending_count) } else { String::new() }, if tree.pin.is_some() { ", saved" } else { "" }),
+            if tree.pending_count > 0 { format!(", {} waiting", tree.pending_count) } else { String::new() }, if tree.place.pinned() { ", saved" } else { "" }),
         "current": matches!(place, Place::OpenBand { current: true }),
-        "badge": match place { Place::OpenBand { .. } if tree.pin.is_some() => Some("Saved"), Place::SavedBand if tree.lifecycle.is_open() => Some("Open"), _ => None },
+        "badge": match place { Place::OpenBand { .. } if tree.place.pinned() => Some("Saved"), Place::SavedBand if tree.place.is_tab() => Some("Open"), _ => None },
         "page": (place != Place::NewTreePage).then(|| super::graph::short_name(forest, tree.last_visit)),
         "waiting": tree.pending_count, "waitingTip": format!("{} waiting", tree.pending_count), "meta": meta,
         "mini": mini_value(forest, &tree_view::miniature(forest, tree, Fit::CARD)),
@@ -121,10 +121,14 @@ mod tests {
         browser.rename_tree(id, "Project").unwrap();
         for open in [true, false] {
             if !open {
-                browser.settle_tree(id).unwrap();
+                browser
+                    .place_tree(id, crate::browser::Move::History)
+                    .unwrap();
             }
-            for saved in [false, true] {
-                browser.set_pinned(id, saved).unwrap();
+            for saved in [false, true].into_iter().filter(|saved| open || !saved) {
+                browser
+                    .place_tree(id, crate::browser::Move::Pin(saved))
+                    .unwrap();
                 let forest = ForestProjection::from_snapshot(
                     browser.snapshot().unwrap(),
                     browser.tree_states().unwrap(),

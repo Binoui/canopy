@@ -397,7 +397,7 @@ fn cell_rect(column: usize, row: usize) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browser::{Lifecycle, Snapshot, TreeId, TreeState, Visit, VisitState};
+    use crate::browser::{Snapshot, TreeId, TreeState, Visit, VisitState};
     use std::collections::HashSet;
 
     #[test]
@@ -418,9 +418,12 @@ mod tests {
             vec![TreeState {
                 root: TreeId(ids[0]),
                 last_visit: ids[3],
-                lifecycle: Lifecycle::Open,
+                spot: crate::browser::Spot::Tab {
+                    pinned: false,
+                    position: 0,
+                },
                 name: None,
-                pin: None,
+
                 last_event_at: None,
             }],
         )
@@ -499,9 +502,12 @@ mod tests {
                 vec![TreeState {
                     root: TreeId(ids[0]),
                     last_visit: ids[0],
-                    lifecycle: Lifecycle::Open,
+                    spot: crate::browser::Spot::Tab {
+                        pinned: false,
+                        position: 0,
+                    },
                     name: None,
-                    pin: None,
+
                     last_event_at: None,
                 }],
             )
@@ -633,11 +639,13 @@ mod tests {
                     current: Some(ids[current]),
                 },
                 vec![TreeState {
-                    pin: None,
                     last_event_at: None,
                     root: TreeId(ids[0]),
                     last_visit: ids[current],
-                    lifecycle: Lifecycle::Open,
+                    spot: crate::browser::Spot::Tab {
+                        pinned: false,
+                        position: 0,
+                    },
                     name: None,
                 }],
             )

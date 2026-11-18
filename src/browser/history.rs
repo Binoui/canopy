@@ -89,7 +89,7 @@ impl Browser {
             for id in std::iter::once(destination).chain(source) {
                 let id: VisitId = id.parse()?;
                 if let Some(tree) = forest.tree_of(id) {
-                    if Some(tree) != current && forest.open().iter().any(|t| t.id == tree) {
+                    if Some(tree) != current && forest.tabs().iter().any(|t| t.id == tree) {
                         return Ok(Some(tree));
                     }
                 }

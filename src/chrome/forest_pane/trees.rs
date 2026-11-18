@@ -5,8 +5,8 @@ pub(super) fn value(forest: &ForestProjection, index: &Index, query: &str) -> Va
     let current = forest.current().and_then(|id| forest.tree_of(id));
     let mut items = Vec::new();
     for (band, title, trees) in [
-        ("open", "Open", forest.open().iter().collect::<Vec<_>>()),
-        ("saved", "Saved", forest.pinned()),
+        ("open", "Open", forest.tabs().iter().collect::<Vec<_>>()),
+        ("saved", "Saved", forest.shelf()),
     ] {
         items.push(json!({"kind":"band", "key":format!("band-{band}"), "title":title, "detail":plural(trees.len(), "tree")}));
         for tree in trees.iter().filter(|t| index.admits(t.id, &key)) {

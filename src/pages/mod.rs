@@ -186,20 +186,34 @@ enum Command {
 
 #[derive(Clone, Copy)]
 enum SettleTarget {
-    Tree(TreeId),
+    Tree(TreeId, Away),
     Branch(VisitId),
+}
+
+#[derive(Clone, Copy)]
+enum Away {
+    History,
+    Shelf(crate::browser::Slot),
+}
+impl Away {
+    fn to_move(self) -> crate::browser::Move {
+        match self {
+            Self::History => crate::browser::Move::History,
+            Self::Shelf(s) => crate::browser::Move::Shelf(s),
+        }
+    }
 }
 
 impl SettleTarget {
     fn head(self) -> VisitId {
         match self {
-            Self::Tree(tree) => tree.root(),
+            Self::Tree(tree, _) => tree.root(),
             Self::Branch(head) => head,
         }
     }
     fn contains(self, forest: &ForestProjection, visit: VisitId) -> bool {
         match self {
-            Self::Tree(tree) => forest.tree_of(visit) == Some(tree),
+            Self::Tree(tree, _) => forest.tree_of(visit) == Some(tree),
             Self::Branch(head) => forest.path(visit).contains(&head),
         }
     }
@@ -749,7 +763,7 @@ impl Pages {
                 || forest
                     .trees()
                     .iter()
-                    .any(|t| Some(t.id) == forest.tree_of(visit) && !t.lifecycle.is_open())
+                    .any(|t| Some(t.id) == forest.tree_of(visit) && !t.place.is_tab())
         } else {
             false
         };
@@ -1102,7 +1116,7 @@ impl Pages {
                             forest
                                 .trees()
                                 .iter()
-                                .any(|t| t.id == id && t.lifecycle.is_open())
+                                .any(|t| t.id == id && t.place.is_tab())
                         }),
                 )
             })
@@ -1709,6 +1723,9 @@ impl Pages {
                 }
             }
             Go::Tree(tree) => {
+                self.browser
+                    .borrow_mut()
+                    .place_tree(tree, crate::browser::Move::Open)?;
                 let visit = self.tree_target(tree)?;
                 self.route(visit)
             }
@@ -1823,8 +1840,24 @@ impl Pages {
                 });
     }
 
-    pub fn settle_tree(&self, tree: TreeId) -> Result<()> {
-        self.settle(SettleTarget::Tree(tree))
+    pub fn place_tree(&self, tree: TreeId, to: crate::browser::Move) -> Result<()> {
+        use crate::browser::Move;
+        let tab = self
+            .read(|b| b.tree_states())?
+            .iter()
+            .any(|s| s.root == tree && s.spot.place().is_tab());
+        if tab {
+            match to {
+                Move::History => return self.settle(SettleTarget::Tree(tree, Away::History)),
+                Move::Shelf(slot) => {
+                    return self.settle(SettleTarget::Tree(tree, Away::Shelf(slot)))
+                }
+                _ => {}
+            }
+        }
+        let landing = self.browser.borrow_mut().place_tree(tree, to)?;
+        self.receive(PageEvent::Changed);
+        self.land(landing)
     }
 
     pub fn settle_branch(&self, head: VisitId) -> Result<()> {
@@ -1996,7 +2029,7 @@ impl Pages {
         }
         let head = target.head();
         let name = match target {
-            SettleTarget::Tree(tree) => forest
+            SettleTarget::Tree(tree, _) => forest
                 .trees()
                 .iter()
                 .find(|t| t.id == tree)
@@ -2016,7 +2049,9 @@ impl Pages {
             })
             .count();
         let landing = match target {
-            SettleTarget::Tree(tree) => self.browser.borrow_mut().settle_tree(tree)?,
+            SettleTarget::Tree(tree, away) => {
+                self.browser.borrow_mut().place_tree(tree, away.to_move())?
+            }
             SettleTarget::Branch(head) => self.browser.borrow_mut().settle_branch(head)?,
         };
         *self.settle_undo.borrow_mut() = Some(SettleUndo {
@@ -2025,7 +2060,7 @@ impl Pages {
                 .current()
                 .filter(|id| target.contains(&forest, *id))
                 .unwrap_or_else(|| match target {
-                    SettleTarget::Tree(tree) => forest
+                    SettleTarget::Tree(tree, _) => forest
                         .trees()
                         .iter()
                         .find(|t| t.id == tree)
@@ -2037,6 +2072,10 @@ impl Pages {
             "Settled ‘{name}’ · {waiting} waiting kept"
         )));
         self.receive(PageEvent::Changed);
+        self.land(landing)
+    }
+
+    fn land(&self, landing: Landing) -> Result<()> {
         match landing {
             Landing::Unchanged => Ok(()),
             Landing::Restore(visit) => self.go(Go::Visit(visit)),
@@ -2065,9 +2104,9 @@ impl Pages {
             if forest
                 .trees()
                 .iter()
-                .any(|t| t.id == tree && !t.lifecycle.is_open())
+                .any(|t| t.id == tree && !t.place.is_tab())
             {
-                start = match self.browser.borrow_mut().settle_tree(tree)? {
+                start = match self.browser.borrow_mut().resume_landing()? {
                     Landing::Restore(visit) => StartPage::Show(visit),
                     Landing::Start => StartPage::Blank,
                     Landing::Unchanged => StartPage::Reload,
@@ -2202,9 +2241,6 @@ impl Pages {
     }
     pub fn decline(&self, key: &crate::suggest::SuggestionKey) -> Result<()> {
         self.browser.borrow_mut().decline(key)
-    }
-    pub fn set_pinned(&self, tree: TreeId, pinned: bool) -> Result<()> {
-        self.browser.borrow_mut().set_pinned(tree, pinned)
     }
     pub fn rename_tree(&self, tree: TreeId, name: &str) -> Result<()> {
         self.browser.borrow_mut().rename_tree(tree, name)

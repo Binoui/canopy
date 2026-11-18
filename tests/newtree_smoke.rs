@@ -165,7 +165,7 @@ fn main() -> Result<()> {
             .read(|b| b.tree_states())
             .unwrap()
             .iter()
-            .any(|t| t.root == tree(&ui, root) && !t.lifecycle.is_open() && t.pin.is_some())
+            .any(|t| t.root == tree(&ui, root) && !t.place.is_tab() && t.place.pinned())
     })?;
     let source = SourceContext {
         page_url: web_url(&format!("http://{address}/Reading"))?,
@@ -359,7 +359,7 @@ fn main() -> Result<()> {
                 .find(|t| t.root.root() == id)
                 .unwrap()
                 .root;
-            browser.set_pinned(tree, true)?;
+            browser.place_tree(tree, crate::browser::Move::Pin(true))?;
         }
     }
     ui.dispatch(ChromeIntent::SetTheme(ThemeMode::Dark));
@@ -862,7 +862,7 @@ fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
             .tree_states()
             .unwrap()
             .iter()
-            .any(|t| t.root.root() == waiting && t.pin.is_some())
+            .any(|t| t.root.root() == waiting && t.place.pinned())
     })?;
     wait("kept tree leaves", || !visible(ui, &selector))?;
     assert!(!chrome(ui, "canopy.state().start.suggested.map(s=>s.key)")?
@@ -948,7 +948,7 @@ fn suggested(ui: &Ui, data: &std::path::Path, base: &str) -> Result<()> {
     assert!(browser
         .tree_states()?
         .iter()
-        .any(|t| t.root.root() == waiting && t.lifecycle.is_open()));
+        .any(|t| t.root.root() == waiting && t.place.is_tab()));
     ui.dispatch(ChromeIntent::PinTree {
         tree: tree(ui, waiting),
         pinned: true,

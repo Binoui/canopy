@@ -71,10 +71,10 @@ fn main() -> Result<()> {
             .root;
         b.rename_tree(tree, &format!("Project {i}"))?;
         if i >= 4 {
-            b.settle_tree(tree)?;
+            b.place_tree(tree, crate::browser::Move::History)?;
         }
         if i == 0 || i == 4 {
-            b.set_pinned(tree, true)?;
+            b.place_tree(tree, crate::browser::Move::Pin(true))?;
         }
     }
     drop(b);
@@ -198,7 +198,7 @@ fn main() -> Result<()> {
         .pages
         .read(|b| b.tree_states())?
         .iter()
-        .any(|s| s.root == tree && s.pin.is_some() && !s.lifecycle.is_open()));
+        .any(|s| s.root == tree && s.place.pinned() && !s.place.is_tab()));
     let reopen = chrome(&ui, "S.forest.history.preview.id")?;
     held_refresh(&ui, "[data-forest=reopen]")?;
     wait("Reopen navigates", || {
@@ -260,8 +260,9 @@ fn main() -> Result<()> {
     wait("closed", || !visible(&ui, "#forest"))?;
     let current = ui.snapshot()?.current.unwrap();
     for state in ui.pages.read(|b| b.tree_states())? {
-        if state.lifecycle.is_open() && state.root.root() != current {
-            ui.pages.settle_tree(state.root)?;
+        if state.place.is_tab() && state.root.root() != current {
+            ui.pages
+                .place_tree(state.root, crate::browser::Move::History)?;
         }
     }
     pump(300);

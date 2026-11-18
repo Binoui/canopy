@@ -233,7 +233,7 @@ fn settling_removes_the_trees_marks() -> Result<()> {
         .read(|b| canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?
         .tree_of(a)
         .unwrap();
-    f.ui.pages.settle_tree(tree)?;
+    f.ui.pages.place_tree(tree, crate::browser::Move::History)?;
     common::wait("settled mark removed", || !marked(&f, a))?;
     Ok(())
 }

@@ -41,10 +41,10 @@ fn main() -> Result<()> {
             .root;
         b.rename_tree(tree, &format!("Project {i}"))?;
         if i >= 4 {
-            b.settle_tree(tree)?;
+            b.place_tree(tree, crate::browser::Move::History)?;
         }
         if i == 0 || i == 4 {
-            b.set_pinned(tree, true)?;
+            b.place_tree(tree, crate::browser::Move::Pin(true))?;
         }
     }
     drop(b);

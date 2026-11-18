@@ -90,18 +90,18 @@ pub(super) fn layout(forest: &ForestProjection, room: f64, start: bool) -> Value
         .current()
         .filter(|_| !start)
         .and_then(|id| forest.tree_of(id));
-    let active = forest.open().iter().position(|t| Some(t.id) == current);
+    let active = forest.tabs().iter().position(|t| Some(t.id) == current);
     let (items, overflow) = fit(
-        forest.open().len(),
+        forest.tabs().len(),
         active,
         active
             .map(|i| {
-                let tree = &forest.open()[i];
+                let tree = &forest.tabs()[i];
                 let sub =
                     subtitle(forest, tree).map_or(0., |s| super::view::text_width(&s, 11., 0.53));
                 let title = super::view::text_width(&tree.title, 12.5, 0.56).max(sub) + 64.;
                 title
-                    + if tree.pin.is_some() && title >= 160. {
+                    + if tree.place.pinned() && title >= 160. {
                         17.
                     } else {
                         0.
@@ -112,7 +112,7 @@ pub(super) fn layout(forest: &ForestProjection, room: f64, start: bool) -> Value
     );
     json!({
         "overflow": overflow,
-        "items": forest.open().iter().zip(items).map(|(tree, (mode, width))| {
+        "items": forest.tabs().iter().zip(items).map(|(tree, (mode, width))| {
             json!({"id": tree.id.root().to_string(), "mode": match mode { Mode::Title => "title", Mode::Icon => "icon", Mode::Hidden => "hidden" }, "width": width, "short": width < 160.})
         }).collect::<Vec<_>>()
     })

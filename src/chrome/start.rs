@@ -8,7 +8,7 @@ use super::{
 pub(super) fn value(frame: &ChromeFrame, frozen: &[crate::suggest::Suggestion]) -> Value {
     let pinned: Vec<_> = frame
         .forest
-        .pinned()
+        .shelf()
         .into_iter()
         .map(|tree| {
             super::tree_card::card(&frame.forest, tree, super::tree_card::Place::NewTreePage)
@@ -89,8 +89,18 @@ mod tests {
             ])
             .unwrap();
         let states = browser.tree_states().unwrap();
-        browser.set_pinned(states[1].root, true).unwrap();
-        browser.set_pinned(states[0].root, true).unwrap();
+        browser
+            .place_tree(
+                states[1].root,
+                crate::browser::Move::Shelf(crate::browser::Slot::End),
+            )
+            .unwrap();
+        browser
+            .place_tree(
+                states[0].root,
+                crate::browser::Move::Shelf(crate::browser::Slot::End),
+            )
+            .unwrap();
         let frame = ChromeFrame {
             mail: crate::mail::Mail::default(),
             forest: ForestProjection::from_snapshot(
@@ -121,7 +131,7 @@ mod tests {
             .tree_states()
             .unwrap()
             .iter()
-            .all(|t| t.pin.is_some()));
+            .all(|t| matches!(t.spot.place(), crate::browser::Place::Shelf { .. })));
     }
 }
 

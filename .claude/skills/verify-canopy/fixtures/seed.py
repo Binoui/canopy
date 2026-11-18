@@ -40,8 +40,10 @@ def page(parent, host, title, queued=False, step=40_000):
 
 
 def tree(root, last, name=None, settled=False, pin=None):
-    db.execute('INSERT INTO tree_state(root_id,last_visit_id,name,settled_at,pin_order) VALUES(?,?,?,?,?)',
-               (root, last, name, clock[0] if settled else None, pin))
+    place = 'tab' if not settled else ('shelf' if pin else 'history')
+    position = None if place == 'history' else db.execute('SELECT COALESCE(MAX(position),-1)+1 FROM tree_state WHERE place=?', (place,)).fetchone()[0]
+    db.execute('INSERT INTO tree_state(root_id,last_visit_id,name,place,position,pinned,placed_at) VALUES(?,?,?,?,?,?,?)',
+               (root, last, name, place, position, int(place == 'tab' and pin is not None), clock[0]))
     trees.append((root, last))
 
 

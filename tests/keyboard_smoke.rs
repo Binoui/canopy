@@ -410,13 +410,14 @@ fn main() -> Result<()> {
         wait("reopen after toast", || {
             ui.snapshot().is_ok_and(|s| s.current == Some(*selected))
         })?;
-        ui.pages.settle_tree(
+        ui.pages.place_tree(
             ui.pages
                 .read(|b| {
                     canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)
                 })?
                 .tree_of(trees[4].2)
                 .unwrap(),
+            crate::browser::Move::History,
         )?;
         wait("other tree settled", || {
             text(&ui, "#toast").contains("small")

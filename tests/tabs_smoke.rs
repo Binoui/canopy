@@ -56,7 +56,7 @@ fn main() -> Result<()> {
         let mut b = Browser::open(&data.join("forest.sqlite3"))?;
         for tree in b.tree_states()? {
             b.rename_tree(tree.root, "A tree title long enough to shrink")?;
-            b.set_pinned(tree.root, true)?;
+            b.place_tree(tree.root, crate::browser::Move::Pin(true))?;
             let page = b
                 .snapshot()?
                 .visits

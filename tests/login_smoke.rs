@@ -352,8 +352,9 @@ fn main() -> Result<()> {
         ui.pages.read(|browser| browser.snapshot())?,
         ui.pages.read(|browser| browser.tree_states())?,
     )?;
-    for tree in forest.open() {
-        ui.pages.settle_tree(tree.id)?;
+    for tree in forest.tabs() {
+        ui.pages
+            .place_tree(tree.id, crate::browser::Move::History)?;
     }
     wait("the offer leaves with the last tree", || {
         offered(&ui) == json!([])

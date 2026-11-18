@@ -807,7 +807,9 @@ impl ChromeHost for Ui {
                 result
             }
             ChromeIntent::PinTree { tree, pinned } => {
-                let result = self.pages.set_pinned(tree, pinned);
+                let result = self
+                    .pages
+                    .place_tree(tree, crate::browser::Move::Pin(pinned));
                 self.schedule_refresh();
                 result
             }
@@ -826,7 +828,9 @@ impl ChromeHost for Ui {
             ChromeIntent::SettleBranch(head) => self.pages.settle_branch(head),
             ChromeIntent::MoveToTree(head) => self.pages.move_to_tree(head),
             ChromeIntent::UndoSettle => self.pages.undo_settle(),
-            ChromeIntent::SettleTree(tree) => self.pages.settle_tree(tree),
+            ChromeIntent::SettleTree(tree) => {
+                self.pages.place_tree(tree, crate::browser::Move::History)
+            }
             ChromeIntent::SelectTree(tree) => self.pages.go(Go::Tree(tree)),
             ChromeIntent::Restore(visit) => self.pages.go(Go::Visit(visit)),
             ChromeIntent::PageScale(action) => self.pages.page_scale(action),

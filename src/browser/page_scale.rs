@@ -110,6 +110,7 @@ mod tests {
         let browser = Browser::open(&path)?;
         let visit = Ulid::new().to_string();
         browser.connection.execute("INSERT INTO visits(id,url,title,created_at,opened_at) VALUES(?1,'https://example.org/a','Kept',1,1)", [&visit])?;
+        super::super::places::legacy_14(&browser.connection);
         browser
             .connection
             .execute_batch("DROP TABLE site_page_scale; ALTER TABLE session DROP COLUMN trees_help; PRAGMA user_version = 12;")?;
@@ -119,7 +120,7 @@ mod tests {
             browser
                 .connection
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?,
-            14
+            15
         );
         assert_eq!(
             browser.connection.query_row(
@@ -157,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn refuses_v15_and_invalid_stored_steps() -> Result<()> {
+    fn refuses_v16_and_invalid_stored_steps() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("forest.sqlite3");
         let browser = Browser::open(&path)?;
@@ -167,7 +168,7 @@ mod tests {
             [site.as_str()],
         )?;
         assert!(browser.page_scale(&site).is_err());
-        browser.connection.pragma_update(None, "user_version", 15)?;
+        browser.connection.pragma_update(None, "user_version", 16)?;
         drop(browser);
         assert!(Browser::open(&path)
             .err()

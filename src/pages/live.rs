@@ -2362,7 +2362,7 @@ impl NativeState {
         else {
             return false;
         };
-        forest.tree_of(visit) == Some(tree) && forest.open().iter().any(|open| open.id == tree)
+        forest.tree_of(visit) == Some(tree) && forest.tabs().iter().any(|open| open.id == tree)
     }
 
     fn current_entry_visit(&self) -> Option<VisitId> {

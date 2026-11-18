@@ -150,7 +150,7 @@ fn main() -> Result<()> {
         .pages
         .read(|b| b.tree_states())?
         .iter()
-        .any(|t| t.root.root() == beta && t.pin.is_some());
+        .any(|t| t.root.root() == beta && t.place.pinned());
     println!("menu row click across refresh: {menu}");
     key("Escape")?;
     if !menu {

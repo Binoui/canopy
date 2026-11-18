@@ -238,7 +238,7 @@ impl ForestPane {
             }
         }
         let value = json!({ "view": open.shown.view().name(), "query": open.query,
-            "count": format!("{} open · {} saved · {} in history", frame.forest.open().len(), frame.forest.pinned().len(), index.history.len()),
+            "count": format!("{} open · {} saved · {} in history", frame.forest.tabs().len(), frame.forest.shelf().len(), index.history.len()),
             "trees": matches!(open.shown, Shown::Trees).then(|| trees::value(&frame.forest, &index, &open.query)),
             "history": match &open.shown { Shown::History(c) => Some(history::value(&frame.forest, &index, &rows, c, &*self.calendar)), _ => None } });
         if open.sent.as_ref() == Some(&value) {
@@ -271,7 +271,7 @@ fn resolve(anchor: Option<Anchor>, rows: &[&Entry]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browser::{Browser, Lifecycle, Snapshot, TreeState, VisitId};
+    use crate::browser::{Browser, Snapshot, Spot, TreeState, VisitId};
     fn fixture(count: usize, pages: usize) -> ChromeFrame {
         let dir = tempfile::tempdir().unwrap();
         let mut b = Browser::open(&dir.path().join("db")).unwrap();
@@ -297,13 +297,18 @@ mod tests {
             states.push(TreeState {
                 root: TreeId(root),
                 last_visit: id(t * pages + pages - 1),
-                pin: None,
+
                 last_event_at: Some(t as i64 * 86_400_000),
                 name: Some(format!("Tree {t}")),
-                lifecycle: if t == 0 {
-                    Lifecycle::Open
+                spot: if t == 0 {
+                    crate::browser::Spot::Tab {
+                        pinned: false,
+                        position: 0,
+                    }
                 } else {
-                    Lifecycle::Settled { since: 0 }
+                    crate::browser::Spot::History {
+                        settled_at: t as i64 * 86_400_000,
+                    }
                 },
             });
         }
@@ -353,7 +358,7 @@ mod tests {
         assert_eq!(v["count"], "1 open · 0 saved · 3 in history");
         assert_eq!(
             v["trees"]["items"][1]["id"],
-            f.forest.open()[0].id.root().to_string()
+            f.forest.tabs()[0].id.root().to_string()
         );
         assert_eq!(v["trees"]["items"][1]["current"], true);
         assert!(matches!(p.present(&f), Reply::Unchanged));
@@ -441,10 +446,19 @@ mod tests {
             states.push(TreeState {
                 root: tree.id,
                 last_visit: tree.last_visit,
-                pin: tree.pin,
                 last_event_at: tree.last_event_at,
                 name: Some(tree.title.clone()),
-                lifecycle: tree.lifecycle,
+                spot: match tree.place {
+                    crate::browser::Place::Tab { pinned } => Spot::Tab {
+                        pinned,
+                        position: 0,
+                    },
+                    crate::browser::Place::Shelf { saved_at } => Spot::Shelf {
+                        saved_at,
+                        position: 0,
+                    },
+                    crate::browser::Place::History { settled_at } => Spot::History { settled_at },
+                },
             });
         }
         mutate(&mut states);
@@ -469,20 +483,24 @@ mod tests {
         let root = b
             .add_roots(&[url::Url::parse("https://saved.example").unwrap()])
             .unwrap()[0];
-        b.set_pinned(TreeId(root), true).unwrap();
-        let pin = b.tree_states().unwrap()[0].pin;
+        b.place_tree(TreeId(root), crate::browser::Move::Pin(true))
+            .unwrap();
+        let spot = Spot::Shelf {
+            position: 0,
+            saved_at: 1,
+        };
         change(&mut f, |states| {
             states
                 .iter_mut()
                 .find(|s| s.root.root().to_string() == selected)
                 .unwrap()
-                .pin = pin
+                .spot = spot
         });
         let v = value(p.present(&f));
         assert_eq!(rows(&v)[0]["id"], successor);
         assert_eq!(rows(&v)[0]["selected"], true);
         assert_eq!(v["count"], "1 open · 1 saved · 2 in history");
-        assert_eq!(f.forest.settled().len(), 3);
+        assert_eq!(f.forest.history().len(), 2);
         let v = value(p.input(Input::Show(View::Trees), &f));
         let saved = v["trees"]["items"]
             .as_array()
@@ -581,9 +599,9 @@ mod tests {
         change(&mut f, |states| {
             for s in states {
                 s.last_event_at = None;
-                if !s.lifecycle.is_open() {
-                    s.lifecycle = crate::browser::Lifecycle::Settled {
-                        since: 1_790_000_000_000,
+                if !s.spot.place().is_tab() {
+                    s.spot = crate::browser::Spot::History {
+                        settled_at: 1_790_000_000_000,
                     };
                 }
             }
@@ -592,13 +610,11 @@ mod tests {
         let v = value(p.input(Input::Open(View::History), &f));
         assert_eq!(rows(&v).len(), 60);
         assert_eq!(v["history"]["items"][0]["count"], "131 trees");
-        let tree = f.forest.settled().last().unwrap().id;
+        let tree = f.forest.history().last().unwrap().id;
         change(&mut f, |states| {
-            states
-                .iter_mut()
-                .find(|s| s.root == tree)
-                .unwrap()
-                .last_event_at = Some(1_800_000_000_000)
+            states.iter_mut().find(|s| s.root == tree).unwrap().spot = Spot::History {
+                settled_at: 1_800_000_000_000,
+            }
         });
         let v = value(p.present(&f));
         assert_eq!(rows(&v)[0]["id"], tree.root().to_string());

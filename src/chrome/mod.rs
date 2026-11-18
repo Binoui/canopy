@@ -361,7 +361,7 @@ impl HtmlChrome {
         // would be current with no tab to stand under.
         if let Some(crate::browser::PendingTarget::Visit(visit)) = &frame.pending {
             let tree = frame.forest.tree_of(*visit);
-            if frame.forest.open().iter().any(|t| Some(t.id) == tree) {
+            if frame.forest.tabs().iter().any(|t| Some(t.id) == tree) {
                 frame.forest.show_current(*visit);
             }
         }
@@ -432,7 +432,7 @@ impl HtmlChrome {
             .borrow()
             .as_ref()?
             .forest
-            .open()
+            .tabs()
             .get(index)
             .map(|t| t.id)
     }
