@@ -471,7 +471,11 @@ fn islands_boxes_clear_at_minimum_and_rest_and_chains_stay_compact() {
                         .fold(1_f64, f64::max)
                         * level.band().rest
                         / level.band().min;
-                    assert!(max <= 15. * unit, "tree needs more than fifteen rings");
+                    assert!(
+                        max <= 15. * unit,
+                        "tree {} {level:?} needs more than fifteen rings, max {max} unit {unit}",
+                        parents.len()
+                    );
                     assert!(p.items[0].iter().any(|p| p.x < root.x));
                     assert!(p.items[0].iter().any(|p| p.x > root.x));
                 }
@@ -503,5 +507,238 @@ fn islands_wraps_trees_at_every_resting_zoom() {
         );
         assert!(p.trees[1].x > p.trees[0].x);
         assert!(p.trees.last().unwrap().y > p.trees[0].y);
+    }
+}
+
+fn island_items(parents: &[Option<usize>]) -> Vec<items::Item> {
+    let (mut f, ids) = fixture_with_parents(parents, false, false);
+    f.forest.show_current(ids[0]);
+    let facts = Facts {
+        forest: &f.forest,
+        previous: ids.last().copied(),
+        live: &f.live,
+        shown: &f.shown,
+    };
+    items::fold(&facts, &f.forest.tabs()[0], Level::Near)
+}
+#[test]
+fn islands_short_chain_is_one_outward_spoke() {
+    let items = island_items(&[None, Some(0), Some(1)]);
+    for level in Level::ALL {
+        let (at, _) = place::island_points(&items, level);
+        let a = at[1].y.atan2(at[1].x);
+        let b = at[2].y.atan2(at[2].x);
+        assert!((a - b).abs() < 0.01);
+        assert!(at[1].x.hypot(at[1].y) < at[2].x.hypot(at[2].y));
+    }
+}
+#[test]
+fn islands_children_stay_in_their_parents_share_and_hubs_surround_the_root() {
+    let parents: Vec<_> = (0..31)
+        .map(|i| if i == 0 { None } else { Some((i - 1) / 5) })
+        .collect();
+    let items = island_items(&parents);
+    for level in Level::ALL {
+        let (at, shares) = place::island_points(&items, level);
+        let mut angles = Vec::new();
+        for (i, item) in items.iter().enumerate().skip(1) {
+            let parent = item.parent.unwrap();
+            assert!(shares[i].start >= shares[parent].start - 1e-9);
+            assert!(shares[i].end <= shares[parent].end + 1e-9);
+            let mut angle = at[i].y.atan2(at[i].x);
+            while angle < shares[i].start {
+                angle += std::f64::consts::TAU;
+            }
+            assert!(angle <= shares[i].end + 1e-9);
+            if parent == 0 {
+                angles.push(angle);
+            }
+        }
+        angles.sort_by(f64::total_cmp);
+        assert_eq!(angles.len(), 5);
+        for i in 0..5 {
+            let next = if i == 4 {
+                angles[0] + std::f64::consts::TAU
+            } else {
+                angles[i + 1]
+            };
+            assert!(next - angles[i] < std::f64::consts::PI);
+        }
+    }
+}
+fn segment_hits_box(
+    a: Point,
+    b: Point,
+    c: Point,
+    item: &items::Item,
+    level: Level,
+    scale: f64,
+) -> bool {
+    let a = Point {
+        x: a.x * scale,
+        y: a.y * scale,
+    };
+    let b = Point {
+        x: b.x * scale,
+        y: b.y * scale,
+    };
+    let (above, below) = item.extent(level);
+    let x = c.x * scale;
+    let y = c.y * scale;
+    let w = item.width(level) / 2.;
+    let corners = [
+        Point {
+            x: x - w,
+            y: y - above,
+        },
+        Point {
+            x: x + w,
+            y: y - above,
+        },
+        Point {
+            x: x + w,
+            y: y + below,
+        },
+        Point {
+            x: x - w,
+            y: y + below,
+        },
+    ];
+    let inside = |p: Point| p.x >= x - w && p.x <= x + w && p.y >= y - above && p.y <= y + below;
+    let cross =
+        |p: Point, q: Point, r: Point| (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+    inside(a)
+        || inside(b)
+        || (0..4).any(|i| {
+            let c = corners[i];
+            let d = corners[(i + 1) % 4];
+            cross(a, b, c) * cross(a, b, d) <= 0.
+                && cross(c, d, a) * cross(c, d, b) <= 0.
+                && a.x.min(b.x) <= c.x.max(d.x)
+                && c.x.min(d.x) <= a.x.max(b.x)
+                && a.y.min(b.y) <= c.y.max(d.y)
+                && c.y.min(d.y) <= a.y.max(b.y)
+        })
+}
+#[test]
+fn islands_edges_clear_unrelated_boxes_in_short_chains_hubs_and_branches() {
+    let cases = [
+        vec![None, Some(0), Some(1)],
+        (0..12)
+            .map(|i| match i {
+                0 => None,
+                1..=5 => Some(0),
+                _ => Some(i - 1),
+            })
+            .collect(),
+        (0..30)
+            .map(|i| if i == 0 { None } else { Some((i - 1) / 3) })
+            .collect(),
+        (0..21)
+            .map(|i| if i == 0 { None } else { Some(0) })
+            .collect(),
+    ];
+    for parents in cases {
+        let items = island_items(&parents);
+        for level in Level::ALL {
+            let (at, _) = place::island_points(&items, level);
+            for scale in [1., level.band().min / level.band().rest] {
+                for (i, item) in items.iter().enumerate() {
+                    if let Some(parent) = item.parent {
+                        for (j, other) in items.iter().enumerate() {
+                            if j != i && j != parent {
+                                assert!(
+                                    !segment_hits_box(
+                                        at[parent], at[i], at[j], other, level, scale
+                                    ),
+                                    "edge {parent}-{i} hits {j} in {} items at {level:?}",
+                                    items.len()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+#[test]
+fn islands_thirty_item_tree_fits_the_middle_room() {
+    let parents: Vec<_> = (0..30)
+        .map(|i| if i == 0 { None } else { Some((i - 1) / 5) })
+        .collect();
+    let mut items = island_items(&parents);
+    for item in &mut items {
+        item.named = item.appearance.current || item.appearance.previous;
+    }
+    let room = Room {
+        width: 1400.,
+        height: 760.,
+    };
+    let p = Layout::Islands.place(Level::Middle, std::slice::from_ref(&items), room);
+    let pan = place::camera(&p, Some((0, 0)), room, 1.);
+    for (at, item) in p.items[0].iter().zip(&items) {
+        assert!(at.x + pan[0] - item.width(Level::Middle) / 2. >= 0.);
+        assert!(at.x + pan[0] + item.width(Level::Middle) / 2. <= room.width);
+        assert!(at.y + pan[1] - item.extent(Level::Middle).0 >= 0.);
+        assert!(
+            at.y + pan[1] + item.extent(Level::Middle).1 <= room.height,
+            "bottom {}",
+            at.y + pan[1] + item.extent(Level::Middle).1
+        );
+    }
+}
+
+#[test]
+fn islands_resting_spoke_spacing_uses_the_item_boxes() {
+    let mut items = island_items(&[None, Some(0), Some(1)]);
+    items[1].named = false;
+    items[1].pages = vec![items[1].go; 8];
+    for level in Level::ALL {
+        let (at, _) = place::island_points(&items, level);
+        let before = items
+            .iter()
+            .map(|i| {
+                let (a, b) = i.extent(level);
+                i.width(level).hypot(2. * a.max(b)) + 20.
+            })
+            .fold(1_f64, f64::max)
+            * level.band().rest
+            / level.band().min;
+        let spacing = at[1].x.hypot(at[1].y);
+        println!("spacing {level:?}: before {before:.3}, after {spacing:.3} CSS px at rest");
+        let range = match level {
+            Level::Far => 50. ..60.,
+            Level::Middle => 110. ..150.,
+            Level::Near => 230. ..260.,
+        };
+        assert!(range.contains(&spacing));
+    }
+}
+#[test]
+fn islands_coiled_chains_keep_their_edges_clear() {
+    for n in [90, 500] {
+        let items = island_items(&(0..n).map(|i: usize| i.checked_sub(1)).collect::<Vec<_>>());
+        for level in Level::ALL {
+            let (at, shares) = place::island_points(&items, level);
+            for (i, item) in items.iter().enumerate().skip(1) {
+                let parent = item.parent.unwrap();
+                let mut angle = at[i].y.atan2(at[i].x);
+                while angle < shares[parent].start {
+                    angle += std::f64::consts::TAU;
+                }
+                assert!(angle <= shares[parent].end + 1e-9);
+                for scale in [1., level.band().min / level.band().rest] {
+                    for (j, other) in items.iter().enumerate() {
+                        if j != i && j != parent {
+                            assert!(
+                                !segment_hits_box(at[parent], at[i], at[j], other, level, scale),
+                                "chain {n} edge {parent}-{i} hits {j} {level:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }

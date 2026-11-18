@@ -29,8 +29,67 @@ fn page(ui: &Ui, id: VisitId) -> Result<String> {
     pump(50);
     Ok(selector)
 }
+fn stress_anchor(source: &std::path::Path) -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    std::fs::copy(source, dir.path().join("forest.sqlite3"))?;
+    std::fs::write(dir.path().join("canopy-layout"), "islands")?;
+    start(dir.path())?;
+    let ui = Ui::new(dir.path())?;
+    ui.window.show_all();
+    ready(&ui)?;
+    ui.window.resize(1440, 900);
+    pump(200);
+    let current = ui.snapshot()?.current.unwrap();
+    open(&ui)?;
+    for (width, height) in [(1440, 900), (1920, 1000)] {
+        ui.window.resize(width, height);
+        pump(200);
+        for zoom in ["far", "middle", "near"] {
+            level(&ui, zoom)?;
+            println!(
+                "stress geometry {width} {zoom}: {}",
+                chrome(
+                    &ui,
+                    r#"(()=>{const v=canopyValue(),n=v.items.findIndex(i=>i.go && i.up===null),r=v.items[n],c=v.items.find(i=>i.up===n);return {firstEdge:c?Math.hypot(c.x-r.x,c.y-r.y):null,scale:scaleNow()};})()"#
+                )?
+            );
+        }
+        page(&ui, current)?;
+        let mut max_error = 0_f64;
+        let mut seen = std::collections::HashSet::new();
+        for button in ["5", "4"] {
+            for _ in 0..12 {
+                chrome(
+                    &ui,
+                    &format!(
+                        r#"(()=>{{const i=canopyValue().items.find(i=>i.pages?.includes('{current}')),r=mapView.nodes.get(i.k).el.getBoundingClientRect(),v=$('forest-canopy').getBoundingClientRect();globalThis.proof={{page:'{current}',f:[.58,.47],at:[r.left-v.left+r.width*.58,r.top-v.top+r.height*.47]}};return true;}})()"#
+                    ),
+                )?;
+                let at = chrome(&ui, "proof.at")?;
+                let v = rect(&ui, "#forest-canopy")?;
+                move_to(
+                    (v.0 + at[0].as_f64().unwrap()).round() as i32,
+                    (v.1 + at[1].as_f64().unwrap()).round() as i32,
+                )?;
+                xdo(&["click", button])?;
+                pump(100);
+                let error=chrome(&ui,r#"(()=>{const i=canopyValue().items.find(i=>i.pages?.includes(proof.page)),r=mapView.nodes.get(i.k).el.getBoundingClientRect(),v=$('forest-canopy').getBoundingClientRect();return Math.hypot(r.left-v.left+r.width*proof.f[0]-proof.at[0],r.top-v.top+r.height*proof.f[1]-proof.at[1]);})()"#)?.as_f64().unwrap();
+                max_error = max_error.max(error);
+                assert!(error <= 1., "stress wheel anchor error {error}");
+                seen.insert(chrome(&ui, "mapView.drawn")?.as_str().unwrap().to_owned());
+            }
+        }
+        assert_eq!(seen.len(), 3);
+        println!("PASS stress Islands real wheel across both thresholds both ways at {width}x{height}, maximum error {max_error:.6} CSS px.");
+    }
+    ui.window.close();
+    Ok(())
+}
 fn main() -> Result<()> {
     let _runtime = private_runtime()?;
+    if let Some(path) = std::env::var_os("CANOPY_STRESS_FIXTURE") {
+        return stress_anchor(std::path::Path::new(&path));
+    }
     let layout = std::env::var("CANOPY_TEST_LAYOUT").unwrap_or_else(|_| "islands".into());
     assert!(matches!(layout.as_str(), "flow" | "islands"));
     let dir = tempfile::tempdir()?;

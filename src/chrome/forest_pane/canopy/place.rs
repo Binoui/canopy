@@ -54,6 +54,7 @@ struct Shape {
     height: f64,
 }
 pub(super) struct Placed {
+    layout: Layout,
     pub trees: Vec<Point>,
     pub items: Vec<Vec<Point>>,
     bounds: Vec<(f64, f64)>,
@@ -100,6 +101,7 @@ impl Layout {
         let limit = room.width - 48.;
         let mut occupied: Vec<(f64, f64, f64, f64)> = vec![];
         let mut placed = Placed {
+            layout: self,
             trees: vec![],
             items: vec![],
             bounds: vec![],
@@ -234,45 +236,375 @@ fn flow(items: &[Item], m: Metrics, level: Level) -> Shape {
         at,
     }
 }
-fn islands(items: &[Item], m: Metrics, level: Level) -> Shape {
+#[derive(Clone, Copy)]
+pub(super) struct Sector {
+    pub start: f64,
+    pub end: f64,
+}
+impl Sector {
+    fn middle(self) -> f64 {
+        (self.start + self.end) / 2.
+    }
+}
+#[derive(Clone, Copy)]
+struct BoxSize {
+    half_width: f64,
+    above: f64,
+    below: f64,
+}
+impl BoxSize {
+    fn overlaps(self, a: Point, other: Self, b: Point) -> bool {
+        (a.x - b.x).abs() < self.half_width + other.half_width
+            && a.y - self.above < b.y + other.below
+            && b.y - other.above < a.y + self.below
+    }
+    fn crosses(self, center: Point, a: Point, b: Point) -> bool {
+        let mut lo = 0_f64;
+        let mut hi = 1_f64;
+        for (origin, delta, min, max) in [
+            (
+                a.x,
+                b.x - a.x,
+                center.x - self.half_width,
+                center.x + self.half_width,
+            ),
+            (a.y, b.y - a.y, center.y - self.above, center.y + self.below),
+        ] {
+            if delta.abs() < 1e-9 {
+                if origin < min || origin > max {
+                    return false;
+                }
+            } else {
+                let u = (min - origin) / delta;
+                let v = (max - origin) / delta;
+                lo = lo.max(u.min(v));
+                hi = hi.min(u.max(v));
+            }
+        }
+        lo <= hi
+    }
+}
+fn fit_sectors(
+    at: &mut [Point],
+    sectors: &mut [Sector],
+    boxes: &[BoxSize],
+    items: &[Item],
+    clearance: f64,
+    minimum: f64,
+) {
+    use std::f64::consts::PI;
+    let mut best = (f64::INFINITY, 1., 1., 0.);
+    for phase in 0..24 {
+        let rotation = phase as f64 * PI / 12.;
+        let rotated: Vec<_> = at
+            .iter()
+            .map(|p| Point {
+                x: p.x * rotation.cos() - p.y * rotation.sin(),
+                y: p.x * rotation.sin() + p.y * rotation.cos(),
+            })
+            .collect();
+        let at = &rotated;
+        for trial in 0..80 {
+            let sy = minimum * 1.06_f64.powi(trial);
+            let mut sx = minimum;
+            for i in 0..items.len() {
+                for j in 0..i {
+                    if at[i].y * sy - boxes[i].above < at[j].y * sy + boxes[j].below
+                        && at[j].y * sy - boxes[j].above < at[i].y * sy + boxes[i].below
+                    {
+                        sx = sx.max(
+                            (boxes[i].half_width + boxes[j].half_width) / (at[i].x - at[j].x).abs(),
+                        );
+                    }
+                }
+                if let Some(parent) = items[i].parent {
+                    for j in 0..items.len() {
+                        if j == i || j == parent {
+                            continue;
+                        }
+                        let a = at[parent];
+                        let b = at[i];
+                        let c = at[j];
+                        let dy = (b.y - a.y) * sy;
+                        let (lo, hi) = if dy.abs() < 1e-9 {
+                            if a.y * sy < c.y * sy - boxes[j].above
+                                || a.y * sy > c.y * sy + boxes[j].below
+                            {
+                                continue;
+                            }
+                            (0., 1.)
+                        } else {
+                            let u = ((c.y - a.y) * sy - boxes[j].above) / dy;
+                            let v = ((c.y - a.y) * sy + boxes[j].below) / dy;
+                            (u.min(v).max(0.), u.max(v).min(1.))
+                        };
+                        if lo > hi {
+                            continue;
+                        }
+                        let x0 = a.x + (b.x - a.x) * lo - c.x;
+                        let x1 = a.x + (b.x - a.x) * hi - c.x;
+                        let distance = if x0 * x1 <= 0. {
+                            0.
+                        } else {
+                            x0.abs().min(x1.abs())
+                        };
+                        sx = sx.max(boxes[j].half_width / distance);
+                    }
+                }
+            }
+            let left = at
+                .iter()
+                .zip(boxes)
+                .map(|(p, b)| p.x * sx - b.half_width)
+                .fold(0_f64, f64::min);
+            let right = at
+                .iter()
+                .zip(boxes)
+                .map(|(p, b)| p.x * sx + b.half_width)
+                .fold(180. * clearance, f64::max);
+            let top = at
+                .iter()
+                .zip(boxes)
+                .map(|(p, b)| p.y * sy - b.above)
+                .fold(0_f64, f64::min);
+            let bottom = at
+                .iter()
+                .zip(boxes)
+                .map(|(p, b)| p.y * sy + b.below)
+                .fold(0_f64, f64::max);
+            let score = ((right - left) / 1384.).max((bottom - top + 42.) / 744.);
+            if score < best.0 {
+                best = (score, sx, sy, rotation);
+            }
+        }
+    }
+    for p in &mut *at {
+        let x = p.x * best.3.cos() - p.y * best.3.sin();
+        let y = p.x * best.3.sin() + p.y * best.3.cos();
+        p.x = x * best.1 * 1.001;
+        p.y = y * best.2 * 1.001;
+    }
+    let transform = |angle: f64| {
+        let angle = angle + best.3;
+        let mut a = (angle.sin() * best.2).atan2(angle.cos() * best.1);
+        while a < angle - PI {
+            a += 2. * PI;
+        }
+        while a > angle + PI {
+            a -= 2. * PI;
+        }
+        a
+    };
+    for sector in &mut *sectors {
+        sector.start = transform(sector.start);
+        sector.end = transform(sector.end);
+    }
+}
+pub(super) fn island_points(items: &[Item], level: Level) -> (Vec<Point>, Vec<Sector>) {
     use std::f64::consts::PI;
     let clearance = level.band().rest / level.band().min;
-    let diameter = items
+    let boxes: Vec<_> = items
         .iter()
-        .map(|i| {
-            let (above, below) = i.extent(level);
-            i.width(level).hypot(2. * above.max(below)) + 20.
-        })
-        .fold(1_f64, f64::max)
-        * clearance;
-    let span = 1.84 * PI;
-    let mut ring = 1_usize;
-    let mut used = 0;
-    let mut at = vec![Point::default(); items.len()];
-    for (i, point) in at.iter_mut().enumerate().skip(1) {
-        let (delta, capacity) = loop {
-            let delta = 2. * (1. / (2. * ring as f64)).asin();
-            let capacity = ((span / delta).floor() as usize).min(items.len() - i + used);
-            if used < capacity {
-                break (span / capacity as f64, capacity);
+        .map(|item| {
+            let (above, below) = item.extent(level);
+            BoxSize {
+                half_width: item.width(level) / 2. * clearance,
+                above: above * clearance,
+                below: below * clearance,
             }
-            ring += 1;
-            used = 0;
-        };
-        let slot = if ring.is_multiple_of(2) {
-            capacity - used - 1
-        } else {
-            used
-        };
-        let angle =
-            -span / 2. + (span - capacity as f64 * delta) / 2. + (slot as f64 + 0.5) * delta;
-        let radius = ring as f64 * diameter;
-        *point = Point {
-            x: radius * angle.cos(),
-            y: radius * angle.sin(),
-        };
-        used += 1;
+        })
+        .collect();
+    let mut children = vec![Vec::new(); items.len()];
+    for (i, item) in items.iter().enumerate() {
+        if let Some(parent) = item.parent {
+            children[parent].push(i);
+        }
     }
+    let mut weight: Vec<_> = boxes.iter().map(|b| b.half_width).collect();
+    let mut tail = vec![1; items.len()];
+    for i in (0..items.len()).rev() {
+        if !children[i].is_empty() {
+            weight[i] = children[i]
+                .iter()
+                .map(|&c| weight[c])
+                .sum::<f64>()
+                .max(weight[i]);
+            if children[i].len() == 1 {
+                tail[i] += tail[children[i][0]];
+            }
+        }
+    }
+    let step = match level {
+        Level::Far => 54.,
+        Level::Middle => 104.,
+        Level::Near => 244.,
+    };
+    let whole = Sector {
+        start: -PI / 2.,
+        end: PI * 1.5,
+    };
+    let mut sectors = vec![whole; items.len()];
+    let mut radii = vec![0.; items.len()];
+    let mut at = vec![Point::default(); items.len()];
+    for i in 0..items.len() {
+        let sector = sectors[i];
+        let angle = sector.middle();
+        if i > 0 {
+            at[i] = Point {
+                x: radii[i] * angle.cos(),
+                y: radii[i] * angle.sin(),
+            };
+        }
+        let mut start = sector.start;
+        let span = if i == 0 || children[i].len() == 1 {
+            sector.end - sector.start
+        } else {
+            (sector.end - sector.start).min(PI * 2. / 3.)
+        };
+        start += (sector.end - sector.start - span) / 2.;
+        let total: f64 = children[i].iter().map(|&c| weight[c]).sum();
+        for &child in &children[i] {
+            let share = span * weight[child] / total;
+            sectors[child] = Sector {
+                start,
+                end: start + share,
+            };
+            radii[child] = radii[i] + step;
+            start += share;
+        }
+    }
+    for head in 0..items.len() {
+        if tail[head] < 7 || items[head].parent.is_some_and(|p| children[p].len() == 1) {
+            continue;
+        }
+        let mut run = vec![head];
+        while children[*run.last().unwrap()].len() == 1 {
+            run.push(children[*run.last().unwrap()][0]);
+        }
+        let sector = sectors[head];
+        let mut angle = sector.middle();
+        let mut radius = radii[run[5]];
+        let pitch = run
+            .iter()
+            .map(|&i| boxes[i].above + boxes[i].below)
+            .fold(0_f64, f64::max);
+        let delta = 0.025_f64.min((sector.end - sector.start) / 16.);
+        let mut forward = true;
+        for (offset, &i) in run.iter().enumerate().skip(6) {
+            loop {
+                angle += if forward { delta } else { -delta };
+                if sector.end - sector.start > 2. * PI - 0.01 {
+                    radius += pitch * delta / (2. * PI);
+                    if angle > sector.end {
+                        angle -= 2. * PI;
+                    }
+                } else if angle >= sector.end - delta || angle <= sector.start + delta {
+                    angle = angle.clamp(sector.start + delta, sector.end - delta);
+                    radius += pitch;
+                    forward = !forward;
+                }
+                let p = Point {
+                    x: radius * angle.cos(),
+                    y: radius * angle.sin(),
+                };
+                if run[..offset].iter().all(|&j| {
+                    !boxes[i].overlaps(p, boxes[j], at[j])
+                        && (j == run[offset - 1]
+                            || !boxes[j].crosses(at[j], at[run[offset - 1]], p))
+                }) && run[..offset]
+                    .windows(2)
+                    .all(|edge| !boxes[i].crosses(p, at[edge[0]], at[edge[1]]))
+                {
+                    at[i] = p;
+                    break;
+                }
+            }
+        }
+    }
+    for i in 0..items.len() {
+        if children[i].len() <= 32 || children[i].iter().any(|&c| !children[c].is_empty()) {
+            continue;
+        }
+        let sector = sectors[i];
+        let delta = 0.025_f64.min((sector.end - sector.start) / 16.);
+        let mut angle = sector.start;
+        let mut radius = radii[i] + step;
+        let pitch = children[i]
+            .iter()
+            .map(|&c| boxes[c].above + boxes[c].below)
+            .fold(0_f64, f64::max);
+        for &child in &children[i] {
+            loop {
+                angle += delta;
+                if angle > sector.end - delta {
+                    angle = sector.start + delta;
+                    radius += pitch;
+                }
+                let p = Point {
+                    x: radius * angle.cos(),
+                    y: radius * angle.sin(),
+                };
+                if (0..child).all(|j| !boxes[child].overlaps(p, boxes[j], at[j])) {
+                    at[child] = p;
+                    sectors[child] = Sector {
+                        start: angle - delta / 2.,
+                        end: angle + delta / 2.,
+                    };
+                    break;
+                }
+            }
+        }
+    }
+    let leaf_rows = children
+        .iter()
+        .any(|c| c.len() > 32 && c.iter().all(|&i| children[i].is_empty()));
+    if items.len() > 3 && tail.iter().all(|&n| n < 7) && !leaf_rows {
+        fit_sectors(
+            &mut at,
+            &mut sectors,
+            &boxes,
+            items,
+            clearance,
+            if level == Level::Middle { 0.4 } else { 0.9 },
+        );
+        return (at, sectors);
+    }
+    let mut scale = 1_f64;
+    for i in 0..items.len() {
+        for j in 0..i {
+            let dx = (at[i].x - at[j].x).abs();
+            let dy = at[i].y - at[j].y;
+            let x = (boxes[i].half_width + boxes[j].half_width) / dx;
+            let y = if dy > 0. {
+                (boxes[j].below + boxes[i].above) / dy
+            } else {
+                (boxes[i].below + boxes[j].above) / -dy
+            };
+            scale = scale.max(x.min(y));
+        }
+    }
+    for p in &mut at {
+        p.x *= scale;
+        p.y *= scale;
+    }
+    if !leaf_rows {
+        while items.iter().enumerate().any(|(i, item)| {
+            item.parent.is_some_and(|parent| {
+                (0..items.len())
+                    .any(|j| j != i && j != parent && boxes[j].crosses(at[j], at[parent], at[i]))
+            })
+        }) {
+            for p in &mut at {
+                p.x *= 1.05;
+                p.y *= 1.05;
+            }
+        }
+    }
+    (at, sectors)
+}
+fn islands(items: &[Item], m: Metrics, level: Level) -> Shape {
+    let clearance = level.band().rest / level.band().min;
+    let (mut at, _) = island_points(items, level);
     let left = at
         .iter()
         .zip(items)
@@ -367,6 +699,15 @@ pub(super) fn camera(
         room.width * 0.55 - point.x * s,
         room.height * 0.45 - point.y * s,
     ];
+    if placed.layout == Layout::Islands {
+        if placed.bounds[t].0 * s <= room.width - 16. {
+            pan[0] = (room.width - placed.bounds[t].0 * s) / 2. - (name.x - 90.) * s;
+        }
+        if placed.bounds[t].1 * s <= room.height - 16. {
+            pan[1] = (room.height - placed.bounds[t].1 * s) / 2. - name.y * s;
+        }
+        return pan;
+    }
     if placed.bounds[t].0 * s <= room.width - 48. {
         pan[0] = 112. - name.x * s;
     }
