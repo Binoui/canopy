@@ -16,12 +16,22 @@ impl Calendar for LocalCalendar {
         )
     }
 }
+// The chrome is in English. GLib's own names follow LC_TIME once GTK has set the locale.
+const WEEKDAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 fn civil(t: DateTime) -> Civil {
     Civil {
         date: t.format("%Y-%m-%d").unwrap().to_string(),
         year: t.year(),
         day: t.day_of_year(),
-        label: t.format("%a %-d %b").unwrap().to_string(),
+        label: format!(
+            "{} {} {}",
+            WEEKDAYS[(t.day_of_week() - 1) as usize],
+            t.day_of_month(),
+            MONTHS[(t.month() - 1) as usize]
+        ),
         clock: t.format("%H:%M").unwrap().to_string(),
     }
 }
