@@ -6,7 +6,7 @@ function treesCardHtml(c) {
     + (!line && c.page ? `<span class="card-page">${esc(c.page)}</span>` : '')
     + (c.time ? `<span class="card-time">${esc(c.time)}</span>` : '')
     + (!line && c.meta ? `<span class="card-meta">${esc(c.meta)}</span>` : '')
-    + (!line && c.waiting ? `<span class="card-waiting count" title="${esc(c.waitingTip)}" aria-label="${esc(c.waitingTip)}">${esc(c.waiting)}</span>` : '') + '</button>';
+    + (!line && c.waiting ? `<span class="card-waiting count" title="${esc(c.waitingTip)}" aria-label="${esc(c.waitingTip)}">${esc(c.waitingTip)}</span>` : '') + '</button>';
   const glyph = {pin:icon('pinned'), unpin:icon('pinned'), save:icon('bookmark'), settle:'✓'};
   const buttons = c.buttons.map(b => `<button data-key="${b.act}" data-act="${b.act}" class="card-action" title="${esc(b.label)}" aria-label="${esc(b.label)}">${glyph[b.act] ?? esc(b.label)}</button>`).join('');
   return `<div class="tree-card ${c.kind}" data-key="${c.key}" data-id="${c.id}" data-forest="card" data-tree-menu draggable="true" tabindex="0" role="group" aria-label="${esc(c.name)}" aria-current="${!!c.current}">${main}<span class="card-acts" data-key="acts">${buttons}</span></div>`;

@@ -8,13 +8,14 @@
 #forest-trees .tree-card:hover { border-color: var(--faint); box-shadow: none; }
 #forest-trees .tree-card[aria-current="true"] { border-color: var(--green); }
 #forest-trees .card-main { position: relative; display: flex; flex-direction: column; min-width: 0; width: 100%; padding: 0; border-radius: 9px; cursor: inherit; text-align: left; }
-#forest-trees .card-art { display: flex; align-items: center; justify-content: center; height: 58px; width: 100%; overflow: hidden; border-bottom: 1px solid var(--border); background: var(--bg); border-radius: 9px 9px 0 0; }
+#forest-trees .card-art { display: flex; align-items: center; justify-content: flex-start; height: 64px; padding: 0 10px; width: 100%; overflow: hidden; border-bottom: 1px solid var(--border); background: var(--bg); border-radius: 9px 9px 0 0; }
 #forest-trees .card-title, #forest-trees .card-page, #forest-trees .card-meta { display: block; width: 100%; padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #forest-trees .card-title { margin-top: 7px; font-size: 13px; font-weight: 600; }
 #forest-trees .card-page { margin-top: 2px; color: var(--muted); font-size: 11.5px; }
-#forest-trees .card-meta { margin: 3px 0 2px; color: var(--faint); font-size: 11px; }
+#forest-trees .card-meta { margin: 6px 0 9px; padding-right: 96px; color: var(--faint); font-size: 11px; }
+#forest-trees .card-page:last-child { margin-bottom: 30px; }
 #forest-trees .card-waiting { position: absolute; right: 6px; top: 5px; padding: 2px 5px; background: var(--green-soft); color: var(--green-ink); border-radius: 5px; font-size: 10px; }
-#forest-trees .card-acts { display: flex; flex: none; justify-content: flex-end; gap: 2px; padding: 2px 4px 4px; }
+#forest-trees .card-acts { position: absolute; right: 4px; bottom: 3px; display: flex; gap: 2px; }
 #forest-trees .card-action, .lane-history { height: 26px; padding: 0 7px; border-radius: 6px; color: var(--muted); font-size: 11.5px; white-space: nowrap; }
 #forest-trees .card-action:hover, .lane-history:hover { background: var(--hover); color: var(--text); }
 #forest-trees .card-action[data-act="open"] { border: 1px solid var(--border); }
@@ -23,7 +24,7 @@
 #forest-trees .line .card-title { flex: 1; width: 0; margin: 0; padding: 0; font-size: 12px; }
 #forest-trees .card-icon { flex: none; display: flex; }
 #forest-trees .card-time { color: var(--faint); font-size: 10px; }
-#forest-trees .line .card-acts { padding: 3px; }
+#forest-trees .line .card-acts { position: static; flex: none; padding: 3px; }
 .lane-history { flex: none; align-self: flex-start; margin-top: 6px; border: 1px solid var(--border); }
 #forest-trees .hint-line { padding: 10px 4px; color: var(--faint); }
 #forest-trees img, #forest-trees svg { -webkit-user-drag: none; pointer-events: none; }
