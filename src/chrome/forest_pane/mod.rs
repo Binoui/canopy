@@ -1,3 +1,5 @@
+#[cfg_attr(not(test), allow(dead_code))]
+mod canopy;
 mod days;
 mod history;
 mod index;
