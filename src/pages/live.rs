@@ -624,7 +624,27 @@ impl LivePage {
             let weak = state.pages.clone();
             signals.push((
                 native.clone().upcast(),
-                native.connect_enter_fullscreen(move |view| !is_selected(&weak, view)),
+                native.connect_enter_fullscreen(move |view| {
+                    if !is_selected(&weak, view) {
+                        return true;
+                    }
+                    // WebKit only fullscreens the window; the page must also leave the chrome's
+                    // band and the chrome must step aside, or the video stays under the strip.
+                    if let Some(pages) = weak.upgrade() {
+                        pages.fullscreen_entered(view);
+                    }
+                    false
+                }),
+            ));
+            let weak = state.pages.clone();
+            signals.push((
+                native.clone().upcast(),
+                native.connect_leave_fullscreen(move |view| {
+                    if let Some(pages) = weak.upgrade() {
+                        pages.fullscreen_left(view);
+                    }
+                    false
+                }),
             ));
             let weak = state.pages.clone();
             signals.push((
