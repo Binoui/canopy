@@ -588,3 +588,14 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .errors-head { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; gap: 20px; font-size: 12px; }
 .menu-error { max-width: 320px; overflow-wrap: anywhere; }
 .menu-error small { display: block; color: var(--muted); margin-top: 4px; }
+
+.pv-art { display: flex; align-items: center; justify-content: center; height: 150px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 10px; }
+.pv-title { display: flex; flex-wrap: wrap; gap: 7px; align-items: baseline; margin-bottom: 8px; }
+.pv-title span, .pv-cut { font-size: 11px; color: var(--muted); }
+.pv-action { margin: 0 6px 8px 0; }
+.pv-row { display: flex; align-items: center; gap: 7px; width: 100%; height: 26px; text-align: left; border-radius: 5px; }
+.pv-row:hover { background: var(--hover); }
+.pv-row span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pv-row.last { color: var(--green-ink); }
+.pv-row.waiting .fav { outline: 1px dashed var(--green); outline-offset: 2px; }
+@container (max-width: 700px) { .pv-art { height: 80px; } }

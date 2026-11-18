@@ -3,6 +3,7 @@ mod index;
 
 use super::{
     tree_card::{self, Place},
+    tree_view::{self, Fit},
     view::plural,
     ChromeFrame,
 };
@@ -264,8 +265,28 @@ fn history(
                 "name":format!("{}, {}, {}",tree.title,plural(tree.page_count,"page"),e.at.when(&today)), "menu":tree_card::menu(tree,Place::History)}));
         }
     }
-    json!({"items":items, "more":Value::Null, "preview":Value::Null,
+    json!({"items":items, "more":Value::Null, "preview":cursor.anchor.and_then(|a| rows.iter().find(|e| e.tree == a.tree)).map(|e| preview(forest,e,&today)),
         "empty":rows.is_empty().then_some("No settled trees yet. A tree you settle waits here.")})
+}
+
+const OUTLINE_MAX: usize = 40;
+fn preview(forest: &ForestProjection, entry: &Entry, today: &days::Civil) -> Value {
+    let tree = forest.trees().iter().find(|t| t.id == entry.tree).unwrap();
+    let mut outline = Vec::new();
+    let mut stack = vec![(tree.id.root(), 0usize)];
+    while let Some((id, depth)) = stack.pop() {
+        let v = forest.visit(id).unwrap();
+        outline.push(json!({"id":id.to_string(), "depth":depth, "url":v.url.as_str(), "name":super::graph::short_name(forest,id), "last":id==tree.last_visit, "waiting":forest.is_waiting(id)}));
+        if outline.len() == OUTLINE_MAX {
+            break;
+        }
+        stack.extend(forest.children(id).iter().rev().map(|&c| (c, depth + 1)));
+    }
+    json!({"id":tree.id.root().to_string(), "key":format!("pv-{}",tree.id.root()), "title":tree.title,
+        "meta":format!("{} · last used {}",plural(tree.page_count,"page"),entry.at.when(today)),
+        "mini":tree_card::mini_value(forest,&tree_view::miniature(forest,tree,Fit::PREVIEW)),
+        "actions":[{"kind":"reopen","label":"Reopen"},{"kind":"save","label":"Save"}],
+        "cut":(tree.page_count>outline.len()).then(||format!("{} more pages",tree.page_count-outline.len())), "outline":outline})
 }
 
 #[cfg(test)]
@@ -411,5 +432,85 @@ mod tests {
         ] {
             assert!(Input::parse(&m).is_err());
         }
+    }
+    #[test]
+    fn preview_uses_true_depth_preorder_and_caps_the_outline() {
+        let f = fixture(2, 80);
+        let mut p = ForestPane::default();
+        let v = value(p.input(Input::Open(View::History), &f));
+        let preview = &v["history"]["preview"];
+        let outline = preview["outline"].as_array().unwrap();
+        assert_eq!(outline.len(), OUTLINE_MAX);
+        assert_eq!(outline[0]["depth"], 0);
+        assert_eq!(outline[39]["depth"], 39);
+        assert_eq!(preview["cut"], "40 more pages");
+        assert_eq!(
+            preview["actions"],
+            json!([{"kind":"reopen","label":"Reopen"},{"kind":"save","label":"Save"}])
+        );
+    }
+    fn change(frame: &mut ChromeFrame, mutate: impl FnOnce(&mut Vec<TreeState>)) {
+        let mut visits = vec![];
+        let mut states = vec![];
+        for tree in frame.forest.trees() {
+            let mut stack = vec![tree.id.root()];
+            while let Some(id) = stack.pop() {
+                visits.push(frame.forest.visit(id).unwrap().clone());
+                stack.extend(frame.forest.children(id));
+            }
+            states.push(TreeState {
+                root: tree.id,
+                last_visit: tree.last_visit,
+                pin: tree.pin,
+                last_event_at: tree.last_event_at,
+                name: Some(tree.title.clone()),
+                lifecycle: tree.lifecycle,
+            });
+        }
+        mutate(&mut states);
+        frame.forest = ForestProjection::from_snapshot(
+            Snapshot {
+                visits,
+                current: frame.forest.current(),
+            },
+            states,
+        )
+        .unwrap();
+    }
+    #[test]
+    fn saving_selected_history_keeps_it_settled_and_selects_the_successor() {
+        let mut f = fixture(4, 4);
+        let mut p = ForestPane::default();
+        let v = value(p.input(Input::Open(View::History), &f));
+        let selected = rows(&v)[0]["id"].as_str().unwrap().to_owned();
+        let successor = rows(&v)[1]["id"].clone();
+        let dir = tempfile::tempdir().unwrap();
+        let mut b = Browser::open(&dir.path().join("db")).unwrap();
+        let root = b
+            .add_roots(&[url::Url::parse("https://saved.example").unwrap()])
+            .unwrap()[0];
+        b.set_pinned(TreeId(root), true).unwrap();
+        let pin = b.tree_states().unwrap()[0].pin;
+        change(&mut f, |states| {
+            states
+                .iter_mut()
+                .find(|s| s.root.root().to_string() == selected)
+                .unwrap()
+                .pin = pin
+        });
+        let v = value(p.present(&f));
+        assert_eq!(rows(&v)[0]["id"], successor);
+        assert_eq!(rows(&v)[0]["selected"], true);
+        assert_eq!(v["count"], "1 open · 1 saved · 2 in history");
+        assert_eq!(f.forest.settled().len(), 3);
+        let v = value(p.input(Input::Show(View::Trees), &f));
+        let saved = v["trees"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["key"].as_str().is_some_and(|s| s.starts_with("saved-")))
+            .unwrap();
+        assert_eq!(saved["id"], selected);
+        assert!(saved["badge"].is_null());
     }
 }

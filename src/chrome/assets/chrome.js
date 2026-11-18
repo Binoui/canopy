@@ -1752,10 +1752,19 @@ function renderHistory(h) {
   const list = $('forest-list');
   const inList = list.contains(document.activeElement);
   patchChildren(list, h.items.map(historyItemHtml).join(''));
+  patchChildren($('forest-preview'), h.preview ? forestPreviewHtml(h.preview) : '');
+  $('forest-preview').hidden = !h.preview;
   if (inList) {
     const row = list.querySelector('[aria-selected="true"]');
     row?.focus({ preventScroll: true }); row?.scrollIntoView({ block: 'nearest' });
   }
+}
+function forestPreviewHtml(p) {
+  return `<div class="pv-art" data-key="${p.key}-art">${miniHtml(p.mini)}</div>`
+    + `<div class="pv-title" data-key="${p.key}-title"><b>${esc(p.title)}</b><span>${esc(p.meta)}</span></div>`
+    + p.actions.map(a => `<button class="action pv-action" data-key="${p.key}-${a.kind}" data-forest="${a.kind}" data-id="${p.id}">${esc(a.label)}</button>`).join('')
+    + p.outline.map(r => `<button class="pv-row${r.last ? ' last' : ''}${r.waiting ? ' waiting' : ''}" data-key="${p.key}-${r.id}" data-forest="page" data-id="${r.id}" aria-label="${esc(r.name)}, depth ${r.depth}${r.last ? ', last page' : ''}${r.waiting ? ', waiting' : ''}" style="padding-left:${Math.min(r.depth,6)*16}px">${fav(r.url,!r.waiting,14)}<span>${esc(r.name)}</span></button>`).join('')
+    + (p.cut ? `<div class="pv-cut" data-key="${p.key}-cut">${esc(p.cut)}</div>` : '');
 }
 function historyItemHtml(i) {
   if (i.kind === 'day') return `<div class="forest-day" data-key="${i.key}" role="presentation"><b>${esc(i.label)}</b><span>${esc(i.count)}</span></div>`;
@@ -1770,6 +1779,9 @@ $('forest').addEventListener('click', (e) => {
   const id = el.dataset.id;
   if (el.dataset.forest === 'card') openForestTree(id);
   else if (el.dataset.forest === 'row') post({ t: 'forest', do: 'select', tree: id });
+  else if (el.dataset.forest === 'reopen') openForestTree(id);
+  else if (el.dataset.forest === 'save') intent('pin-tree', { id, pinned: true });
+  else if (el.dataset.forest === 'page') { uncover(); intent('restore', { id }); }
 });
 $('forest').addEventListener('dblclick', (e) => {
   const row = e.target.closest('[data-forest="row"]');

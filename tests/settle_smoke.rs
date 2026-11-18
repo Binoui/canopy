@@ -201,7 +201,7 @@ fn main() -> Result<()> {
     click_chrome(&ui, "#forest-views [data-view=history]")?;
     wait("history again", || visible(&ui, ".forest-row"))?;
     click_chrome(&ui, &format!(".forest-row[data-id='{}']", ids[0]))?;
-    key("Return")?;
+    click_chrome(&ui, &format!(".pv-row[data-id='{}']", ids[0]))?;
     wait("history reopens Alpha", || {
         tabs(&ui) == 1 && shown(&ui, ids[0])
     })?;
