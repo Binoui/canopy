@@ -1,3 +1,4 @@
+mod appearance;
 mod logins;
 mod save_watch;
 
@@ -12,7 +13,9 @@ use gtk::prelude::*;
 use url::Url;
 
 use crate::{
-    browser::{Browser, Download, ImportedPage, SearchHit, Snapshot, VisitId, VisitPreview},
+    browser::{
+        Browser, Download, ImportedPage, SearchHit, Snapshot, ThemeMode, VisitId, VisitPreview,
+    },
     chrome::{
         ChromeFrame, ChromeHost, ChromeIntent, HtmlChrome, PageFile, PaletteScope, PaletteSeed,
         Toast,
@@ -27,6 +30,8 @@ pub struct Ui {
     pub pages: Rc<Pages>,
     pub chrome: HtmlChrome,
     pub mail: Rc<crate::mail::MailWatch>,
+    /// The desktop's light or dark preference, which `Theme: System` follows.
+    desktop: Rc<appearance::Desktop>,
     refresh_scheduled: Cell<bool>,
     /// The pending target the chrome last drew, so a load that starts or ends redraws it.
     shown_pending: RefCell<Option<crate::browser::PendingTarget>>,
@@ -104,8 +109,17 @@ impl Ui {
                         }
                     }
                 });
+            let desktop = appearance::Desktop::watch({
+                let me = me.clone();
+                move || {
+                    if let Some(ui) = me.upgrade() {
+                        ui.desktop_appearance_changed();
+                    }
+                }
+            });
             Ui {
                 mail,
+                desktop,
                 window,
                 pages,
                 chrome,
@@ -193,14 +207,13 @@ impl Ui {
                 .map_or(glib::Propagation::Proceed, |ui| ui.shortcut(event))
         });
         if let Some(settings) = gtk::Settings::default() {
-            for property in ["gtk-application-prefer-dark-theme", "gtk-theme-name"] {
-                let weak = Rc::downgrade(&ui);
-                settings.connect_notify_local(Some(property), move |_, _| {
-                    if let Some(ui) = weak.upgrade() {
-                        ui.chrome.set_system_dark(prefers_dark());
-                    }
-                });
-            }
+            // Not `gtk-application-prefer-dark-theme`: Canopy sets that one for its pages.
+            let weak = Rc::downgrade(&ui);
+            settings.connect_notify_local(Some("gtk-theme-name"), move |_, _| {
+                if let Some(ui) = weak.upgrade() {
+                    ui.desktop_appearance_changed();
+                }
+            });
         }
         let weak = Rc::downgrade(&ui);
         ui.cookie_monitor.connect_changed(move |_, _, _, _| {
@@ -208,7 +221,7 @@ impl Ui {
                 ui.drain_cookies();
             }
         });
-        ui.chrome.set_system_dark(prefers_dark());
+        ui.chrome.set_system_dark(ui.desktop.prefers_dark());
         ui.refresh();
         if let Some(problem) = logins_problem {
             ui.report_error(&problem);
@@ -377,10 +390,21 @@ impl Ui {
                 if let Some(visit) = frame.forest.current().and_then(|id| frame.forest.visit(id)) {
                     self.mail.notice_page(&visit.url, &visit.title);
                 }
+                let dark = match frame.theme {
+                    ThemeMode::Dark => true,
+                    ThemeMode::Light => false,
+                    ThemeMode::System => self.desktop.prefers_dark(),
+                };
+                appearance::show_pages(dark);
                 self.chrome.present(frame);
             }
             Err(error) => self.report_error(&error.to_string()),
         }
+    }
+
+    fn desktop_appearance_changed(&self) {
+        self.chrome.set_system_dark(self.desktop.prefers_dark());
+        self.schedule_refresh();
     }
 
     fn report(&self, result: Result<()>) {
@@ -910,15 +934,6 @@ impl Ui {
                 anyhow::anyhow!("Could not open {shown}. {}", error.message())
             })
     }
-}
-
-/// Whether the desktop prefers dark, which `Theme: System` follows.
-fn prefers_dark() -> bool {
-    gtk::Settings::default().is_some_and(|s| {
-        s.is_gtk_application_prefer_dark_theme()
-            || s.gtk_theme_name()
-                .is_some_and(|name| name.to_lowercase().contains("dark"))
-    })
 }
 
 fn download_toast(event: DownloadEvent) -> Toast {
