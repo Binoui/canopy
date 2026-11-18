@@ -562,6 +562,19 @@ impl HtmlChrome {
         use gtk::prelude::WidgetExt;
         use wry::WebViewExtUnix;
         if let Some(surface) = self.inner.escape_surface.get() {
+            if surface == "overlay" {
+                if let Some(frame) = self.inner.frame.borrow().as_ref() {
+                    let reply = self
+                        .inner
+                        .forest
+                        .borrow_mut()
+                        .input(forest_pane::Input::Escape, frame);
+                    if !matches!(reply, forest_pane::Reply::Unchanged) {
+                        self.inner.forest_reply(reply);
+                        return true;
+                    }
+                }
+            }
             self.inner.call("escape", &[json!(surface)]);
             return true;
         }
@@ -769,6 +782,7 @@ impl Inner {
     fn forest_reply(&self, reply: forest_pane::Reply) {
         match reply {
             forest_pane::Reply::Unchanged => {}
+            forest_pane::Reply::Close => self.call("escape", &[json!("overlay")]),
             forest_pane::Reply::Show(value) => self.call("forest", &[value]),
         }
     }

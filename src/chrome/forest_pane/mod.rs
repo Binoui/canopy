@@ -36,6 +36,8 @@ pub(super) enum Input {
     Select(TreeId),
     Step(i8),
     More { seen: usize },
+    Find(String),
+    Escape,
 }
 impl Input {
     pub fn parse(m: &Value) -> Result<Self> {
@@ -48,6 +50,10 @@ impl Input {
             Some("open") => Self::Open(view()?),
             Some("close") => Self::Close,
             Some("show") => Self::Show(view()?),
+            Some("find") => {
+                Self::Find(m["query"].as_str().context("Missing Find text")?.to_owned())
+            }
+            Some("escape") => Self::Escape,
             Some("more") => Self::More {
                 seen: usize::try_from(m["seen"].as_u64().context("Missing row count")?)?,
             },
@@ -66,6 +72,7 @@ impl Input {
 pub(super) enum Reply {
     Unchanged,
     Show(Value),
+    Close,
 }
 pub(super) struct ForestPane {
     calendar: Box<dyn Calendar>,
@@ -139,6 +146,24 @@ impl ForestPane {
                         Input::Show(view) => {
                             if open.shown.view() != view {
                                 open.shown = Shown::new(view);
+                            }
+                        }
+                        Input::Find(query) => {
+                            if query != open.query {
+                                open.query = query;
+                                if matches!(open.shown, Shown::History(_)) {
+                                    open.shown = Shown::new(View::History);
+                                }
+                            }
+                        }
+                        Input::Escape => {
+                            if open.query.is_empty() {
+                                return Reply::Close;
+                            } else {
+                                open.query.clear();
+                                if matches!(open.shown, Shown::History(_)) {
+                                    open.shown = Shown::new(View::History);
+                                }
                             }
                         }
                         Input::More { seen } => {
@@ -290,7 +315,7 @@ fn history(
         }
     }
     json!({"items":items, "more":(shown.len()<rows.len()).then(|| json!({"seen":shown.len(), "label":format!("Show {} older trees",rows.len()-shown.len())})), "preview":cursor.anchor.and_then(|a| rows.iter().find(|e| e.tree == a.tree)).map(|e| preview(forest,e,&today)),
-        "empty":rows.is_empty().then_some("No settled trees yet. A tree you settle waits here.")})
+        "empty":rows.is_empty().then_some(if index.history.is_empty() { "No settled trees yet. A tree you settle waits here." } else { "No settled tree matches." })})
 }
 
 const OUTLINE_MAX: usize = 40;
@@ -573,5 +598,29 @@ mod tests {
             panic!()
         };
         assert_eq!(c.reach, 180);
+    }
+    #[test]
+    fn find_searches_titles_and_every_site_and_escape_clears_then_closes() {
+        let f = fixture(4, 4);
+        let mut p = ForestPane::default();
+        p.input(Input::Open(View::History), &f);
+        let v = value(p.input(Input::Find("TREE 2".into()), &f));
+        assert_eq!(rows(&v).len(), 1);
+        assert_eq!(rows(&v)[0]["title"], "Tree 2");
+        assert_eq!(v["count"], "1 open · 0 saved · 3 in history");
+        let v = value(p.input(Input::Find("site3".into()), &f));
+        assert_eq!(rows(&v).len(), 3);
+        let v = value(p.input(Input::Find("absent".into()), &f));
+        assert_eq!(v["history"]["empty"], "No settled tree matches.");
+        let v = value(p.input(Input::Escape, &f));
+        assert_eq!(v["query"], "");
+        assert_eq!(rows(&v).len(), 3);
+        assert!(matches!(p.input(Input::Escape, &f), Reply::Close));
+        p.input(Input::Find("unkept".into()), &f);
+        p.input(Input::Close, &f);
+        let v = value(p.input(Input::Open(View::Trees), &f));
+        assert_eq!(v["query"], "");
+        let v = value(p.input(Input::Find("absent".into()), &f));
+        assert_eq!(v["trees"]["empty"], "No open or saved tree matches.");
     }
 }
