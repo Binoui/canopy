@@ -1009,10 +1009,11 @@ function renderPopover() {
       for (const button of popover.querySelectorAll('[data-node-action]')) button.onclick = () => {
         const action = button.dataset.nodeAction;
         if (action === 'choose-move-tree') {
-          const anchor = S.popover.anchor;
+          const { anchor, listKey } = S.popover;
           const request = ++nextMoveRequest;
           closePopover(false);
           openPopover('move-tree', anchor, { head: data, request, choices: null });
+          S.popover.listKey = listKey;
           post({ t: 'branch-move-choices', head: data, request });
           return;
         }

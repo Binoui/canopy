@@ -290,7 +290,23 @@ fn main() -> Result<()> {
             0
         );
         f.shot("strip-row-menu", theme)?;
+        common::click_chrome(&f.ui, "[data-node-action='choose-move-tree']")?;
+        common::wait("attached-row tree choices", || {
+            common::chrome(
+                &f.ui,
+                "S.popover?.kind === 'move-tree' && !!S.popover.data.choices",
+            )
+            .is_ok_and(|v| v == true)
+        })?;
+        common::pump(300);
         common::key("Escape")?;
+        common::wait("picker restores attached-row focus", || {
+            common::chrome(
+                &f.ui,
+                &format!("document.activeElement?.dataset.id === '{waiting}'"),
+            )
+            .is_ok_and(|v| v == true)
+        })?;
         common::open_list(&f.ui)?;
         f.menu("#strip-list .bl-head")?;
         common::key("Escape")?;
