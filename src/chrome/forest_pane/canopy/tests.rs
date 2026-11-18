@@ -457,7 +457,7 @@ fn islands_boxes_clear_at_minimum_and_rest_and_chains_stay_compact() {
                         }
                     }
                 }
-                if parents[2] == Some(1) {
+                {
                     let root = p.items[0][0];
                     let max = p.items[0]
                         .iter()
@@ -472,7 +472,7 @@ fn islands_boxes_clear_at_minimum_and_rest_and_chains_stay_compact() {
                         .fold(1_f64, f64::max)
                         * level.band().rest
                         / level.band().min;
-                    assert!(max <= 15. * unit, "chain became a spoke");
+                    assert!(max <= 15. * unit, "tree needs more than fifteen rings");
                     assert!(p.items[0].iter().any(|p| p.x < root.x));
                     assert!(p.items[0].iter().any(|p| p.x > root.x));
                 }

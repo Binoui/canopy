@@ -51,6 +51,7 @@ mod tests {
         };
         let frozen = [page("a"), page("b"), page("c")];
         let frame = ChromeFrame {
+            canopy_layout: Default::default(),
             shown: Default::default(),
             mail: crate::mail::Mail::default(),
             forest: ForestProjection::from_snapshot(
@@ -101,6 +102,7 @@ mod tests {
             )
             .unwrap();
         let frame = ChromeFrame {
+            canopy_layout: Default::default(),
             shown: Default::default(),
             mail: crate::mail::Mail::default(),
             forest: ForestProjection::from_snapshot(

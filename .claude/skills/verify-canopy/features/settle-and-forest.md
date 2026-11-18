@@ -4,7 +4,7 @@ A tree is in Tabs, Saved for later or History. Pins belong only to Tabs. Leaving
 
 ## Canopy
 
-See [Canopy](../../../../docs/canopy.md). Open with Ctrl+E and the Canopy button. From a deep linked page, click the hub, reopen and return through Back to or a folded site. Check all three zooms, current and previous marks, waiting and visited state, showing sizes, hover text, wheel anchoring, native stepped drag, arrows, Enter, Tab containment, Escape and both menus. Non-navigation menu actions keep the map open. Saved trees reopen from the new-tree shelf. Check stored tab order across a restart.
+See [Canopy](../../../../docs/canopy.md). Open with Ctrl+E and the Canopy button. From a deep linked page, click the hub, reopen and return through Back to or a folded site. Repeat in Flow and Islands. Switch layouts with the current page in view, then quit and start the same private profile to check the remembered choice at Middle. Resize after every start. On a physical touchpad, pinch over a page across both thresholds and back, then check wheel, keys and preset buttons. Pinch delivery cannot be proven on Xvfb. Check all three zooms, current and previous marks, waiting and visited state, showing sizes, hover text, wheel anchoring, native stepped drag, arrows, Enter, Tab containment, Escape and both menus. Non-navigation menu actions keep the map open. Saved trees reopen from the new-tree shelf. Check stored tab order across a restart.
 
 ## History
 

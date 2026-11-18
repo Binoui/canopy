@@ -19,3 +19,11 @@ Click a page, a folded mark or a tree name to go there and close Canopy. A tree 
 **Ctrl+H** switches to History. **Ctrl+E** from History switches to Canopy. Pressing the shortcut for the view already showing closes it.
 
 Flow is the only layout in this version. Islands, a stored layout choice and touchpad pinch belong to the next change.
+
+## Choose a layout
+
+The header offers **Flow** and **Islands**. Flow runs each tree left to right. Islands puts its first page in the middle, with branches around it. Long branches fill successive rings. Islands trees sit beside one another and wrap at every zoom. Larger trees pan at readable sizes.
+
+Switching keeps the current page in view. The choice survives restarts in the `canopy-layout` file beside the database. Missing or unreadable choices start in Flow. The map still opens at Middle each time.
+
+Pinch on a touchpad zooms around the gesture centre. Wheel, keys and zoom buttons remain available. The GTK pinch route needs a trial on a physical desktop; the private X display cannot produce touchpad gestures.

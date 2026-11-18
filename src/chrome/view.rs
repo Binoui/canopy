@@ -758,6 +758,7 @@ mod tests {
         );
         let frame = |forest: ForestProjection, back: Option<VisitId>, forward: Option<VisitId>| {
             ChromeFrame {
+                canopy_layout: Default::default(),
                 shown: Default::default(),
                 mail: crate::mail::Mail::default(),
                 loaded: HashSet::new(),
@@ -959,6 +960,7 @@ mod tests {
             )
             .unwrap();
         let frame = ChromeFrame {
+            canopy_layout: Default::default(),
             shown: Default::default(),
             mail: crate::mail::Mail::default(),
             forest: ForestProjection::from_snapshot(
@@ -1017,6 +1019,7 @@ mod tests {
     fn loaded_frame_serializes_all_three_states() {
         let (forest, ids) = chain();
         let mut frame = ChromeFrame {
+            canopy_layout: Default::default(),
             shown: Default::default(),
             mail: crate::mail::Mail::default(),
             forest,
@@ -1136,6 +1139,7 @@ mod tests {
         )
         .unwrap();
         let frame = ChromeFrame {
+            canopy_layout: Default::default(),
             shown: Default::default(),
             mail: crate::mail::Mail::default(),
             loaded: HashSet::new(),
@@ -1171,6 +1175,7 @@ mod tests {
     fn settled_current_pages_stay_scoped_during_a_navigation() {
         let (forest, ids) = chain_with_lifecycle(crate::browser::Spot::History { settled_at: 1 });
         let frame = ChromeFrame {
+            canopy_layout: Default::default(),
             shown: Default::default(),
             mail: crate::mail::Mail::default(),
             loaded: HashSet::new(),
@@ -1204,6 +1209,7 @@ mod tests {
     fn the_frame_carries_every_visit_and_the_folded_strip() {
         let (forest, ids) = chain();
         let frame = ChromeFrame {
+            canopy_layout: Default::default(),
             shown: Default::default(),
             mail: crate::mail::Mail::default(),
             loaded: HashSet::new(),
@@ -1265,6 +1271,7 @@ mod tests {
             missing,
         };
         let frame = ChromeFrame {
+            canopy_layout: Default::default(),
             shown: Default::default(),
             mail: crate::mail::Mail::default(),
             loaded: HashSet::new(),
@@ -1379,6 +1386,7 @@ mod tests {
         .unwrap();
         assert_eq!(forest.tabs()[0].pending_count, 0);
         let frame = ChromeFrame {
+            canopy_layout: Default::default(),
             shown: Default::default(),
             mail: crate::mail::Mail::default(),
             forest,

@@ -59,6 +59,7 @@ function renderCanopy(value) {
   const first = !mapView;
   if (first) mapView = { k:value.place.k,pan:[...value.place.pan],drawn:value.level,request:0,
     asked:null,nodes:new Map([...$('forest-canopy').querySelector('.canopy-items').children].map(el => [el.dataset.key,{el,sig:null,x:NaN,y:NaN}])),edges:new Map([...$('forest-canopy').querySelector('.canopy-edges g').children].map(el => [el.dataset.key,el])),focus:null,drag:null,moved:false,tipTimer:0,room:null,witness:null,value };
+  const changedLayout = !first && canopyValue().layout !== value.layout;
   const active = document.activeElement?.closest('.canopy-item');
   const oldFocus=canopyValue().items.find(i=>i.k===mapView.focus);
   const focusedPage=mapView.focusPage ?? oldFocus?.anchorPage ?? oldFocus?.go;
@@ -74,15 +75,18 @@ function renderCanopy(value) {
   const view = $('forest-canopy');
   view.hidden = false;
   view.dataset.level = value.level;
+  view.dataset.layout = value.layout;
   for (const [name,px] of Object.entries(value.css)) view.style.setProperty(name, `${px}px`);
   patchItems(value);
   patchEdges(value);
   const tipNode=mapView.nodes.get(mapView.tipKey);
   if (!tipNode) hideTip();
   else if (!$('canopy-tip').hidden) $('canopy-tip').textContent=value.items[+tipNode.el.dataset.index].tip;
-  reanchor(witness);
+  if (changedLayout) { mapView.pan=[...value.place.pan]; mapView.witness=null; }
+  else reanchor(witness);
   applyTransform();
   if (active && (!active.isConnected || active.dataset.key !== mapView.focus)) canopyFocus()?.focus({preventScroll:true});
+  if (changedLayout) { focusItem(homeKey(value)); hideTip(); }
   renderCanopyHeader(value);
 }
 function patchItems(value) {
@@ -140,6 +144,7 @@ function patchEdges(value) {
 }
 function homeKey(value) {return value.items.find(i => i.current && i.go)?.k ?? value.items[0]?.k;}
 function renderCanopyHeader(value) {
+  patchChildren($('canopy-layout'),value.layouts.map(l => `<button data-key="${l.layout}" data-layout="${l.layout}" aria-pressed="${l.layout === value.layout}">${esc(l.label)}</button>`).join(''));
   patchChildren($('canopy-zoom'),value.levels.map(l => `<button data-key="${l.level}" data-level="${l.level}" aria-pressed="${l.level === value.level}">${esc(l.label)}</button>`).join(''));
   const back=$('canopy-back'); back.hidden=!value.back;
   if (value.back) {back.dataset.go=value.back.id;patchChildren(back,`<span data-key="b">${esc(value.back.label)} <b>${esc(value.back.title)}</b></span>`);}
@@ -253,3 +258,14 @@ new ResizeObserver(() => {
   if (mapView.room?.width === room.width && mapView.room?.height === room.height) return;
   mapView.room=room;post({t:'forest',do:'room',...room});
 }).observe($('forest-canopy'));
+
+$('canopy-layout').addEventListener('click',e => {
+  const b=e.target.closest('[data-layout]');
+  if (b && mapView) post({t:'forest',do:'layout',layout:b.dataset.layout});
+});
+function canopyPinch(factor,x,y) {
+  if (!mapView || S.overlay !== 'forest' || S.forest?.view !== 'canopy') return;
+  const r=$('forest-canopy').getBoundingClientRect();
+  if (x < r.left || y < r.top || x > r.right || y > r.bottom) return;
+  zoomAround([x-r.left,y-r.top],mapView.k*factor);
+}

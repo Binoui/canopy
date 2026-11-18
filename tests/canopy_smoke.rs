@@ -100,6 +100,19 @@ fn main() -> Result<()> {
             && !ui.pages.selected_page().native.is_loading()
     })?;
     open(&ui)?;
+    assert_eq!(chrome(&ui, "canopyValue().layout")?, "flow");
+    for layout in ["islands", "flow", "islands"] {
+        click_chrome(&ui, &format!("#canopy-layout [data-layout={layout}]"))?;
+        wait("layout switch", || {
+            chrome(&ui, "canopyValue().layout").is_ok_and(|v| v == layout)
+        })?;
+        assert!(chrome(&ui,"(()=>{const r=document.querySelector('#forest-canopy [data-current=true][data-page]').getBoundingClientRect(),v=$('forest-canopy').getBoundingClientRect();return r.left>=v.left && r.right<=v.right && r.top>=v.top && r.bottom<=v.bottom;})()")?==true);
+    }
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("canopy-layout"))?.trim(),
+        "islands"
+    );
+    println!("PASS layout switch keeps the current page visible and writes Islands.");
     assert_eq!(text(&ui, "#forest-button"), "Canopy");
     assert_eq!(chrome(&ui, "mapView.drawn")?, "middle");
     assert_eq!(
@@ -310,7 +323,7 @@ fn main() -> Result<()> {
     println!(
         "PASS arrows, Tab trap, plus/minus, in-map hover, page and tree menus keep map usable."
     );
-    std::fs::create_dir_all(".cache/shots/canopy-view")?;
+    std::fs::create_dir_all(".cache/shots/canopy-islands")?;
     for width in [1920, 728, 390] {
         ui.window.resize(width, 900);
         pump(200);
@@ -329,7 +342,7 @@ fn main() -> Result<()> {
                 save_window(
                     &ui,
                     &format!(
-                        ".cache/shots/canopy-view/smoke-{width}-{}-{zoom}.png",
+                        ".cache/shots/canopy-islands/smoke-{width}-{}-{zoom}.png",
                         if mode == ThemeMode::Dark {
                             "dark"
                         } else {
@@ -428,5 +441,17 @@ fn main() -> Result<()> {
     assert!(!visible(&ui, "#forest"));
     println!("PASS responsive dark/light captures, Escape, Ctrl+H and Ctrl+E transitions.");
     ui.window.close();
+    drop(ui);
+    pump(200);
+    let restarted = Ui::new(dir.path())?;
+    restarted.window.show_all();
+    ready(&restarted)?;
+    restarted.window.resize(1240, 800);
+    pump(200);
+    open(&restarted)?;
+    assert_eq!(chrome(&restarted, "canopyValue().layout")?, "islands");
+    assert_eq!(chrome(&restarted, "mapView.drawn")?, "middle");
+    println!("PASS restarted app restores Islands at Middle.");
+    restarted.window.close();
     Ok(())
 }

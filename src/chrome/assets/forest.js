@@ -24,7 +24,7 @@ function renderForest() {
   if (document.activeElement !== $('forest-find') || !f.query) $('forest-find').value = f.query;
   for (const b of $('forest-views').children) b.setAttribute('aria-pressed', String(b.dataset.view === f.view));
   $('forest-canopy').hidden = f.view !== 'canopy';
-  for (const id of ['canopy-zoom','canopy-legend']) $(id).hidden = f.view !== 'canopy';
+  for (const id of ['canopy-layout','canopy-zoom','canopy-legend']) $(id).hidden = f.view !== 'canopy';
   $('canopy-back').hidden = f.view !== 'canopy' || !f.canopy?.back;
   $('forest-find').hidden = f.view !== 'history';
   $('forest-history').hidden = f.view !== 'history';

@@ -2,7 +2,7 @@ use super::{items::Item, Level, Room};
 use serde_json::{json, Value};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(super) enum Layout {
+pub enum Layout {
     #[default]
     Flow,
     Islands,
@@ -59,19 +59,36 @@ pub(super) struct Placed {
     bounds: Vec<(f64, f64)>,
 }
 impl Layout {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "flow" => Some(Self::Flow),
+            "islands" => Some(Self::Islands),
+            _ => None,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Flow => "Flow",
+            Self::Islands => "Islands",
+        }
+    }
+    pub(super) fn choices() -> Value {
+        json!([Self::Flow, Self::Islands].map(|l| json!({"layout":l.name(),"label":l.label()})))
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Flow => "flow",
             Self::Islands => "islands",
         }
     }
-    pub fn edge(self) -> &'static str {
+    pub(super) fn edge(self) -> &'static str {
         match self {
             Self::Flow => "curve",
             Self::Islands => "line",
         }
     }
-    pub fn place(self, level: Level, trees: &[Vec<Item>], room: Room) -> Placed {
+    pub(super) fn place(self, level: Level, trees: &[Vec<Item>], room: Room) -> Placed {
         let m = level.metrics();
         let shapes: Vec<_> = trees
             .iter()
@@ -228,50 +245,33 @@ fn islands(items: &[Item], m: Metrics, level: Level) -> Shape {
         })
         .fold(1_f64, f64::max)
         * clearance;
-    let mut children = vec![vec![]; items.len()];
-    let mut weight = vec![1; items.len()];
-    for i in (1..items.len()).rev() {
-        if let Some(p) = items[i].parent {
-            weight[p] += weight[i];
-        }
-    }
-    for (i, item) in items.iter().enumerate() {
-        if let Some(p) = item.parent {
-            children[p].push(i);
-        }
-    }
+    let span = 1.84 * PI;
+    let mut ring = 1_usize;
+    let mut used = 0;
     let mut at = vec![Point::default(); items.len()];
-    let mut start = -0.92 * PI;
-    for &child in children.first().into_iter().flatten() {
-        let span = 1.84 * PI * weight[child] as f64 / (items.len() - 1) as f64;
-        let mut ring = (1. / (2. * (span / 2.).min(PI / 2.).sin())).ceil().max(1.) as usize;
-        let mut used = 0;
-        let mut stack = vec![child];
-        while let Some(i) = stack.pop() {
-            let (delta, capacity) = loop {
-                let delta = 2. * (1. / (2. * ring as f64)).asin();
-                let capacity = (span / delta).floor() as usize;
-                if used < capacity {
-                    break (delta, capacity);
-                }
-                ring += 1;
-                used = 0;
-            };
-            let slot = if ring % 2 == 0 {
-                capacity - used - 1
-            } else {
-                used
-            };
-            let angle = start + (span - capacity as f64 * delta) / 2. + (slot as f64 + 0.5) * delta;
-            let radius = ring as f64 * diameter;
-            at[i] = Point {
-                x: radius * angle.cos(),
-                y: radius * angle.sin(),
-            };
-            used += 1;
-            stack.extend(children[i].iter().rev());
-        }
-        start += span;
+    for (i, point) in at.iter_mut().enumerate().skip(1) {
+        let (delta, capacity) = loop {
+            let delta = 2. * (1. / (2. * ring as f64)).asin();
+            let capacity = ((span / delta).floor() as usize).min(items.len() - i + used);
+            if used < capacity {
+                break (span / capacity as f64, capacity);
+            }
+            ring += 1;
+            used = 0;
+        };
+        let slot = if ring.is_multiple_of(2) {
+            capacity - used - 1
+        } else {
+            used
+        };
+        let angle =
+            -span / 2. + (span - capacity as f64 * delta) / 2. + (slot as f64 + 0.5) * delta;
+        let radius = ring as f64 * diameter;
+        *point = Point {
+            x: radius * angle.cos(),
+            y: radius * angle.sin(),
+        };
+        used += 1;
     }
     let left = at
         .iter()
