@@ -358,8 +358,13 @@ impl HtmlChrome {
 
     pub fn present(&self, mut frame: ChromeFrame) {
         let inner = &self.inner;
+        // A settled tree's page waits for its tree to reopen at commit; drawn earlier, it
+        // would be current with no tab to stand under.
         if let Some(crate::browser::PendingTarget::Visit(visit)) = &frame.pending {
-            frame.forest.show_current(*visit);
+            let tree = frame.forest.tree_of(*visit);
+            if frame.forest.open().iter().any(|t| Some(t.id) == tree) {
+                frame.forest.show_current(*visit);
+            }
         }
         let changed = !inner.forest_layout.borrow().is_null()
             && inner

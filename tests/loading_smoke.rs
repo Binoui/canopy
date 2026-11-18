@@ -177,9 +177,17 @@ fn main() -> Result<()> {
     assert!(candidate.is_loading());
     assert!(!selected.is_loading());
     assert_eq!(ui.pages.selected_page().native, selected);
+    // A new tree has no page until it commits; its tab shows the load from the start.
     assert_eq!(
         chrome(&ui, "canopy.state().loading.page")?,
-        serde_json::json!(source.to_string())
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        chrome(
+            &ui,
+            "document.querySelector('#new-tree-tab .tab-title').textContent"
+        )?,
+        serde_json::json!(site.url("/").host_str().unwrap())
     );
     assert!(chrome(&ui, "canopy.state().loading.progress")?
         .as_u64()
@@ -200,7 +208,7 @@ fn main() -> Result<()> {
     pump(200);
     assert_eq!(ui.snapshot()?.current, Some(source));
     println!(
-        "PASS Off-screen progress decorates the outgoing page; Escape priority preserves its form."
+        "PASS A new tree's tab shows its progress; Escape priority preserves the old page's form."
     );
 
     eval(
@@ -309,14 +317,15 @@ fn main() -> Result<()> {
     wait("button candidate", || {
         site.hit("/hold-button") && status(&ui, "busy")
     })?;
-    open_list(&ui)?;
-    click_chrome(&ui, "#strip-list [data-act='stop']")?;
+    // A loading new tree stands on the new tree page; its tab's cross stops it.
+    wait("loading new tree tab", || visible(&ui, "#new-tree-close"))?;
+    click_chrome(&ui, "#new-tree-close")?;
     idle(&ui)?;
     wait("Stop returns the keyboard to the page", || {
         ui.pages.selected_page().native.has_focus()
     })?;
     site.release("/hold-button");
-    println!("PASS The strip Stop button cancels the foreground candidate and returns the keyboard to the page.");
+    println!("PASS Closing a loading new tree's tab cancels the candidate and returns the keyboard to the page.");
 
     let queued_count = ui.snapshot()?.visits.len();
     eval(&ui, "document.body.insertAdjacentHTML('beforeend', '<a id=queue href=/hold-background style=position:fixed;top:100px;left:20px>Queue</a>'); JSON.stringify(true)")?;

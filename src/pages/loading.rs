@@ -150,8 +150,12 @@ impl Pages {
             .or_else(|| self.branches.live.borrow().clone())
     }
 
-    /// Where the page on screen is headed, while that load has not committed.
+    /// Where the page on screen is headed, while that load has not committed. A page held
+    /// behind the form question is not on its way yet.
     pub fn pending_target(&self) -> Option<PendingTarget> {
+        if self.has_form_return() {
+            return None;
+        }
         self.foreground_load()
             .and_then(|page| page.pending_target())
     }

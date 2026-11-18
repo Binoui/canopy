@@ -1470,6 +1470,7 @@ const pageShows = () => S.surface === 'reading' && !S.overlay;
 function setSurface(surface) {
   if (S.surface === surface) return;
   S.surface = surface;
+  S.startForNewTree = false;
   post({ t: 'surface', start: surface === 'start' });
   if (surface === 'start') { if (S.frame) S.frame.start = null; S.startPaint = null; $('start-content').replaceChildren(); focusStart(); }
   renderTabs();
@@ -1917,8 +1918,16 @@ window.canopy = {
       S.leaveStart = false;
       if (!frame.newTree && S.surface === 'start') setSurface('reading');
     }
-    // A new tree is shown from the moment it is asked for, on the new tree page.
-    if (frame.newTree && frame.newTree.url !== previousNewTree && S.surface !== 'start') setSurface('start');
+    // A new tree is shown from the moment it is asked for, on the new tree page. If the
+    // reader came from a page, a load that ends without a page takes them back to it.
+    if (frame.newTree && frame.newTree.url !== previousNewTree && S.surface !== 'start') {
+      setSurface('start');
+      S.startForNewTree = true;
+    }
+    if (!frame.newTree && S.startForNewTree) {
+      S.startForNewTree = false;
+      if (S.surface === 'start' && current()) setSurface('reading');
+    }
     if (!frame.tabs.length && S.surface === 'reading') setSurface('start');
     if (S.popover?.kind === 'rename' && !frame.tabs.some((tree) => tree.id === S.popover.data)) closePopover();
     renderTabs();
