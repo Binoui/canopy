@@ -236,12 +236,12 @@ fn main() -> Result<()> {
             )? == true
         );
         chrome(&ui, "(canopy.toggleForest(), true)")?;
-        wait("forest data", || visible(&ui, ".forest-node.pending"))?;
-        chrome(&ui, "(() => { const v=S.frame.visits[S.frame.waiting.ids[0]]; v.loaded=true; v.when='loaded'; const u=S.frame.visits[S.frame.waiting.ids[1]]; u.loaded=false; u.when='';u.detail=''; canopy.present(S.frame); return true; })()")?;
-        assert!(chrome(&ui, "getComputedStyle(document.querySelector('.forest-node.pending.loaded')).borderTopStyle === 'solid'")? == true);
-        assert!(chrome(&ui, "getComputedStyle(document.querySelector('.forest-node.pending:not(.loaded)')).borderTopStyle === 'dashed'")? == true);
-        assert!(chrome(&ui, "getComputedStyle(document.querySelector('.forest-node.pending.loaded .fav')).opacity === '1'")? == true);
-        assert!(chrome(&ui, "getComputedStyle(document.querySelector('.forest-node.pending:not(.loaded) .fav')).opacity === '0.5'")? == true);
+        wait("forest waiting count", || visible(&ui, ".tree-card .count"))?;
+        assert_eq!(
+            text(&ui, ".tree-card[aria-current=true] .count"),
+            waiting(&ui)?.len().to_string()
+        );
+        assert!(visible(&ui, ".tree-card[aria-current=true] .mt-node.last"));
         chrome(&ui, "(canopy.toggleForest(), true)")?;
         assert_eq!(text(&ui, "#popover .next .menu-detail"), "loaded");
         shots(&ui, &format!("{theme}-loaded"))?;

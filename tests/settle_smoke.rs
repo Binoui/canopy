@@ -185,27 +185,27 @@ fn main() -> Result<()> {
     println!("PASS Ctrl+W on the last tree shows the new-tree surface over a blank page.");
 
     key("ctrl+e")?;
-    wait("settled forest", || {
-        visible(&ui, ".forest-divider") && visible(&ui, ".forest-node.settled")
-    })?;
-    assert!(text(&ui, ".forest-divider").contains("3 trees"));
-    click_chrome(&ui, &format!(".forest-head[data-id='{}']", ids[0]))?;
-    wait("settled head reopens its last page", || {
+    wait("forest", || visible(&ui, "#forest"))?;
+    click_chrome(&ui, "#forest-views [data-view=history]")?;
+    wait("settled history", || visible(&ui, ".forest-row"))?;
+    assert!(text(&ui, ".forest-day").contains("3 trees"));
+    click_chrome(&ui, &format!(".forest-row[data-id='{}']", ids[0]))?;
+    key("Return")?;
+    wait("history reopens its last page", || {
         tabs(&ui) == 1 && shown(&ui, ids[0])
     })?;
     key("ctrl+w")?;
-    wait("settle the reopened head again", || {
-        tabs(&ui) == 0 && ui.snapshot().unwrap().current.is_none()
-    })?;
+    wait("settle again", || tabs(&ui) == 0)?;
     key("ctrl+e")?;
-    wait("return to settled forest", || {
-        visible(&ui, ".forest-node.settled")
-    })?;
-    click_chrome(&ui, &format!(".forest-node[data-id='{}']", ids[0]))?;
-    wait("forest click reopens Alpha", || {
+    wait("forest again", || visible(&ui, "#forest"))?;
+    click_chrome(&ui, "#forest-views [data-view=history]")?;
+    wait("history again", || visible(&ui, ".forest-row"))?;
+    click_chrome(&ui, &format!(".forest-row[data-id='{}']", ids[0]))?;
+    click_chrome(&ui, &format!(".pv-row[data-id='{}']", ids[0]))?;
+    wait("history reopens Alpha", || {
         tabs(&ui) == 1 && shown(&ui, ids[0])
     })?;
-    println!("PASS clicking a settled page in the forest brings its tab back.");
+    println!("PASS history reopens a settled tree.");
 
     key("ctrl+k")?;
     let palette_focus = wait("palette input has focus", || {

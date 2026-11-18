@@ -855,10 +855,7 @@ fn overlay_pixels() -> Result<()> {
     pump(1200);
     key("ctrl+e")?;
     pump(250);
-    let pending = chrome(
-        &u.ui,
-        "document.querySelector('.forest-node.pending')?.dataset.id",
-    )?;
+    let pending = chrome(&u.ui, "S.frame.waiting.ids[0]")?;
     key("Escape")?;
     if let Some(id) = pending.as_str() {
         u.ui.pages.go(Go::Visit(id.parse()?))?;
@@ -920,7 +917,9 @@ fn forest_click_survives_frame() -> Result<()> {
     u.ui.pages.settle_tree(tree)?;
     wait("last tree settled", || u.cursor().is_none() && !u.loading())?;
     key("ctrl+e")?;
-    let selector = format!(".forest-node[data-id='{a}']");
+    wait("forest", || visible(&u.ui, "#forest"))?;
+    click_chrome(&u.ui, "#forest-views [data-view=history]")?;
+    let selector = format!(".forest-row[data-id='{a}']");
     wait("settled page visible", || visible(&u.ui, &selector))?;
     let (x, y) = chrome_point(&u.ui, &selector)?;
     focus_window()?;
@@ -932,6 +931,8 @@ fn forest_click_survives_frame() -> Result<()> {
     })?;
     chrome(&u.ui, "(canopy.present(S.frame),true)")?;
     xdo(&["mouseup", "1"])?;
+    pump(100);
+    key("Return")?;
     anyhow::ensure!(
         u.arrives(a, 6000),
         "unchanged forest frame must preserve a pressed page's click"
@@ -1391,7 +1392,7 @@ fn main() -> Result<()> {
         ("resize", resize_and_show),
         ("anchor", palette_anchor_stable),
         ("stacking", chrome_after_changes),
-        ("forest_frame", forest_click_survives_frame),
+        ("forest_press", forest_click_survives_frame),
     ];
     for (name, run) in cases {
         if !only.is_empty() && !only.iter().any(|o| o == name) {

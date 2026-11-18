@@ -12,6 +12,9 @@ use super::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Place {
     Tab,
+    OpenBand { current: bool },
+    SavedBand,
+    History,
     NewTreePage,
 }
 
@@ -36,18 +39,61 @@ pub(super) fn menu(tree: &TreeSummary, place: Place) -> Value {
 
 pub(super) fn card(forest: &ForestProjection, tree: &TreeSummary, place: Place) -> Value {
     let pages = plural(tree.page_count, "page");
-    let meta = tree
-        .last_event_at
-        .map_or_else(|| pages.clone(), |at| format!("{pages} · {}", ago(at)));
+    let sites = sites(forest, tree);
+    let meta = if place == Place::NewTreePage {
+        tree.last_event_at
+            .map_or_else(|| pages.clone(), |at| format!("{pages} · {}", ago(at)))
+    } else {
+        format!("{pages} · {}", sites_line(&sites, 2))
+    };
     json!({
         "id": tree.id.root().to_string(), "title": tree.title,
-        "tip": format!("{}, saved\n{}", tree.title, forest.visit(tree.id.root()).unwrap().url),
-        "name": format!("{}, {}{}, saved", tree.title, pages,
-            if tree.pending_count > 0 { format!(", {} waiting", tree.pending_count) } else { String::new() }),
-        "waiting": tree.pending_count, "meta": meta,
+        "tip": format!("{}\n{}", tree.title, forest.visit(tree.id.root()).unwrap().url),
+        "name": format!("{}, {}{}{}", tree.title, pages,
+            if tree.pending_count > 0 { format!(", {} waiting", tree.pending_count) } else { String::new() }, if tree.pin.is_some() { ", saved" } else { "" }),
+        "current": matches!(place, Place::OpenBand { current: true }),
+        "badge": match place { Place::OpenBand { .. } if tree.pin.is_some() => Some("Saved"), Place::SavedBand if tree.lifecycle.is_open() => Some("Open"), _ => None },
+        "page": (place != Place::NewTreePage).then(|| super::graph::short_name(forest, tree.last_visit)),
+        "waiting": tree.pending_count, "waitingTip": format!("{} waiting", tree.pending_count), "meta": meta,
         "mini": mini_value(forest, &tree_view::miniature(forest, tree, Fit::CARD)),
         "menu": menu(tree, place),
     })
+}
+
+pub(super) struct Site {
+    pub host: String,
+    pub sample: url::Url,
+    pages: usize,
+}
+pub(super) fn sites(forest: &ForestProjection, tree: &TreeSummary) -> Vec<Site> {
+    let mut sites: std::collections::BTreeMap<String, Site> = Default::default();
+    let mut stack = vec![tree.id.root()];
+    while let Some(id) = stack.pop() {
+        let v = forest.visit(id).unwrap();
+        let host = v.url.host_str().unwrap_or(v.url.scheme()).to_lowercase();
+        let site = sites.entry(host.clone()).or_insert_with(|| Site {
+            host,
+            sample: v.url.clone(),
+            pages: 0,
+        });
+        site.pages += 1;
+        stack.extend(forest.children(id).iter().rev());
+    }
+    let mut sites: Vec<_> = sites.into_values().collect();
+    sites.sort_by(|a, b| b.pages.cmp(&a.pages).then(a.host.cmp(&b.host)));
+    sites
+}
+pub(super) fn sites_line(sites: &[Site], names: usize) -> String {
+    let mut line = sites
+        .iter()
+        .take(names)
+        .map(|s| s.host.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if sites.len() > names {
+        line.push_str(&format!(" +{}", sites.len() - names));
+    }
+    line
 }
 
 pub(super) fn mini_value(

@@ -36,7 +36,7 @@ const post = (message) => window.ipc.postMessage(JSON.stringify(message));
 const NAVIGATES = new Set(['reload', 'back', 'forward', 'stop', 'restore', 'select-tree', 'settle-tree', 'settle-current', 'open-suggestion', 'open-bookmark', 'open-mail', 'open-inbox', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
 const intent = (kind, extra = {}) => {
   post({ t: 'intent', kind, ...extra });
-  if (NAVIGATES.has(kind)) post({ t: 'focus', target: 'page' });
+  if (NAVIGATES.has(kind) && !(S.overlay === 'forest' && kind === 'settle-tree')) post({ t: 'focus', target: 'page' });
 };
 const esc = (text) => String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const icon = (name) => `<svg class="icon" viewBox="0 0 24 24">${ICONS[name]}</svg>`;
@@ -68,8 +68,8 @@ const S = {
   reader: null,
   find: null,
   errors: { recent: [], toast: null, unread: false },
-  forestLabels: true,
-  camera: { x: 0, y: 0, zoom: 1 },
+  forest: null,
+  forestWants: 'trees',
   reported: '',
 };
 
@@ -1501,7 +1501,7 @@ const OVERLAYS = {
   forest: {
     el: 'forest', button: 'forest-button',
     available: () => !!S.frame,
-    show(reveal) { renderForest(); if (reveal) { fitForest(false); post({ t: 'focus', target: 'chrome' }); $('forest-titles').focus(); } },
+    show() { renderForest(); },
   },
 };
 const restingLayer = () => (S.palette || S.overlay || S.surface !== 'reading') ? 'palette' : 'none';
@@ -1512,7 +1512,7 @@ function setSurface(surface) {
   S.surface = surface;
   S.startForNewTree = false;
   post({ t: 'surface', start: surface === 'start' });
-  if (surface === 'start') { if (S.frame) S.frame.start = null; S.startPaint = null; $('start-content').replaceChildren(); focusStart(); }
+  if (surface === 'start') { if (S.frame) S.frame.start = null; S.startPaint = null; $('start-content').replaceChildren(); if (S.overlay !== 'forest') focusStart(); }
   renderTabs();
   renderPlaceholder();
   $('start').hidden = surface !== 'start';
@@ -1546,13 +1546,13 @@ function setOverlay(kind) {
   syncLayer();
   if (forestChanged) {
     if (kind === 'forest') requestForest();
-    else post({ t: 'forest', open: false });
+    else { S.forest = null; post({ t: 'forest', do: 'close' }); }
   }
 }
 
 function requestForest() {
   if (S.overlay === 'forest' && $('forest').hidden && window.innerHeight >= S.windowHeight - 1) {
-    post({ t: 'forest', open: true, revision: S.forestRevision });
+    post({ t: 'forest', do: 'open', view: S.forestWants });
   }
 }
 window.addEventListener('resize', requestForest);
@@ -1624,6 +1624,7 @@ function miniHtml(mini) {
 }
 
 const TREE_MENUS = {
+  forest: (id) => S.forest?.trees?.items.find(i => i.id === id)?.menu ?? S.forest?.history?.items.find(i => i.id === id)?.menu,
   tab: (id) => S.frame?.tabs.find((t) => t.id === id)?.menu,
   start: (id) => S.frame?.start?.pinned.find((c) => c.id === id)?.menu,
 };
@@ -1631,8 +1632,9 @@ const TREE_MENUS = {
 function treeCard(t, attrs) {
   return `<button class="tree-card" ${attrs} data-id="${t.id}" aria-label="${esc(t.name)}" title="${esc(t.tip)}">`
     + `<span class="pc-tree">${miniHtml(t.mini)}</span><span class="pc-foot"><span class="pc-name">${esc(t.title)}</span>`
-    + (t.waiting ? `<span class="count" title="${t.waiting} waiting">${t.waiting}</span>` : '')
-    + `</span><span class="pc-meta">${esc(t.meta)}</span></button>`;
+    + (t.badge ? `<span class="badge">${esc(t.badge)}</span>` : '')
+    + (t.waiting ? `<span class="count" title="${esc(t.waitingTip)}">${t.waiting}</span>` : '')
+    + `</span>${t.page ? `<span class="pc-page">${esc(t.page)}</span>` : ''}<span class="pc-meta">${esc(t.meta)}</span></button>`;
 }
 
 function pinnedBand(start) {
@@ -1731,135 +1733,124 @@ function renderStart() {
 
 // ---------- forest view ----------
 
-function forestLayout() {
-  return S.frame?.forest?.[S.forestLabels ? 'labels' : 'icons'];
+function toggleForest(view = 'trees', fromChrome = true) {
+  if (S.overlay !== 'forest') {
+    S.forestWants = view;
+    toggleOverlay('forest');
+    if (!fromChrome && S.overlay === 'forest') rememberFocus('overlay', document.body);
+  } else if (!S.forest) closeOverlay();
+  else post({ t: 'forest', do: 'toggle', view });
 }
-
+function focusForest() {
+  post({ t: 'focus', target: 'chrome' });
+  const target = S.forest?.view === 'trees'
+    ? $('forest-trees').querySelector('.tree-card[aria-current="true"]') ?? $('forest-trees').querySelector('.tree-card')
+    : $('forest-list').querySelector('[aria-selected="true"]');
+  (target ?? $('forest-find')).focus({ preventScroll: true });
+  target?.scrollIntoView({ block: 'nearest' });
+}
 function renderForest() {
-  if (S.overlay !== 'forest' || !S.frame) {
-    return;
-  }
-  const frame = S.frame;
-  const layout = forestLayout();
-  if (!layout) return;
-  $('forest-count').textContent = frame.forest.count;
-  $('forest-titles').setAttribute('aria-pressed', String(S.forestLabels));
-  const path = new Set();
-  for (let id = current(); id; id = visit(id)?.parent) path.add(id);
-  const positions = new Map(layout.nodes.map((n) => [n.id, n]));
-  let maxX = 0, maxY = 0;
-  const nodes = layout.nodes.map((n) => {
-    const v = visit(n.id);
-    if (!v) return '';
-    maxX = Math.max(maxX, n.x + n.w / 2);
-    maxY = Math.max(maxY, n.y + n.s / 2);
-    const cls = `forest-node${n.settled ? ' settled' : ''}${S.forestLabels ? '' : ' icon-only'}${path.has(n.id) ? ' path' : ''}${markClass(v)}`;
-    return `<button class="${cls}" data-key="node-${n.id}" data-id="${n.id}" aria-current="${n.id === current() ? 'page' : 'false'}" aria-label="${esc(v.name)}" title="${esc(v.label + (v.live ? ' · Still open' : ''))}" style="left:${n.x - n.w / 2}px;top:${n.y - n.s / 2}px;width:${n.w}px;height:${n.s}px">`
-      + markedFav(v, 16, false) + (v.live ? '<i class="live-dot"></i>' : '') + (S.forestLabels ? `<span>${esc(v.label)}</span>` : '') + '</button>';
-  }).join('');
-  const heads = layout.heads.map((h) => `<button class="forest-head${h.settled ? ' settled' : ''}" data-key="head-${h.id}" data-id="${h.id}" style="top:${h.y}px"><b>${esc(h.title)}</b><span>${esc(h.detail)}</span></button>`).join('');
-  const edges = layout.nodes.map((b) => {
-    const v = visit(b.id);
-    const a = v?.parent && positions.get(v.parent);
-    if (!a) return '';
-    const x = a.x + a.w / 2, end = b.x - b.w / 2, dx = (end - x) / 2;
-    const cls = path.has(b.id) ? 'path' : v.queued ? 'pending' : '';
-    return `<path class="${cls}" d="M${x},${a.y} C${x + dx},${a.y} ${end - dx},${b.y} ${end},${b.y}"/>`;
-  }).join('');
-  const svg = $('forest-edges');
-  svg.setAttribute('width', maxX + 40);
-  svg.setAttribute('height', maxY + 40);
-  svg.innerHTML = edges;
-  const d = layout.divider;
-  const divider = d ? `<div class="forest-divider" data-key="divider" style="top:${d.y}px"><b>${esc(d.title)}</b><span>${esc(d.detail)}</span></div>` : '';
-  const content = heads + divider + nodes;
-  const layer = $('forest-nodes');
-  if (layer.__content !== content) {
-    patchChildren(layer, content);
-    layer.__content = content;
-  }
-  applyCamera();
+  const f = S.forest;
+  if (!f || S.overlay !== 'forest') return;
+  const within = $('forest').contains(document.activeElement);
+  $('forest-count').textContent = f.count;
+  if (document.activeElement !== $('forest-find') || !f.query) $('forest-find').value = f.query;
+  for (const b of $('forest-views').children) b.setAttribute('aria-pressed', String(b.dataset.view === f.view));
+  $('forest-trees').hidden = f.view !== 'trees';
+  $('forest-history').hidden = f.view !== 'history';
+  if (f.view === 'trees') patchChildren($('forest-trees'), f.trees.items.map(treesItemHtml).join(''));
+  else renderHistory(f.history);
+  const empty = f.view === 'trees' ? f.trees.empty : f.history.empty;
+  $('forest-empty').hidden = !empty;
+  $('forest-empty').textContent = empty ?? '';
+  if (within && (!$('forest').contains(document.activeElement) || !document.activeElement.getClientRects().length)) focusForest();
 }
-
-function applyCamera() {
-  const c = S.camera;
-  $('forest-layer').style.transform = `translate(${c.x}px, ${c.y}px) scale(${c.zoom})`;
+function treesItemHtml(i) {
+  if (i.kind === 'band') return `<div class="band-head" data-key="${i.key}"><span>${esc(i.title)}</span><span class="hint">${esc(i.detail)}</span></div>`;
+  if (i.kind === 'hint') return `<div class="hint-line" data-key="${i.key}">${esc(i.text)}</div>`;
+  return treeCard(i, `data-key="${i.key}" data-id="${i.id}" data-forest="card" data-tree-menu aria-current="${i.current}"`);
 }
-
-let cameraTween = 0;
-function fitForest(animate) {
-  const layout = forestLayout();
-  if (!layout) return;
-  const canvas = $('forest-canvas');
-  const to = { x: 0, y: 0, zoom: clamp((canvas.clientWidth - 20) / Math.max(layout.width, 1), 0.3, 1) };
-  cancelAnimationFrame(cameraTween);
-  if (!animate || reducedMotion.matches) {
-    S.camera = to;
-    applyCamera();
-    return;
+function renderHistory(h) {
+  const list = $('forest-list');
+  const inList = list.contains(document.activeElement);
+  patchChildren(list, h.items.map(historyItemHtml).join('') + (h.more ? `<button class="forest-more" data-key="more" data-forest="more" data-seen="${h.more.seen}">${esc(h.more.label)}</button>` : ''));
+  patchChildren($('forest-preview'), h.preview ? forestPreviewHtml(h.preview) : '');
+  $('forest-preview').hidden = !h.preview;
+  if (inList) {
+    const row = list.querySelector('[aria-selected="true"]');
+    row?.focus({ preventScroll: true }); row?.scrollIntoView({ block: 'nearest' });
   }
-  const from = { ...S.camera };
-  const start = performance.now();
-  const frame = (now) => {
-    const t = reducedMotion.matches ? 1 : (now - start) / 220;
-    const k = ease(t);
-    S.camera = { x: mix(from.x, to.x, k), y: mix(from.y, to.y, k), zoom: mix(from.zoom, to.zoom, k) };
-    applyCamera();
-    if (t < 1) cameraTween = requestAnimationFrame(frame);
-  };
-  cameraTween = requestAnimationFrame(frame);
 }
-
-(() => {
-  const canvas = $('forest-canvas');
-  let drag = null;
-  canvas.addEventListener('mousedown', (event) => {
-    if (event.button !== 0) return;
-    drag = { x: event.clientX, y: event.clientY, camera: { ...S.camera }, moved: false };
-  });
-  window.addEventListener('mousemove', (event) => {
-    if (!drag) return;
-    const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
-    if (Math.abs(dx) + Math.abs(dy) > 3) {
-      drag.moved = true;
-      canvas.classList.add('dragging');
-    }
-    if (drag.moved) {
-      S.camera = { ...drag.camera, x: drag.camera.x + dx, y: drag.camera.y + dy };
-      applyCamera();
-    }
-  });
-  window.addEventListener('mouseup', () => {
-    if (drag?.moved) setTimeout(() => { drag = null; }, 0);
-    else drag = null;
-    canvas.classList.remove('dragging');
-  });
-  canvas.addEventListener('click', (event) => {
-    if (drag?.moved) return;
-    const node = event.target.closest('[data-id]');
-    if (!node) return;
-    activate(node.dataset.id);
-  });
-  canvas.addEventListener('wheel', (event) => {
-    event.preventDefault();
-    const c = S.camera;
-    const zoom = clamp(c.zoom * Math.exp(-event.deltaY * 0.0012 * (event.deltaMode ? 33 : 1)), 0.3, 1.6);
-    const box = canvas.getBoundingClientRect();
-    const px = event.clientX - box.left, py = event.clientY - box.top;
-    const ratio = zoom / c.zoom;
-    S.camera = { zoom, x: px - (px - c.x) * ratio, y: py - (py - c.y) * ratio };
-    applyCamera();
-  }, { passive: false });
-})();
-
-$('forest-titles').addEventListener('click', () => {
-  S.forestLabels = !S.forestLabels;
-  renderForest();
-  fitForest(true);
+function forestPreviewHtml(p) {
+  return `<div class="pv-art" data-key="${p.key}-art">${miniHtml(p.mini)}</div>`
+    + `<div class="pv-title" data-key="${p.key}-title"><b>${esc(p.title)}</b><span>${esc(p.meta)}</span></div>`
+    + p.actions.map(a => `<button class="action pv-action" data-key="${p.key}-${a.kind}" data-forest="${a.kind}" data-id="${p.id}">${esc(a.label)}</button>`).join('')
+    + p.outline.map(r => `<button class="pv-row${r.last ? ' last' : ''}${r.waiting ? ' waiting' : ''}" data-key="${p.key}-${r.id}" data-forest="page" data-id="${r.id}" aria-label="${esc(r.label)}" style="padding-left:${Math.min(r.depth,6)*16}px">${fav(r.url,!r.waiting,14)}<span>${esc(r.name)}</span></button>`).join('')
+    + (p.cut ? `<div class="pv-cut" data-key="${p.key}-cut">${esc(p.cut)}</div>` : '');
+}
+function historyItemHtml(i) {
+  if (i.kind === 'day') return `<div class="forest-day" data-key="${i.key}" role="presentation"><b>${esc(i.label)}</b><span>${esc(i.count)}</span></div>`;
+  return `<button class="forest-row" role="option" data-key="${i.key}" data-id="${i.id}" data-forest="row" data-tree-menu aria-selected="${i.selected}" tabindex="${i.selected ? 0 : -1}" aria-label="${esc(i.name)}">`
+    + `<span class="tm">${esc(i.time)}</span><span class="forest-icons">${i.icons.map(n => fav(n.url, true, 16)).join('')}${i.more ? `<span>${esc(i.more)}</span>` : ''}</span>`
+    + `<span class="nm">${esc(i.title)}</span><span class="st">${esc(i.sites)}</span><span class="pg">${esc(i.pages)}</span></button>`;
+}
+function openForestTree(id) { uncover(); intent('select-tree', { id }); }
+$('forest').addEventListener('click', (e) => {
+  const el = e.target.closest('[data-forest]');
+  if (!el) return;
+  const id = el.dataset.id;
+  if (el.dataset.forest === 'card') openForestTree(id);
+  else if (el.dataset.forest === 'row') post({ t: 'forest', do: 'select', tree: id });
+  else if (el.dataset.forest === 'reopen') openForestTree(id);
+  else if (el.dataset.forest === 'more') post({ t: 'forest', do: 'more', seen: Number(el.dataset.seen) });
+  else if (el.dataset.forest === 'save') intent('pin-tree', { id, pinned: true });
+  else if (el.dataset.forest === 'page') { uncover(); intent('restore', { id }); }
 });
-$('forest-fit').addEventListener('click', () => fitForest(true));
+$('forest').addEventListener('contextmenu', (e) => {
+  const el = e.target.closest('[data-tree-menu]');
+  if (!el) return;
+  e.preventDefault();
+  openPopover('tree', el, { source: 'forest', id: el.dataset.id });
+  post({ t: 'focus', target: 'chrome' });
+  $('popover').querySelector('button')?.focus();
+});
+$('forest').addEventListener('dblclick', (e) => {
+  const row = e.target.closest('[data-forest="row"]');
+  if (row) openForestTree(row.dataset.id);
+});
+$('forest-views').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-view]');
+  if (b) post({ t: 'forest', do: 'show', view: b.dataset.view });
+});
+$('forest-find').addEventListener('input', () => post({ t: 'forest', do: 'find', query: $('forest-find').value }));
 $('forest-close').addEventListener('click', closeOverlay);
 $('forest').querySelector('.scrim').addEventListener('mousedown', closeOverlay);
+$('forest').addEventListener('keydown', (e) => {
+  if (S.popover || e.ctrlKey || e.altKey || e.metaKey || e.isComposing) return;
+  const field = e.target === $('forest-find');
+  const row = e.target.closest('.forest-row'), card = e.target.closest('.tree-card');
+  if (!field && [...e.key].length === 1 && e.key !== ' ') {
+    $('forest-find').focus(); $('forest-find').value += e.key;
+    post({ t: 'forest', do: 'find', query: $('forest-find').value });
+  } else if (field && e.key === 'ArrowDown') focusForest();
+  else if (row && ['ArrowUp', 'ArrowDown'].includes(e.key)) post({ t: 'forest', do: 'step', by: e.key === 'ArrowUp' ? -1 : 1 });
+  else if (row && e.key === 'Enter') openForestTree(row.dataset.id);
+  else if (card && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) moveForestCard(card, e.key);
+  else return;
+  e.preventDefault();
+});
+function moveForestCard(card, key) {
+  const cards = [...$('forest-trees').querySelectorAll('.tree-card')];
+  let next;
+  if (key === 'ArrowLeft' || key === 'ArrowRight') next = cards[clamp(cards.indexOf(card) + (key === 'ArrowRight' ? 1 : -1), 0, cards.length - 1)];
+  else {
+    const a = card.getBoundingClientRect(), down = key === 'ArrowDown';
+    next = cards.map(c => [c, c.getBoundingClientRect()])
+      .filter(([,r]) => down ? r.top > a.bottom - 1 : r.bottom < a.top + 1)
+      .sort(([,r],[,s]) => (down ? r.top - s.top : s.bottom - r.bottom) || Math.abs(r.left-a.left)-Math.abs(s.left-a.left))[0]?.[0];
+  }
+  next?.focus();
+}
 
 // ---------- reader ----------
 
@@ -1930,14 +1921,14 @@ window.canopy = {
     renderStart();
     if (initial) requestAnimationFrame(() => requestAnimationFrame(() => { if (S.surface === 'start') post({ t: 'suggestions' }); }));
   },
-  forest(value, revision) {
-    if (value) { S.forestFrame = value; S.forestRevision = revision; }
-    value = S.forestFrame;
-    if (!value || !S.frame || S.overlay !== 'forest') return;
-    Object.assign(S.frame.visits, value.visits);
-    S.frame.forest = value.forest;
+  forest(value) {
+    if (S.overlay !== 'forest') return;
+    const first = !S.forest || S.forest.view !== value.view;
+    S.forest = value;
     $('forest').hidden = false;
-    OVERLAYS.forest.show(true);
+    renderForest();
+    if (first) focusForest();
+    if (S.popover?.data?.source === 'forest') refreshPopover();
   },
   loading(value) {
     const previous = S.loading;
@@ -1960,7 +1951,7 @@ window.canopy = {
     renderMailPin();
     applyTheme();
     // Overlays stay over the old page until the new one commits, as they always have.
-    if (frame.committed !== previousCommitted && S.overlay !== 'tree') setOverlay(null);
+    if (frame.committed !== previousCommitted && !['tree', 'forest'].includes(S.overlay)) setOverlay(null);
     if (frame.current !== previous) {
       hideList();
       const sameTree = previousTree && previousTree === frame.tabs.find((tab) => tab.active)?.id;
@@ -2056,7 +2047,7 @@ window.canopy = {
     focusStart();
     syncLayer();
   },
-  toggleForest(fromChrome = true) { toggleOverlay('forest'); if (!fromChrome && S.overlay === 'forest') rememberFocus('overlay', document.body); },
+  toggleForest(view = 'trees', fromChrome = true) { toggleForest(view, fromChrome); },
   workbench(view) {
     if (!S.frame) return;
     const id = document.activeElement?.closest('[data-id]')?.dataset.id;
@@ -2464,7 +2455,7 @@ document.addEventListener('focusin', (event) => {
   }
 }, true);
 
-const NODE_TARGETS = '#strip-nodes [data-page], #strip-list [data-id], #strip-list [data-page], #tree-nodes [data-id], #tree-list [data-id], #popover.waiting [data-id], #forest-nodes [data-id]';
+const NODE_TARGETS = '#strip-nodes [data-page], #strip-list [data-id], #strip-list [data-page], #tree-nodes [data-id], #tree-list [data-id], #popover.waiting [data-id]';
 document.addEventListener('keydown', (event) => {
   if (event.defaultPrevented || S.popover || !(event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) return;
   const el = event.target.closest(NODE_TARGETS);

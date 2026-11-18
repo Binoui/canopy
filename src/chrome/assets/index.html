@@ -73,13 +73,13 @@
       <strong>Forest</strong>
       <span class="menu-detail" id="forest-count"></span>
       <div class="spacer"></div>
-      <button class="action" id="forest-titles">Titles</button>
-      <button class="action" id="forest-fit">Fit</button>
+      <div id="forest-views" role="group" aria-label="Forest view"><button data-view="trees">Trees</button><button data-view="history">History</button></div>
+      <input id="forest-find" placeholder="Find a tree" aria-label="Find a tree" spellcheck="false" autocomplete="off">
       <button class="action" id="forest-close" aria-label="Close the forest view">×</button>
     </div>
-    <div id="forest-canvas" class="dapple">
-      <div id="forest-layer"><svg id="forest-edges" width="1" height="1"></svg><div id="forest-nodes"></div></div>
-    </div>
+    <div id="forest-trees" class="forest-body" hidden></div>
+    <div id="forest-history" class="forest-body forest-split" hidden><div id="forest-list" role="listbox" aria-label="History"></div><div id="forest-preview"></div></div>
+    <div id="forest-empty" class="hint-line" hidden></div>
   </div>
 </div>
 

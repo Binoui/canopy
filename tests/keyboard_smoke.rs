@@ -349,10 +349,9 @@ fn main() -> Result<()> {
         check(&ui, "document.activeElement.id === 'zoom-pin'")?;
         focus(&ui, "#forest-button")?;
         key("Return")?;
-        check(&ui, "document.activeElement.id === 'forest-titles'")?;
+        check(&ui, "document.activeElement.matches('.tree-card')")?;
         key("shift+Tab")?;
         check(&ui, "document.activeElement.closest('#forest') !== null")?;
-        check(&ui, "[...document.querySelectorAll('.forest-node')].every(el=>!S.frame.visits[el.dataset.id].live || el.getAttribute('aria-label').includes('still open'))")?;
         capture(&shots, "forest", theme)?;
         key("Escape")?;
         check(&ui, "document.activeElement.id === 'forest-button'")?;

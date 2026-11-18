@@ -195,6 +195,13 @@ impl Fit {
         step_x: 20.,
         step_y: 18.,
     };
+    pub const PREVIEW: Self = Self {
+        columns: 12,
+        rows: 5,
+        icon: 16.,
+        step_x: 30.,
+        step_y: 26.,
+    };
     pub const CARD: Self = Self {
         columns: 7,
         rows: 3,

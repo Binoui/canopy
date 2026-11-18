@@ -322,13 +322,20 @@ fn main() -> Result<()> {
     wait("settled from menu", || !visible(&ui, &tab))?;
     start_page(&ui)?;
     assert_eq!(chrome(&ui, "canopy.state().start.pinned.length")?, 3);
-    chrome(&ui, "(() => { const c=S.frame.start.pinned.find(c=>!S.frame.tabs.some(t=>t.id===c.id)); const anchor=document.querySelector(`[data-start=tree][data-id='${c.id}']`); openPopover('rename',anchor,{source:'start',id:c.id,name:c.title}); S.popover.field.focus(); S.popover.field.select(); canopy.present(S.frame); return true; })()")?;
+    key("ctrl+e")?;
+    wait("forest saved cards", || {
+        visible(&ui, "#forest-trees [data-key^=saved-]")
+    })?;
+    chrome(&ui, "(() => { const c=S.forest.trees.items.find(c=>c.kind==='card' && c.key.startsWith('saved-') && !S.frame.tabs.some(t=>t.id===c.id)); document.querySelector(`#forest-trees [data-key='${c.key}']`).focus(); return true; })()")?;
+    key("Menu")?;
+    click_chrome(&ui, "[data-tab-action=rename]")?;
     assert!(chrome_focused(&ui, "#tree-name"));
     type_text("Settled saved tree")?;
     key("Return")?;
     wait("settled tree renamed", || {
         text(&ui, "#start-content").contains("Settled saved tree")
     })?;
+    key("Escape")?;
     menu(&ui, ".tree-card")?;
     assert_eq!(text(&ui, "#popover"), "Remove from saved");
     click_chrome(&ui, "[data-tab-action=pin]")?;
