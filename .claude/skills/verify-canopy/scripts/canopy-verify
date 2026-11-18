@@ -191,7 +191,9 @@ cmd_wheel() {
 cmd_shot() {
   load
   [ -n "${1:-}" ] || die "shot NAME"
-  app_env import -window root "$EVIDENCE/$1.png"
+  local target=root
+  [ "${2:-}" != window ] || target=$(window)
+  app_env import -window "$target" "$EVIDENCE/$1.png"
   echo "$EVIDENCE/$1.png"
 }
 
