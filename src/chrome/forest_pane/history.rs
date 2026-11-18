@@ -209,7 +209,7 @@ fn preview(forest: &ForestProjection, entry: &Entry, today: &days::Civil) -> Val
         stack.extend(forest.children(id).iter().rev().map(|&c| (c, depth + 1)));
     }
     json!({"id":tree.id.root().to_string(), "key":format!("pv-{}",tree.id.root()), "title":tree.title,
-        "meta":format!("{} · last used {}",plural(tree.page_count,"page"),entry.at.when(today)),
+        "meta":format!("{} · settled {}",plural(tree.page_count,"page"),entry.at.when(today)),
         "mini":tree_card::mini_value(forest,&tree_view::miniature(forest,tree,Fit::PREVIEW)),
         "actions":[{"kind":"reopen","label":"Reopen"},{"kind":"save","label":"Save for later"}],
         "cut":(tree.page_count>outline.len()).then(||format!("{} more pages",tree.page_count-outline.len())), "outline":outline})
