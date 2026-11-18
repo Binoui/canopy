@@ -28,6 +28,8 @@ pub struct Ui {
     pub chrome: HtmlChrome,
     pub mail: Rc<crate::mail::MailWatch>,
     refresh_scheduled: Cell<bool>,
+    /// The pending target the chrome last drew, so a load that starts or ends redraws it.
+    shown_pending: RefCell<Option<crate::browser::PendingTarget>>,
     me: Weak<Ui>,
     inbox: crate::cookies::Inbox,
     cookie_monitor: gio::FileMonitor,
@@ -108,6 +110,7 @@ impl Ui {
                 pages,
                 chrome,
                 refresh_scheduled: Cell::new(false),
+                shown_pending: RefCell::new(None),
                 me: me.clone(),
                 inbox,
                 cookie_monitor,
@@ -158,7 +161,12 @@ impl Ui {
                 PageEvent::Selected => ui.refresh(),
                 PageEvent::Changed | PageEvent::Loading(false) => ui.schedule_refresh(),
                 PageEvent::Loading(true) => {}
-                PageEvent::LoadState(value) => ui.chrome.loading(value),
+                PageEvent::LoadState(value) => {
+                    if ui.pages.pending_target() != *ui.shown_pending.borrow() {
+                        ui.schedule_refresh();
+                    }
+                    ui.chrome.loading(value);
+                }
                 PageEvent::Waiting { parent, label } => {
                     // The pulse must land on the new count, including the first After item.
                     ui.refresh();
@@ -324,6 +332,7 @@ impl Ui {
                 files,
                 back,
                 forward,
+                pending: self.pages.pending_target(),
             })
         })
     }
@@ -364,6 +373,7 @@ impl Ui {
                         |v| format!("{} · Canopy", v.label()),
                     );
                 self.window.set_title(&title);
+                self.shown_pending.replace(frame.pending.clone());
                 if let Some(visit) = frame.forest.current().and_then(|id| frame.forest.visit(id)) {
                     self.mail.notice_page(&visit.url, &visit.title);
                 }
@@ -715,6 +725,21 @@ impl ChromeHost for Ui {
                 | ChromeIntent::OpenSaved(_)
         ) {
             self.chrome.uncover();
+        }
+        // The chrome waits for the next frame to learn whether a page it asked for opens a
+        // new tree, so every navigation answers with one.
+        let navigates = matches!(
+            intent,
+            ChromeIntent::Navigate { .. }
+                | ChromeIntent::OpenPath { .. }
+                | ChromeIntent::Restore(_)
+                | ChromeIntent::SelectTree(_)
+                | ChromeIntent::OpenCitation(_)
+                | ChromeIntent::OpenSaved(_)
+                | ChromeIntent::BranchFromQueued(_)
+        );
+        if navigates {
+            self.schedule_refresh();
         }
         let result = match intent {
             ChromeIntent::AnswerFormReturn { .. } | ChromeIntent::CheckMail => unreachable!(),

@@ -122,6 +122,7 @@ fn main() -> Result<()> {
             files: vec![],
             back: None,
             forward: None,
+            pending: None,
             capture_enabled: false,
             trees_help: true,
             theme: ThemeMode::Light,

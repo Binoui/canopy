@@ -85,6 +85,9 @@ pub struct ChromeFrame {
     pub back: Option<VisitId>,
     /// The child of the current page that Forward opens: the one shown most recently.
     pub forward: Option<VisitId>,
+    /// Where the page on screen is headed before it commits. The chrome shows that page,
+    /// or a new tree's tab, as soon as the load is asked for.
+    pub pending: Option<crate::browser::PendingTarget>,
 }
 
 /// A file downloaded from a page, and whether it is still where it was saved.
@@ -353,8 +356,11 @@ impl HtmlChrome {
         *self.inner.host.borrow_mut() = Some(host);
     }
 
-    pub fn present(&self, frame: ChromeFrame) {
+    pub fn present(&self, mut frame: ChromeFrame) {
         let inner = &self.inner;
+        if let Some(crate::browser::PendingTarget::Visit(visit)) = &frame.pending {
+            frame.forest.show_current(*visit);
+        }
         let changed = !inner.forest_layout.borrow().is_null()
             && inner
                 .frame

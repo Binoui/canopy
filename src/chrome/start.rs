@@ -84,6 +84,7 @@ mod tests {
             bookmarks: vec![],
             back: None,
             forward: None,
+            pending: None,
             files: vec![],
         };
         let start = value(&frame, &frozen);
@@ -122,6 +123,7 @@ mod tests {
             bookmarks: vec![],
             back: None,
             forward: None,
+            pending: None,
             files: vec![],
         };
         let start = value(&frame, &[]);
