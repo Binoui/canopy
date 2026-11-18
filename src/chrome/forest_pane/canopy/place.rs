@@ -63,6 +63,7 @@ struct Shape {
 pub(super) struct Placed {
     pub trees: Vec<Point>,
     pub items: Vec<Vec<Point>>,
+    bounds: Vec<(f64, f64)>,
 }
 impl Layout {
     pub fn name(self) -> &'static str {
@@ -80,7 +81,7 @@ impl Layout {
         let shapes: Vec<_> = trees
             .iter()
             .map(|items| match self {
-                Self::Flow => flow(items, m),
+                Self::Flow => flow(items, m, level),
             })
             .collect();
         let band = level.band();
@@ -89,8 +90,10 @@ impl Layout {
         let mut placed = Placed {
             trees: vec![],
             items: vec![],
+            bounds: vec![],
         };
         for shape in shapes {
+            placed.bounds.push((shape.width, shape.height));
             if x > 0. && (level == Level::Near || x + shape.width > limit) {
                 x = 0.;
                 y += row_h + m.gap;
@@ -113,7 +116,7 @@ impl Layout {
         placed
     }
 }
-fn flow(items: &[Item], m: Metrics) -> Shape {
+fn flow(items: &[Item], mut m: Metrics, level: Level) -> Shape {
     let mut children = vec![Vec::new(); items.len()];
     let mut depth = vec![0; items.len()];
     for (i, item) in items.iter().enumerate() {
@@ -121,6 +124,19 @@ fn flow(items: &[Item], m: Metrics) -> Shape {
             children[parent].push(i);
             depth[i] = depth[parent] + 1;
         }
+    }
+    if level == Level::Far {
+        let mut counts = vec![0; depth.iter().max().map_or(0, |d| d + 1)];
+        for &d in &depth {
+            counts[d] += 1;
+        }
+        m.height = items.iter().map(|i| i.height(level)).fold(25_f64, f64::max);
+        m.step.1 = items
+            .iter()
+            .zip(&depth)
+            .filter(|(_, d)| counts[**d] > 1)
+            .map(|(i, _)| i.height(level))
+            .fold(25_f64, f64::max);
     }
     let mut at = vec![Point::default(); items.len()];
     let mut leaf = 0;
@@ -219,10 +235,10 @@ pub(super) fn camera(
         room.width * 0.55 - point.x * s,
         room.height * 0.45 - point.y * s,
     ];
-    if (point.x - name.x) * s < room.width - 180. {
+    if placed.bounds[t].0 * s <= room.width - 48. {
         pan[0] = 112. - name.x * s;
     }
-    if (point.y - name.y) * s < room.height - 100. {
+    if placed.bounds[t].1 * s <= room.height - 80. {
         pan[1] = 32. - name.y * s;
     }
     pan

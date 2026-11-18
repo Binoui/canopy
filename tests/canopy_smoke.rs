@@ -163,6 +163,15 @@ fn main() -> Result<()> {
             pump(80);
             let error=chrome(&ui,r#"(()=>{const i=canopyValue().items.find(i=>i.pages?.includes(proof.page)),r=mapView.nodes.get(i.k).el.getBoundingClientRect(),v=$('forest-canopy').getBoundingClientRect();return Math.hypot(r.left-v.left+r.width*proof.f[0]-proof.at[0],r.top-v.top+r.height*proof.f[1]-proof.at[1]);})()"#)?.as_f64().unwrap();
             assert!(error <= 1., "fractional wheel anchor error {error}");
+            assert!(
+                chrome(
+                    &ui,
+                    &format!(
+                        "canopyValue().items.find(i=>i.k===mapView.focus).pages?.includes('{}')",
+                        ids[6]
+                    )
+                )? == true
+            );
         }
     }
     println!("PASS real wheel keeps an off-centre page point within 1 CSS px across both thresholds both ways.");

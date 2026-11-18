@@ -148,6 +148,19 @@ pub(super) fn size(shown: u32, base: f64) -> f64 {
     (base * (1. + 0.3 * f64::from(shown.max(1)).log2()).min(2.1)).round()
 }
 impl Item {
+    pub fn height(&self, level: Level) -> f64 {
+        if level != Level::Far {
+            return level.metrics().height;
+        }
+        if self.appearance.current {
+            72.
+        } else {
+            size(self.shown, level.metrics().icon)
+                + 10.
+                + if self.appearance.previous { 8. } else { 0. }
+        }
+    }
+
     pub fn key(&self) -> String {
         format!("{}:{}", if self.folds { "r" } else { "p" }, self.pages[0])
     }
@@ -155,7 +168,7 @@ impl Item {
         use serde_json::json;
         let page = facts.forest.visit(self.go).unwrap();
         let site = site(facts.forest, self.go);
-        let run = self.folds && level != Level::Near;
+        let run = level == Level::Far || (self.pages.len() > 1 && level == Level::Middle);
         let title = if level == Level::Far {
             None
         } else if run {
@@ -197,6 +210,7 @@ impl Item {
             tip.push_str(&format!("\nshown {} times", self.shown));
         }
         json!({"k":self.key(), "kind":if run {"run"} else {"page"}, "go":self.go.to_string(), "page":self.go.to_string(),
+            "anchorPage":if self.appearance.current {facts.forest.current().unwrap()} else {self.go}.to_string(),
             "pages":self.pages.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "st":self.appearance.memory.name(), "current":self.appearance.current, "previous":self.appearance.previous,
             "sz":size(self.shown, level.metrics().icon), "t":title, "sub":sub, "n":run.then_some(self.pages.len()),

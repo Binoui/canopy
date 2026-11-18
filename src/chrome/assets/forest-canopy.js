@@ -29,7 +29,9 @@ function witnessAt(at, focused = false) {
   const item = node && canopyValue().items[+el.dataset.index];
   if (!item?.go) return { world: at.map((p,i) => (p-mapView.pan[i])/scaleNow()), at };
   const r = el.getBoundingClientRect();
-  return { page:item.go, fraction:[(at[0]+view.left-r.left)/r.width,(at[1]+view.top-r.top)/r.height], at };
+  const retained=mapView.witness?.page;
+  const page=retained && item.pages?.includes(retained) ? retained : item.anchorPage ?? item.go;
+  return { page, fraction:[(at[0]+view.left-r.left)/r.width,(at[1]+view.top-r.top)/r.height], at };
 }
 function witnessScreen(witness) {
   if (!witness?.page) return witness;
@@ -58,7 +60,14 @@ function renderCanopy(value) {
   if (first) mapView = { k:value.place.k,pan:[...value.place.pan],drawn:value.level,request:0,
     asked:null,nodes:new Map([...$('forest-canopy').querySelector('.canopy-items').children].map(el => [el.dataset.key,{el,sig:null,x:NaN,y:NaN}])),edges:new Map([...$('forest-canopy').querySelector('.canopy-edges g').children].map(el => [el.dataset.key,el])),focus:null,drag:null,moved:false,tipTimer:0,room:null,witness:null,value };
   const active = document.activeElement?.closest('.canopy-item');
+  const oldFocus=canopyValue().items.find(i=>i.k===mapView.focus);
+  const focusedPage=mapView.focusPage ?? oldFocus?.anchorPage ?? oldFocus?.go;
   const witness = first ? null : witnessScreen(mapView.witness) ?? (active ? witnessAt(focusedPoint(), true) : null);
+  if (focusedPage) {
+    const next=value.items.find(i=>i.pages?.includes(focusedPage));
+    mapView.focus=next?.k ?? homeKey(value);
+    mapView.focusPage=next ? focusedPage : null;
+  }
   mapView.value = value;
   mapView.drawn = value.level;
   mapView.asked = null;
@@ -73,7 +82,7 @@ function renderCanopy(value) {
   else if (!$('canopy-tip').hidden) $('canopy-tip').textContent=value.items[+tipNode.el.dataset.index].tip;
   reanchor(witness);
   applyTransform();
-  if (active && !active.isConnected) canopyFocus()?.focus({preventScroll:true});
+  if (active && (!active.isConnected || active.dataset.key !== mapView.focus)) canopyFocus()?.focus({preventScroll:true});
   renderCanopyHeader(value);
 }
 function patchItems(value) {
@@ -203,7 +212,7 @@ function showTip(el) {
 function hideTip() {if (mapView) {clearTimeout(mapView.tipTimer);mapView.tipKey=null;}$('canopy-tip').hidden=true;}
 $('forest-canopy').addEventListener('pointerover',e => {const el=e.target.closest('.canopy-item');if (el && !el.contains(e.relatedTarget)) showTip(el);});
 $('forest-canopy').addEventListener('pointerout',e => {const el=e.target.closest('.canopy-item');if (el && !el.contains(e.relatedTarget)) hideTip();});
-$('forest-canopy').addEventListener('focusin',e => {const el=e.target.closest('.canopy-item');if (el) {mapView.focus=el.dataset.key;showTip(el);}});
+$('forest-canopy').addEventListener('focusin',e => {const el=e.target.closest('.canopy-item');if (el) {mapView.focus=el.dataset.key;const item=canopyValue().items[+el.dataset.index];mapView.focusPage=item.anchorPage ?? item.go ?? null;showTip(el);}});
 const CANOPY_STEP={ArrowLeft:0,ArrowRight:1,ArrowUp:2,ArrowDown:3};
 function canopyKey(e) {
   if (!mapView) return false;
@@ -217,7 +226,7 @@ function canopyKey(e) {
 function focusItem(key) {
   const node=mapView.nodes.get(key);if (!node) return;
   for (const [k,n] of mapView.nodes) n.el.tabIndex=k === key ? 0 : -1;
-  mapView.focus=key;mapView.witness=null;node.el.focus({preventScroll:true});
+  mapView.focus=key;const item=canopyValue().items[+node.el.dataset.index];mapView.focusPage=item.anchorPage ?? item.go ?? null;mapView.witness=null;node.el.focus({preventScroll:true});
   const r=$('forest-canopy').getBoundingClientRect(),[x,y]=screenOf(node),box=node.el.getBoundingClientRect();
   for (const [i,p,extent,limit] of [[0,x,box.width/2,r.width],[1,y,box.height/2,r.height]])
     mapView.pan[i]+=Math.max(0,extent+8-p)-Math.max(0,p+extent+8-limit);

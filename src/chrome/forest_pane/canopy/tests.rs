@@ -121,6 +121,10 @@ fn ninety_page_run_preserves_both_roles_and_folds_at_each_level() {
     assert!(far[0].appearance.current && far[0].appearance.previous);
     assert_eq!(far[0].go, ids[0]);
     assert_eq!(
+        far[0].paint(&facts, Level::Far)["anchorPage"],
+        ids[89].to_string()
+    );
+    assert_eq!(
         far[0].paint(&facts, Level::Far)["tags"],
         json!(["You are here"])
     );
@@ -195,9 +199,12 @@ fn flow_item_boxes_do_not_overlap_and_trees_fit_resting_room() {
                 );
                 let m = level.metrics();
                 for (i, a) in placed.items[0].iter().enumerate() {
-                    for b in &placed.items[0][i + 1..] {
+                    for (j, b) in placed.items[0].iter().enumerate().skip(i + 1) {
                         assert!(
-                            (a.x - b.x).abs() >= m.width || (a.y - b.y).abs() >= m.height,
+                            (a.x - b.x).abs() >= m.width
+                                || (a.y - b.y).abs()
+                                    >= (folded[0][i].height(level) + folded[0][j].height(level))
+                                        / 2.,
                             "overlapping boxes {n} {level:?}"
                         );
                     }

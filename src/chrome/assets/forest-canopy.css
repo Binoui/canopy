@@ -8,11 +8,14 @@
 .canopy-edges path[data-e=waiting] { stroke-dasharray:3 3; }
 .canopy-item { position:absolute; left:0; top:0; transform:translate(calc(var(--x) * var(--s) * 1px),calc(var(--y) * var(--s) * 1px)) translate(-50%,-50%); display:flex; align-items:center; justify-content:center; padding:0; border:0; background:none; border-radius:9px; color:var(--text); }
 .canopy-item:hover { z-index:4; }
-.canopy-item:focus-visible { outline:2px solid var(--text); outline-offset:3px; }
+.canopy-item:focus-visible { outline:none; }
+.canopy-item:focus-visible .mk { outline:2px solid var(--text); outline-offset:7px; }
+.canopy-item[data-kind=tree]:focus-visible, #forest-canopy[data-level=near] .canopy-item:focus-visible { outline:2px solid var(--text); outline-offset:3px; }
+#forest-canopy[data-level=near] .canopy-item:focus-visible .mk { outline:none; }
 .canopy-item .fav { box-shadow:0 0 0 2px var(--bg),0 0 0 3px var(--line); }
 .canopy-item[data-st=visited] .fav { opacity:.5; filter:saturate(.3); box-shadow:0 0 0 2px var(--bg); }
 .canopy-item[data-st=waiting] .fav { opacity:.5; box-shadow:none; outline:1.5px dashed var(--green); outline-offset:2px; }
-.canopy-item[data-previous=true] .fav { box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--text); opacity:1; filter:none; }
+.canopy-item[data-previous=true] .fav { box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--text); }
 .canopy-item[data-current=true] .fav { box-shadow:0 0 0 2px var(--bg),0 0 0 4.5px var(--green); opacity:1; filter:none; }
 .canopy-item[data-current=true][data-previous=true] .mk { outline:1px solid var(--text); outline-offset:6px; }
 .canopy-item .mk { position:relative; display:inline-flex; align-items:center; justify-content:center; gap:5px; }
@@ -57,7 +60,6 @@
 #canopy-legend .map-help { margin-left:auto; }
 @container (max-width:700px) { #canopy-back { max-width:calc(100% - 44px); order:2; } #forest-count { display:none; } #canopy-legend .map-help { display:none; } }
 
-.canopy-item[data-st=visited] .mk { opacity:.55; }
 .canopy-item[data-st=visited] .lb b { color:var(--muted); font-weight:500; }
 .canopy-item[data-current=true] .mk { opacity:1; }
 

@@ -178,7 +178,7 @@ impl State {
                 value["x"] = json!(p.x);
                 value["y"] = json!(p.y);
                 value["w"] = json!(self.level.metrics().width);
-                value["h"] = json!(self.level.metrics().height);
+                value["h"] = json!(item.height(self.level));
                 value["up"] = json!(item.parent.map(|p| p + offset));
                 for id in &item.pages {
                     if Some(tree.id) != current {
