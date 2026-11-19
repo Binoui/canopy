@@ -72,8 +72,21 @@ fn main() -> Result<()> {
         "Pin tab\nSave for later\nRename\nSettle tree"
     );
     click_chrome(&ui, "[data-tab-action=pin]")?;
+    // Three trees in a wide window: the pin keeps its name and shows the pin mark.
+    wait("pinned and named", || {
+        visible(
+            &ui,
+            &format!("{tab}.pinned:not(.icon-only) .tab-pinned-mark"),
+        )
+    })?;
+    // Short of room, the pin folds to its icon.
+    ui.window.resize(560, 800);
     wait("pinned icon", || {
         visible(&ui, &format!("{tab}.pinned.icon-only"))
+    })?;
+    ui.window.resize(1240, 800);
+    wait("pinned named again", || {
+        visible(&ui, &format!("{tab}.pinned:not(.icon-only)"))
     })?;
     hover_chrome(&ui, &tab)?;
     xdo(&["click", "3"])?;

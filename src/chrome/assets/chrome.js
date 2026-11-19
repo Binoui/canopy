@@ -270,6 +270,7 @@ function renderTabs() {
     const html = `<button class="tab${tree.pinned ? ' pinned' : ''}" draggable="true" role="tab" tabindex="${active ? 0 : -1}" aria-selected="${active}" data-id="${tree.id}" title="${esc(`${tree.title}${sub ? ` · ${sub}` : ''} · ${pages}${pending}${pinned}${key}`)}" aria-label="${esc((sub ? `${tree.name}, on ${sub}` : tree.name) + pending)}">`
       + (root ? `<span class="mk">${visitFav(root, 14)}</span>` : '')
       + `<span class="tab-title${sub ? ' two-line' : ''}"><span class="tab-name">${esc(tree.title)}</span>${sub ? `<span class="tab-sub">${esc(sub)}</span>` : ''}</span>`
+      + (tree.pinned ? `<span class="tab-pinned-mark" aria-hidden="true">${icon('pinned')}</span>` : '')
       + (tree.pending ? '<i class="unread-dot" aria-hidden="true"></i>' : '')
       + `<span class="tab-settle" data-settle="${tree.id}" title="Settle${active ? ' · Ctrl+W' : ''}" aria-hidden="true">${icon('close')}</span>`
       + '</button>';

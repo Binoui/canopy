@@ -1,5 +1,7 @@
 //! Names a tree from its own pages. No model: the words the user searched for when there
-//! are some, otherwise the root page's title without the site's name around it.
+//! are some, otherwise the root page's title without the site's name around it. A root that
+//! is an error or sign-in page says nothing about the tree, so the first real page under it
+//! names the tree instead.
 
 use url::Url;
 
@@ -25,13 +27,77 @@ pub fn tree_name<'a>(root: &Visit, children: impl IntoIterator<Item = &'a Visit>
     if let Some(query) = search_query(&root.url) {
         return query;
     }
+    let children: Vec<&Visit> = children.into_iter().collect();
     // A tree started on a site's front page is about what was searched for there.
     if root.url.path() == "/" {
-        if let Some(query) = children.into_iter().find_map(|v| search_query(&v.url)) {
+        if let Some(query) = children.iter().find_map(|v| search_query(&v.url)) {
             return query;
         }
     }
+    if is_error_page(&root.title, &root.url) {
+        let real = children
+            .iter()
+            .find(|v| !v.title.trim().is_empty() && !is_error_page(&v.title, &v.url));
+        if let Some(child) = real {
+            return search_query(&child.url).unwrap_or_else(|| page_name(&child.title, &child.url));
+        }
+    }
     page_name(&root.title, &root.url)
+}
+
+/// Titles of pages that stand in for the one asked for: "Page not found · GitHub",
+/// "404 Not Found", "Sign in - Google Accounts", "Just a moment...".
+pub fn is_error_page(title: &str, url: &Url) -> bool {
+    const PHRASES: [&str; 18] = [
+        "page not found",
+        "not found",
+        "file not found",
+        "page unavailable",
+        "access denied",
+        "forbidden",
+        "unauthorized",
+        "server error",
+        "internal server error",
+        "bad gateway",
+        "service unavailable",
+        "gateway timeout",
+        "error",
+        "sign in",
+        "log in",
+        "login",
+        "just a moment",
+        "attention required",
+    ];
+    let looks_like = |piece: &str| {
+        let words: Vec<String> = piece
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_lowercase)
+            .collect();
+        let status = |word: &String| {
+            word.len() == 3
+                && (word.starts_with('4') || word.starts_with('5'))
+                && word.bytes().all(|b| b.is_ascii_digit())
+        };
+        let coded = words.iter().any(status);
+        let rest = words
+            .iter()
+            .filter(|word| !status(word))
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(" ");
+        (coded && (rest.is_empty() || rest == "error" || PHRASES.contains(&rest.as_str())))
+            || PHRASES.contains(&rest.as_str())
+            || ["sign in to ", "log in to ", "login to "]
+                .iter()
+                .any(|lead| rest.starts_with(lead) && rest.split(' ').count() <= 5)
+    };
+    let first = SEPARATORS
+        .iter()
+        .filter_map(|separator| title.find(separator))
+        .min()
+        .map_or(title, |at| &title[..at]);
+    looks_like(first) || looks_like(&page_name(title, url))
 }
 
 /// The words typed into a search box, when `url` is a page of search results.
@@ -290,5 +356,87 @@ mod tests {
             "GitHub - tauri-apps/tauri",
         );
         assert_eq!(tree_name(&repository, [&results]), "tauri-apps/tauri");
+    }
+
+    #[test]
+    fn error_and_sign_in_pages_are_recognised() {
+        for (address, title, error) in [
+            (
+                "https://github.com/Binoui/canopy/pull/32",
+                "Page not found · GitHub · GitHub",
+                true,
+            ),
+            ("https://example.org/missing", "404 Not Found", true),
+            ("https://example.org/missing", "Error 404", true),
+            ("https://example.org/broken", "502 Bad Gateway", true),
+            (
+                "https://www.reddit.com/r/x",
+                "Reddit - Page not found",
+                true,
+            ),
+            (
+                "https://accounts.google.com/v3/signin",
+                "Sign in - Google Accounts",
+                true,
+            ),
+            (
+                "https://github.com/login",
+                "Sign in to GitHub · GitHub",
+                true,
+            ),
+            ("https://example.org/", "Just a moment...", true),
+            // Pages about errors, codes or signing in are real pages.
+            (
+                "https://doc.rust-lang.org/book/ch09-00-error-handling.html",
+                "Error Handling - The Rust Programming Language",
+                false,
+            ),
+            ("https://example.org/", "Route 404 road trip", false),
+            (
+                "https://www.wowhead.com/classic",
+                "WoW Classic News and Guides",
+                false,
+            ),
+            ("https://example.org/", "Login screens that work", false),
+            (
+                "https://example.org/",
+                "Sign in to your account without a password: a guide",
+                false,
+            ),
+            // A page about a status reads like one; it only loses its name to a real page under it.
+            (
+                "https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404",
+                "404 Not Found - HTTP | MDN",
+                true,
+            ),
+        ] {
+            assert_eq!(is_error_page(title, &url(address)), error, "{title}");
+        }
+    }
+
+    #[test]
+    fn an_error_root_is_named_by_its_first_real_page() {
+        let missing = visit(
+            "https://github.com/Binoui/canopy/pull/32",
+            "Page not found · GitHub · GitHub",
+        );
+        let sign_in = visit("https://github.com/session", "Sign in · GitHub");
+        let pull = visit(
+            "https://github.com/Binoui/canopy/pull/32",
+            "Keep logins in a password manager · Pull Request #32 · Binoui/canopy",
+        );
+        assert_eq!(
+            tree_name(&missing, [&sign_in, &pull]),
+            "Keep logins in a password manager · Pull Request #32 · Binoui/canopy"
+        );
+        // Nothing better under it: the error page still names the tree.
+        assert_eq!(tree_name(&missing, [&sign_in]), "Page not found");
+        assert_eq!(tree_name(&missing, []), "Page not found");
+        // A real root keeps its name whatever comes after it.
+        let wowhead = visit(
+            "https://www.wowhead.com/classic",
+            "WoW Classic News and Guides",
+        );
+        assert_eq!(tree_name(&wowhead, [&pull]), "WoW Classic News and Guides");
     }
 }
