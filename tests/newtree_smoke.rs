@@ -302,8 +302,12 @@ fn main() -> Result<()> {
     key("Return")?;
     menu(&ui, &tab)?;
     click_chrome(&ui, "[data-tab-action=pin]")?;
-    wait("pinned icon", || {
-        visible(&ui, &format!("{tab}.pinned.icon-only"))
+    // The pinned tree being read keeps its name.
+    wait("pinned and named", || {
+        visible(
+            &ui,
+            &format!("{tab}.pinned:not(.icon-only) .tab-pinned-mark"),
+        )
     })?;
     menu(&ui, &tab)?;
     click_chrome(&ui, "[data-tab-action=unpin]")?;

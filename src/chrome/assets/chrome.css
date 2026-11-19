@@ -574,5 +574,5 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 #settings-button.has-errors::after { content: ""; position: absolute; top: 3px; right: 3px; box-shadow: 0 0 0 2px var(--chrome); }
 .errors-head { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; gap: 20px; font-size: 12px; }
 
-.tab.pinned .tab-title, .tab.pinned .tab-settle, .tab.pinned .unread-dot { display:none; }
-.tab.pinned { justify-content:center; padding:0; }
+/* A pinned tree is named while there is room and folds to its icon (.icon-only) when not. */
+.tab.pinned .tab-settle { display:none; }

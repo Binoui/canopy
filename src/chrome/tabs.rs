@@ -85,6 +85,9 @@ fn fit(count: usize, active: Option<usize>, natural: f64, room: f64) -> (Vec<(Mo
     (result, overflow)
 }
 
+/// Pinned trees lead the row. They keep their names while every tab has room for a full
+/// one and fold to their icons first when room runs short; the tree being read keeps its
+/// name either way.
 fn fit_pinned(
     count: usize,
     pins: usize,
@@ -95,30 +98,38 @@ fn fit_pinned(
     if pins == 0 {
         return fit(count, active, natural, room);
     }
-    if count == pins && room >= pins as f64 * 36. - 2. {
-        return (vec![(Mode::Icon, 34.); pins], false);
+    let named = fit(count, active, natural, room);
+    if !named.1
+        && named
+            .0
+            .iter()
+            .all(|&(mode, width)| matches!(mode, Mode::Title) && width >= 160.)
+    {
+        return named;
     }
-    if count == pins + 1 && active == Some(pins) && room >= pins as f64 * 36. + 34. {
-        let (rest, overflow) = fit(1, Some(0), natural, room - pins as f64 * 36.);
-        let mut items = vec![(Mode::Icon, 34.); pins];
-        items.extend(rest);
-        return (items, overflow);
-    }
-    let reserve = pins as f64 * 36.;
-    let need_current = if active.is_some_and(|a| a >= pins) {
-        34.
+    let icons = (0..pins).filter(|&i| Some(i) != active).count();
+    let reserve = icons as f64 * 36.;
+    let rest: Vec<usize> = (0..count)
+        .filter(|&i| i >= pins || Some(i) == active)
+        .collect();
+    let need_current = if active.is_some() { 34. } else { 0. };
+    // The overflow button needs room only when unpinned trees may not all fit.
+    let need_overflow = if rest.len() > usize::from(active.is_some()) {
+        32.
     } else {
-        0.
+        -2.
     };
-    if room >= reserve + need_current + 32. {
-        let (rest, overflow) = fit(
-            count - pins,
-            active.filter(|a| *a >= pins).map(|a| a - pins),
+    if room >= reserve + need_current + need_overflow {
+        let (fitted, overflow) = fit(
+            rest.len(),
+            active.and_then(|a| rest.iter().position(|&i| i == a)),
             natural,
             (room - reserve).max(0.),
         );
-        let mut items = vec![(Mode::Icon, 34.); pins];
-        items.extend(rest);
+        let mut items = vec![(Mode::Icon, 34.); count];
+        for (&i, item) in rest.iter().zip(fitted) {
+            items[i] = item;
+        }
         return (items, overflow);
     }
     let mut items = vec![(Mode::Hidden, 0.); count];
@@ -154,7 +165,9 @@ pub(super) fn layout(forest: &ForestProjection, room: f64, start: bool) -> Value
                 let tree = &forest.tabs()[i];
                 let sub =
                     subtitle(forest, tree).map_or(0., |s| super::view::text_width(&s, 11., 0.53));
-                super::view::text_width(&tree.title, 12.5, 0.56).max(sub) + 64.
+                let title = super::view::text_width(&tree.title, 12.5, 0.56).max(sub) + 64.;
+                // The pin mark after a pinned tree's name.
+                title + if tree.place.pinned() { 17. } else { 0. }
             })
             .unwrap_or(110.),
         room,
@@ -186,8 +199,33 @@ mod tests {
                 assert!(overflow);
             }
         }
+        // The pinned tree being read keeps its name while the other pins fold.
         let (tabs, _) = fit_pinned(8, 4, Some(2), 200., 800.);
-        assert!(matches!(tabs[2].0, Mode::Icon));
+        assert!(matches!(tabs[2].0, Mode::Title));
+        for i in [0, 1, 3] {
+            assert!(matches!(tabs[i].0, Mode::Icon));
+        }
+    }
+
+    #[test]
+    fn pins_keep_their_names_while_there_is_room() {
+        // Two trees, one pinned, in a wide window: both named.
+        let (tabs, overflow) = fit_pinned(2, 1, Some(1), 240., 1200.);
+        assert!(!overflow);
+        assert!(tabs
+            .iter()
+            .all(|t| matches!(t.0, Mode::Title) && t.1 >= 160.));
+        // Short of room, the pin folds to its icon before any other tree loses its name.
+        let (tabs, _) = fit_pinned(6, 1, Some(5), 240., 900.);
+        assert!(matches!(tabs[0].0, Mode::Icon));
+        assert!(tabs[1..].iter().all(|t| matches!(t.0, Mode::Title)));
+        // Only pins, no room for names: icons.
+        let (tabs, overflow) = fit_pinned(3, 3, None, 200., 300.);
+        assert!(!overflow);
+        assert!(tabs.iter().all(|t| matches!(t.0, Mode::Icon)));
+        let (tabs, overflow) = fit_pinned(3, 3, None, 200., 106.);
+        assert!(!overflow);
+        assert!(tabs.iter().all(|t| matches!(t.0, Mode::Icon)));
     }
     #[test]
     fn active_title_gets_room_before_other_trees() {
