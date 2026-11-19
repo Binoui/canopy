@@ -70,7 +70,7 @@ const S = {
   find: null,
   errors: { recent: [], toast: null, unread: false },
   forest: null,
-  forestWants: 'trees',
+  forestWants: 'canopy',
   reported: '',
 };
 
@@ -103,7 +103,7 @@ function returnFocus(kind) {
 const tabKey = (event) => ['Tab', 'ISO_Left_Tab'].includes(event.key) || event.code === 'Tab' || event.keyCode === 9;
 const controlsIn = (root) => [...root.querySelectorAll('button:not(:disabled), input, [tabindex="0"]')].filter((el) => el.tabIndex >= 0 && el.getClientRects().length);
 
-const visit = (id) => S.frame?.visits[id];
+const visit = (id) => S.frame?.visits[id] ?? S.forest?.canopy?.visits?.[id];
 const current = () => S.frame?.current ?? null;
 /// The files downloaded from a page of the current tree, oldest first.
 const filesOf = (id) => S.frame?.files?.[id] ?? [];
@@ -1635,7 +1635,8 @@ function setOverlay(kind) {
     if (overlay.leavesStart) setSurface('reading');
     hideList();
     closePopover(false);
-    $(overlay.el).hidden = kind === 'forest';
+    $(overlay.el).hidden = false;
+    if (kind === 'forest') { $('forest').dataset.pending = ''; $('forest-canopy').hidden = S.forestWants !== 'canopy'; $('canopy-legend').hidden = S.forestWants !== 'canopy'; $('forest-history').hidden = S.forestWants !== 'history'; }
     $(overlay.button).setAttribute('aria-pressed', 'true');
     if (kind !== 'forest') overlay.show(true);
   }
@@ -1643,13 +1644,13 @@ function setOverlay(kind) {
   syncLayer();
   if (forestChanged) {
     if (kind === 'forest') requestForest();
-    else { S.forest = null; post({ t: 'forest', do: 'close' }); }
+    else { resetCanopy(); S.forest = null; post({ t: 'forest', do: 'close' }); }
   }
 }
 
 function requestForest() {
-  if (S.overlay === 'forest' && $('forest').hidden && window.innerHeight >= S.windowHeight - 1) {
-    post({ t: 'forest', do: 'open', view: S.forestWants });
+  if (S.overlay === 'forest' && $('forest').hasAttribute('data-pending') && window.innerHeight >= S.windowHeight - 1) {
+    post({ t: 'forest', do: 'open', view: S.forestWants, ...canopyRoom() });
   }
 }
 window.addEventListener('resize', requestForest);
@@ -1900,7 +1901,10 @@ window.canopy = {
   },
   forest(value) {
     if (S.overlay !== 'forest') return;
+    if (value.view === 'canopy' && !acceptCanopy(value.canopy)) return;
     const first = !S.forest || S.forest.view !== value.view;
+    if (first) resetCanopy();
+    delete $('forest').dataset.pending;
     S.forest = value;
     $('forest').hidden = false;
     renderForest();
@@ -2029,7 +2033,7 @@ window.canopy = {
     focusStart();
     syncLayer();
   },
-  toggleForest(view = 'trees', fromChrome = true) { toggleForest(view, fromChrome); },
+  toggleForest(view = 'canopy', fromChrome = true) { toggleForest(view, fromChrome); },
   workbench(view) {
     if (!S.frame) return;
     const id = document.activeElement?.closest('[data-id]')?.dataset.id;
@@ -2272,7 +2276,7 @@ $('nav-back').innerHTML = icon('back');
 $('nav-forward').innerHTML = icon('forward');
 $('new-tree-tab').querySelector('.mk').innerHTML = icon('forest');
 $('new-tree-close').innerHTML = icon('close');
-$('forest-button').innerHTML = icon('forest') + '<span>Forest</span>';
+$('forest-button').innerHTML = icon('forest') + '<span>Canopy</span>';
 $('settings-button').innerHTML = icon('settings');
 $('tab-overflow').innerHTML = icon('chevron');
 $('search-pill').insertAdjacentHTML('afterbegin', icon('search'));
@@ -2503,7 +2507,7 @@ document.addEventListener('focusin', (event) => {
   }
 }, true);
 
-const NODE_TARGETS = '#strip-nodes [data-page], #strip-list [data-id], #strip-list [data-page], #tree-nodes [data-id], #tree-list [data-id], #popover.waiting [data-id]';
+const NODE_TARGETS = '#strip-nodes [data-page], #strip-list [data-id], #strip-list [data-page], #tree-nodes [data-id], #tree-list [data-id], #popover.waiting [data-id], #forest-canopy [data-page]';
 document.addEventListener('keydown', (event) => {
   if (event.defaultPrevented || S.popover || !(event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) return;
   const el = event.target.closest(NODE_TARGETS);

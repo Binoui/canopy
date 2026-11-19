@@ -44,6 +44,7 @@ Prefer keyboard shortcuts. They are stable handles, and pointer positions move w
 $V key ctrl+k                     # xdotool key names: ctrl+shift+e, alt+Left, Return, Escape, F6
 $V type "http://wiki.localhost:PORT/p/Repotting"
 $V drag 150 26 350 26            # stepped native tab drag
+$V wheel 500 350 up 5            # native wheel notches in the map
 $V click 390 328 [left|middle|right]
 $V hover 70 68 [seconds]          # rests the pointer, 1.2 s by default
 $V url Repotting                  # fixture address for a page title; CANOPY_HOST=wiki picks the host

@@ -156,3 +156,82 @@ impl Browser {
         Ok(())
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LogOrder(i64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Shown {
+    times: u32,
+    last: LogOrder,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Showings {
+    pages: std::collections::HashMap<VisitId, Shown>,
+}
+
+impl Showings {
+    pub fn times(&self, id: VisitId) -> u32 {
+        self.pages.get(&id).map_or(0, |s| s.times)
+    }
+    pub fn last_shown(&self, id: VisitId) -> Option<LogOrder> {
+        self.pages.get(&id).map(|s| s.last)
+    }
+    fn eligible(&self, forest: &ForestProjection, id: VisitId) -> bool {
+        forest.current().is_some_and(|current| {
+            id != current
+                && forest.tree_of(id) == forest.tree_of(current)
+                && !forest.is_settled(id)
+                && forest
+                    .visit(id)
+                    .is_some_and(|v| v.state == super::VisitState::Opened)
+        })
+    }
+    pub fn recent(&self, forest: &ForestProjection) -> Vec<VisitId> {
+        let mut pages: Vec<_> = self
+            .pages
+            .iter()
+            .filter(|(id, _)| self.eligible(forest, **id))
+            .collect();
+        pages.sort_unstable_by_key(|(_, s)| std::cmp::Reverse(s.last));
+        pages.into_iter().map(|(id, _)| *id).collect()
+    }
+    pub fn previous(&self, forest: &ForestProjection) -> Option<VisitId> {
+        self.pages
+            .iter()
+            .filter(|(id, _)| self.eligible(forest, **id))
+            .max_by_key(|(_, s)| s.last)
+            .map(|(id, _)| *id)
+    }
+}
+impl Browser {
+    pub fn showings(&self) -> Result<Showings> {
+        let mut stmt = self.connection.prepare(
+            "WITH RECURSIVE open(id) AS (
+            SELECT root_id FROM tree_state WHERE place='tab'
+            UNION ALL SELECT v.id FROM visits v JOIN open o ON v.parent_id=o.id)
+            SELECT e.visit_id, SUM(e.kind<>'reload'), MAX(e.id)
+            FROM open o JOIN visit_events e ON e.visit_id=o.id GROUP BY e.visit_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, u32>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        let mut pages = std::collections::HashMap::new();
+        for row in rows {
+            let (id, times, last) = row?;
+            pages.insert(
+                id.parse()?,
+                Shown {
+                    times,
+                    last: LogOrder(last),
+                },
+            );
+        }
+        Ok(Showings { pages })
+    }
+}

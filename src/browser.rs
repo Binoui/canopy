@@ -5,7 +5,7 @@ mod bookmarks;
 mod history;
 mod page_scale;
 pub use bookmarks::{Bookmark, BookmarkId, BookmarkToggle, ImportedBookmark};
-pub use history::{Arrival, ArrivalKind};
+pub use history::{Arrival, ArrivalKind, LogOrder, Showings};
 pub use page_scale::PageScale;
 use std::{
     collections::HashSet,
@@ -1775,6 +1775,110 @@ mod tests {
             tx.commit().unwrap();
         }
         connection
+    }
+
+    fn recent_pages_oracle(
+        b: &Browser,
+        forest: &crate::forest::ForestProjection,
+        limit: usize,
+    ) -> Vec<VisitId> {
+        let Some(current) = forest.current() else {
+            return vec![];
+        };
+        let Some(tree) = forest.tree_of(current) else {
+            return vec![];
+        };
+        let opened = |id| {
+            forest
+                .visit(id)
+                .is_some_and(|v| v.state == VisitState::Opened)
+        };
+        let root = tree.root();
+        let total = forest.opened_descendant_count(root) + usize::from(opened(root));
+        let mut seen = std::collections::HashSet::new();
+        let mut out = vec![];
+        let mut stmt = b
+            .connection
+            .prepare("SELECT visit_id FROM visit_events ORDER BY id DESC")
+            .unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        while out.len() < limit && seen.len() < total {
+            let Some(row) = rows.next().unwrap() else {
+                break;
+            };
+            let id: VisitId = row.get::<_, String>(0).unwrap().parse().unwrap();
+            if forest.tree_of(id) != Some(tree) || !opened(id) || !seen.insert(id) {
+                continue;
+            }
+            if id != current && !forest.is_settled(id) {
+                out.push(id);
+            }
+        }
+        out
+    }
+    #[test]
+    fn showings_count_new_and_return_rows_not_reloads() {
+        let mut b = memory();
+        let root = follow(&mut b, "root", NavigationTarget::Root);
+        let child = follow_child(&mut b, "child");
+        let load = b.restore(root).unwrap();
+        b.started(load.clone()).unwrap();
+        b.committed(load).unwrap();
+        let load = b.reload().unwrap().unwrap();
+        b.started(load.clone()).unwrap();
+        b.committed(load).unwrap();
+        let shown = b.showings().unwrap();
+        assert_eq!(shown.times(root), 2);
+        assert_eq!(shown.times(child), 1);
+        assert!(shown.last_shown(root) > shown.last_shown(child));
+    }
+    #[test]
+    fn previous_follows_the_recent_pages_rule_also_while_loading() {
+        let mut b = memory();
+        let root = follow(&mut b, "hub", NavigationTarget::Root);
+        let a = follow_child(&mut b, "a");
+        let hidden = follow_child(&mut b, "put-away");
+        let load = b.restore(a).unwrap();
+        b.started(load.clone()).unwrap();
+        b.committed(load).unwrap();
+        b.settle_branch(hidden).unwrap();
+        let c = follow_child(&mut b, "c");
+        let other = follow(&mut b, "other", NavigationTarget::Root);
+        let load = b.restore(c).unwrap();
+        b.started(load.clone()).unwrap();
+        b.committed(load).unwrap();
+        b.connection
+            .execute("UPDATE visit_events SET at=1", [])
+            .unwrap();
+        let mut forest = crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap();
+        let shown = b.showings().unwrap();
+        assert_eq!(shown.previous(&forest), Some(a));
+        assert_eq!(shown.recent(&forest), recent_pages_oracle(&b, &forest, 100));
+        assert!(!shown.recent(&forest).contains(&hidden));
+        assert!(!shown.recent(&forest).contains(&other));
+        let loading = b.restore(root).unwrap();
+        b.started(loading).unwrap();
+        forest.show_current(root);
+        assert_eq!(shown.previous(&forest), Some(c));
+        assert_eq!(
+            shown.previous(&forest),
+            recent_pages_oracle(&b, &forest, 1).first().copied()
+        );
+    }
+    #[test]
+    fn showings_leave_out_trees_that_are_not_tabs() {
+        let mut b = memory();
+        let root = follow(&mut b, "root", NavigationTarget::Root);
+        follow(&mut b, "other", NavigationTarget::Root);
+        b.place_tree(TreeId(root), Move::Shelf(Slot::First))
+            .unwrap();
+        assert_eq!(b.showings().unwrap().times(root), 0);
+        b.place_tree(TreeId(root), Move::History).unwrap();
+        assert_eq!(b.showings().unwrap().last_shown(root), None);
     }
 
     #[test]

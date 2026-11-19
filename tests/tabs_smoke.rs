@@ -493,14 +493,20 @@ fn tab_reorder(ui: std::rc::Rc<Ui>, data: &std::path::Path) -> Result<std::rc::R
         pump(200);
     }
     expected = stored_tabs(data)?;
-    ui.window.resize(480, 800);
+    ui.window.resize(520, 800);
     key("ctrl+8")?;
     pump(400);
     let visible: Vec<String> = serde_json::from_value(chrome(
         &ui,
         "[...document.querySelectorAll('#tab-row .tab:not([hidden])')].map(t => t.dataset.id)",
     )?)?;
-    assert!(visible.len() >= 2 && visible.len() < expected.len());
+    assert!(
+        visible.len() >= 2 && visible.len() < expected.len(),
+        "overflow drag at {}px has {} visible tabs out of {}",
+        ui.window.allocation().width(),
+        visible.len(),
+        expected.len()
+    );
     let source = visible.last().unwrap();
     let target = &visible[0];
     let from = expected.iter().position(|id| id == source).unwrap();

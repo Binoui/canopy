@@ -236,12 +236,13 @@ fn main() -> Result<()> {
             )? == true
         );
         chrome(&ui, "(canopy.toggleForest(), true)")?;
-        wait("forest waiting count", || visible(&ui, ".tree-card .count"))?;
-        assert_eq!(
-            text(&ui, ".tree-card[aria-current=true] .count"),
-            waiting(&ui)?.len().to_string()
-        );
-        assert!(visible(&ui, ".tree-card[aria-current=true] .mt-node.last"));
+        wait("Canopy waiting marks", || {
+            visible(&ui, "#forest-canopy [data-st=waiting]")
+        })?;
+        assert!(visible(
+            &ui,
+            "#forest-canopy [data-current=true][data-page]"
+        ));
         chrome(&ui, "(canopy.toggleForest(), true)")?;
         assert_eq!(text(&ui, "#popover .next .menu-detail"), "loaded");
         shots(&ui, &format!("{theme}-loaded"))?;

@@ -113,6 +113,7 @@ fn main() -> Result<()> {
         .unwrap_or(400);
     for i in 0..7 {
         let frame = ChromeFrame {
+            shown: b.showings()?,
             mail: canopy::mail::Mail::default(),
             forest: ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)?,
             bookmarks: b.bookmarks()?,
