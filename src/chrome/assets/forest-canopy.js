@@ -33,6 +33,22 @@ function witnessAt(at, focused = false) {
   const page=retained && item.pages?.includes(retained) ? retained : item.anchorPage ?? item.go;
   return { page, fraction:[(at[0]+view.left-r.left)/r.width,(at[1]+view.top-r.top)/r.height], at };
 }
+// Over empty space the world point holds while the layout stays, but a new zoom level
+// lays the map out again, so the nearest page keeps its screen offset from the pointer.
+function nearestPage(at) {
+  let best=null;
+  for (const node of mapView.nodes.values()) {
+    const item=canopyValue().items[+node.el.dataset.index];
+    if (!item?.go || !item.pages?.length) continue;
+    const p=screenOf(node), d=Math.hypot(p[0]-at[0],p[1]-at[1]);
+    if (!best || d<best.d) best={d,page:item.anchorPage ?? item.go,off:[at[0]-p[0],at[1]-p[1]]};
+  }
+  return best && {page:best.page,off:best.off};
+}
+function nodeOfPage(page) {
+  const item = canopyValue().items.find(i => i.pages?.includes(page));
+  return item && mapView.nodes.get(item.k);
+}
 function witnessScreen(witness) {
   if (!witness?.page) return witness;
   const item = canopyValue().items.find(i => i.pages?.includes(witness.page));
@@ -41,8 +57,13 @@ function witnessScreen(witness) {
   const center = screenOf(node), r = node.el.getBoundingClientRect();
   return { ...witness, at:[center[0]+(witness.fraction[0]-.5)*r.width,center[1]+(witness.fraction[1]-.5)*r.height] };
 }
-function reanchor(witness) {
+function reanchor(witness, relaid = false) {
   if (!witness) return;
+  const near = relaid && witness.near && nodeOfPage(witness.near.page);
+  if (near) {
+    mapView.pan = witness.at.map((p,i) => p-witness.near.off[i]-(i ? near.y : near.x)*scaleNow());
+    return;
+  }
   if (witness.world) {
     mapView.pan = witness.at.map((p,i) => p-witness.world[i]*scaleNow());
     return;
@@ -83,7 +104,7 @@ function renderCanopy(value) {
   if (!tipNode) hideTip();
   else if (!$('canopy-tip').hidden) $('canopy-tip').textContent=value.items[+tipNode.el.dataset.index].tip;
   if (changedLayout) { mapView.pan=[...value.place.pan]; mapView.witness=null; }
-  else reanchor(witness);
+  else reanchor(witness, true);
   applyTransform();
   if (active && (!active.isConnected || active.dataset.key !== mapView.focus)) canopyFocus()?.focus({preventScroll:true});
   if (changedLayout) { focusItem(homeKey(value)); hideTip(); }
@@ -158,6 +179,7 @@ function zoomAround(at,k,focused=false) {
   mapView.k=next;
   reanchor(witness);
   applyTransform();
+  if (witness.world) witness.near=nearestPage(at);
   mapView.witness=witness;
   const want=levelOf(next);
   // A reversal to the still-drawn level must supersede an outstanding request too.
