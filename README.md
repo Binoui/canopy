@@ -70,6 +70,7 @@ Good to know:
 - Close Canopy and start it again: the trees and the page you were on are kept.
 - Your data lives in `~/.local/share/canopy`. To try Canopy without touching it, run `cargo run --locked -- --data-dir .data`.
 - `canopy --import-chrome` brings your Chrome history, bookmarks, cookies and saved passwords ([how it works](docs/guide.md#bring-your-chrome-history)).
+- `canopy session` prints the open trees and the page on screen, so coding agents can see what you are reading ([details](docs/guide.md#let-agents-see-what-is-open)).
 - If the window does not start, or video plays green on an NVIDIA card, see [Sandbox and video](docs/guide.md#sandbox-and-video).
 
 ## What it is

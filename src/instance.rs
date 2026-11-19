@@ -1,6 +1,7 @@
 //! One Canopy per data directory. The process holding `instance.lock` owns the profile and
 //! listens on `instance.sock`; any later launch on that directory hands its request over
 //! and exits. The kernel drops the lock when its holder dies, so a crash never blocks a start.
+//! The same socket answers questions about the running window, such as `canopy session`.
 
 use std::{
     fs::{File, OpenOptions, TryLockError},
@@ -32,6 +33,49 @@ pub struct Request {
     pub urls: Vec<Url>,
     /// The launching app's startup-notification or activation token, so focus can move.
     pub activation: Option<String>,
+}
+
+/// A question for the running Canopy, answered later through a [`Reply`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Question {
+    /// The trees and pages on screen, and with `text` the shown page's visible text.
+    Session { text: bool },
+}
+
+impl Question {
+    fn encode(self) -> Vec<u8> {
+        match self {
+            Self::Session { text } => json!({ "query": "session", "text": text }),
+        }
+        .to_string()
+        .into_bytes()
+    }
+
+    fn decode(value: &Value) -> Option<Result<Self>> {
+        let query = value.get("query")?;
+        Some(match query.as_str() {
+            Some("session") => Ok(Self::Session {
+                text: value["text"].as_bool().unwrap_or(false),
+            }),
+            _ => Err(anyhow!("Unknown question: {query}.")),
+        })
+    }
+}
+
+/// The way back to the process that asked a [`Question`]. Dropping it unsent closes the
+/// connection, which the asker reports as no answer.
+pub struct Reply(UnixStream);
+
+impl Reply {
+    /// Sends `answer`, or the error in its place, as one JSON object.
+    pub fn send(mut self, answer: Result<Value>) {
+        let body = match answer {
+            Ok(value) => json!({ "answer": value }),
+            Err(error) => json!({ "error": format!("{error:#}") }),
+        };
+        // The asker may have given up; nothing else is waiting on this connection.
+        let _ = self.0.write_all(body.to_string().as_bytes());
+    }
 }
 
 pub enum Launch {
@@ -155,9 +199,54 @@ fn forward(mut stream: UnixStream, request: &Request) -> Result<()> {
     );
 }
 
+/// Asks the Canopy running on `data_dir`. Never starts one.
+pub fn ask(data_dir: &Path, question: Question) -> Result<Value> {
+    let Ok(directory) = File::open(data_dir) else {
+        bail!("Canopy is not running on {}.", data_dir.display())
+    };
+    let socket_path = PathBuf::from(format!(
+        "/proc/self/fd/{}/instance.sock",
+        directory.as_raw_fd()
+    ));
+    let mut stream = match UnixStream::connect(&socket_path) {
+        Ok(stream) => stream,
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            bail!("Canopy is not running on {}.", data_dir.display())
+        }
+        Err(error) => return Err(error).context("Could not reach Canopy."),
+    };
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    stream.write_all(&question.encode())?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+    let mut reply = Vec::new();
+    stream
+        .read_to_end(&mut reply)
+        .context("Canopy did not answer.")?;
+    if reply.is_empty() {
+        bail!("Canopy did not answer. A Canopy started before this version cannot; restart it.");
+    }
+    let mut reply: Value =
+        serde_json::from_slice(&reply).context("Canopy answered something unreadable.")?;
+    if let Some(error) = reply["error"].as_str() {
+        bail!("{error}");
+    }
+    Ok(reply["answer"].take())
+}
+
 impl Primary {
-    /// Hands every waiting launch's request to `open`, then tells that launch how it went.
-    pub fn answer(&self, mut open: impl FnMut(Request) -> Result<()>) -> Result<()> {
+    /// Hands every waiting launch's request to `open`, then tells that launch how it went,
+    /// and every waiting question to `ask` with the way to answer it.
+    pub fn answer(
+        &self,
+        mut open: impl FnMut(Request) -> Result<()>,
+        mut ask: impl FnMut(Question, Reply),
+    ) -> Result<()> {
         loop {
             let mut stream = match self.listener.accept() {
                 Ok((stream, _)) => stream,
@@ -169,6 +258,20 @@ impl Primary {
             stream.set_write_timeout(Some(Duration::from_secs(2)))?;
             let mut bytes = Vec::new();
             (&mut stream).take(MAX_REQUEST).read_to_end(&mut bytes)?;
+            let question = serde_json::from_slice::<Value>(&bytes)
+                .ok()
+                .and_then(|value| Question::decode(&value));
+            match question {
+                Some(Ok(question)) => {
+                    ask(question, Reply(stream));
+                    continue;
+                }
+                Some(Err(error)) => {
+                    Reply(stream).send(Err(error));
+                    continue;
+                }
+                None => {}
+            }
             let request = Request::decode(&bytes)
                 .map_err(|error| anyhow!("Ignored a launch request. {error}"))?;
             match open(request) {
@@ -216,7 +319,9 @@ mod tests {
         let (path, sent) = (path.to_owned(), sent.clone());
         let second = thread::spawn(move || launch(&path, &sent));
         while !second.is_finished() {
-            first.answer(&mut open).unwrap();
+            first
+                .answer(&mut open, |_, _| panic!("no question"))
+                .unwrap();
             thread::sleep(Duration::from_millis(5));
         }
         second.join().unwrap()
@@ -285,7 +390,78 @@ mod tests {
         assert!(dir.path().join("instance.sock").exists());
         assert!(dir.path().join("instance.lock").exists());
         let next = primary(launch(dir.path(), &request(&["a"])).unwrap());
-        next.answer(|_| panic!("nothing was forwarded")).unwrap();
+        next.answer(
+            |_| panic!("nothing was forwarded"),
+            |_, _| panic!("nothing was asked"),
+        )
+        .unwrap();
+    }
+
+    /// Asks `question` on `path` from another thread while `first` answers with `respond`.
+    fn ask_from_another_process(
+        first: &Primary,
+        path: &Path,
+        question: Question,
+        mut respond: impl FnMut(Question, Reply),
+    ) -> Result<Value> {
+        let path = path.to_owned();
+        let asker = thread::spawn(move || ask(&path, question));
+        while !asker.is_finished() {
+            first
+                .answer(|_| panic!("nothing was opened"), &mut respond)
+                .unwrap();
+            thread::sleep(Duration::from_millis(5));
+        }
+        asker.join().unwrap()
+    }
+
+    #[test]
+    fn a_question_reaches_the_running_canopy_and_its_answer_comes_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = primary(launch(dir.path(), &Request::default()).unwrap());
+        let mut asked = Vec::new();
+        let answer = ask_from_another_process(
+            &first,
+            dir.path(),
+            Question::Session { text: true },
+            |question, reply| {
+                asked.push(question);
+                reply.send(Ok(json!({ "tabs": [] })));
+            },
+        )
+        .unwrap();
+        assert_eq!(asked, [Question::Session { text: true }]);
+        assert_eq!(answer, json!({ "tabs": [] }));
+        let error = ask_from_another_process(
+            &first,
+            dir.path(),
+            Question::Session { text: false },
+            |_, reply| reply.send(Err(anyhow!("no page is shown"))),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("no page is shown"), "{error}");
+        let error = ask_from_another_process(
+            &first,
+            dir.path(),
+            Question::Session { text: false },
+            |_, reply| drop(reply),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("did not answer"), "{error}");
+    }
+
+    #[test]
+    fn asking_never_starts_a_canopy() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = ask(dir.path(), Question::Session { text: false }).unwrap_err();
+        assert!(error.to_string().contains("not running"), "{error}");
+        assert!(!dir.path().join("instance.lock").exists());
+        drop(primary(launch(dir.path(), &Request::default()).unwrap()));
+        let error = ask(dir.path(), Question::Session { text: false }).unwrap_err();
+        assert!(error.to_string().contains("not running"), "{error}");
+        let missing = dir.path().join("missing");
+        assert!(ask(&missing, Question::Session { text: false }).is_err());
+        assert!(!missing.exists());
     }
 
     #[test]
@@ -299,5 +475,12 @@ mod tests {
         ] {
             assert!(Request::decode(bytes).is_err());
         }
+        let question = Question::Session { text: true };
+        let value: Value = serde_json::from_slice(&question.encode()).unwrap();
+        assert_eq!(Question::decode(&value).unwrap().unwrap(), question);
+        assert!(Question::decode(&json!({ "query": "cookies" }))
+            .unwrap()
+            .is_err());
+        assert!(Question::decode(&json!({ "urls": [] })).is_none());
     }
 }

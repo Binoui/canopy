@@ -307,6 +307,33 @@ impl Ui {
         self.pages.open_roots(urls)
     }
 
+    /// Answers `canopy session`: the open trees as the window shows them, and with `text`
+    /// the shown page's visible text, which is read from the page and so arrives later.
+    pub fn answer_session(&self, text: bool, reply: crate::instance::Reply) {
+        let session = self.pages.read(|browser| {
+            let forest =
+                ForestProjection::from_snapshot(browser.snapshot()?, browser.tree_states()?)?;
+            Ok::<_, anyhow::Error>(crate::session::describe(&crate::session::Seen {
+                forest: &forest,
+                live: &self.pages.hidden_visits(),
+                loaded: &self.pages.loaded_visits(),
+                pending: self.pages.pending_target().as_ref(),
+                loading: self.pages.selected_loading(),
+            }))
+        });
+        let mut session = match session {
+            Ok(session) if text && !session["shown"].is_null() => session,
+            other => return reply.send(other),
+        };
+        self.pages.selected_text(200_000, move |text| {
+            match text {
+                Ok(text) => session["text"] = text.into(),
+                Err(error) => session["text_error"] = format!("{error:#}").into(),
+            }
+            reply.send(Ok(session));
+        });
+    }
+
     /// Raises the window, using the launching app's activation token when it passed one.
     pub fn bring_forward(&self, activation: Option<&str>) {
         if let Some(token) = activation {
