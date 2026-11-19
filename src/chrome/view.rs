@@ -1003,6 +1003,7 @@ mod tests {
         )
         .unwrap();
         let frame = ChromeFrame {
+            shown: Default::default(),
             mail: crate::mail::Mail::default(),
             forest,
             loaded: Default::default(),
