@@ -2234,6 +2234,29 @@ impl Pages {
     pub fn decline(&self, key: &crate::suggest::SuggestionKey) -> Result<()> {
         self.browser.borrow_mut().decline(key)
     }
+    pub fn move_tree(&self, tree: TreeId, to_index: usize) -> Result<()> {
+        self.browser.borrow_mut().move_tree(tree, to_index)
+    }
+
+    pub fn move_current_tree(&self, next: bool) -> Result<()> {
+        let mut browser = self.browser.borrow_mut();
+        let forest = ForestProjection::from_snapshot(browser.snapshot()?, browser.tree_states()?)?;
+        let Some(tree) = forest.current().and_then(|id| forest.tree_of(id)) else {
+            return Ok(());
+        };
+        let Some(index) = forest.open().iter().position(|t| t.id == tree) else {
+            return Ok(());
+        };
+        browser.move_tree(
+            tree,
+            if next {
+                index + 1
+            } else {
+                index.saturating_sub(1)
+            },
+        )
+    }
+
     pub fn set_pinned(&self, tree: TreeId, pinned: bool) -> Result<()> {
         self.browser.borrow_mut().set_pinned(tree, pinned)
     }

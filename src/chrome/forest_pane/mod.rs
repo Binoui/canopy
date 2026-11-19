@@ -391,7 +391,9 @@ mod tests {
                 last_event_at: Some(t as i64 * 86_400_000),
                 name: Some(format!("Tree {t}")),
                 lifecycle: if t == 0 {
-                    Lifecycle::Open
+                    Lifecycle::Open {
+                        tab: crate::browser::TabOrder::new(0),
+                    }
                 } else {
                     Lifecycle::Settled { since: 0 }
                 },

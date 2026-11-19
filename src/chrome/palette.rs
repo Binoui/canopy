@@ -218,7 +218,9 @@ mod tests {
             vec![TreeState {
                 pin: None,
                 last_event_at: None,
-                lifecycle: crate::browser::Lifecycle::Open,
+                lifecycle: crate::browser::Lifecycle::Open {
+                    tab: crate::browser::TabOrder::new(0),
+                },
                 root: TreeId(root),
                 last_visit: root,
                 name: None,

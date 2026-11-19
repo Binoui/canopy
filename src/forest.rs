@@ -167,8 +167,8 @@ impl ForestProjection {
             }
         }
         trees.sort_by_key(|tree| match tree.lifecycle {
-            Lifecycle::Open => (0, 0),
-            Lifecycle::Settled { since } => (1, -since),
+            Lifecycle::Open { tab } => (0, tab.index() as i128),
+            Lifecycle::Settled { since } => (1, -i128::from(since)),
         });
         let open = trees.partition_point(|tree| tree.lifecycle.is_open());
         Ok(Self {
@@ -334,7 +334,9 @@ mod tests {
                 lifecycle: match i {
                     1 => Lifecycle::Settled { since: 10 },
                     3 => Lifecycle::Settled { since: 20 },
-                    _ => Lifecycle::Open,
+                    _ => Lifecycle::Open {
+                        tab: crate::browser::TabOrder::new(0),
+                    },
                 },
             })
             .collect();
@@ -383,7 +385,9 @@ mod tests {
             vec![TreeState {
                 pin: None,
                 last_event_at: None,
-                lifecycle: crate::browser::Lifecycle::Open,
+                lifecycle: crate::browser::Lifecycle::Open {
+                    tab: crate::browser::TabOrder::new(0),
+                },
                 root: TreeId(root_id),
                 last_visit: leaf,
                 name: None,
@@ -413,7 +417,9 @@ mod tests {
             states.push(TreeState {
                 pin: None,
                 last_event_at: None,
-                lifecycle: crate::browser::Lifecycle::Open,
+                lifecycle: crate::browser::Lifecycle::Open {
+                    tab: crate::browser::TabOrder::new(0),
+                },
                 root: TreeId(root_id),
                 last_visit: root_id,
                 name: None,
@@ -454,7 +460,9 @@ mod tests {
         let state = TreeState {
             pin: None,
             last_event_at: None,
-            lifecycle: crate::browser::Lifecycle::Open,
+            lifecycle: crate::browser::Lifecycle::Open {
+                tab: crate::browser::TabOrder::new(0),
+            },
             root: TreeId(root.id),
             last_visit: root.id,
             name: None,
@@ -474,7 +482,9 @@ mod tests {
             vec![TreeState {
                 pin: None,
                 last_event_at: None,
-                lifecycle: crate::browser::Lifecycle::Open,
+                lifecycle: crate::browser::Lifecycle::Open {
+                    tab: crate::browser::TabOrder::new(0)
+                },
                 last_visit: child.id,
                 ..state.clone()
             }]

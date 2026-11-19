@@ -11,6 +11,7 @@ mod http;
 use common::*;
 
 fn main() -> Result<()> {
+    let _runtime = private_runtime()?;
     let directory = tempfile::tempdir()?;
     start(directory.path())?;
     let data = std::env::var_os("CANOPY_TAB_FIXTURE")
@@ -81,6 +82,7 @@ fn main() -> Result<()> {
     wait("sixteen tabs", || {
         chrome(&ui, "document.querySelectorAll('#tab-row .tab').length").is_ok_and(|v| v == 16)
     })?;
+    let ui = tab_reorder(ui, &data)?;
     settle(&ui)?;
     assert_eq!(chrome(&ui, "(() => { const el = document.getElementById('memory-dot'); const r = el.getBoundingClientRect(); return [-11, 11].every(dx => [-11, 11].every(dy => el.contains(document.elementFromPoint(r.x+r.width/2+dx, r.y+r.height/2+dy)))) })()")?, true);
     assert_eq!(chrome(&ui, "[...document.querySelectorAll('.tab:not([hidden]):not(.icon-only) .tab-settle')].every(el => el.offsetWidth >= 24 && el.offsetHeight >= 24)")?, true);
@@ -325,4 +327,150 @@ fn review_regressions(ui: &Ui) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn stored_tabs(data: &std::path::Path) -> Result<Vec<String>> {
+    let db = rusqlite::Connection::open_with_flags(
+        data.join("forest.sqlite3"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let tabs = db
+        .prepare("SELECT root_id FROM tree_state WHERE settled_at IS NULL ORDER BY tab_order")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(tabs)
+}
+
+fn tab_ids(ui: &Ui) -> Result<Vec<String>> {
+    Ok(serde_json::from_value(chrome(
+        ui,
+        "S.frame.tabs.map(t => t.id)",
+    )?)?)
+}
+
+fn native_drag(ui: &Ui, source: &str, end: (i32, i32), on_row: bool) -> Result<()> {
+    let start = chrome_point(ui, &format!(".tab[data-id='{source}'] .mk"))?;
+    move_to(start.0, start.1)?;
+    pump(150);
+    xdo(&["mousedown", "1"])?;
+    pump(200);
+    for step in 1..=25 {
+        move_to(
+            start.0 + (end.0 - start.0) * step / 25,
+            start.1 + (end.1 - start.1) * step / 25,
+        )?;
+        pump(60);
+    }
+    pump(200);
+    let indicator = chrome(
+        ui,
+        "document.getElementById('tab-row').classList.contains('drop-target')",
+    )?;
+    let dimmed = chrome(ui, "!!document.querySelector('.tab.dragging')")?;
+    xdo(&["mouseup", "1"])?;
+    assert_eq!(indicator, on_row, "drop indicator follows the native drag");
+    assert_eq!(dimmed, true, "source stays dimmed during the native drag");
+    pump(400);
+    assert_eq!(chrome(ui, "!!document.querySelector('.tab.dragging') || document.getElementById('tab-row').classList.contains('drop-target')")?, false);
+    Ok(())
+}
+
+fn tab_reorder(ui: std::rc::Rc<Ui>, data: &std::path::Path) -> Result<std::rc::Rc<Ui>> {
+    ui.window.resize(1240, 800);
+    key("ctrl+1")?;
+    pump(400);
+    let original = tab_ids(&ui)?;
+    key("ctrl+shift+Page_Up")?;
+    assert_eq!(stored_tabs(data)?, original);
+    let outside = page_point(&ui, 400, 400)?;
+    native_drag(&ui, &original[0], outside, false)?;
+    assert_eq!(
+        stored_tabs(data)?,
+        original,
+        "a drop on the page cannot reorder"
+    );
+    let (x, y, _, h) = rect(&ui, &format!(".tab[data-id='{}']", original[3]))?;
+    let gap = screen_point(
+        &ui,
+        &ui.chrome.native(),
+        (x - 1.) as i32,
+        (y + h / 2.) as i32,
+    )?;
+    native_drag(&ui, &original[0], gap, true)?;
+    let mut expected = original.clone();
+    let moved = expected.remove(0);
+    expected.insert(2, moved);
+    wait("native drop reordered the strip", || {
+        tab_ids(&ui).is_ok_and(|tabs| tabs == expected)
+    })?;
+    assert_eq!(stored_tabs(data)?, expected);
+    assert_eq!(
+        chrome(
+            &ui,
+            "document.querySelector('.tab[aria-selected=true]').dataset.id"
+        )?,
+        original[0]
+    );
+    key("ctrl+shift+Page_Up")?;
+    expected.swap(1, 2);
+    wait("keyboard move left", || {
+        stored_tabs(data).is_ok_and(|tabs| tabs == expected)
+    })?;
+    key("ctrl+shift+Page_Down")?;
+    expected.swap(1, 2);
+    wait("keyboard move right", || {
+        stored_tabs(data).is_ok_and(|tabs| tabs == expected)
+    })?;
+    println!("PASS native drag reorders, preserves selection and shows an indicator; page drops do nothing; keyboard moves use the stored order.");
+
+    ui.window.resize(480, 800);
+    key("ctrl+8")?;
+    pump(400);
+    let visible: Vec<String> = serde_json::from_value(chrome(
+        &ui,
+        "[...document.querySelectorAll('#tab-row .tab:not([hidden])')].map(t => t.dataset.id)",
+    )?)?;
+    assert!(visible.len() >= 2 && visible.len() < expected.len());
+    let source = visible.last().unwrap();
+    let target = &visible[0];
+    let from = expected.iter().position(|id| id == source).unwrap();
+    let to = expected.iter().position(|id| id == target).unwrap();
+    let active = chrome(
+        &ui,
+        "document.querySelector('.tab[aria-selected=true]').dataset.id",
+    )?;
+    let (x, y, _, h) = rect(&ui, &format!(".tab[data-id='{target}']"))?;
+    let gap = screen_point(
+        &ui,
+        &ui.chrome.native(),
+        (x + 2.) as i32,
+        (y + h / 2.) as i32,
+    )?;
+    native_drag(&ui, source, gap, true)?;
+    let moved = expected.remove(from);
+    expected.insert(to, moved);
+    wait("overflow drag uses full indexes", || {
+        tab_ids(&ui).is_ok_and(|tabs| tabs == expected)
+    })?;
+    assert_eq!(stored_tabs(data)?, expected);
+    assert_eq!(
+        chrome(
+            &ui,
+            "document.querySelector('.tab[aria-selected=true]').dataset.id"
+        )?,
+        active
+    );
+    println!("PASS dragging visible tabs with overflow preserves the hidden tabs' order and the active tree.");
+    ui.window.close();
+    drop(ui);
+    pump(200);
+    let ui = Ui::new(data)?;
+    ui.window.show_all();
+    ready(&ui)?;
+    wait("restarted strip keeps tab order", || {
+        tab_ids(&ui).is_ok_and(|tabs| tabs == expected)
+    })?;
+    assert_eq!(stored_tabs(data)?, expected);
+    println!("PASS stored tab order survives closing and reopening the UI.");
+    Ok(ui)
 }

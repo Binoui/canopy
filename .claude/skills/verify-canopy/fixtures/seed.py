@@ -40,8 +40,8 @@ def page(parent, host, title, queued=False, step=40_000):
 
 
 def tree(root, last, name=None, settled=False, pin=None):
-    db.execute('INSERT INTO tree_state(root_id,last_visit_id,name,settled_at,pin_order) VALUES(?,?,?,?,?)',
-               (root, last, name, clock[0] if settled else None, pin))
+    db.execute('INSERT INTO tree_state(root_id,last_visit_id,name,settled_at,pin_order,tab_order) VALUES(?,?,?,?,?,?)',
+               (root, last, name, clock[0] if settled else None, pin, None if settled else len(trees)))
     trees.append((root, last))
 
 

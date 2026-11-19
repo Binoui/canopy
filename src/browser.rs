@@ -68,7 +68,9 @@ pub struct ImportedPage {
 /// Whether a tree has a tab. A settled tree keeps every page and reopens when one is visited.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Lifecycle {
-    Open,
+    Open {
+        tab: TabOrder,
+    },
     /// `since` is in ms and orders the settled trees, newest first.
     Settled {
         since: i64,
@@ -77,7 +79,20 @@ pub enum Lifecycle {
 
 impl Lifecycle {
     pub fn is_open(self) -> bool {
-        matches!(self, Self::Open)
+        matches!(self, Self::Open { .. })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct TabOrder(usize);
+
+impl TabOrder {
+    pub fn new(index: usize) -> Self {
+        Self(index)
+    }
+
+    pub fn index(self) -> usize {
+        self.0
     }
 }
 
@@ -318,7 +333,7 @@ impl Browser {
              INSERT OR IGNORE INTO session(singleton, current_id) VALUES(1, NULL);",
         )?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version > 14 {
+        if version > 15 {
             bail!("This database comes from a newer version of Canopy.");
         }
         if version == 0 {
@@ -524,6 +539,18 @@ impl Browser {
             tx.execute_batch("ALTER TABLE session ADD COLUMN trees_help INTEGER NOT NULL DEFAULT 1; PRAGMA user_version=14;")?;
             tx.commit()?;
         }
+        if version < 15 {
+            let tx = connection.transaction()?;
+            tx.execute_batch(
+                "ALTER TABLE tree_state ADD COLUMN tab_order INTEGER CHECK(tab_order >= 0);
+                 WITH positions AS (
+                     SELECT t.root_id, ROW_NUMBER() OVER (ORDER BY r.created_at, r.rowid) - 1 AS position
+                     FROM tree_state t JOIN visits r ON r.id=t.root_id WHERE t.settled_at IS NULL
+                 ) UPDATE tree_state SET tab_order=(SELECT position FROM positions WHERE positions.root_id=tree_state.root_id);
+                 PRAGMA user_version=15;",
+            )?;
+            tx.commit()?;
+        }
         Ok(Self { connection })
     }
 
@@ -657,7 +684,7 @@ impl Browser {
     GROUP BY m.root_id
 )
 SELECT t.root_id, t.last_visit_id, t.name, t.settled_at, t.pin_order,
-       a.latest_event_at
+       a.latest_event_at, t.tab_order
 FROM tree_state t
 JOIN visits r ON r.id=t.root_id
 LEFT JOIN activity a ON a.root_id=t.root_id
@@ -675,12 +702,44 @@ ORDER BY r.created_at, r.rowid",
                 root: TreeId(row.get::<_, String>(0)?.parse()?),
                 last_visit: row.get::<_, String>(1)?.parse()?,
                 name: row.get(2)?,
-                lifecycle: row
-                    .get::<_, Option<i64>>(3)?
-                    .map_or(Lifecycle::Open, |since| Lifecycle::Settled { since }),
+                lifecycle: match row.get::<_, Option<i64>>(3)? {
+                    Some(since) => Lifecycle::Settled { since },
+                    None => Lifecycle::Open {
+                        tab: TabOrder::new(row.get::<_, usize>(6)?),
+                    },
+                },
             });
         }
         Ok(states)
+    }
+
+    /// Moves an open tree to its final zero-based index. An index past the end means last.
+    pub fn move_tree(&mut self, tree: TreeId, to_index: usize) -> Result<()> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut trees = tx
+            .prepare("SELECT root_id FROM tree_state WHERE settled_at IS NULL ORDER BY tab_order")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let from = trees
+            .iter()
+            .position(|id| *id == tree.root().to_string())
+            .context("This tree is not open.")?;
+        let to = to_index.min(trees.len() - 1);
+        if from == to {
+            return Ok(());
+        }
+        let moved = trees.remove(from);
+        trees.insert(to, moved);
+        for (index, id) in trees.iter().enumerate() {
+            tx.execute(
+                "UPDATE tree_state SET tab_order=?2 WHERE root_id=?1 AND tab_order<>?2",
+                params![id, index],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn set_pinned(&mut self, tree: TreeId, pinned: bool) -> Result<()> {
@@ -730,7 +789,7 @@ ORDER BY r.created_at, r.rowid",
         let tx = self.connection.transaction()?;
         let root = tree.0.to_string();
         if tx.execute(
-            "UPDATE tree_state SET settled_at=COALESCE(settled_at, ?2) WHERE root_id=?1",
+            "UPDATE tree_state SET settled_at=COALESCE(settled_at, ?2), tab_order=NULL WHERE root_id=?1",
             params![root, now_ms()?],
         )? == 0
         {
@@ -817,7 +876,9 @@ ORDER BY r.created_at, r.rowid",
             [head.to_string()],
         )?;
         tx.execute(
-            "UPDATE tree_state SET settled_at=NULL WHERE root_id=?1",
+            "UPDATE tree_state SET settled_at=NULL,
+             tab_order=(SELECT COALESCE(MAX(tab_order), -1)+1 FROM tree_state)
+             WHERE root_id=?1 AND settled_at IS NOT NULL",
             [head.to_string()],
         )?;
         tx.commit()?;
@@ -854,7 +915,7 @@ ORDER BY r.created_at, r.rowid",
             params![old.root().to_string(), old_target.to_string()],
         )?;
         tx.execute(
-            "INSERT INTO tree_state(root_id,last_visit_id) VALUES(?1,?2)",
+            "INSERT INTO tree_state(root_id,last_visit_id,tab_order) VALUES(?1,?2,(SELECT COALESCE(MAX(tab_order), -1)+1 FROM tree_state))",
             params![head.to_string(), target.to_string()],
         )?;
         tx.commit()?;
@@ -1038,7 +1099,7 @@ ORDER BY r.created_at, r.rowid",
                 params![id.to_string(), url.as_str(), now_ms()?],
             )?;
             transaction.execute(
-                "INSERT INTO tree_state(root_id, last_visit_id) VALUES (?1, ?1)",
+                "INSERT INTO tree_state(root_id, last_visit_id, tab_order) VALUES (?1, ?1, (SELECT COALESCE(MAX(tab_order), -1)+1 FROM tree_state))",
                 [id.to_string()],
             )?;
             roots.push(id);
@@ -1719,9 +1780,11 @@ fn record_selection(
                 UNION
                 SELECT v.id, v.parent_id FROM visits v JOIN ancestry a ON v.id=a.parent_id
              )
-             INSERT INTO tree_state(root_id, last_visit_id)
-                SELECT id, ?1 FROM ancestry WHERE parent_id IS NULL
-             ON CONFLICT(root_id) DO UPDATE SET last_visit_id=excluded.last_visit_id, settled_at=NULL",
+             INSERT INTO tree_state(root_id, last_visit_id, tab_order)
+                SELECT id, ?1, (SELECT COALESCE(MAX(tab_order), -1)+1 FROM tree_state)
+                FROM ancestry WHERE parent_id IS NULL
+             ON CONFLICT(root_id) DO UPDATE SET last_visit_id=excluded.last_visit_id, settled_at=NULL,
+                tab_order=COALESCE(tree_state.tab_order, excluded.tab_order)",
         [id.to_string()],
     )?;
     Ok(())
@@ -2326,8 +2389,116 @@ mod tests {
             b.connection
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            14
+            15
         );
+    }
+
+    fn tab_roots(b: &Browser) -> Vec<TreeId> {
+        crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap()
+        .open()
+        .iter()
+        .map(|tree| tree.id)
+        .collect()
+    }
+
+    #[test]
+    fn tab_moves_are_idempotent_clamped_atomic_and_persistent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("forest.db");
+        let mut b = TestBrowser::open(&path).unwrap();
+        let roots: Vec<_> = ["a", "b", "c", "d"]
+            .into_iter()
+            .map(|name| TreeId(follow(&mut b, name, NavigationTarget::Root)))
+            .collect();
+        assert_eq!(tab_roots(&b), roots);
+        let current = b.current_id().unwrap();
+        b.move_tree(roots[0], 2).unwrap();
+        assert_eq!(tab_roots(&b), [roots[1], roots[2], roots[0], roots[3]]);
+        assert_eq!(b.current_id().unwrap(), current);
+        let before = b.tree_states().unwrap();
+        b.connection.execute_batch("CREATE TRIGGER reject_move BEFORE UPDATE ON tree_state BEGIN SELECT RAISE(ABORT, 'write'); END;").unwrap();
+        b.move_tree(roots[0], 2).unwrap();
+        assert!(b.move_tree(roots[0], 0).is_err());
+        assert_eq!(b.tree_states().unwrap(), before);
+        b.connection
+            .execute_batch("DROP TRIGGER reject_move")
+            .unwrap();
+        b.move_tree(roots[0], usize::MAX).unwrap();
+        assert_eq!(tab_roots(&b), [roots[1], roots[2], roots[3], roots[0]]);
+        b.move_tree(roots[0], 0).unwrap();
+        assert_eq!(tab_roots(&b), roots);
+        assert!(b.move_tree(TreeId(VisitId(Ulid::new())), 0).is_err());
+        drop(b);
+        assert_eq!(tab_roots(&Browser::open(&path).unwrap()), roots);
+    }
+
+    #[test]
+    fn settled_tabs_lose_their_position_and_every_open_path_appends() {
+        let mut b = memory();
+        let a = TreeId(follow(&mut b, "a", NavigationTarget::Root));
+        let child = follow_child(&mut b, "child");
+        let c = TreeId(follow(&mut b, "c", NavigationTarget::Root));
+        b.settle_tree(a).unwrap();
+        assert!(matches!(
+            b.tree_states().unwrap()[0].lifecycle,
+            Lifecycle::Settled { .. }
+        ));
+        assert!(b.move_tree(a, 0).is_err());
+        assert_eq!(tab_roots(&b), [c]);
+        let request = b.restore(a.root()).unwrap();
+        b.started(request.clone()).unwrap();
+        b.committed(request).unwrap();
+        assert_eq!(tab_roots(&b), [c, a]);
+        b.settle_tree(c).unwrap();
+        b.undo_settle(c.root()).unwrap();
+        assert_eq!(tab_roots(&b), [a, c]);
+        b.undo_settle(a.root()).unwrap();
+        assert_eq!(tab_roots(&b), [a, c]);
+        let added = b.add_roots(&[url("added"), url("another")]).unwrap();
+        let detached = b.move_to_tree(child).unwrap();
+        assert_eq!(
+            tab_roots(&b),
+            [a, c, TreeId(added[0]), TreeId(added[1]), detached]
+        );
+    }
+
+    #[test]
+    fn migration_fifteen_numbers_open_tabs_in_creation_order_with_rowid_ties() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("forest.db");
+        let mut b = TestBrowser::open(&path).unwrap();
+        let a = TreeId(follow(&mut b, "a", NavigationTarget::Root));
+        let c = TreeId(follow(&mut b, "c", NavigationTarget::Root));
+        let d = TreeId(follow(&mut b, "d", NavigationTarget::Root));
+        let e = TreeId(follow(&mut b, "e", NavigationTarget::Root));
+        b.settle_tree(c).unwrap();
+        b.connection
+            .execute(
+                "UPDATE visits SET created_at=1 WHERE id<>?1",
+                [a.root().to_string()],
+            )
+            .unwrap();
+        b.connection
+            .execute_batch("ALTER TABLE tree_state DROP COLUMN tab_order; PRAGMA user_version=14;")
+            .unwrap();
+        drop(b);
+        let b = Browser::open(&path).unwrap();
+        assert_eq!(tab_roots(&b), [d, e, a]);
+        assert!(matches!(
+            b.tree_states()
+                .unwrap()
+                .iter()
+                .find(|t| t.root == c)
+                .unwrap()
+                .lifecycle,
+            Lifecycle::Settled { .. }
+        ));
+        drop(b);
+        assert_eq!(tab_roots(&Browser::open(&path).unwrap()), [d, e, a]);
     }
 
     #[test]
@@ -3899,13 +4070,14 @@ mod tests {
                 .unwrap();
             b.rename_tree(TreeId(root), "Seeded tree").unwrap();
             let snapshot = b.snapshot().unwrap();
+            let states = b.tree_states().unwrap();
             b.connection
                 .execute_batch(
-                    "ALTER TABLE visits DROP COLUMN dismissed_at;
+                    "ALTER TABLE tree_state DROP COLUMN tab_order; ALTER TABLE visits DROP COLUMN dismissed_at;
                 ALTER TABLE visits DROP COLUMN branch_settled_at; DROP TABLE site_page_scale; ALTER TABLE session DROP COLUMN trees_help; PRAGMA user_version=11;",
                 )
                 .unwrap();
-            (snapshot, b.tree_states().unwrap(), events(&b))
+            (snapshot, states, events(&b))
         };
         std::fs::copy(&original, &copy).unwrap();
         let first = TestBrowser::open(&copy).unwrap();
