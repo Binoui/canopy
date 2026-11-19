@@ -56,6 +56,8 @@ pub enum PageEvent {
     OpenBranchPalette { visit: VisitId },
     Login(LoginEvent),
     Find(FindUpdate),
+    // The selected page went fullscreen (a video, say) or came back; the chrome steps aside.
+    Fullscreen(bool),
 }
 
 /// What the selected page reports about signing in.
@@ -311,6 +313,8 @@ pub struct Pages {
     observer: RefCell<Option<Observer>>,
     start: Cell<Option<StartPage>>,
     settle_undo: RefCell<Option<SettleUndo>>,
+    /// The page shown fullscreen: it covers the whole window, chrome included.
+    fullscreen: RefCell<Option<glib::WeakRef<webkit2gtk::WebView>>>,
 }
 
 impl Pages {
@@ -362,6 +366,7 @@ impl Pages {
             observer: RefCell::new(None),
             start: Cell::new(None),
             settle_undo: RefCell::new(None),
+            fullscreen: RefCell::new(None),
         });
         let weak = Rc::downgrade(&pages);
         container.connect_size_allocate(move |container, a| {
@@ -509,6 +514,32 @@ impl Pages {
 
     fn selected_changed(&self) {
         self.publish_loading();
+        // Another page took the window; the fullscreen one cannot keep covering it.
+        let fullscreen = self.fullscreen.borrow().as_ref().map(|w| w.upgrade());
+        if let Some(view) = fullscreen {
+            let selected = self
+                .branches
+                .live
+                .borrow()
+                .as_ref()
+                .map(|p| p.native.clone());
+            if view.is_none() || selected != view {
+                *self.fullscreen.borrow_mut() = None;
+                self.fullscreen_changed(false);
+            }
+            if let Some(view) = view.filter(|v| selected.as_ref() != Some(v)) {
+                view.evaluate_javascript(
+                    "document.exitFullscreen?.().catch(() => {})",
+                    None,
+                    None,
+                    None::<&gio::Cancellable>,
+                    |_| {},
+                );
+                if let Some(window) = self.container.toplevel().and_downcast::<gtk::Window>() {
+                    window.unfullscreen();
+                }
+            }
+        }
         let observer = self.observer.borrow().clone();
         if let Some(observer) = observer {
             observer(PageEvent::Selected);
@@ -2238,15 +2269,48 @@ impl Pages {
             page.focus();
         }
     }
+    fn fullscreen_view(&self) -> Option<webkit2gtk::WebView> {
+        self.fullscreen.borrow().as_ref().and_then(|w| w.upgrade())
+    }
+
+    /// Whether a page covers the window, chrome included.
+    pub fn is_fullscreen(&self) -> bool {
+        self.fullscreen_view().is_some()
+    }
+
+    /// The selected `view` entered fullscreen: it takes the whole window.
+    fn fullscreen_entered(&self, view: &webkit2gtk::WebView) {
+        *self.fullscreen.borrow_mut() = Some(view.downgrade());
+        self.fullscreen_changed(true);
+    }
+
+    /// `view` left fullscreen, or must: it goes back below the chrome.
+    fn fullscreen_left(&self, view: &webkit2gtk::WebView) {
+        if self.fullscreen_view().as_ref() != Some(view) {
+            return;
+        }
+        *self.fullscreen.borrow_mut() = None;
+        self.fullscreen_changed(false);
+    }
+
+    fn fullscreen_changed(&self, on: bool) {
+        let (width, height) = self.viewport.get();
+        self.resize(f64::from(width), f64::from(height));
+        let observer = self.observer.borrow().clone();
+        if let Some(observer) = observer {
+            observer(PageEvent::Fullscreen(on));
+        }
+    }
+
     /// Every view uses the current content rectangle; page churn cannot size the chrome.
     fn place_view(&self, view: &webkit2gtk::WebView) {
         let (width, height) = self.viewport.get();
-        let rect = gtk::Allocation::new(
-            0,
-            CHROME_HEIGHT as i32,
-            width.max(1),
-            (height - CHROME_HEIGHT as i32).max(1),
-        );
+        let top = if self.fullscreen_view().as_ref() == Some(view) {
+            0
+        } else {
+            CHROME_HEIGHT as i32
+        };
+        let rect = gtk::Allocation::new(0, top, width.max(1), (height - top).max(1));
         if view.size_request() != (rect.width(), rect.height()) {
             view.set_size_request(rect.width(), rect.height());
         }

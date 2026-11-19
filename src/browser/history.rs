@@ -1,4 +1,4 @@
-use super::{Browser, TreeId, VisitId};
+use super::{Browser, TreeId, VisitId, VisitState};
 use crate::{address::web_url, forest::ForestProjection, suggest::SuggestionKey};
 use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
@@ -96,6 +96,42 @@ impl Browser {
             }
         }
         Ok(None)
+    }
+
+    /// The current tree's read pages, most recently shown first, for the Ctrl+Tab list.
+    /// The current page and pages in put-away branches are left out.
+    pub fn recent_pages(&self, forest: &ForestProjection, limit: usize) -> Result<Vec<VisitId>> {
+        let Some(current) = forest.current() else {
+            return Ok(Vec::new());
+        };
+        let Some(tree) = forest.tree_of(current) else {
+            return Ok(Vec::new());
+        };
+        let opened = |id: VisitId| {
+            forest
+                .visit(id)
+                .is_some_and(|v| v.state == VisitState::Opened)
+        };
+        let root = tree.root();
+        // Once every read page of the tree has been seen, older events add nothing.
+        let total = forest.opened_descendant_count(root) + usize::from(opened(root));
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        let mut stmt = self
+            .connection
+            .prepare("SELECT visit_id FROM visit_events ORDER BY id DESC")?;
+        let mut rows = stmt.query([])?;
+        while out.len() < limit && seen.len() < total {
+            let Some(row) = rows.next()? else { break };
+            let id: VisitId = row.get::<_, String>(0)?.parse()?;
+            if forest.tree_of(id) != Some(tree) || !opened(id) || !seen.insert(id) {
+                continue;
+            }
+            if id != current && !forest.is_settled(id) {
+                out.push(id);
+            }
+        }
+        Ok(out)
     }
 
     pub fn declined(&self) -> Result<HashSet<SuggestionKey>> {

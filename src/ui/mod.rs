@@ -1,3 +1,4 @@
+mod appearance;
 mod logins;
 mod save_watch;
 
@@ -12,7 +13,9 @@ use gtk::prelude::*;
 use url::Url;
 
 use crate::{
-    browser::{Browser, Download, ImportedPage, SearchHit, Snapshot, VisitId, VisitPreview},
+    browser::{
+        Browser, Download, ImportedPage, SearchHit, Snapshot, ThemeMode, VisitId, VisitPreview,
+    },
     chrome::{
         ChromeFrame, ChromeHost, ChromeIntent, HtmlChrome, PageFile, PaletteScope, PaletteSeed,
         Toast,
@@ -27,7 +30,11 @@ pub struct Ui {
     pub pages: Rc<Pages>,
     pub chrome: HtmlChrome,
     pub mail: Rc<crate::mail::MailWatch>,
+    /// The desktop's light or dark preference, which `Theme: System` follows.
+    desktop: Rc<appearance::Desktop>,
     refresh_scheduled: Cell<bool>,
+    /// The Ctrl+Tab list is open and opens its selected page when Ctrl is released.
+    switching: Cell<bool>,
     /// The pending target the chrome last drew, so a load that starts or ends redraws it.
     shown_pending: RefCell<Option<crate::browser::PendingTarget>>,
     me: Weak<Ui>,
@@ -104,12 +111,22 @@ impl Ui {
                         }
                     }
                 });
+            let desktop = appearance::Desktop::watch({
+                let me = me.clone();
+                move || {
+                    if let Some(ui) = me.upgrade() {
+                        ui.desktop_appearance_changed();
+                    }
+                }
+            });
             Ui {
                 mail,
+                desktop,
                 window,
                 pages,
                 chrome,
                 refresh_scheduled: Cell::new(false),
+                switching: Cell::new(false),
                 shown_pending: RefCell::new(None),
                 me: me.clone(),
                 inbox,
@@ -185,6 +202,7 @@ impl Ui {
                         .open_palette(PaletteScope::From(visit), PaletteSeed::Empty);
                 }
                 PageEvent::Find(update) => ui.chrome.find(update),
+                PageEvent::Fullscreen(on) => ui.chrome.set_fullscreen(on),
             }
         });
         let weak = Rc::downgrade(&ui);
@@ -192,15 +210,34 @@ impl Ui {
             weak.upgrade()
                 .map_or(glib::Propagation::Proceed, |ui| ui.shortcut(event))
         });
-        if let Some(settings) = gtk::Settings::default() {
-            for property in ["gtk-application-prefer-dark-theme", "gtk-theme-name"] {
-                let weak = Rc::downgrade(&ui);
-                settings.connect_notify_local(Some(property), move |_, _| {
-                    if let Some(ui) = weak.upgrade() {
-                        ui.chrome.set_system_dark(prefers_dark());
-                    }
-                });
+        let weak = Rc::downgrade(&ui);
+        ui.window.connect_key_release_event(move |_, event| {
+            use gdk::keys::constants as key;
+            if let Some(ui) = weak.upgrade() {
+                if ui.switching.get() && matches!(event.keyval(), key::Control_L | key::Control_R) {
+                    ui.end_switcher(true);
+                }
             }
+            // Page scale also listens for Control's release on this window.
+            glib::Propagation::Proceed
+        });
+        let weak = Rc::downgrade(&ui);
+        ui.window.connect_focus_out_event(move |_, _| {
+            if let Some(ui) = weak.upgrade() {
+                if ui.switching.get() {
+                    ui.end_switcher(false);
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        if let Some(settings) = gtk::Settings::default() {
+            // Not `gtk-application-prefer-dark-theme`: Canopy sets that one for its pages.
+            let weak = Rc::downgrade(&ui);
+            settings.connect_notify_local(Some("gtk-theme-name"), move |_, _| {
+                if let Some(ui) = weak.upgrade() {
+                    ui.desktop_appearance_changed();
+                }
+            });
         }
         let weak = Rc::downgrade(&ui);
         ui.cookie_monitor.connect_changed(move |_, _, _, _| {
@@ -208,7 +245,7 @@ impl Ui {
                 ui.drain_cookies();
             }
         });
-        ui.chrome.set_system_dark(prefers_dark());
+        ui.chrome.set_system_dark(ui.desktop.prefers_dark());
         ui.refresh();
         if let Some(problem) = logins_problem {
             ui.report_error(&problem);
@@ -377,10 +414,32 @@ impl Ui {
                 if let Some(visit) = frame.forest.current().and_then(|id| frame.forest.visit(id)) {
                     self.mail.notice_page(&visit.url, &visit.title);
                 }
+                let dark = match frame.theme {
+                    ThemeMode::Dark => true,
+                    ThemeMode::Light => false,
+                    ThemeMode::System => self.desktop.prefers_dark(),
+                };
+                appearance::show_pages(dark);
                 self.chrome.present(frame);
             }
             Err(error) => self.report_error(&error.to_string()),
         }
+    }
+
+    fn desktop_appearance_changed(&self) {
+        self.chrome.set_system_dark(self.desktop.prefers_dark());
+        self.schedule_refresh();
+    }
+
+    fn control_held(&self) -> bool {
+        gdk::Keymap::for_display(&self.window.display()).is_some_and(|keymap| {
+            keymap.modifier_state() & gdk::ModifierType::CONTROL_MASK.bits() != 0
+        })
+    }
+
+    fn end_switcher(&self, open: bool) {
+        self.switching.set(false);
+        self.chrome.end_switcher(open);
     }
 
     fn report(&self, result: Result<()>) {
@@ -413,7 +472,31 @@ impl Ui {
     }
 
     fn shortcut(&self, event: &gdk::EventKey) -> glib::Propagation {
-        let Some(shortcut) = Shortcut::of(event) else {
+        // The fullscreen page gets every key; the chrome its shortcuts drive is hidden.
+        if self.pages.is_fullscreen() {
+            return glib::Propagation::Proceed;
+        }
+        let shortcut = Shortcut::of(event);
+        if self.switching.get() {
+            match shortcut {
+                Some(Shortcut::Switch) => {
+                    self.chrome.step_switcher(false);
+                    return glib::Propagation::Stop;
+                }
+                Some(Shortcut::PreviousTree) => {
+                    self.chrome.step_switcher(true);
+                    return glib::Propagation::Stop;
+                }
+                Some(Shortcut::Escape) => {
+                    self.end_switcher(false);
+                    return glib::Propagation::Stop;
+                }
+                // Any other key, apart from the modifiers themselves, drops the list.
+                None if is_modifier_key(&event.keyval()) => return glib::Propagation::Proceed,
+                _ => self.end_switcher(false),
+            }
+        }
+        let Some(shortcut) = shortcut else {
             return glib::Propagation::Proceed;
         };
         if !matches!(shortcut, Shortcut::Escape) && self.pages.has_form_return() {
@@ -445,7 +528,19 @@ impl Ui {
                 Ok(None) => {}
                 Err(error) => self.report(Err(error)),
             },
-            Shortcut::NextWaiting => self.chrome.next_waiting(),
+            Shortcut::Switch => {
+                let opened = self.chrome.open_switcher(|forest, limit| {
+                    self.pages
+                        .read(|browser| browser.recent_pages(forest, limit))
+                });
+                match opened {
+                    // A shortcut replayed after the form question can arrive with Control
+                    // already up; it then acts as a quick press.
+                    Ok(()) if self.control_held() => self.switching.set(true),
+                    Ok(()) => self.chrome.end_switcher(true),
+                    Err(error) => self.report(Err(error)),
+                }
+            }
             Shortcut::PageScale(action) => self.report(self.pages.page_scale(action)),
             Shortcut::Reload => {
                 self.chrome.uncover();
@@ -483,6 +578,29 @@ impl Ui {
     }
 }
 
+/// Modifier keys on their own. `EventKey::is_modifier` is not set on every backend.
+fn is_modifier_key(keyval: &gdk::keys::Key) -> bool {
+    use gdk::keys::constants as key;
+    [
+        key::Shift_L,
+        key::Shift_R,
+        key::Control_L,
+        key::Control_R,
+        key::Alt_L,
+        key::Alt_R,
+        key::Meta_L,
+        key::Meta_R,
+        key::Super_L,
+        key::Super_R,
+        key::Hyper_L,
+        key::Hyper_R,
+        key::ISO_Level3_Shift,
+        key::Caps_Lock,
+        key::Num_Lock,
+    ]
+    .contains(keyval)
+}
+
 /// Window-level keys, handled before the focused web view sees them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Shortcut {
@@ -493,9 +611,12 @@ enum Shortcut {
     UndoSettle,
     Forest(crate::chrome::ForestView),
     ZoomTree,
-    NextWaiting,
+    /// Ctrl+Tab: opens the next row of the page list, held to pick another.
+    Switch,
     PreviousTree,
-    MoveTree { next: bool },
+    MoveTree {
+        next: bool,
+    },
     PageScale(PageScaleAction),
     Reload,
     RememberSelection,
@@ -651,7 +772,7 @@ impl Shortcut {
                 key::Page_Down,
                 Self::MoveTree { next: true },
             ),
-            (Modifiers::CONTROL, key::Tab, Self::NextWaiting),
+            (Modifiers::CONTROL, key::Tab, Self::Switch),
             (Modifiers::CONTROL_SHIFT, key::Tab, Self::PreviousTree),
             (
                 Modifiers::CONTROL_SHIFT,
@@ -932,15 +1053,6 @@ impl Ui {
     }
 }
 
-/// Whether the desktop prefers dark, which `Theme: System` follows.
-fn prefers_dark() -> bool {
-    gtk::Settings::default().is_some_and(|s| {
-        s.is_gtk_application_prefer_dark_theme()
-            || s.gtk_theme_name()
-                .is_some_and(|name| name.to_lowercase().contains("dark"))
-    })
-}
-
 fn download_toast(event: DownloadEvent) -> Toast {
     let name = |path: &Path| {
         path.file_name()
@@ -1070,7 +1182,7 @@ mod shortcut_tests {
                 Modifiers::CONTROL_SHIFT,
                 Shortcut::MoveTree { next: true },
             ),
-            (key::Tab, Modifiers::CONTROL, Shortcut::NextWaiting),
+            (key::Tab, Modifiers::CONTROL, Shortcut::Switch),
             (key::Tab, Modifiers::CONTROL_SHIFT, Shortcut::PreviousTree),
             (
                 key::ISO_Left_Tab,
