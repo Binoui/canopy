@@ -140,23 +140,21 @@ fn main() -> Result<()> {
     hover_chrome(&ui, &format!(".tab[data-id='{beta}']"))?;
     xdo(&["click", "3"])?;
     wait("tab menu", || {
-        visible(&ui, "#popover [data-tab-action='pin']")
+        visible(&ui, "#popover [data-tab-action='save']")
     })?;
-    press(&ui, "#popover [data-tab-action='pin']")?;
+    press(&ui, "#popover [data-tab-action='save']")?;
     rename(&ui, gamma, "Menu refresh");
     held_back(&ui)?;
     release()?;
-    let menu = ui
-        .pages
-        .read(|b| b.tree_states())?
-        .iter()
-        .any(|t| t.root.root() == beta && t.pin.is_some());
+    let menu = ui.pages.read(|b| b.tree_states())?.iter().any(|t| {
+        t.root.root() == beta && matches!(t.place(), canopy::browser::Place::Shelf { .. })
+    });
     println!("menu row click across refresh: {menu}");
     key("Escape")?;
     if !menu {
-        ui.dispatch(ChromeIntent::PinTree {
+        ui.dispatch(ChromeIntent::PlaceTree {
             tree: tree(&ui, beta),
-            pinned: true,
+            to: canopy::browser::Move::Shelf(canopy::browser::Slot::First),
         });
         pump(300);
     }

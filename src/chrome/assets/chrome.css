@@ -344,7 +344,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .band-head .grow { flex: 1; }
 .band-head .hint { font-weight: 400; color: var(--muted); }
 .hint-line { padding: 9px 11px; border: 1px dashed var(--tile-border); border-radius: 10px; color: var(--muted); font-size: 12px; }
-.tab-pinned-mark { display: inline-flex; color: var(--green); }
+.tab-pinned-mark { display: inline-flex; color: var(--muted); }
 .tab-pinned-mark svg.icon { width: 10px; height: 12px; }
 #strip-placeholder { position: absolute; left: 12px; top: 12px; height: 28px; padding: 5px 10px; border: 1px dashed var(--faint); border-radius: 9px; color: var(--muted); font-size: 12px; }
 .mt { position: relative; display: block; flex: none; }
@@ -356,7 +356,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .mt-node.last .fav { box-shadow: 0 0 0 1px var(--bg), 0 0 0 2.5px var(--green); }
 .tree-card .mt-node.last .fav { box-shadow: 0 0 0 1px var(--tile), 0 0 0 2.5px var(--green); }
 
-.pinned-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.shelf-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .tree-card { display: flex; flex-direction: column; align-items: stretch; gap: 3px; min-width: 0; overflow: hidden; padding: 11px 11px 9px; border: 1px solid var(--tile-border); border-radius: 11px; background: var(--tile); text-align: left; }
 .tree-card:hover { border-color: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
 .pc-tree { height: 58px; margin-bottom: 6px; }
@@ -391,45 +391,6 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .start-tile .glyph { width: 38px; height: 38px; border-radius: 11px; border: 1px solid var(--tile-border); background: var(--tile); display: grid; place-items: center; }
 .start-tile .label { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.forest-pop { display: flex; flex-direction: column; container-type: inline-size; }
-.forest-toolbar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
-.forest-toolbar strong { font-size: 14px; font-weight: 600; }
-#forest-views { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-#forest-views button { padding: 5px 11px; color: var(--muted); }
-#forest-views [aria-pressed="true"] { background: var(--green-soft); color: var(--green-ink); }
-.forest-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px 18px; }
-#forest-trees { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(200px, 100%), 240px)); justify-content: start; align-content: start; gap: 9px; }
-#forest-trees .band-head, #forest-trees .hint-line { grid-column: 1 / -1; }
-#forest-trees .band-head { margin: 3px 0 0; gap: 8px; }
-.tree-card[aria-current="true"] { border-color: var(--green); }
-.tree-card .pc-page { display: block; color: var(--muted); padding: 0 9px 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
-.tree-card .badge { flex: none; background: var(--hover); color: var(--muted); border-radius: 4px; padding: 2px 5px; font-size: 10px; }
-.forest-split { display: flex; gap: 16px; overflow: hidden; }
-#forest-list { flex: 0 1 720px; min-width: 0; overflow: auto; }
-#forest-preview { flex: 1 1 380px; min-width: 0; overflow: auto; background: var(--tile); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
-.forest-day { display: flex; gap: 8px; position: sticky; top: 0; z-index: 1; background: var(--bg); color: var(--muted); padding: 9px 2px; font-size: 11px; }
-.forest-day b { color: var(--text); font-weight: 500; }
-.forest-row { display: flex; align-items: center; width: 100%; gap: 10px; height: 38px; border: 1px solid transparent; border-radius: 8px; padding: 0 8px; text-align: left; }
-.forest-row:hover { background: var(--hover); }
-.forest-row[aria-selected="true"] { border-color: var(--green); }
-.forest-row .tm, .forest-row .pg, .forest-row .st { color: var(--muted); font-size: 11px; white-space: nowrap; }
-.forest-row .tm { flex: none; width: 34px; }
-.forest-row .forest-icons { display: flex; align-items: center; gap: 3px; width: 65px; flex: none; font-size: 10px; color: var(--muted); }
-.forest-row .nm { flex: 1 1 auto; min-width: 55px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
-.forest-row .st { flex: 0 1000 180px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.forest-row .pg { flex: none; }
-#forest-empty { margin: 0 14px 14px; }
-@container (max-width: 700px) {
-  .forest-split { flex-direction: column; }
-  #forest-preview { flex: none; max-height: 240px; order: -1; }
-  #forest-list { flex: 1; }
-  .forest-row .st { display: none; }
-  .forest-toolbar #forest-count { flex: 1; }
-}
-#forest-trees .pc-tree { position: relative; display: flex; align-items: center; justify-content: center; height: 84px; margin: -11px -11px 3px; padding: 10px; background: var(--bg); border-bottom: 1px solid var(--border); }
-#forest-trees .pc-page { padding: 0; }
-#forest-trees .tree-card:hover { border-color: var(--faint); box-shadow: none; }
-#forest-trees .tree-card[aria-current="true"] { border-color: var(--green); }
 
 
 /* ---------- reader ---------- */
@@ -607,30 +568,6 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .error-dot, #settings-button.has-errors::after { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--danger); flex: none; }
 #settings-button.has-errors::after { content: ""; position: absolute; top: 3px; right: 3px; box-shadow: 0 0 0 2px var(--chrome); }
 .errors-head { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; gap: 20px; font-size: 12px; }
-.menu-error { max-width: 320px; overflow-wrap: anywhere; }
-.menu-error small { display: block; color: var(--muted); margin-top: 4px; }
 
-.pv-art { display: flex; align-items: center; justify-content: center; height: 150px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 10px; }
-.pv-title { display: flex; flex-wrap: wrap; gap: 7px; align-items: baseline; margin-bottom: 8px; }
-.pv-title span, .pv-cut { font-size: 11px; color: var(--muted); }
-.pv-action { margin: 0 6px 8px 0; }
-.pv-row { display: flex; align-items: center; gap: 7px; width: 100%; height: 26px; text-align: left; border-radius: 5px; }
-.pv-row:hover { background: var(--hover); }
-.pv-row span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pv-row.last { color: var(--green-ink); }
-.pv-row.waiting .fav { outline: 1px dashed var(--green); outline-offset: 2px; }
-@container (max-width: 700px) { .pv-art { height: 80px; } }
-
-.forest-more { width: 100%; padding: 14px; color: var(--muted); border: 1px solid var(--border); border-radius: 8px; margin-top: 8px; }
-
-#forest-find { width: 170px; min-width: 100px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; background: var(--bg); color: var(--text); }
-
-#forest-trees .tree-card { min-height: 150px; }
-#forest-trees .tree-card > span { flex: none; }
-#forest-trees .pc-meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-@container (max-width: 700px) {
-  .pv-art .mt { transform: scale(.6); }
-  #forest-count { min-width: 170px; white-space: nowrap; }
-  #forest-views, #forest-find { order: 1; }
-  #forest-close { margin-left: auto; }
-}
+.tab.pinned .tab-title, .tab.pinned .tab-settle, .tab.pinned .unread-dot { display:none; }
+.tab.pinned { justify-content:center; padding:0; }

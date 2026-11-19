@@ -3,13 +3,12 @@ use std::collections::HashMap;
 use anyhow::{bail, Context, Result};
 
 use crate::{
-    browser::{Lifecycle, PinOrder, Snapshot, TreeId, TreeState, Visit, VisitId, VisitState},
+    browser::{Place, Snapshot, TreeId, TreeState, Visit, VisitId, VisitState},
     naming::tree_name,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TreeSummary {
-    pub pin: Option<PinOrder>,
     pub last_event_at: Option<i64>,
     pub id: TreeId,
     pub title: String,
@@ -17,7 +16,7 @@ pub struct TreeSummary {
     pub page_count: usize,
     pub pending_count: usize,
     pub last_visit: VisitId,
-    pub lifecycle: Lifecycle,
+    pub place: Place,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -35,7 +34,9 @@ struct Node {
 pub struct ForestProjection {
     nodes: HashMap<VisitId, Node>,
     trees: Vec<TreeSummary>,
+    by_id: HashMap<TreeId, usize>,
     open: usize,
+    shelf: usize,
     current: Option<VisitId>,
 }
 
@@ -114,6 +115,11 @@ impl ForestProjection {
                 parent.pending_below += pending;
             }
         }
+        let tree_order: HashMap<_, _> = tree_states
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.root, i))
+            .collect();
         let mut states = HashMap::with_capacity(tree_states.len());
         for state in tree_states {
             if states.insert(state.root, state).is_some() {
@@ -126,8 +132,7 @@ impl ForestProjection {
             let TreeState {
                 last_visit,
                 name,
-                lifecycle,
-                pin,
+                spot,
                 last_event_at,
                 ..
             } = states.remove(&node.tree).context("Missing tree state.")?;
@@ -136,7 +141,6 @@ impl ForestProjection {
                 bail!("Tree target must be an opened page in its tree.");
             }
             trees.push(TreeSummary {
-                pin,
                 last_event_at,
                 id: node.tree,
                 title: name.unwrap_or_else(|| {
@@ -154,7 +158,7 @@ impl ForestProjection {
                             && !node.settled,
                     ),
                 last_visit,
-                lifecycle,
+                place: spot.place(),
             });
         }
         if !states.is_empty() {
@@ -166,13 +170,14 @@ impl ForestProjection {
                 bail!("Current page has not been opened.");
             }
         }
-        trees.sort_by_key(|tree| match tree.lifecycle {
-            Lifecycle::Open { tab } => (0, tab.index() as i128),
-            Lifecycle::Settled { since } => (1, -i128::from(since)),
-        });
-        let open = trees.partition_point(|tree| tree.lifecycle.is_open());
+        trees.sort_by_key(|tree| tree_order[&tree.id]);
+        let open = trees.partition_point(|tree| tree.place.is_tab());
+        let shelf = trees.partition_point(|tree| !matches!(tree.place, Place::History { .. }));
+        let by_id = trees.iter().enumerate().map(|(i, t)| (t.id, i)).collect();
         Ok(Self {
+            by_id,
             open,
+            shelf,
             nodes,
             trees,
             current: snapshot.current,
@@ -208,22 +213,17 @@ impl ForestProjection {
         &self.trees
     }
 
-    pub fn pinned(&self) -> Vec<&TreeSummary> {
-        let mut trees: Vec<_> = self
-            .trees
-            .iter()
-            .filter(|tree| tree.pin.is_some())
-            .collect();
-        trees.sort_by_key(|tree| tree.pin);
-        trees
+    pub fn shelf(&self) -> Vec<&TreeSummary> {
+        self.trees[self.open..self.shelf].iter().collect()
     }
-
-    pub fn open(&self) -> &[TreeSummary] {
+    pub fn tabs(&self) -> &[TreeSummary] {
         &self.trees[..self.open]
     }
-
-    pub fn settled(&self) -> &[TreeSummary] {
-        &self.trees[self.open..]
+    pub fn history(&self) -> &[TreeSummary] {
+        &self.trees[self.shelf..]
+    }
+    pub fn tree(&self, id: TreeId) -> Option<&TreeSummary> {
+        self.by_id.get(&id).map(|&i| &self.trees[i])
     }
 
     pub fn current(&self) -> Option<VisitId> {
@@ -301,43 +301,44 @@ mod tests {
                 current: Some(id),
             },
             vec![TreeState {
-                pin: None,
                 last_event_at: None,
                 root: TreeId(id),
                 last_visit: id,
                 name: None,
-                lifecycle: Lifecycle::Settled { since: 2 },
+                spot: crate::browser::Spot::History { settled_at: 2 },
             }],
         )
         .unwrap();
         assert_eq!(forest.current(), Some(id));
         assert_eq!(forest.tree_of(id), Some(TreeId(id)));
-        assert!(forest.open().is_empty());
-        assert_eq!(forest.settled().len(), 1);
+        assert!(forest.tabs().is_empty());
+        assert_eq!(forest.history().len(), 1);
     }
 
     #[test]
-    fn open_trees_keep_creation_order_and_settled_trees_list_newest_first() {
+    fn projection_keeps_the_stores_order_of_tabs_and_history() {
         let visits: Vec<_> = (0..5)
             .map(|time| visit(None, time, VisitState::Opened))
             .collect();
         let ids: Vec<_> = visits.iter().map(|v| v.id).collect();
-        let states = ids
-            .iter()
-            .enumerate()
-            .map(|(i, &id)| TreeState {
-                pin: None,
-                last_event_at: None,
-                root: TreeId(id),
-                last_visit: id,
-                name: None,
-                lifecycle: match i {
-                    1 => Lifecycle::Settled { since: 10 },
-                    3 => Lifecycle::Settled { since: 20 },
-                    _ => Lifecycle::Open {
-                        tab: crate::browser::TabOrder::new(0),
+        let states = [0, 2, 4, 3, 1]
+            .into_iter()
+            .map(|i| {
+                let id = ids[i];
+                TreeState {
+                    last_event_at: None,
+                    root: TreeId(id),
+                    last_visit: id,
+                    name: None,
+                    spot: match i {
+                        1 => crate::browser::Spot::History { settled_at: 10 },
+                        3 => crate::browser::Spot::History { settled_at: 20 },
+                        _ => crate::browser::Spot::Tab {
+                            pinned: false,
+                            position: i as u32,
+                        },
                     },
-                },
+                }
             })
             .collect();
         let f = ForestProjection::from_snapshot(
@@ -349,11 +350,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            f.open().iter().map(|t| t.id.root()).collect::<Vec<_>>(),
+            f.tabs().iter().map(|t| t.id.root()).collect::<Vec<_>>(),
             vec![ids[0], ids[2], ids[4]]
         );
         assert_eq!(
-            f.settled().iter().map(|t| t.id.root()).collect::<Vec<_>>(),
+            f.history().iter().map(|t| t.id.root()).collect::<Vec<_>>(),
             vec![ids[3], ids[1]]
         );
         assert_eq!(
@@ -383,10 +384,10 @@ mod tests {
                 current: Some(leaf),
             },
             vec![TreeState {
-                pin: None,
                 last_event_at: None,
-                lifecycle: crate::browser::Lifecycle::Open {
-                    tab: crate::browser::TabOrder::new(0),
+                spot: crate::browser::Spot::Tab {
+                    pinned: false,
+                    position: 0,
                 },
                 root: TreeId(root_id),
                 last_visit: leaf,
@@ -415,10 +416,10 @@ mod tests {
             let second = visit(Some(root_id), i, VisitState::Queued);
             visits.extend([first, second]);
             states.push(TreeState {
-                pin: None,
                 last_event_at: None,
-                lifecycle: crate::browser::Lifecycle::Open {
-                    tab: crate::browser::TabOrder::new(0),
+                spot: crate::browser::Spot::Tab {
+                    pinned: false,
+                    position: 0,
                 },
                 root: TreeId(root_id),
                 last_visit: root_id,
@@ -458,10 +459,10 @@ mod tests {
         let root = visit(None, 0, VisitState::Opened);
         let child = visit(Some(root.id), 1, VisitState::Queued);
         let state = TreeState {
-            pin: None,
             last_event_at: None,
-            lifecycle: crate::browser::Lifecycle::Open {
-                tab: crate::browser::TabOrder::new(0),
+            spot: crate::browser::Spot::Tab {
+                pinned: false,
+                position: 0,
             },
             root: TreeId(root.id),
             last_visit: root.id,
@@ -480,10 +481,10 @@ mod tests {
         assert!(ForestProjection::from_snapshot(
             snapshot,
             vec![TreeState {
-                pin: None,
                 last_event_at: None,
-                lifecycle: crate::browser::Lifecycle::Open {
-                    tab: crate::browser::TabOrder::new(0)
+                spot: crate::browser::Spot::Tab {
+                    pinned: false,
+                    position: 0
                 },
                 last_visit: child.id,
                 ..state.clone()

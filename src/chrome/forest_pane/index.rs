@@ -3,7 +3,7 @@ use super::{
     days::{Calendar, Civil},
 };
 use crate::{
-    browser::{Lifecycle, TreeId},
+    browser::{Place, TreeId},
     forest::ForestProjection,
 };
 use std::collections::HashMap;
@@ -33,9 +33,9 @@ impl Index {
                     sites: tree_card::sites(forest, tree),
                 },
             );
-            if let Lifecycle::Settled { since } = tree.lifecycle {
-                if tree.pin.is_none() {
-                    let used = tree.last_event_at.unwrap_or(since);
+            if let Place::History { settled_at } = tree.place {
+                if !tree.place.pinned() {
+                    let used = settled_at;
                     history.push(Entry {
                         tree: tree.id,
                         at: calendar.civil(used),

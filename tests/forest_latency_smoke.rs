@@ -22,7 +22,7 @@ fn main() -> Result<()> {
                 let n = t * 10 + p;
                 tx.execute("INSERT INTO visits(id,parent_id,url,title,created_at,opened_at) VALUES(?,?,?,?,?,?)",rusqlite::params![id(n), (p>0).then(|| id(n-1)), format!("http://site{}.localhost:9/p/{t}/{p}",p%4),format!("Project {t} page {p}"),1_790_000_000_000i64+n as i64,1_790_000_000_000i64+n as i64])?;
             }
-            tx.execute("INSERT INTO tree_state(root_id,last_visit_id,name,settled_at,pin_order,tab_order) VALUES(?,?,?,?,?,?)",rusqlite::params![id(t*10),id(t*10+9),format!("Project {t}"),(t>=4).then_some(1_790_000_000_000i64+t as i64),(t<5).then_some(t as i64+1),(t<4).then_some(t)])?;
+            tx.execute("INSERT INTO tree_state(root_id,last_visit_id,name,place,position,pinned,placed_at) VALUES(?,?,?,?,?,?,?)",rusqlite::params![id(t*10),id(t*10+9),format!("Project {t}"),if t<4 {"tab"} else if t==4 {"shelf"} else {"history"},(t<5).then_some(t as i64),t<4,1_790_000_000_000i64+t as i64])?;
         }
         tx.execute("UPDATE session SET current_id=?", [id(9)])?;
         tx.commit()?;

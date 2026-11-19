@@ -57,7 +57,6 @@ fn main() -> Result<()> {
         let mut b = Browser::open(&data.join("forest.sqlite3"))?;
         for tree in b.tree_states()? {
             b.rename_tree(tree.root, "A tree title long enough to shrink")?;
-            b.set_pinned(tree.root, true)?;
             let page = b
                 .snapshot()?
                 .visits
@@ -122,7 +121,7 @@ fn main() -> Result<()> {
     println!("PASS Ctrl+Shift+Tab alternates between previously shown trees.");
     chrome(
         &ui,
-        "(intent('select-tree', {id: S.frame.tabs[S.frame.tabs.length-1].id}), true)",
+        "(treeAct(S.frame.tabs[S.frame.tabs.length-1].id,'open'), true)",
     )?;
     wait("last tree active", || {
         chrome(&ui, "S.frame.tabs[S.frame.tabs.length-1].active").is_ok_and(|v| v == true)
@@ -199,7 +198,7 @@ fn main() -> Result<()> {
     })?;
     println!("PASS settle in the overflow removes its tree.");
     ui.window.resize(820, 800);
-    chrome(&ui, "(() => { const keep = S.frame.tabs.slice(0,4).map(t => t.id); for (const t of S.frame.tabs.slice(4)) intent('settle-tree', {id:t.id}); intent('rename-tree', {id:keep[0], name:'GTK documentation and application development'}); intent('select-tree', {id:keep[0]}); return true; })()")?;
+    chrome(&ui, "(() => { const keep = S.frame.tabs.slice(0,4).map(t => t.id); for (const t of S.frame.tabs.slice(4)) treeAct(t.id,'settle'); intent('rename-tree', {id:keep[0], name:'GTK documentation and application development'}); treeAct(keep[0],'open'); return true; })()")?;
     wait("four trees", || {
         chrome(&ui, "S.frame.tabs.length").is_ok_and(|v| v == 4)
     })?;
@@ -237,20 +236,11 @@ fn main() -> Result<()> {
 fn review_regressions(ui: &Ui) -> Result<()> {
     ui.window.resize(820, 800);
     pump(400);
-    chrome(
-        ui,
-        "(intent('select-tree', {id: S.frame.tabs[0].id}), true)",
-    )?;
+    chrome(ui, "(treeAct(S.frame.tabs[0].id,'open'), true)")?;
     pump(400);
-    chrome(
-        ui,
-        "(intent('select-tree', {id: S.frame.tabs[1].id}), true)",
-    )?;
+    chrome(ui, "(treeAct(S.frame.tabs[1].id,'open'), true)")?;
     pump(500);
-    chrome(
-        ui,
-        "(intent('select-tree', {id: S.frame.tabs[0].id}), true)",
-    )?;
+    chrome(ui, "(treeAct(S.frame.tabs[0].id,'open'), true)")?;
     pump(500);
     chrome(ui, "(() => { window.reviewFrames = []; const present = canopy.present; canopy.present = (...args) => { present(...args); const on = document.querySelector('.tab[aria-selected=true]'); window.reviewFrames.push(!on.classList.contains('icon-only') && on.offsetWidth >= 110 && [...document.querySelectorAll('.tab:not([aria-selected=true])')].every(t => t.hidden || t.classList.contains('icon-only'))); }; return true; })()")?;
     let target = chrome(
@@ -284,7 +274,7 @@ fn review_regressions(ui: &Ui) -> Result<()> {
         true
     );
     println!("PASS 7 active class and titled fit change in the same presentation call.");
-    assert_eq!(chrome(ui, "(() => { const cross = document.querySelector('.tab[aria-selected=true] .tab-settle'); const original = window.ipc.postMessage; let settled = false; window.ipc.postMessage = (message) => { settled ||= JSON.parse(message).kind === 'settle-tree'; }; const r = cross.getBoundingClientRect(); const event = (type, detail, x = r.x+12) => cross.dispatchEvent(new MouseEvent(type, {bubbles:true, button:0, detail, clientX:x, clientY:r.y+12})); cross.style.opacity = '0'; event('mousedown',1); cross.style.opacity = '1'; event('mouseup',1); event('click',1); event('mousedown',2); event('mouseup',2); event('click',2); event('mousedown',1,r.x-1); event('mouseup',1); event('click',1); window.ipc.postMessage = original; cross.style.opacity = ''; return !settled; })()")?, true);
+    assert_eq!(chrome(ui, "(() => { const cross = document.querySelector('.tab[aria-selected=true] .tab-settle'); const original = window.ipc.postMessage; let settled = false; window.ipc.postMessage = (message) => { settled ||= JSON.parse(message).act === 'settle'; }; const r = cross.getBoundingClientRect(); const event = (type, detail, x = r.x+12) => cross.dispatchEvent(new MouseEvent(type, {bubbles:true, button:0, detail, clientX:x, clientY:r.y+12})); cross.style.opacity = '0'; event('mousedown',1); cross.style.opacity = '1'; event('mouseup',1); event('click',1); event('mousedown',2); event('mouseup',2); event('click',2); event('mousedown',1,r.x-1); event('mouseup',1); event('click',1); window.ipc.postMessage = original; cross.style.opacity = ''; return !settled; })()")?, true);
     println!("PASS 1 invisible-at-press cross and second double-click cannot settle.");
     assert_eq!(
         chrome(
@@ -304,7 +294,7 @@ fn review_regressions(ui: &Ui) -> Result<()> {
         assert_eq!(chrome(ui, "(() => { const tab = document.querySelector('.tab[aria-selected=true]'); return tab.offsetWidth >= 200 && tab.offsetWidth <= 280 && tab.querySelector('.tab-title').clientWidth >= 110; })()")?, true, "active natural title at {width}px");
     }
     println!("PASS 2 active title keeps 200 to 280px at 820, 560 and 480px.");
-    chrome(ui, "(intent('select-tree', {id:S.frame.tabs[0].id}), true)")?;
+    chrome(ui, "(treeAct(S.frame.tabs[0].id,'open'), true)")?;
     pump(300);
     ui.window.resize(1240, 800);
     pump(400);
@@ -335,7 +325,7 @@ fn stored_tabs(data: &std::path::Path) -> Result<Vec<String>> {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
     let tabs = db
-        .prepare("SELECT root_id FROM tree_state WHERE settled_at IS NULL ORDER BY tab_order")?
+        .prepare("SELECT root_id FROM tree_state WHERE place='tab' ORDER BY pinned DESC,position,root_id")?
         .query_map([], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     Ok(tabs)
@@ -423,6 +413,86 @@ fn tab_reorder(ui: std::rc::Rc<Ui>, data: &std::path::Path) -> Result<std::rc::R
     })?;
     println!("PASS native drag reorders, preserves selection and shows an indicator; page drops do nothing; keyboard moves use the stored order.");
 
+    for id in &expected[..2] {
+        hover_chrome(&ui, &format!(".tab[data-id='{id}']"))?;
+        xdo(&["click", "3"])?;
+        click_chrome(&ui, "#popover [data-tab-action=pin]")?;
+        pump(200);
+    }
+    key("ctrl+2")?;
+    wait("second pinned tab committed", || {
+        ui.snapshot().is_ok_and(|snapshot| {
+            snapshot
+                .current
+                .is_some_and(|id| id.to_string() == expected[1])
+        })
+    })?;
+    key("ctrl+shift+Page_Down")?;
+    assert_eq!(
+        stored_tabs(data)?,
+        expected,
+        "last pinned tab stops at the border"
+    );
+    key("ctrl+shift+Page_Up")?;
+    expected.swap(0, 1);
+    wait("keyboard moves within pinned tabs", || {
+        stored_tabs(data).is_ok_and(|tabs| tabs == expected)
+    })?;
+    key("ctrl+shift+Page_Down")?;
+    expected.swap(0, 1);
+    wait("keyboard returns within pinned tabs", || {
+        stored_tabs(data).is_ok_and(|tabs| tabs == expected)
+    })?;
+    let source = expected[3].clone();
+    let (x, y, _, h) = rect(&ui, &format!(".tab[data-id='{}']", expected[1]))?;
+    let gap = screen_point(
+        &ui,
+        &ui.chrome.native(),
+        (x + 2.) as i32,
+        (y + h / 2.) as i32,
+    )?;
+    native_drag(&ui, &source, gap, true)?;
+    let moved = expected.remove(3);
+    expected.insert(1, moved);
+    wait("drop among pinned tabs pins the source", || {
+        tab_ids(&ui).is_ok_and(|tabs| tabs == expected)
+    })?;
+    assert_eq!(
+        chrome(
+            &ui,
+            &format!("S.frame.tabs.find(t=>t.id==='{source}').pinned")
+        )?,
+        true
+    );
+    let (x, y, _, h) = rect(&ui, &format!(".tab[data-id='{}']", expected[5]))?;
+    let gap = screen_point(
+        &ui,
+        &ui.chrome.native(),
+        (x + 2.) as i32,
+        (y + h / 2.) as i32,
+    )?;
+    native_drag(&ui, &source, gap, true)?;
+    let moved = expected.remove(1);
+    expected.insert(4, moved);
+    wait("pinned tab dragged out becomes unpinned", || {
+        tab_ids(&ui).is_ok_and(|tabs| tabs == expected)
+    })?;
+    assert_eq!(
+        chrome(
+            &ui,
+            &format!("S.frame.tabs.find(t=>t.id==='{source}').pinned")
+        )?,
+        false
+    );
+    assert_eq!(stored_tabs(data)?, expected);
+    println!("PASS real drags pin among pinned tabs and unpin outside; keyboard moves stay inside the pinned group.");
+    for id in &expected[..2] {
+        hover_chrome(&ui, &format!(".tab[data-id='{id}']"))?;
+        xdo(&["click", "3"])?;
+        click_chrome(&ui, "#popover [data-tab-action=unpin]")?;
+        pump(200);
+    }
+    expected = stored_tabs(data)?;
     ui.window.resize(480, 800);
     key("ctrl+8")?;
     pump(400);

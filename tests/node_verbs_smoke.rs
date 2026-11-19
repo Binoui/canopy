@@ -408,13 +408,14 @@ fn main() -> Result<()> {
         || f.ui.snapshot().is_ok_and(|s| s.current == Some(waiting)),
     )?;
     println!("PASS waiting-row node menu, Dismiss drops its background view and queue entry, reopening clears the mark, Ctrl+Tab reads remaining waiting.");
-    f.ui.pages.settle_tree(
+    f.ui.pages.place_tree(
         f.ui.pages
             .read(|b| {
                 canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)
             })?
             .tree_of(a)
             .unwrap(),
+        canopy::browser::Move::History,
     )?;
     common::wait("tree settle undo", || {
         common::visible(&f.ui, "#toast button")

@@ -9,55 +9,120 @@ use super::{
     view::{ago, plural},
 };
 
+use super::ChromeIntent;
+use crate::browser::{Move, Place, Slot};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Place {
-    Tab,
-    OpenBand { current: bool },
-    SavedBand,
-    History,
-    NewTreePage,
+pub(super) enum Act {
+    Pin,
+    Unpin,
+    Save,
+    Rename,
+    Settle,
+    Open,
+    OpenKeep,
+    Delete,
 }
-
-pub(super) fn menu(tree: &TreeSummary, place: Place) -> Value {
-    let pin = json!({
-        "kind": "pin",
-        "label": if tree.pin.is_some() { "Remove from saved" } else { "Save tree" },
-        "pinned": tree.pin.is_none(),
-    });
-    if place == Place::NewTreePage {
-        return json!([pin]);
+impl Act {
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "pin" => Self::Pin,
+            "unpin" => Self::Unpin,
+            "save" => Self::Save,
+            "rename" => Self::Rename,
+            "settle" => Self::Settle,
+            "open" => Self::Open,
+            "open-keep" => Self::OpenKeep,
+            "delete" => Self::Delete,
+            _ => return None,
+        })
     }
-    let mut rows = vec![
-        json!({"kind": "rename", "label": "Rename", "name": tree.title}),
-        pin,
-    ];
-    if tree.lifecycle.is_open() {
-        rows.push(json!({"kind": "settle", "label": "Settle tree"}));
+    fn name(self) -> &'static str {
+        match self {
+            Self::Pin => "pin",
+            Self::Unpin => "unpin",
+            Self::Save => "save",
+            Self::Rename => "rename",
+            Self::Settle => "settle",
+            Self::Open => "open",
+            Self::OpenKeep => "open-keep",
+            Self::Delete => "delete",
+        }
     }
-    json!(rows)
+    pub fn label(self, place: Place) -> &'static str {
+        match (self, place) {
+            (Self::Pin, _) => "Pin tab",
+            (Self::Unpin, _) => "Unpin tab",
+            (Self::Save, _) => "Save for later",
+            (Self::Rename, _) => "Rename",
+            (Self::Settle, _) => "Settle tree",
+            (Self::Open, Place::History { .. }) => "Reopen",
+            (Self::Open | Self::OpenKeep, _) => "Open",
+            (Self::Delete, _) => "Delete",
+        }
+    }
 }
-
-pub(super) fn card(forest: &ForestProjection, tree: &TreeSummary, place: Place) -> Value {
+pub(super) fn acts(place: Place) -> &'static [Act] {
+    match place {
+        Place::Tab { pinned: false } => &[Act::Pin, Act::Save, Act::Rename, Act::Settle],
+        Place::Tab { pinned: true } => &[Act::Unpin, Act::Save, Act::Rename, Act::Settle],
+        Place::Shelf { .. } => &[Act::Open, Act::Rename, Act::Settle],
+        Place::History { .. } => &[Act::Open, Act::Save, Act::Rename, Act::Delete],
+    }
+}
+pub(super) fn menu(tree: &TreeSummary) -> Value {
+    buttons(tree, acts(tree.place))
+}
+pub(super) fn buttons(tree: &TreeSummary, keep: &[Act]) -> Value {
+    json!(acts(tree.place).iter().filter(|a|keep.contains(a)).map(|a|json!({"act":a.name(),"label":a.label(tree.place),"name":tree.title,"go":*a==Act::Open})).collect::<Vec<_>>())
+}
+pub(super) fn intent(tree: &TreeSummary, act: Act) -> Option<ChromeIntent> {
+    if !matches!(act, Act::Open | Act::OpenKeep) && !acts(tree.place).contains(&act) {
+        return None;
+    }
+    Some(match act {
+        Act::Pin => ChromeIntent::PlaceTree {
+            tree: tree.id,
+            to: Move::Pin(true),
+        },
+        Act::Unpin => ChromeIntent::PlaceTree {
+            tree: tree.id,
+            to: Move::Pin(false),
+        },
+        Act::Save => ChromeIntent::PlaceTree {
+            tree: tree.id,
+            to: Move::Shelf(Slot::First),
+        },
+        Act::Settle => ChromeIntent::PlaceTree {
+            tree: tree.id,
+            to: Move::History,
+        },
+        Act::Open => ChromeIntent::SelectTree(tree.id),
+        Act::OpenKeep => ChromeIntent::PlaceTree {
+            tree: tree.id,
+            to: Move::Open,
+        },
+        Act::Delete => ChromeIntent::DeleteTrees(vec![tree.id]),
+        Act::Rename => return None,
+    })
+}
+pub(super) fn card(forest: &ForestProjection, tree: &TreeSummary, current: bool) -> Value {
     let pages = plural(tree.page_count, "page");
     let sites = sites(forest, tree);
-    let meta = if place == Place::NewTreePage {
-        tree.last_event_at
-            .map_or_else(|| pages.clone(), |at| format!("{pages} · {}", ago(at)))
-    } else {
-        format!("{pages} · {}", sites_line(&sites, 2))
-    };
-    json!({
-        "id": tree.id.root().to_string(), "title": tree.title,
-        "tip": format!("{}\n{}", tree.title, forest.visit(tree.id.root()).unwrap().url),
-        "name": format!("{}, {}{}{}", tree.title, pages,
-            if tree.pending_count > 0 { format!(", {} waiting", tree.pending_count) } else { String::new() }, if tree.pin.is_some() { ", saved" } else { "" }),
-        "current": matches!(place, Place::OpenBand { current: true }),
-        "badge": match place { Place::OpenBand { .. } if tree.pin.is_some() => Some("Saved"), Place::SavedBand if tree.lifecycle.is_open() => Some("Open"), _ => None },
-        "page": (place != Place::NewTreePage).then(|| super::graph::short_name(forest, tree.last_visit)),
-        "waiting": tree.pending_count, "waitingTip": format!("{} waiting", tree.pending_count), "meta": meta,
-        "mini": mini_value(forest, &tree_view::miniature(forest, tree, Fit::CARD)),
-        "menu": menu(tree, place),
-    })
+    json!({"id":tree.id.root().to_string(),"title":tree.title,"tip":format!("{}\n{}",tree.title,forest.visit(tree.id.root()).unwrap().url),
+        "name":format!("{}, {}{}",tree.title,pages,if tree.place.pinned() {", pinned"}else{""}),"current":current,
+        "badge":tree.place.pinned().then_some("Pinned"),"page":super::graph::short_name(forest,tree.last_visit),
+        "waiting":tree.pending_count,"waitingTip":format!("{} waiting",tree.pending_count),"meta":format!("{pages} · {}",sites_line(&sites,2)),
+        "mini":mini_value(forest,&tree_view::miniature(forest,tree,Fit::CARD)),"menu":menu(tree)})
+}
+pub(super) fn shelf_card(forest: &ForestProjection, tree: &TreeSummary) -> Value {
+    let mut value = card(forest, tree, false);
+    value["page"] = Value::Null;
+    value["meta"] = json!(tree.last_event_at.map_or_else(
+        || plural(tree.page_count, "page"),
+        |at| format!("{} · {}", plural(tree.page_count, "page"), ago(at))
+    ));
+    value
 }
 
 pub(super) struct Site {
@@ -108,53 +173,55 @@ pub(super) fn mini_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{browser::Browser, forest::ForestProjection};
-
     #[test]
-    fn menu_rows_follow_place_saved_state_and_lifecycle() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut browser = Browser::open(&dir.path().join("forest.sqlite3")).unwrap();
-        let root = browser
-            .add_roots(&[url::Url::parse("https://example.org/project").unwrap()])
-            .unwrap()[0];
-        let id = crate::browser::TreeId(root);
-        browser.rename_tree(id, "Project").unwrap();
-        for open in [true, false] {
-            if !open {
-                browser.settle_tree(id).unwrap();
-            }
-            for saved in [false, true] {
-                browser.set_pinned(id, saved).unwrap();
-                let forest = ForestProjection::from_snapshot(
-                    browser.snapshot().unwrap(),
-                    browser.tree_states().unwrap(),
-                )
-                .unwrap();
-                let tree = &forest.trees()[0];
-                let pin = json!({
-                    "kind": "pin",
-                    "label": if saved { "Remove from saved" } else { "Save tree" },
-                    "pinned": !saved,
-                });
-                let mut expected = vec![
-                    json!({"kind": "rename", "label": "Rename", "name": "Project"}),
-                    pin.clone(),
-                ];
-                if open {
-                    expected.push(json!({"kind": "settle", "label": "Settle tree"}));
-                }
-                assert_eq!(menu(tree, Place::Tab), json!(expected));
-                assert_eq!(menu(tree, Place::NewTreePage), json!([pin]));
-                if saved {
-                    let card = card(&forest, tree, Place::NewTreePage);
-                    assert_eq!(card["menu"], menu(tree, Place::NewTreePage));
-                    assert_eq!(card["name"], "Project, 1 page, saved");
-                    assert_eq!(
-                        card["mini"]["nodes"][0]["url"],
-                        "https://example.org/project"
-                    );
-                }
-            }
+    fn menus_per_place_and_activation_are_separate() {
+        for (place, expected) in [
+            (
+                Place::Tab { pinned: false },
+                vec!["Pin tab", "Save for later", "Rename", "Settle tree"],
+            ),
+            (
+                Place::Tab { pinned: true },
+                vec!["Unpin tab", "Save for later", "Rename", "Settle tree"],
+            ),
+            (
+                Place::Shelf { saved_at: 1 },
+                vec!["Open", "Rename", "Settle tree"],
+            ),
+            (
+                Place::History { settled_at: 1 },
+                vec!["Reopen", "Save for later", "Rename", "Delete"],
+            ),
+        ] {
+            assert_eq!(
+                acts(place)
+                    .iter()
+                    .map(|a| a.label(place))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            let tree = TreeSummary {
+                id: crate::browser::TreeId(ulid::Ulid::new().to_string().parse().unwrap()),
+                title: "Tree".into(),
+                root_host: "example.org".into(),
+                page_count: 1,
+                pending_count: 0,
+                last_visit: ulid::Ulid::new().to_string().parse().unwrap(),
+                last_event_at: None,
+                place,
+            };
+            assert!(matches!(
+                intent(&tree, Act::Open),
+                Some(ChromeIntent::SelectTree(_))
+            ));
+            assert!(matches!(
+                intent(&tree, Act::OpenKeep),
+                Some(ChromeIntent::PlaceTree { to: Move::Open, .. })
+            ));
+            assert_eq!(
+                intent(&tree, Act::Delete).is_some(),
+                matches!(place, Place::History { .. })
+            );
         }
     }
 }

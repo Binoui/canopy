@@ -6,15 +6,13 @@ use super::{
 };
 
 pub(super) fn value(frame: &ChromeFrame, frozen: &[crate::suggest::Suggestion]) -> Value {
-    let pinned: Vec<_> = frame
+    let shelf: Vec<_> = frame
         .forest
-        .pinned()
+        .shelf()
         .into_iter()
-        .map(|tree| {
-            super::tree_card::card(&frame.forest, tree, super::tree_card::Place::NewTreePage)
-        })
+        .map(|tree| super::tree_card::shelf_card(&frame.forest, tree))
         .collect();
-    json!({"pinned": pinned, "bookmarks": bookmarks(&frame.bookmarks), "suggested": suggested(frame, frozen)})
+    json!({"shelfTitle":"Saved for later","shelfHint":"Save for later in a tab’s menu takes a tree off the bar and keeps it here.","shelf": shelf, "bookmarks": bookmarks(&frame.bookmarks), "suggested": suggested(frame, frozen)})
 }
 
 /// The chips still on offer, each in the place it had when the band was ranked, so the
@@ -79,7 +77,7 @@ mod tests {
     }
 
     #[test]
-    fn cards_follow_pin_order_and_roots_without_events_show_only_the_page_count() {
+    fn cards_follow_shelf_order_and_roots_without_events_show_only_the_page_count() {
         let dir = tempfile::tempdir().unwrap();
         let mut browser = Browser::open(&dir.path().join("forest.sqlite3")).unwrap();
         let ids = browser
@@ -89,8 +87,18 @@ mod tests {
             ])
             .unwrap();
         let states = browser.tree_states().unwrap();
-        browser.set_pinned(states[1].root, true).unwrap();
-        browser.set_pinned(states[0].root, true).unwrap();
+        browser
+            .place_tree(
+                states[1].root,
+                crate::browser::Move::Shelf(crate::browser::Slot::End),
+            )
+            .unwrap();
+        browser
+            .place_tree(
+                states[0].root,
+                crate::browser::Move::Shelf(crate::browser::Slot::End),
+            )
+            .unwrap();
         let frame = ChromeFrame {
             mail: crate::mail::Mail::default(),
             forest: ForestProjection::from_snapshot(
@@ -111,17 +119,17 @@ mod tests {
             files: vec![],
         };
         let start = value(&frame, &[]);
-        assert_eq!(start["pinned"][0]["id"], ids[1].to_string());
-        assert_eq!(start["pinned"][1]["id"], ids[0].to_string());
-        assert_eq!(start["pinned"][0]["meta"], "1 page");
-        assert_eq!(start["pinned"][0]["waiting"], 0);
+        assert_eq!(start["shelf"][0]["id"], ids[1].to_string());
+        assert_eq!(start["shelf"][1]["id"], ids[0].to_string());
+        assert_eq!(start["shelf"][0]["meta"], "1 page");
+        assert_eq!(start["shelf"][0]["waiting"], 0);
         drop(browser);
         let reopened = Browser::open(&dir.path().join("forest.sqlite3")).unwrap();
         assert!(reopened
             .tree_states()
             .unwrap()
             .iter()
-            .all(|t| t.pin.is_some()));
+            .all(|t| matches!(t.spot.place(), crate::browser::Place::Shelf { .. })));
     }
 }
 
@@ -279,9 +287,9 @@ pub(super) fn keep(s: &crate::suggest::Suggestion) -> super::ChromeIntent {
             url: url.clone(),
             title: title.clone(),
         },
-        Suggestion::Tree { tree, .. } => super::ChromeIntent::PinTree {
+        Suggestion::Tree { tree, .. } => super::ChromeIntent::PlaceTree {
             tree: *tree,
-            pinned: true,
+            to: crate::browser::Move::Shelf(crate::browser::Slot::First),
         },
         Suggestion::Path { first, .. } => super::ChromeIntent::Bookmark {
             url: first.clone(),

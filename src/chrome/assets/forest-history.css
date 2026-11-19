@@ -1,0 +1,33 @@
+.forest-split { display: flex; gap: 16px; overflow: hidden; }
+#forest-list { flex: 0 1 720px; min-width: 0; overflow: auto; }
+#forest-preview { flex: 1 1 380px; min-width: 0; overflow: auto; background: var(--tile); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+.forest-day { display: flex; gap: 8px; position: sticky; top: 0; z-index: 1; background: var(--bg); color: var(--muted); padding: 9px 2px; font-size: 11px; }
+.forest-day b { color: var(--text); font-weight: 500; }
+.forest-row { display: flex; align-items: center; width: 100%; gap: 10px; height: 38px; border: 1px solid transparent; border-radius: 8px; padding: 0 8px; text-align: left; }
+.forest-row:hover { background: var(--hover); }
+.forest-row[aria-selected="true"] { border-color: var(--green); }
+.forest-row .tm, .forest-row .pg, .forest-row .st { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.forest-row .tm { flex: none; width: 34px; }
+.forest-row .forest-icons { display: flex; align-items: center; gap: 3px; width: 65px; flex: none; font-size: 10px; color: var(--muted); }
+.forest-row .nm { flex: 1 1 auto; min-width: 55px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.forest-row .st { flex: 0 1000 180px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.forest-row .pg { flex: none; }
+@container (max-width: 700px) {
+  .forest-split { flex-direction: column; }
+  #forest-preview { flex: none; max-height: 240px; order: -1; }
+  #forest-list { flex: 1; }
+  .forest-row .st { display: none; }
+}
+.pv-art { display: flex; align-items: center; justify-content: center; height: 150px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 10px; }
+.pv-title { display: flex; flex-wrap: wrap; gap: 7px; align-items: baseline; margin-bottom: 8px; }
+.pv-title span, .pv-cut { font-size: 11px; color: var(--muted); }
+.pv-action { margin: 0 6px 8px 0; }
+.pv-row { display: flex; align-items: center; gap: 7px; width: 100%; height: 26px; text-align: left; border-radius: 5px; }
+.pv-row:hover { background: var(--hover); }
+.pv-row span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pv-row.last { color: var(--green-ink); }
+.pv-row.waiting .fav { outline: 1px dashed var(--green); outline-offset: 2px; }
+@container (max-width: 700px) { .pv-art { height: 80px; } }
+.forest-more { width: 100%; padding: 14px; color: var(--muted); border: 1px solid var(--border); border-radius: 8px; margin-top: 8px; }
+
+@container (max-width: 700px) { .pv-art .mt { transform: scale(.6); } }

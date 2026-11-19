@@ -396,7 +396,7 @@ fn main() -> Result<()> {
         .find(|t| t.root.root() == source)
         .unwrap()
         .root;
-    ui.pages.settle_tree(tree)?;
+    ui.pages.place_tree(tree, canopy::browser::Move::History)?;
     wait("settle cancels foreground activity", || {
         status(&ui, "idle") && !visible(&ui, "#load-progress")
     })?;

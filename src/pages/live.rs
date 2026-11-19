@@ -250,6 +250,12 @@ impl LivePage {
     pub(super) fn owns(&self, ticket: LoadTicket) -> bool {
         ticket.belongs_to(&self.state.navigation.borrow())
     }
+    pub(super) fn discard_deleted(&self) {
+        self.native.set_is_muted(true);
+        self.native.set_sensitive(false);
+        self.cancel();
+        self.detach();
+    }
     pub(super) fn current_visit(&self) -> Option<VisitId> {
         self.state
             .navigation
@@ -1165,7 +1171,6 @@ impl LivePage {
         self.state.revival_refusals.get()
     }
 
-    #[cfg(feature = "gui-smoke")]
     pub(super) fn history_visits(&self) -> Vec<VisitId> {
         self.state
             .history
@@ -1271,7 +1276,12 @@ impl LivePage {
                     (state.upgrade(), owner.upgrade(), ticket, value)
                 {
                     if let Ok(value) = serde_json::from_str::<Value>(&value.to_str()) {
-                        if checkpoint_document_matches(&value, &ticket) {
+                        if state.lifecycle.get() != Lifecycle::Released
+                            && owner
+                                .read(|b| b.contains_visit(ticket.visit))
+                                .unwrap_or(false)
+                            && checkpoint_document_matches(&value, &ticket)
+                        {
                             if let Some(y) = value["y"].as_f64().filter(|y| y.is_finite()) {
                                 if y != 0.
                                     || owner
@@ -2382,7 +2392,7 @@ impl NativeState {
         else {
             return false;
         };
-        forest.tree_of(visit) == Some(tree) && forest.open().iter().any(|open| open.id == tree)
+        forest.tree_of(visit) == Some(tree) && forest.tabs().iter().any(|open| open.id == tree)
     }
 
     fn current_entry_visit(&self) -> Option<VisitId> {

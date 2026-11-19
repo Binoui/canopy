@@ -1,18 +1,15 @@
 # Settle and the forest
 
-Settling removes a tab and keeps every page, including waiting pages. Undo returns it. Saving and settling are independent.
+A tree is in Tabs, Saved for later or History. Pins belong only to Tabs. Leaving Tabs retires its pages and clears its pin. Ctrl+W settles even pinned tabs. Settle keeps its existing toast Undo and Ctrl+Shift+T recovery.
 
-## Sub-features
+## Trees
 
-- `settle-tree`: Ctrl+W, tab ×, middle click or tree menu; Undo or Ctrl+Shift+T restores it.
-- `forest-view`: Ctrl+E or Forest opens Trees, with Open cards in tab order and Saved cards in saved order. Ctrl+H opens History, switches from Trees, or closes History.
-- `forest-history`: settled unsaved trees grouped by local last-use day; select a row for a miniature and a capped preorder outline. Reopen/Enter/double-click resumes its last page; an outline click opens that page. Save keeps it settled, moves it to Saved and selects the successor.
-- `forest-find`: typing anywhere searches titles and every site in both views. Escape clears text first, then closes; close clears the query.
+See [Trees](../../../../docs/forest-trees.md). Drive Pin and Unpin from the tab menu, Save for later, the shelf on the new-tree page and Open from it. Check stored order across a restart and Ctrl+1 through Ctrl+9. Open Trees with Ctrl+E, check Tabs and Saved for later, card activation and Alt+Enter keeping the page. Alt+Up and Alt+Down reach the forest rather than the window’s sibling shortcuts.
 
-## Drive with canopy-verify
+## History
 
-Use a stress launch and doctor. At 1240px, open Ctrl+E; inspect Open and Saved, click a card, then reopen. Use arrows and Tab. Menu, Shift+F10 and right-click open Rename, Save tree/Remove from saved, and Settle tree for open trees. All mutations keep the forest open, including settling the current tree.
+See [History](../../../../docs/forest-history.md). Drive Ctrl+H, row selection, preview, outline navigation, Find and Escape, menu Save for later, Delete and Undo. Check captures and download records disappear, bookmarks and files remain, and restored captures are searchable. Delete without Undo persists across restart.
 
-Open Ctrl+H. Select a history row, use Up/Down and inspect the preview; exercise Reopen, Save and an outline page. Find a title and a site; check no matches and the two Escape presses. Resize to at least 1920px and below 700px pop-in width; the preview stacks above the list at narrow width. Capture dark and light at each size, resizing by one pixel and back before capture if WebKit leaves a black band. On large fixtures, Show older trees or keyboard traversal extends the loaded rows by 60.
+## Verification
 
-Check saved/settled state with read-only `tree_state` queries. A saved settled card also restores from the new-tree page after a restart. With no history a hint explains it; no saved trees has a separate saving hint. The forest keeps 22px margins and no width cap. Closing returns focus to its trigger or the page; Ctrl+W closes the forest before settling.
+Use a private stress launch and doctor. Check 390 px and at least 1920 px widths, both themes and English dates under LC_TIME=fr_FR.UTF-8. Run tree_places_smoke for the shared model, forest_trees_smoke for cards and forest_history_smoke for list/preview. Check schema 16 with tree_state(place,position,pinned,placed_at). Never open the real forest. Copy the schema-14 timing fixture before migrating it.

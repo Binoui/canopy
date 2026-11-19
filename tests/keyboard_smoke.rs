@@ -83,8 +83,8 @@ fn main() -> Result<()> {
         }
         let current = ids[depth - 1];
         db.execute(
-            "INSERT INTO tree_state(root_id,last_visit_id,tab_order) VALUES(?1,?2,?3)",
-            rusqlite::params![ids[0].to_string(), current.to_string(), trees.len()],
+            "INSERT INTO tree_state(root_id,last_visit_id,place,position,pinned,placed_at) VALUES(?1,?2,'tab',(SELECT COALESCE(MAX(position),-1)+1 FROM tree_state WHERE place='tab'),0,(SELECT created_at FROM visits WHERE id=?1))",
+            rusqlite::params![ids[0].to_string(), current.to_string()],
         )?;
         trees.push((shape, ids, current));
     }
@@ -200,6 +200,8 @@ fn main() -> Result<()> {
         pump(250);
         focus(&ui, "#tab-row [aria-selected=true]")?;
         key("Menu")?;
+        key("Down")?;
+        key("Down")?;
         check(&ui, "document.activeElement.dataset.tabAction === 'rename'")?;
         capture(&shots, "tab-menu", theme)?;
         key("Return")?;
@@ -216,20 +218,33 @@ fn main() -> Result<()> {
         chrome(&ui, "canopy.present(S.frame)")?;
         check(&ui, "document.activeElement === window.keptTab")?;
         key("shift+F10")?;
-        check(&ui, "document.activeElement.dataset.tabAction === 'rename'")?;
-        key("Down")?;
         check(&ui, "document.activeElement.dataset.tabAction === 'pin'")?;
         key("Return")?;
         wait("pin state in accessible name", || {
-            chrome(&ui, "document.querySelector('#tab-row [aria-selected=true]').getAttribute('aria-label').includes('saved')").is_ok_and(|v|v==true)
+            chrome(&ui, "document.querySelector('#tab-row [aria-selected=true]').getAttribute('aria-label').includes('pinned')").is_ok_and(|v|v==true)
         })?;
+        check(&ui, "document.activeElement === window.keptTab")?;
         key("shift+F10")?;
-        key("Down")?;
+        wait("Unpin menu focused", || {
+            chrome(&ui, "document.activeElement.dataset.tabAction").is_ok_and(|v| v == "unpin")
+        })
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "{error}; focus and menu {:?}",
+                chrome(
+                    &ui,
+                    "({focus:document.activeElement.tagName,id:document.activeElement.dataset.id,menu:S.popover?.kind})"
+                )
+            )
+        })?;
         key("Return")?;
+        wait("tab unpinned", || {
+            chrome(&ui, "S.frame.tabs.find(t=>t.active)?.pinned").is_ok_and(|v| v == false)
+        })?;
         ui.window.resize(480, 800);
         wait("tab overflow at narrow width", || {
             visible(&ui, "#tab-overflow")
-        })?;
+        }).map_err(|error|anyhow::anyhow!("{error}; tabs and fit {:?}",chrome(&ui,"({width:innerWidth,tabs:S.frame.tabs,fit:S.frame.tabFit,room:$('tabs-wrap')?.clientWidth})")))?;
         focus(&ui, "#tab-overflow")?;
         key("Return")?;
         check(&ui, "document.activeElement.matches('#popover button')")?;
@@ -410,13 +425,14 @@ fn main() -> Result<()> {
         wait("reopen after toast", || {
             ui.snapshot().is_ok_and(|s| s.current == Some(*selected))
         })?;
-        ui.pages.settle_tree(
+        ui.pages.place_tree(
             ui.pages
                 .read(|b| {
                     canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)
                 })?
                 .tree_of(trees[4].2)
                 .unwrap(),
+            canopy::browser::Move::History,
         )?;
         wait("other tree settled", || {
             text(&ui, "#toast").contains("small")
@@ -429,14 +445,11 @@ fn main() -> Result<()> {
         settle(&ui)?;
         key("ctrl+t")?;
         wait("start visible", || visible(&ui, "#start"))?;
-        chrome(
-            &ui,
-            "intent('pin-tree', {id:S.frame.tabs[0].id,pinned:true})",
-        )?;
+        chrome(&ui, "treeAct(S.frame.tabs[0].id,'save')")?;
         wait("pinned card", || visible(&ui, "[data-start=tree]"))?;
         focus(&ui, "[data-start=tree]")?;
         key("Menu")?;
-        check(&ui, "document.activeElement.dataset.tabAction === 'pin'")?;
+        check(&ui, "document.activeElement.dataset.tabAction === 'open'")?;
         capture(&shots, "pinned-menu", theme)?;
         key("Escape")?;
         check(&ui, "document.activeElement.dataset.start === 'tree'")?;

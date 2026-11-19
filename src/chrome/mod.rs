@@ -121,11 +121,17 @@ pub enum ChromeIntent {
     },
     Stop,
     SelectTree(TreeId),
-    MoveTree {
+    StepTree {
         tree: TreeId,
-        to_index: usize,
+        next: bool,
     },
-    SettleTree(TreeId),
+    PlaceTree {
+        tree: TreeId,
+        to: crate::browser::Move,
+    },
+    DeleteTrees(Vec<TreeId>),
+    UndoDelete(crate::browser::DeleteId),
+    ForgetDeleted,
     Dismiss(VisitId),
     SettleBranch(VisitId),
     MoveToTree(VisitId),
@@ -181,10 +187,6 @@ pub enum ChromeIntent {
         save: bool,
     },
     RemoveBookmark(crate::browser::BookmarkId),
-    PinTree {
-        tree: TreeId,
-        pinned: bool,
-    },
     Find {
         session: crate::pages::FindId,
         action: crate::pages::FindAction,
@@ -368,7 +370,7 @@ impl HtmlChrome {
         // would be current with no tab to stand under.
         if let Some(crate::browser::PendingTarget::Visit(visit)) = &frame.pending {
             let tree = frame.forest.tree_of(*visit);
-            if frame.forest.open().iter().any(|t| Some(t.id) == tree) {
+            if frame.forest.tabs().iter().any(|t| Some(t.id) == tree) {
                 frame.forest.show_current(*visit);
             }
         }
@@ -439,7 +441,7 @@ impl HtmlChrome {
             .borrow()
             .as_ref()?
             .forest
-            .open()
+            .tabs()
             .get(index)
             .map(|t| t.id)
     }
@@ -457,6 +459,18 @@ impl HtmlChrome {
         }
     }
 
+    pub fn forest_open(&self) -> bool {
+        self.inner.forest.borrow().is_open()
+    }
+    pub fn deleted(&self, id: Option<crate::browser::DeleteId>, text: String) {
+        self.inner.forest.borrow_mut().deleted(id, text);
+    }
+    pub fn rerank_suggestions(&self, forest: &crate::forest::ForestProjection) {
+        if let Some(host) = self.inner.host() {
+            *self.inner.suggested.borrow_mut() = host.suggestions(forest).unwrap_or_default();
+            self.inner.palette.borrow_mut().take();
+        }
+    }
     pub fn settle_current(&self) {
         match self.inner.escape_surface.get() {
             Some("list") | None => {
@@ -850,6 +864,18 @@ impl Inner {
     fn forest_reply(&self, reply: forest_pane::Reply) {
         match reply {
             forest_pane::Reply::Unchanged => {}
+            forest_pane::Reply::Act(intent) => {
+                if let Some(host) = self.host() {
+                    host.dispatch(intent);
+                }
+            }
+            forest_pane::Reply::Go(intent) => {
+                self.call("navigated", &[]);
+                if let Some(host) = self.host() {
+                    host.dispatch(intent);
+                    host.focus_page();
+                }
+            }
             forest_pane::Reply::Close => self.call("escape", &[json!("overlay")]),
             forest_pane::Reply::Show(value) => self.call("forest", &[value]),
         }
@@ -870,10 +896,30 @@ impl Inner {
                 self.palette_scope
                     .set(message["id"].as_str().map(str::parse).transpose()?);
             }
+            "tree" => {
+                let tree = TreeId(message["tree"].as_str().context("Missing tree")?.parse()?);
+                let act = tree_card::Act::parse(message["act"].as_str().unwrap_or_default())
+                    .context("Unknown tree action")?;
+                let intent = {
+                    let frame = self.frame.borrow();
+                    frame
+                        .as_ref()
+                        .and_then(|f| f.forest.tree(tree))
+                        .and_then(|t| tree_card::intent(t, act))
+                };
+                if let (Some(intent), Some(host)) = (intent, self.host()) {
+                    host.dispatch(intent);
+                }
+            }
             "forest" => {
                 let input = forest_pane::Input::parse(&message)?;
-                if let Some(frame) = self.frame.borrow().as_ref() {
-                    let reply = self.forest.borrow_mut().input(input, frame);
+                let reply = {
+                    let frame = self.frame.borrow();
+                    frame
+                        .as_ref()
+                        .map(|frame| self.forest.borrow_mut().input(input, frame))
+                };
+                if let Some(reply) = reply {
                     self.forest_reply(reply);
                 }
             }
@@ -1193,13 +1239,27 @@ impl Inner {
             "settle-branch" => ChromeIntent::SettleBranch(id("id")?),
             "move-to-tree" => ChromeIntent::MoveToTree(id("id")?),
             "undo-settle" => ChromeIntent::UndoSettle,
-            "settle-tree" => ChromeIntent::SettleTree(TreeId(id("id")?)),
-            "settle-current" => ChromeIntent::SettleCurrent,
-            "select-tree" => ChromeIntent::SelectTree(TreeId(id("id")?)),
-            "move-tree" => ChromeIntent::MoveTree {
+
+            "place-tree" => ChromeIntent::PlaceTree {
                 tree: TreeId(id("id")?),
-                to_index: usize::try_from(message["index"].as_u64()?).ok()?,
+                to: match message["place"].as_str()? {
+                    "tabs" => crate::browser::Move::Tabs(if message["before"].is_null() {
+                        crate::browser::Slot::End
+                    } else {
+                        let before = TreeId(id("before")?);
+                        if !frame.forest.tree(before)?.place.is_tab() {
+                            return None;
+                        }
+                        crate::browser::Slot::Before(before)
+                    }),
+                    _ => return None,
+                },
             },
+            "step-tree" => ChromeIntent::StepTree {
+                tree: TreeId(id("id")?),
+                next: message["next"].as_bool()?,
+            },
+            "settle-current" => ChromeIntent::SettleCurrent,
             "rename-tree" => {
                 ChromeIntent::RenameTree(TreeId(id("id")?), message["name"].as_str()?.to_owned())
             }
@@ -1236,10 +1296,6 @@ impl Inner {
                 offer: message["offer"].as_u64()?,
                 index: index()?,
             },
-            "pin-tree" => ChromeIntent::PinTree {
-                tree: TreeId(id("id")?),
-                pinned: message["pinned"].as_bool()?,
-            },
             "open-bookmark" => ChromeIntent::Navigate {
                 url: frame
                     .bookmarks
@@ -1268,6 +1324,39 @@ impl Inner {
 
 /// The chrome's own files, its font, and page icons, on the `canopy://` scheme. Only the
 /// chrome view registers it, so pages cannot read it.
+const FOREST_ASSETS: &[(&str, &str, &[u8])] = &[
+    (
+        "/forest.js",
+        "text/javascript",
+        include_bytes!("assets/forest.js"),
+    ),
+    (
+        "/forest.css",
+        "text/css",
+        include_bytes!("assets/forest.css"),
+    ),
+    (
+        "/forest-trees.js",
+        "text/javascript",
+        include_bytes!("assets/forest-trees.js"),
+    ),
+    (
+        "/forest-trees.css",
+        "text/css",
+        include_bytes!("assets/forest-trees.css"),
+    ),
+    (
+        "/forest-history.js",
+        "text/javascript",
+        include_bytes!("assets/forest-history.js"),
+    ),
+    (
+        "/forest-history.css",
+        "text/css",
+        include_bytes!("assets/forest-history.css"),
+    ),
+];
+
 fn serve(request: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
     let respond = |kind: &str, body: Cow<'static, [u8]>| {
         Response::builder()
@@ -1283,6 +1372,13 @@ fn serve(request: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
         ),
         "/chrome.css" => respond("text/css", Cow::Borrowed(CSS.as_bytes())),
         "/chrome.js" => respond("text/javascript", Cow::Borrowed(SCRIPT.as_bytes())),
+        path if FOREST_ASSETS.iter().any(|(name, _, _)| *name == path) => {
+            let (_, kind, bytes) = FOREST_ASSETS
+                .iter()
+                .find(|(name, _, _)| *name == request.uri().path())
+                .unwrap();
+            respond(kind, Cow::Borrowed(bytes))
+        }
         "/inter.ttf" => respond("font/ttf", Cow::Borrowed(INTER)),
         "/icon" => {
             let query = request.uri().query().unwrap_or_default();
@@ -1316,5 +1412,23 @@ fn rect(x: f64, y: f64, width: f64, height: f64) -> Rect {
     Rect {
         position: LogicalPosition::new(x, y).into(),
         size: LogicalSize::new(width.max(1.), height.max(1.)).into(),
+    }
+}
+
+#[cfg(test)]
+mod forest_asset_tests {
+    use super::*;
+    #[test]
+    fn split_assets_are_served_and_ready_waits_for_all_scripts() {
+        for (name, _, bytes) in FOREST_ASSETS {
+            assert!(INDEX.contains(&format!("\"{}\"", &name[1..])));
+            assert!(!bytes.is_empty());
+        }
+        assert!(SCRIPT
+            .contains("document.addEventListener('DOMContentLoaded', () => post({ t: 'ready' }))"));
+        assert!(
+            SCRIPT.find("  forest(value)").unwrap()
+                < SCRIPT.find("for (const kind of ['present'").unwrap()
+        );
     }
 }

@@ -487,7 +487,7 @@ fn settle_other_during_switch() -> Result<()> {
     f.server.gate("x", true);
     f.pages.open_roots(&[f.server.url("/gate/x/x")])?;
     wait("x requested", || f.server.hits("/gate/x/x") > 0)?;
-    f.pages.settle_tree(tree_y)?;
+    f.pages.place_tree(tree_y, canopy::browser::Move::History)?;
     pump_for(300);
     f.server.gate("x", false);
     let arrived = wait_for(5000, || {
@@ -595,7 +595,7 @@ fn settle_start_new_tree() -> Result<()> {
     let a = f.navigate("/a")?;
     f.navigate("/b")?;
     let tree = f.tree(a);
-    f.pages.settle_tree(tree)?;
+    f.pages.place_tree(tree, canopy::browser::Move::History)?;
     pump_for(800);
     println!("NOTE settle_start cursor_after_settle={}", f.cursor_path());
     let n1 = f.navigate("/n1")?;
@@ -801,7 +801,7 @@ fn release_window_commands() -> Result<()> {
             .and_then(|s| s.current_visit().map(|v| v.url.path() == "/root"))
             .unwrap_or(false);
         if matches!(event, PageEvent::Changed) && on_root && !once.replace(true) {
-            let r1 = pages.settle_tree(tree_y);
+            let r1 = pages.place_tree(tree_y, canopy::browser::Move::History);
             let r2 = pages.reload();
             println!(
                 "NOTE release_window settle={:?} reload={:?}",
@@ -816,7 +816,7 @@ fn release_window_commands() -> Result<()> {
     let settled = f
         .pages
         .read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))
-        .map(|forest| !forest.open().iter().any(|t| t.id == tree_y))
+        .map(|forest| !forest.tabs().iter().any(|t| t.id == tree_y))
         .unwrap_or(false);
     println!(
         "RESULT release_window_commands fired={} cursor={} y_settled={settled} root_requests={} errors={}",

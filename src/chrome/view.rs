@@ -41,20 +41,20 @@ pub(crate) fn frame(
     let current = forest.current();
     let active = current.and_then(|id| forest.tree_of(id));
     let tabs: Vec<Value> = forest
-        .open()
+        .tabs()
         .iter()
         .map(|tree| {
             json!({
                 "id": tree.id.root().to_string(),
                 "title": tree.title,
                 "subtitle": super::tabs::subtitle(forest, tree),
-                "name": format!("{}, {}{}{}{}", tree.title, plural(tree.page_count, "page"), if tree.pending_count > 0 { format!(", {} waiting", tree.pending_count) } else { String::new() }, if tree.pin.is_some() { ", saved" } else { "" }, if frame.live.contains(&tree.last_visit) { ", still open" } else { "" }),
+                "name": format!("{}, {}{}{}{}", tree.title, plural(tree.page_count, "page"), if tree.pending_count > 0 { format!(", {} waiting", tree.pending_count) } else { String::new() }, if tree.place.pinned() { ", pinned" } else { "" }, if frame.live.contains(&tree.last_visit) { ", still open" } else { "" }),
                 "pages": tree.page_count,
                 "live": frame.live.contains(&tree.last_visit),
                 "pending": tree.pending_count,
                 "active": Some(tree.id) == active,
-                "pinned": tree.pin.is_some(),
-                "menu": super::tree_card::menu(tree, super::tree_card::Place::Tab),
+                "pinned": tree.place.pinned(),
+                "menu": super::tree_card::menu(tree),
             })
         })
         .collect();
@@ -72,9 +72,9 @@ pub(crate) fn frame(
         }
     }
     visible.extend(surfaces.palette);
-    visible.extend(forest.open().iter().map(|t| t.id.root()));
+    visible.extend(forest.tabs().iter().map(|t| t.id.root()));
     if let Some(start) = &start {
-        for mini in start["pinned"]
+        for mini in start["shelf"]
             .as_array()
             .into_iter()
             .flatten()
@@ -697,7 +697,7 @@ pub(crate) fn ago(timestamp_ms: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::browser::Lifecycle;
+    use crate::browser::Spot;
     #[test]
     fn branch_names_omit_zero_counts_and_repeat_no_state() {
         assert_eq!(super::branch_name("Leaf", 0, 0, false), "Leaf");
@@ -716,14 +716,15 @@ mod tests {
     use crate::browser::{Download, Snapshot, TreeId, TreeState};
 
     fn chain() -> (ForestProjection, Vec<VisitId>) {
-        chain_with_lifecycle(Lifecycle::Open {
-            tab: crate::browser::TabOrder::new(0),
+        chain_with_lifecycle(crate::browser::Spot::Tab {
+            pinned: false,
+            position: 0,
         })
     }
-    fn chain_with_lifecycle(lifecycle: Lifecycle) -> (ForestProjection, Vec<VisitId>) {
-        chain_length(lifecycle, 3)
+    fn chain_with_lifecycle(spot: Spot) -> (ForestProjection, Vec<VisitId>) {
+        chain_length(spot, 3)
     }
-    fn chain_length(lifecycle: Lifecycle, length: usize) -> (ForestProjection, Vec<VisitId>) {
+    fn chain_length(spot: Spot, length: usize) -> (ForestProjection, Vec<VisitId>) {
         let ids: Vec<VisitId> = (0..length)
             .map(|_| ulid::Ulid::new().to_string().parse().unwrap())
             .collect();
@@ -753,9 +754,8 @@ mod tests {
                 current: Some(ids[length - 2]),
             },
             vec![TreeState {
-                pin: None,
                 last_event_at: None,
-                lifecycle,
+                spot,
                 root: TreeId(ids[0]),
                 last_visit: ids[length - 2],
                 name: None,
@@ -768,8 +768,9 @@ mod tests {
     #[test]
     fn back_and_forward_name_their_pages_and_the_tree_starts_after_them() {
         let (forest, ids) = chain_length(
-            Lifecycle::Open {
-                tab: crate::browser::TabOrder::new(0),
+            crate::browser::Spot::Tab {
+                pinned: false,
+                position: 0,
             },
             4,
         );
@@ -806,8 +807,9 @@ mod tests {
         assert_eq!(strip["left"], pins::NAV);
         let pins = pins::pins(
             &chain_length(
-                Lifecycle::Open {
-                    tab: crate::browser::TabOrder::new(0),
+                crate::browser::Spot::Tab {
+                    pinned: false,
+                    position: 0,
                 },
                 4,
             )
@@ -818,8 +820,9 @@ mod tests {
         assert_eq!(strip["room"], pins.room - pins::NAV);
 
         let (root, _) = chain_length(
-            Lifecycle::Open {
-                tab: crate::browser::TabOrder::new(0),
+            crate::browser::Spot::Tab {
+                pinned: false,
+                position: 0,
             },
             2,
         );
@@ -830,8 +833,9 @@ mod tests {
         let narrow = strip_for_frame(
             &frame(
                 chain_length(
-                    Lifecycle::Open {
-                        tab: crate::browser::TabOrder::new(0),
+                    crate::browser::Spot::Tab {
+                        pinned: false,
+                        position: 0,
                     },
                     4,
                 )
@@ -847,8 +851,9 @@ mod tests {
         );
         let pins = pins::pins(
             &chain_length(
-                Lifecycle::Open {
-                    tab: crate::browser::TabOrder::new(0),
+                crate::browser::Spot::Tab {
+                    pinned: false,
+                    position: 0,
                 },
                 4,
             )
@@ -916,8 +921,9 @@ mod tests {
     #[test]
     fn current_pill_fits_reserved_room() {
         let (forest, _) = chain_length(
-            Lifecycle::Open {
-                tab: crate::browser::TabOrder::new(0),
+            crate::browser::Spot::Tab {
+                pinned: false,
+                position: 0,
             },
             40,
         );
@@ -984,13 +990,13 @@ mod tests {
                 current: Some(ids[0]),
             },
             vec![TreeState {
-                pin: None,
                 last_event_at: None,
                 root: TreeId(ids[0]),
                 last_visit: ids[0],
                 name: None,
-                lifecycle: Lifecycle::Open {
-                    tab: crate::browser::TabOrder::new(0),
+                spot: Spot::Tab {
+                    pinned: false,
+                    position: 0,
                 },
             }],
         )
@@ -1036,8 +1042,15 @@ mod tests {
                 url::Url::parse("https://settled.example").unwrap(),
             ])
             .unwrap();
-        browser.settle_tree(TreeId(roots[1])).unwrap();
-        browser.set_pinned(TreeId(roots[1]), true).unwrap();
+        browser
+            .place_tree(TreeId(roots[1]), crate::browser::Move::History)
+            .unwrap();
+        browser
+            .place_tree(
+                TreeId(roots[1]),
+                crate::browser::Move::Shelf(crate::browser::Slot::End),
+            )
+            .unwrap();
         let frame = ChromeFrame {
             mail: crate::mail::Mail::default(),
             forest: ForestProjection::from_snapshot(
@@ -1088,7 +1101,7 @@ mod tests {
                 palette: None,
             },
         );
-        assert_eq!(start["start"]["pinned"].as_array().unwrap().len(), 1);
+        assert_eq!(start["start"]["shelf"].as_array().unwrap().len(), 1);
         assert!(start["visits"][roots[1].to_string()].is_object());
     }
 
@@ -1205,7 +1218,9 @@ mod tests {
         browser
             .add_roots(&[url::Url::parse("https://example.org/b").unwrap()])
             .unwrap();
-        browser.settle_tree(current).unwrap();
+        browser
+            .place_tree(current, crate::browser::Move::History)
+            .unwrap();
         let forest = ForestProjection::from_snapshot(
             browser.snapshot().unwrap(),
             browser.tree_states().unwrap(),
@@ -1244,7 +1259,7 @@ mod tests {
 
     #[test]
     fn settled_current_pages_stay_scoped_during_a_navigation() {
-        let (forest, ids) = chain_with_lifecycle(Lifecycle::Settled { since: 1 });
+        let (forest, ids) = chain_with_lifecycle(crate::browser::Spot::History { settled_at: 1 });
         let frame = ChromeFrame {
             mail: crate::mail::Mail::default(),
             loaded: HashSet::new(),
@@ -1440,15 +1455,16 @@ mod tests {
                 root: TreeId(ids[0]),
                 last_visit: ids[0],
                 name: None,
-                pin: None,
+
                 last_event_at: None,
-                lifecycle: Lifecycle::Open {
-                    tab: crate::browser::TabOrder::new(0),
+                spot: crate::browser::Spot::Tab {
+                    pinned: false,
+                    position: 0,
                 },
             }],
         )
         .unwrap();
-        assert_eq!(forest.open()[0].pending_count, 0);
+        assert_eq!(forest.tabs()[0].pending_count, 0);
         let frame = ChromeFrame {
             mail: crate::mail::Mail::default(),
             forest,

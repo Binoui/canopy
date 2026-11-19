@@ -1,0 +1,28 @@
+.forest-pop { display: flex; flex-direction: column; container-type: inline-size; }
+.forest-toolbar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+.forest-toolbar strong { font-size: 14px; font-weight: 600; }
+#forest-views { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+#forest-views button { padding: 5px 11px; color: var(--muted); }
+#forest-views [aria-pressed="true"] { background: var(--green-soft); color: var(--green-ink); }
+.forest-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px 18px; }
+.tree-card[aria-current="true"] { border-color: var(--green); }
+.tree-card .pc-page { display: block; color: var(--muted); padding: 0 9px 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
+.tree-card .badge { flex: none; background: var(--hover); color: var(--muted); border-radius: 4px; padding: 2px 5px; font-size: 10px; }
+#forest-empty { margin: 0 14px 14px; }
+.menu-error { max-width: 320px; overflow-wrap: anywhere; }
+.menu-error small { display: block; color: var(--muted); margin-top: 4px; }
+
+
+
+#forest-find { width: 170px; min-width: 100px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; background: var(--bg); color: var(--text); }
+
+@container (max-width: 700px) {
+  #forest-count { min-width: 170px; white-space: nowrap; }
+  #forest-views, #forest-find { order: 1; }
+  #forest-close { margin-left: auto; }
+}
+
+#forest-undo { flex:none; display:flex; align-items:center; gap:12px; padding:10px 14px; border-top:1px solid var(--border); }
+#forest-undo button { padding:5px 10px; background:var(--hover); border-radius:6px; }
+
+@container (max-width: 700px) { .forest-toolbar #forest-count { flex:1; } }
