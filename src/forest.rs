@@ -242,6 +242,29 @@ impl ForestProjection {
         self.nodes.get(&id).map(|node| &node.visit)
     }
 
+    pub(crate) fn source_parent_matches(&self, child: VisitId) -> bool {
+        let Some(visit) = self.visit(child) else {
+            return false;
+        };
+        let Some(source) = visit.source.as_ref() else {
+            return false;
+        };
+        visit
+            .parent
+            .and_then(|id| self.visit(id))
+            .is_some_and(|parent| {
+                parent.state == VisitState::Opened && parent.url == source.page_url
+            })
+    }
+
+    pub(crate) fn citation_parent_matches(&self, child: VisitId) -> bool {
+        self.source_parent_matches(child)
+            && self
+                .visit(child)
+                .and_then(|v| v.source.as_ref())
+                .is_some_and(|s| s.citation_url.is_some())
+    }
+
     pub fn path(&self, current: VisitId) -> Vec<VisitId> {
         let mut path = Vec::new();
         let mut cursor = Some(current);

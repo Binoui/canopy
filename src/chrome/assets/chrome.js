@@ -1092,7 +1092,7 @@ function renderPopover() {
   const { kind, data } = S.popover;
   if (['errors', 'settings', 'tree'].includes(kind) && popover.dataset.kind !== kind) popover.replaceChildren();
   popover.dataset.kind = kind;
-  popover.setAttribute('role', ['node', 'tree', 'bookmark'].includes(kind) ? 'menu' : 'dialog');
+  popover.setAttribute('role', ['node', 'tree', 'bookmark', 'move-tree'].includes(kind) ? 'menu' : 'dialog');
   popover.setAttribute('aria-label', kind === 'node' ? 'Page actions' : kind === 'tree' ? 'Tree actions' : kind === 'memory' ? 'Saved text' : kind === 'errors' ? 'Recent errors' : kind.replaceAll('-', ' '));
   popover.classList.toggle('waiting', kind === 'waiting');
   popover.classList.toggle('mail', kind === 'mail');
@@ -1107,6 +1107,15 @@ function renderPopover() {
       popover.dataset.nodeId = data;
       for (const button of popover.querySelectorAll('[data-node-action]')) button.onclick = () => {
         const action = button.dataset.nodeAction;
+        if (action === 'choose-move-tree') {
+          const { anchor, listKey } = S.popover;
+          const request = ++nextMoveRequest;
+          closePopover(false);
+          openPopover('move-tree', anchor, { head: data, request, choices: null });
+          S.popover.listKey = listKey;
+          post({ t: 'branch-move-choices', head: data, request });
+          return;
+        }
         closePopover();
         if (action === 'open') activate(data);
         else if (action === 'new-tree') { uncover(); intent('open-page-in-tree', { id: data }); }
@@ -1115,6 +1124,18 @@ function renderPopover() {
         else intent(action, { id: data });
       };
     }
+  } else if (kind === 'move-tree') {
+    const choices = data.choices;
+    popover.innerHTML = '<div class="menu-heading">Choose a tree</div>'
+      + (choices?.warning ? `<div class="menu-hint">${esc(choices.warning)}</div>` : '')
+      + (choices ? (choices.trees.length ? choices.trees.map((tree) => `<button class="menu-row" role="menuitem" data-move-tree="${tree.id}">${esc(tree.title)}</button>`).join('') : '<div class="menu-hint">No trees available</div>') : '<div class="menu-hint">Loading trees…</div>')
+      + '<button class="menu-row" role="menuitem" data-move-cancel>Cancel</button>';
+    for (const button of popover.querySelectorAll('[data-move-tree]')) button.onclick = () => {
+      const to = { kind: 'tree', id: button.dataset.moveTree };
+      closePopover();
+      intent('move-branch', { head: data.head, to });
+    };
+    popover.querySelector('[data-move-cancel]').onclick = () => closePopover();
   } else if (kind === 'tree') {
     const rows = TREE_MENUS[data.source](data.id);
     if (!rows) { closePopover(false); return; }
@@ -1889,8 +1910,19 @@ function renderPageScale() {
   if (changed) fitTabs();
 }
 
+let nextMoveRequest = 0;
+
 window.canopy = {
   navigated() { uncover(); },
+  branchMoveChoices(reply) {
+    const picker = S.popover;
+    if (picker?.kind !== 'move-tree' || picker.data.request !== reply.request || picker.data.head !== reply.head) return;
+    picker.data.choices = reply;
+    renderPopover();
+    keepPopoverInside();
+    controlsIn($('popover'))[0]?.focus();
+    syncLayer();
+  },
   pageScale(value) { S.pageScale = value; renderPageScale(); },
   viewport(height) { S.windowHeight = height; document.documentElement.style.setProperty('--window-height', `${height}px`); positionList(); syncLayer(); },
   start(value, initial = false) {
@@ -2139,7 +2171,7 @@ window.canopy = {
       + `<div class="reader-meta">${c.kind} remembered on ${esc(when(c.at))} · ${esc(c.url)}</div>${source}`
       + '<div class="card-actions" style="margin-top:0">'
       + '<button class="action" data-act="live">Open the page</button>'
-      + `<button class="action" data-act="source" id="capture-restore-source"${c.parent ? '' : ' disabled'}>Back to source</button>`
+      + `<button class="action" data-act="source" id="capture-restore-source"${c.parent ? '' : ' disabled'}>${esc(c.returnLabel)}</button>`
       + `<button class="action" data-act="citation"${c.citation ? '' : ' disabled'}>Open source comment</button></div>`
       + `<div class="reader-text" id="capture-text">${esc(c.text)}</div>`, false);
     $('reader-box').querySelectorAll('[data-act]').forEach((button) => button.addEventListener('click', () => {

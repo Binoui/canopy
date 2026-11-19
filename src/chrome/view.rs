@@ -323,11 +323,9 @@ pub(crate) fn strip(forest: &ForestProjection, mail: &crate::mail::Mail, width: 
         if page_head {
             actions.push(json!({ "kind": if id == current { "reload" } else { "open" }, "label": if id == current { "Reload" } else { "Open" } }));
             actions.push(json!({ "kind": "branch", "label": "New branch here" }));
-            if id == current {
-                if let Some(source) = &v.source {
-                    if v.parent.is_some() { actions.push(json!({ "kind": "source", "label": "Back to source" })); }
-                    if source.citation_url.is_some() { actions.push(json!({ "kind": "comment", "label": "Open comment" })); }
-                }
+            if id == current && v.source.is_some() {
+                if v.parent.is_some() { actions.push(json!({ "kind": "source", "label": if forest.source_parent_matches(id) { "Back to source" } else { "Back to parent" } })); }
+                if forest.citation_parent_matches(id) { actions.push(json!({ "kind": "comment", "label": "Open comment" })); }
             }
         }
         json!({
@@ -450,7 +448,7 @@ pub(super) fn visit_value(
             } else {
                 format!("From {host} · {}", source.link_text)
             },
-            "citation": source.citation_url.is_some(),
+            "citation": forest.citation_parent_matches(visit.id),
         })
     });
     let detail = visit
@@ -533,10 +531,19 @@ fn node_menu(forest: &ForestProjection, visit: &Visit) -> Vec<Value> {
         if !forest.is_settled(visit.id) {
             rows.push(row("settle-branch", "Settle branch".into()));
         }
-        if visit.state == VisitState::Opened || forest.opened_descendant_count(visit.id) > 0 {
+        if forest.can_detach_branch(visit.id) {
             rows.push(row("move-to-tree", "Move to its own tree".into()));
         }
     }
+    rows.push(row(
+        "choose-move-tree",
+        if visit.parent.is_none() {
+            "Merge into tree…"
+        } else {
+            "Move to tree…"
+        }
+        .into(),
+    ));
     rows
 }
 
@@ -616,12 +623,13 @@ pub(crate) fn preview(forest: &ForestProjection, id: VisitId, preview: &VisitPre
 }
 
 /// One saved text for the reader, with what its actions can reach.
-pub(crate) fn capture(capture: &Capture, visit: &Visit) -> Value {
+pub(crate) fn capture(capture: &Capture, visit: &Visit, forest: &ForestProjection) -> Value {
     json!({
         "capture": capture.id,
         "visit": visit.id.to_string(),
         "parent": visit.parent.map(|id| id.to_string()),
-        "citation": visit.source.as_ref().and_then(|s| s.citation_url.as_ref()).is_some(),
+        "citation": forest.citation_parent_matches(visit.id),
+        "returnLabel": if forest.source_parent_matches(visit.id) { "Back to source" } else { "Back to parent" },
         "title": capture.title,
         "kind": if capture.kind == CaptureKind::Selection { "Selection" } else { "Page" },
         "at": capture.captured_at,
@@ -960,7 +968,7 @@ mod tests {
 
     #[test]
     fn switcher_lists_five_waiting_pages_then_the_read_ones() {
-        use crate::browser::{Snapshot, TreeState, Visit, VisitState};
+        use crate::browser::{Snapshot, Spot, TreeState, Visit, VisitState};
         let ids: Vec<VisitId> = (0..8)
             .map(|_| ulid::Ulid::new().to_string().parse().unwrap())
             .collect();
@@ -1004,12 +1012,12 @@ mod tests {
         )
         .unwrap();
         let frame = ChromeFrame {
-            canopy_layout: Default::default(),
-            shown: Default::default(),
             mail: crate::mail::Mail::default(),
             forest,
             loaded: Default::default(),
             live: [ids[1]].into_iter().collect(),
+            canopy_layout: Default::default(),
+            shown: Default::default(),
             capture_enabled: true,
             trees_help: false,
             theme: ThemeMode::Light,

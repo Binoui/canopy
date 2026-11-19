@@ -154,6 +154,21 @@ pub(super) fn append_tab(tx: &Transaction, root: VisitId, last: VisitId, at: i64
     tx.execute("INSERT OR IGNORE INTO tree_state(root_id,last_visit_id,place,position,pinned,placed_at) VALUES(?1,?2,'tab',(SELECT COALESCE(MAX(position),-1)+1 FROM tree_state WHERE place='tab'),0,?3)", params![root.to_string(),last.to_string(),at])?;
     Ok(())
 }
+pub(super) fn compact_tabs(tx: &Transaction) -> Result<()> {
+    tx.execute(
+        &format!(
+            "WITH ordered AS MATERIALIZED (
+                 SELECT root_id, ROW_NUMBER() OVER (ORDER BY {ORDER}) - 1 AS position
+                 FROM tree_state WHERE place='tab'
+             )
+             UPDATE tree_state SET position=ordered.position FROM ordered
+             WHERE tree_state.root_id=ordered.root_id AND tree_state.position<>ordered.position"
+        ),
+        [],
+    )?;
+    Ok(())
+}
+
 pub(super) fn place_in(tx: &Transaction, tree: TreeId, to: Move, now: i64) -> Result<()> {
     if matches!(to, Move::Tabs(Slot::Before(t)) | Move::Shelf(Slot::Before(t)) if t == tree) {
         return Ok(());

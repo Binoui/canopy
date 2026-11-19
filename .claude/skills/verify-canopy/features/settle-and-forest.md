@@ -10,6 +10,10 @@ See [Canopy](../../../../docs/canopy.md). Open with Ctrl+E and the Canopy button
 
 See [History](../../../../docs/forest-history.md). Drive Ctrl+H and select a row to unfold its pages in place. Choose an outline page and confirm the tree reopens there. Check the time, miniature, title, page trail, sites and page count. Drive page-name Find and its marked trail, Escape, When jumps with loading at both edges, site filters and narrow site chips. Check a tall window fills. Drive Reopen, Save for later, Delete, Delete day and Undo. Check captures and download records disappear, bookmarks and files remain, and restored captures are searchable. Delete without Undo persists across restart.
 
+## Move a branch
+
+Open a page's menu, choose **Move to tree…**, and select a tab. Check that the page and its descendants appear in that tree and the current page stays selected if it moved. Open a root's **Merge into tree…** picker and check the warning. After restarting, check the new parent and tree in the private database.
+
 ## Verification
 
 Use a private stress launch and doctor. Check 390 px and at least 1920 px widths, both themes and English dates under LC_TIME=fr_FR.UTF-8. Run tree_places_smoke for the shared model, canopy_smoke for the map and forest_history_smoke for History rows and in-place outlines. Check schema 16 with tree_state(place,position,pinned,placed_at). Never open the real forest. Copy the schema-14 timing fixture before migrating it. When replacing the database in a stopped private run, remove that run’s old `forest.sqlite3-wal` and `forest.sqlite3-shm` first. Confirm the copied fixture contains 2,000 trees and 20,000 pages before driving it.

@@ -179,6 +179,10 @@ impl Ui {
                 PageEvent::FormReturn(open) => ui.chrome.form_return(open),
                 PageEvent::PageScale(value) => ui.chrome.page_scale(value),
                 PageEvent::Selected => ui.refresh(),
+                PageEvent::BranchMoved => {
+                    ui.chrome.toast(Toast::Info("Moved branch".into()));
+                    ui.schedule_refresh();
+                }
                 PageEvent::Changed | PageEvent::Loading(false) => ui.schedule_refresh(),
                 PageEvent::Loading(true) => {}
                 PageEvent::LoadState(value) => {
@@ -635,10 +639,10 @@ enum Shortcut {
     ZoomTree,
     /// Ctrl+Tab: opens the next row of the page list, held to pick another.
     Switch,
-    PreviousTree,
     MoveTree {
         next: bool,
     },
+    PreviousTree,
     PageScale(PageScaleAction),
     Reload,
     RememberSelection,
@@ -972,7 +976,7 @@ impl ChromeHost for Ui {
             }
             ChromeIntent::Dismiss(head) => self.pages.dismiss(head),
             ChromeIntent::SettleBranch(head) => self.pages.settle_branch(head),
-            ChromeIntent::MoveToTree(head) => self.pages.move_to_tree(head),
+            ChromeIntent::MoveBranch { head, to } => self.pages.move_branch(head, to),
             ChromeIntent::UndoSettle => self.pages.undo_settle(),
             ChromeIntent::SelectTree(tree) => self.pages.go(Go::Tree(tree)),
             ChromeIntent::Restore(visit) => self.pages.go(Go::Visit(visit)),
@@ -1032,12 +1036,16 @@ impl ChromeHost for Ui {
 
 impl Ui {
     fn read_capture(&self, id: i64) -> Result<()> {
-        let (capture, visit) = self.pages.read(|browser| -> Result<_> {
+        let (capture, visit, forest) = self.pages.read(|browser| -> Result<_> {
             let capture = browser.capture(id)?;
             let visit = browser.visit(capture.visit)?;
-            Ok((capture, visit))
+            Ok((
+                capture,
+                visit,
+                ForestProjection::from_snapshot(browser.snapshot()?, browser.tree_states()?)?,
+            ))
         })?;
-        self.chrome.read(&capture, &visit);
+        self.chrome.read(&capture, &visit, &forest);
         Ok(())
     }
 

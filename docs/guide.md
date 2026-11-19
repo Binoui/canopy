@@ -68,7 +68,9 @@ Press **Menu** or **Shift+F10** on a focused page in the strip, an attached list
 
 **Settle branch** puts away a page and everything below it. The list and zoomed tree show an **N pages put away** stub. Those pages leave the strip counts and waiting queue, and their live views are checkpointed and released. If you are reading inside that branch, Canopy first returns to its nearest unsettled ancestor. Opening any page inside reopens every settled ancestor. Pages already inside a settled branch offer no Settle action.
 
-**Move to its own tree** detaches a branch into a new tab. The moved head becomes open, while settled branches below it stay put away. It appears for a non-root page when its branch contains an opened page. The new tree remembers the most recently opened page in that branch. If you are reading inside it, the new tab becomes active. Live pages follow the move, and Back stays inside the new tree.
+**Move to its own tree** detaches a branch into the last tab. It appears when the branch and its source tree will each have an opened page after the move. The new tree remembers the most recently opened page in the branch, or the page you are reading if it moved with the branch. The moved head is visible again, while settled branches below it stay put away.
+
+**Move to tree…** puts the page and its branch under the first page of a tab you choose. The picker includes eligible tabs behind the overflow arrow. A root's menu offers **Merge into tree…** and explains which tree details the merge drops. Live pages follow the move, and the destination tab becomes active if you are reading a page that moved.
 
 Settling a tree or branch shows **Settled ‘name’ · N waiting kept**. The toast appears at the bottom of the window. **Undo** stays available for six seconds and returns to the page you were reading. Waiting links are kept when you settle.
 

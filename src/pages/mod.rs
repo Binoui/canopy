@@ -7,7 +7,10 @@ pub(crate) mod stack;
 
 use crate::{
     address::WebOrigin,
-    browser::{Browser, Landing, LoadTicket, NavigationTarget, ThemeMode, TreeId, VisitId},
+    browser::{
+        Browser, Landing, LoadTicket, MoveOutcome, MoveTo, NavigationTarget, TabPlacement,
+        ThemeMode, TreeId, VisitId,
+    },
     chrome::{Favicons, CHROME_HEIGHT},
     forest::ForestProjection,
     logins::Login,
@@ -56,6 +59,7 @@ pub enum PageEvent {
         label: String,
     },
     Changed,
+    BranchMoved,
     Loading(bool),
     LoadState(LoadingReadout),
     Error(String),
@@ -192,7 +196,7 @@ enum Command {
     Go(Box<Go>, Option<Continuation>, bool),
     Settle(SettleTarget),
     Dismiss(VisitId),
-    Move(VisitId),
+    MoveBranch { head: VisitId, to: MoveTo },
     Reload,
 }
 
@@ -1108,7 +1112,7 @@ impl Pages {
                 }
                 Command::Settle(target) => self.settle(target),
                 Command::Dismiss(head) => self.dismiss(head),
-                Command::Move(head) => self.move_to_tree(head),
+                Command::MoveBranch { head, to } => self.move_branch(head, to),
                 Command::Reload => self.reload(),
             };
             if let Err(error) = result {
@@ -1984,7 +1988,17 @@ impl Pages {
                     _ => true,
                 },
                 Command::Settle(t) => !record.holds(t.head()),
-                Command::Dismiss(v) | Command::Move(v) => !record.holds(*v),
+                Command::Dismiss(v) => !record.holds(*v),
+                Command::MoveBranch { head, to } => {
+                    !record.holds(*head)
+                        && match to {
+                            MoveTo::Page(v) => !record.holds(*v),
+                            MoveTo::Tree(t) | MoveTo::OwnTree(TabPlacement::Before(t)) => {
+                                !record.holds(t.root())
+                            }
+                            MoveTo::OwnTree(TabPlacement::End) => true,
+                        }
+                }
                 _ => true,
             });
             let mut removed = vec![];
@@ -2179,14 +2193,23 @@ impl Pages {
         Ok(())
     }
 
-    pub fn move_to_tree(&self, head: VisitId) -> Result<()> {
+    pub fn move_branch(&self, head: VisitId, to: MoveTo) -> Result<()> {
         if self.busy() {
-            self.commands.borrow_mut().push_back(Command::Move(head));
+            self.commands
+                .borrow_mut()
+                .push_back(Command::MoveBranch { head, to });
             self.end_hold();
             return Ok(());
         }
-        self.browser.borrow_mut().move_to_tree(head)?;
-        self.receive(PageEvent::Changed);
+        let outcome = self.browser.borrow_mut().move_branch(head, to)?;
+        match outcome {
+            MoveOutcome::Unchanged => {}
+            MoveOutcome::TabReordered => self.receive(PageEvent::Changed),
+            MoveOutcome::BranchMoved { .. } => {
+                self.settle_undo.borrow_mut().take();
+                self.receive(PageEvent::BranchMoved);
+            }
+        }
         Ok(())
     }
 
