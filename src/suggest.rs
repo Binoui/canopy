@@ -157,8 +157,7 @@ pub fn admits(
         }
         Suggestion::Tree { tree, .. } => forest.trees().iter().any(|t| {
             t.id == *tree
-                && t.pin.is_none()
-                && !t.lifecycle.is_open()
+                && matches!(t.place, crate::browser::Place::History { .. })
                 && forest.current().and_then(|v| forest.tree_of(v)) != Some(*tree)
         }),
     }
@@ -228,7 +227,7 @@ pub fn rank(input: &Inputs<'_>, now: i64) -> Vec<Suggestion> {
             },
         ));
     }
-    for tree in input.forest.settled() {
+    for tree in input.forest.history() {
         if Some(tree.id) == input.left {
             continue;
         }
@@ -499,10 +498,15 @@ mod tests {
             .unwrap();
         let trees = b.tree_states().unwrap();
         for t in &trees[..3] {
-            b.settle_tree(t.root).unwrap();
+            b.place_tree(t.root, crate::browser::Move::History).unwrap();
         }
-        b.settle_tree(trees[4].root).unwrap();
-        b.set_pinned(trees[2].root, true).unwrap();
+        b.place_tree(trees[4].root, crate::browser::Move::History)
+            .unwrap();
+        b.place_tree(
+            trees[2].root,
+            crate::browser::Move::Shelf(crate::browser::Slot::End),
+        )
+        .unwrap();
         b.queue_link(
             roots[1],
             url("queued.test"),
@@ -550,7 +554,7 @@ mod tests {
         let (_dir, mut b) = browser();
         let roots = b.add_roots(&[url("streak.test")]).unwrap();
         let tree = b.tree_states().unwrap()[0].root;
-        b.settle_tree(tree).unwrap();
+        b.place_tree(tree, crate::browser::Move::History).unwrap();
         let f = ForestProjection::from_snapshot(b.snapshot().unwrap(), b.tree_states().unwrap())
             .unwrap();
         let mut events: Vec<_> = (1..=4)

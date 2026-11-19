@@ -41,20 +41,20 @@ pub(crate) fn frame(
     let current = forest.current();
     let active = current.and_then(|id| forest.tree_of(id));
     let tabs: Vec<Value> = forest
-        .open()
+        .tabs()
         .iter()
         .map(|tree| {
             json!({
                 "id": tree.id.root().to_string(),
                 "title": tree.title,
                 "subtitle": super::tabs::subtitle(forest, tree),
-                "name": format!("{}, {}{}{}{}", tree.title, plural(tree.page_count, "page"), if tree.pending_count > 0 { format!(", {} waiting", tree.pending_count) } else { String::new() }, if tree.pin.is_some() { ", saved" } else { "" }, if frame.live.contains(&tree.last_visit) { ", still open" } else { "" }),
+                "name": format!("{}, {}{}{}{}", tree.title, plural(tree.page_count, "page"), if tree.pending_count > 0 { format!(", {} waiting", tree.pending_count) } else { String::new() }, if tree.place.pinned() { ", pinned" } else { "" }, if frame.live.contains(&tree.last_visit) { ", still open" } else { "" }),
                 "pages": tree.page_count,
                 "live": frame.live.contains(&tree.last_visit),
                 "pending": tree.pending_count,
                 "active": Some(tree.id) == active,
-                "pinned": tree.pin.is_some(),
-                "menu": super::tree_card::menu(tree, super::tree_card::Place::Tab),
+                "pinned": tree.place.pinned(),
+                "menu": super::tree_card::menu(tree),
             })
         })
         .collect();
@@ -72,9 +72,9 @@ pub(crate) fn frame(
         }
     }
     visible.extend(surfaces.palette);
-    visible.extend(forest.open().iter().map(|t| t.id.root()));
+    visible.extend(forest.tabs().iter().map(|t| t.id.root()));
     if let Some(start) = &start {
-        for mini in start["pinned"]
+        for mini in start["shelf"]
             .as_array()
             .into_iter()
             .flatten()
@@ -411,7 +411,7 @@ fn size_text(bytes: u64) -> String {
     }
 }
 
-fn visit_value(
+pub(super) fn visit_value(
     forest: &ForestProjection,
     visit: &Visit,
     loaded: &HashSet<VisitId>,
@@ -479,6 +479,24 @@ fn visit_value(
         "detail": detail,
         "when": match wait { Some(WaitState::NotLoaded) => String::new(), Some(WaitState::Loaded) => "loaded".into(), None => ago(visit.opened_at.unwrap_or(visit.created_at)) },
         "source": source,
+    })
+}
+
+/// Waiting pages the Ctrl+Tab list shows before the read ones; the rest are counted.
+const SWITCHER_WAITING: usize = 5;
+/// Read pages the Ctrl+Tab list shows.
+pub(crate) const SWITCHER_READ: usize = 8;
+
+/// The Ctrl+Tab list: the current tree's next waiting pages, then `recent`, its read pages
+/// most recently shown first. A quick Ctrl+Tab opens the first row.
+pub(crate) fn switcher_value(frame: &ChromeFrame, recent: &[VisitId]) -> Value {
+    let forest = &frame.forest;
+    let waiting = waiting::pages(forest);
+    let row = |visit: &Visit| visit_value(forest, visit, &frame.loaded, &frame.live);
+    json!({
+        "waiting": waiting.iter().take(SWITCHER_WAITING).map(|v| row(v)).collect::<Vec<_>>(),
+        "moreWaiting": waiting.len().saturating_sub(SWITCHER_WAITING),
+        "read": recent.iter().filter_map(|id| forest.visit(*id)).take(SWITCHER_READ).map(row).collect::<Vec<_>>(),
     })
 }
 
@@ -687,7 +705,7 @@ pub(crate) fn ago(timestamp_ms: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::browser::Lifecycle;
+    use crate::browser::Spot;
     #[test]
     fn branch_names_omit_zero_counts_and_repeat_no_state() {
         assert_eq!(super::branch_name("Leaf", 0, 0, false), "Leaf");
@@ -706,14 +724,15 @@ mod tests {
     use crate::browser::{Download, Snapshot, TreeId, TreeState};
 
     fn chain() -> (ForestProjection, Vec<VisitId>) {
-        chain_with_lifecycle(Lifecycle::Open {
-            tab: crate::browser::TabOrder::new(0),
+        chain_with_lifecycle(crate::browser::Spot::Tab {
+            pinned: false,
+            position: 0,
         })
     }
-    fn chain_with_lifecycle(lifecycle: Lifecycle) -> (ForestProjection, Vec<VisitId>) {
-        chain_length(lifecycle, 3)
+    fn chain_with_lifecycle(spot: Spot) -> (ForestProjection, Vec<VisitId>) {
+        chain_length(spot, 3)
     }
-    fn chain_length(lifecycle: Lifecycle, length: usize) -> (ForestProjection, Vec<VisitId>) {
+    fn chain_length(spot: Spot, length: usize) -> (ForestProjection, Vec<VisitId>) {
         let ids: Vec<VisitId> = (0..length)
             .map(|_| ulid::Ulid::new().to_string().parse().unwrap())
             .collect();
@@ -743,9 +762,8 @@ mod tests {
                 current: Some(ids[length - 2]),
             },
             vec![TreeState {
-                pin: None,
                 last_event_at: None,
-                lifecycle,
+                spot,
                 root: TreeId(ids[0]),
                 last_visit: ids[length - 2],
                 name: None,
@@ -758,13 +776,16 @@ mod tests {
     #[test]
     fn back_and_forward_name_their_pages_and_the_tree_starts_after_them() {
         let (forest, ids) = chain_length(
-            Lifecycle::Open {
-                tab: crate::browser::TabOrder::new(0),
+            crate::browser::Spot::Tab {
+                pinned: false,
+                position: 0,
             },
             4,
         );
         let frame = |forest: ForestProjection, back: Option<VisitId>, forward: Option<VisitId>| {
             ChromeFrame {
+                canopy_layout: Default::default(),
+                shown: Default::default(),
                 mail: crate::mail::Mail::default(),
                 loaded: HashSet::new(),
                 live: HashSet::new(),
@@ -796,8 +817,9 @@ mod tests {
         assert_eq!(strip["left"], pins::NAV);
         let pins = pins::pins(
             &chain_length(
-                Lifecycle::Open {
-                    tab: crate::browser::TabOrder::new(0),
+                crate::browser::Spot::Tab {
+                    pinned: false,
+                    position: 0,
                 },
                 4,
             )
@@ -808,8 +830,9 @@ mod tests {
         assert_eq!(strip["room"], pins.room - pins::NAV);
 
         let (root, _) = chain_length(
-            Lifecycle::Open {
-                tab: crate::browser::TabOrder::new(0),
+            crate::browser::Spot::Tab {
+                pinned: false,
+                position: 0,
             },
             2,
         );
@@ -820,8 +843,9 @@ mod tests {
         let narrow = strip_for_frame(
             &frame(
                 chain_length(
-                    Lifecycle::Open {
-                        tab: crate::browser::TabOrder::new(0),
+                    crate::browser::Spot::Tab {
+                        pinned: false,
+                        position: 0,
                     },
                     4,
                 )
@@ -837,8 +861,9 @@ mod tests {
         );
         let pins = pins::pins(
             &chain_length(
-                Lifecycle::Open {
-                    tab: crate::browser::TabOrder::new(0),
+                crate::browser::Spot::Tab {
+                    pinned: false,
+                    position: 0,
                 },
                 4,
             )
@@ -906,8 +931,9 @@ mod tests {
     #[test]
     fn current_pill_fits_reserved_room() {
         let (forest, _) = chain_length(
-            Lifecycle::Open {
-                tab: crate::browser::TabOrder::new(0),
+            crate::browser::Spot::Tab {
+                pinned: false,
+                position: 0,
             },
             40,
         );
@@ -941,6 +967,84 @@ mod tests {
     }
 
     #[test]
+    fn switcher_lists_five_waiting_pages_then_the_read_ones() {
+        use crate::browser::{Snapshot, Spot, TreeState, Visit, VisitState};
+        let ids: Vec<VisitId> = (0..8)
+            .map(|_| ulid::Ulid::new().to_string().parse().unwrap())
+            .collect();
+        // 0 is the root and current page, 1 a read child, 2..8 waiting children.
+        let visits = (0..8)
+            .map(|i| {
+                let opened = i < 2;
+                Visit {
+                    dismissed_at: None,
+                    branch_settled_at: None,
+                    id: ids[i],
+                    parent: (i > 0).then(|| ids[0]),
+                    url: url::Url::parse(&format!("https://example.org/{i}")).unwrap(),
+                    title: format!("Page {i}"),
+                    created_at: i as i64,
+                    opened_at: opened.then_some(i as i64),
+                    state: if opened {
+                        VisitState::Opened
+                    } else {
+                        VisitState::Queued
+                    },
+                    source: None,
+                }
+            })
+            .collect();
+        let forest = ForestProjection::from_snapshot(
+            Snapshot {
+                visits,
+                current: Some(ids[0]),
+            },
+            vec![TreeState {
+                last_event_at: None,
+                root: TreeId(ids[0]),
+                last_visit: ids[0],
+                name: None,
+                spot: Spot::Tab {
+                    pinned: false,
+                    position: 0,
+                },
+            }],
+        )
+        .unwrap();
+        let frame = ChromeFrame {
+            mail: crate::mail::Mail::default(),
+            forest,
+            loaded: Default::default(),
+            live: [ids[1]].into_iter().collect(),
+            canopy_layout: Default::default(),
+            shown: Default::default(),
+            capture_enabled: true,
+            trees_help: false,
+            theme: ThemeMode::Light,
+            declined: Default::default(),
+            bookmarks: vec![],
+            back: None,
+            forward: None,
+            pending: None,
+            files: vec![],
+        };
+        let value = super::switcher_value(&frame, &[ids[1]]);
+        let listed = |key: &str| {
+            value[key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["id"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let id = |i: usize| ids[i].to_string();
+        assert_eq!(listed("waiting"), [id(7), id(6), id(5), id(4), id(3)]);
+        assert_eq!(value["moreWaiting"], 1);
+        assert_eq!(listed("read"), [id(1)]);
+        assert_eq!(value["read"][0]["live"], true);
+    }
+
+    #[test]
     fn closed_surfaces_omit_history_and_open_surfaces_include_their_pages() {
         let dir = tempfile::tempdir().unwrap();
         let mut browser = crate::browser::Browser::open(&dir.path().join("db")).unwrap();
@@ -950,9 +1054,18 @@ mod tests {
                 url::Url::parse("https://settled.example").unwrap(),
             ])
             .unwrap();
-        browser.settle_tree(TreeId(roots[1])).unwrap();
-        browser.set_pinned(TreeId(roots[1]), true).unwrap();
+        browser
+            .place_tree(TreeId(roots[1]), crate::browser::Move::History)
+            .unwrap();
+        browser
+            .place_tree(
+                TreeId(roots[1]),
+                crate::browser::Move::Shelf(crate::browser::Slot::End),
+            )
+            .unwrap();
         let frame = ChromeFrame {
+            canopy_layout: Default::default(),
+            shown: Default::default(),
             mail: crate::mail::Mail::default(),
             forest: ForestProjection::from_snapshot(
                 browser.snapshot().unwrap(),
@@ -1002,7 +1115,7 @@ mod tests {
                 palette: None,
             },
         );
-        assert_eq!(start["start"]["pinned"].as_array().unwrap().len(), 1);
+        assert_eq!(start["start"]["shelf"].as_array().unwrap().len(), 1);
         assert!(start["visits"][roots[1].to_string()].is_object());
     }
 
@@ -1010,6 +1123,8 @@ mod tests {
     fn loaded_frame_serializes_all_three_states() {
         let (forest, ids) = chain();
         let mut frame = ChromeFrame {
+            canopy_layout: Default::default(),
+            shown: Default::default(),
             mail: crate::mail::Mail::default(),
             forest,
             loaded: HashSet::new(),
@@ -1119,13 +1234,17 @@ mod tests {
         browser
             .add_roots(&[url::Url::parse("https://example.org/b").unwrap()])
             .unwrap();
-        browser.settle_tree(current).unwrap();
+        browser
+            .place_tree(current, crate::browser::Move::History)
+            .unwrap();
         let forest = ForestProjection::from_snapshot(
             browser.snapshot().unwrap(),
             browser.tree_states().unwrap(),
         )
         .unwrap();
         let frame = ChromeFrame {
+            canopy_layout: Default::default(),
+            shown: Default::default(),
             mail: crate::mail::Mail::default(),
             loaded: HashSet::new(),
             live: HashSet::new(),
@@ -1158,8 +1277,10 @@ mod tests {
 
     #[test]
     fn settled_current_pages_stay_scoped_during_a_navigation() {
-        let (forest, ids) = chain_with_lifecycle(Lifecycle::Settled { since: 1 });
+        let (forest, ids) = chain_with_lifecycle(crate::browser::Spot::History { settled_at: 1 });
         let frame = ChromeFrame {
+            canopy_layout: Default::default(),
+            shown: Default::default(),
             mail: crate::mail::Mail::default(),
             loaded: HashSet::new(),
             live: HashSet::new(),
@@ -1192,6 +1313,8 @@ mod tests {
     fn the_frame_carries_every_visit_and_the_folded_strip() {
         let (forest, ids) = chain();
         let frame = ChromeFrame {
+            canopy_layout: Default::default(),
+            shown: Default::default(),
             mail: crate::mail::Mail::default(),
             loaded: HashSet::new(),
             live: HashSet::new(),
@@ -1252,6 +1375,8 @@ mod tests {
             missing,
         };
         let frame = ChromeFrame {
+            canopy_layout: Default::default(),
+            shown: Default::default(),
             mail: crate::mail::Mail::default(),
             loaded: HashSet::new(),
             live: HashSet::new(),
@@ -1354,16 +1479,19 @@ mod tests {
                 root: TreeId(ids[0]),
                 last_visit: ids[0],
                 name: None,
-                pin: None,
+
                 last_event_at: None,
-                lifecycle: Lifecycle::Open {
-                    tab: crate::browser::TabOrder::new(0),
+                spot: crate::browser::Spot::Tab {
+                    pinned: false,
+                    position: 0,
                 },
             }],
         )
         .unwrap();
-        assert_eq!(forest.open()[0].pending_count, 0);
+        assert_eq!(forest.tabs()[0].pending_count, 0);
         let frame = ChromeFrame {
+            canopy_layout: Default::default(),
+            shown: Default::default(),
             mail: crate::mail::Mail::default(),
             forest,
             loaded: ids.iter().copied().collect(),

@@ -37,6 +37,12 @@ The download test points `HOME`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` at a temp
 
 `newtree_smoke` checks pinned cards, the tab menu, new-tree typing and focus, the empty strip placeholder, and scrolling at 900 by 600. Set `CANOPY_NEWTREE_SHOTS=1` to save dark and light captures in `.cache/shots/`.
 
+## Check the Canopy map
+
+`canopy_smoke` drives the return journey, native wheel anchors, held refreshes, drag suppression, menus and keyboard controls. It saves dark and light captures at 1920, 728 and 390 px in `.cache/shots/canopy-view/`. Run it with `LC_TIME=fr_FR.UTF-8` and the private display recipe above.
+
+`forest_latency_smoke` runs only with `FOREST_LATENCY=1`. Build with `--release` for measurements. `FOREST_FIXTURE` supplies a copied database. `FOREST_ZOOM=1` measures native wheel threshold steps and a Near wheel step. `FOREST_BIG=500` generates a local 500-page tree, prints six showings-query samples, and drives native keyboard, menu and drag input after timing. The first query sample is the warmup. `FOREST_LAYOUT=islands` selects Islands in the private observer profile. Each opening ends two animation frames after the expected scene is visible. Keep first-open and reopen samples separate and alternate base and candidate runs on the same database.
+
 ## Retake the README's pictures
 
 The pictures and the short film in the README come from the real window, browsing made-up sites that `tests/readme_site` serves on this computer. Nothing is fetched from the web. After a change to the chrome, retake them all with one command. It needs Xvfb, xdotool and ffmpeg:

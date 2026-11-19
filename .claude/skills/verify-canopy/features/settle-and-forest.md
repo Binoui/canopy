@@ -1,18 +1,21 @@
 # Settle and the forest
 
-Settling removes a tab and keeps every page, including waiting pages. Undo returns it. Saving and settling are independent.
+A tree is in Tabs, Saved for later or History. Pins belong only to Tabs. Leaving Tabs retires its pages and clears its pin. Ctrl+W settles even pinned tabs. Settle keeps its existing toast Undo and Ctrl+Shift+T recovery.
 
-## Sub-features
+## Canopy
 
-- `settle-tree`: Ctrl+W, tab ×, middle click or tree menu; Undo or Ctrl+Shift+T restores it.
-- `forest-view`: Ctrl+E or Forest opens Trees, with Open cards in tab order and Saved cards in saved order. Ctrl+H opens History, switches from Trees, or closes History.
-- `forest-history`: settled unsaved trees grouped by local last-use day; select a row for a miniature and a capped preorder outline. Reopen/Enter/double-click resumes its last page; an outline click opens that page. Save keeps it settled, moves it to Saved and selects the successor.
-- `forest-find`: typing anywhere searches titles and every site in both views. Escape clears text first, then closes; close clears the query.
+See [Canopy](../../../../docs/canopy.md). Open with Ctrl+E and the Canopy button. From a deep linked page, click the hub, reopen and return through Back to or a folded site. Repeat in Flow and Islands. Switch layouts with the current page in view, then quit and start the same private profile to check the remembered choice at Middle. Resize after every start. On a physical touchpad, pinch over a page across both thresholds and back, then check wheel, keys and preset buttons. Pinch delivery cannot be proven on Xvfb. In Islands, check that a three-item chain follows one spoke and that the current tree opens clear of the header and footer. Check all three zooms, current and previous marks, waiting and visited state, showing sizes, hover text, wheel anchoring, native stepped drag, arrows, Enter, Tab containment, Escape and both menus. Non-navigation menu actions keep the map open. Saved trees reopen from the new-tree shelf. Check stored tab order across a restart.
 
-## Drive with canopy-verify
+## History
 
-Use a stress launch and doctor. At 1240px, open Ctrl+E; inspect Open and Saved, click a card, then reopen. Use arrows and Tab. Menu, Shift+F10 and right-click open Rename, Save tree/Remove from saved, and Settle tree for open trees. All mutations keep the forest open, including settling the current tree.
+See [History](../../../../docs/forest-history.md). Drive Ctrl+H and select a row to unfold its pages in place. Choose an outline page and confirm the tree reopens there. Check the time, miniature, title, page trail, sites and page count. Drive page-name Find and its marked trail, Escape, When jumps with loading at both edges, site filters and narrow site chips. Check a tall window fills. Drive Reopen, Save for later, Delete, Delete day and Undo. Check captures and download records disappear, bookmarks and files remain, and restored captures are searchable. Delete without Undo persists across restart.
 
-Open Ctrl+H. Select a history row, use Up/Down and inspect the preview; exercise Reopen, Save and an outline page. Find a title and a site; check no matches and the two Escape presses. Resize to at least 1920px and below 700px pop-in width; the preview stacks above the list at narrow width. Capture dark and light at each size, resizing by one pixel and back before capture if WebKit leaves a black band. On large fixtures, Show older trees or keyboard traversal extends the loaded rows by 60.
+## Move a branch
 
-Check saved/settled state with read-only `tree_state` queries. A saved settled card also restores from the new-tree page after a restart. With no history a hint explains it; no saved trees has a separate saving hint. The forest keeps 22px margins and no width cap. Closing returns focus to its trigger or the page; Ctrl+W closes the forest before settling.
+Open a page's menu, choose **Move to tree…**, and select a tab. Check that the page and its descendants appear in that tree and the current page stays selected if it moved. Open a root's **Merge into tree…** picker and check the warning. After restarting, check the new parent and tree in the private database.
+
+Drag a strip page onto a tab, then drag a tab among the pinned tabs. Open the Canopy map and find the moved page under its new tree. Restart and check the parent and pin order. Use native `canopy-verify drag` gestures.
+
+## Verification
+
+Use a private stress launch and doctor. Check 390 px and at least 1920 px widths, both themes and English dates under LC_TIME=fr_FR.UTF-8. Run tree_places_smoke for the shared model, canopy_smoke for the map and forest_history_smoke for History rows and in-place outlines. Check schema 16 with tree_state(place,position,pinned,placed_at). Never open the real forest. Copy the schema-14 timing fixture before migrating it. When replacing the database in a stopped private run, remove that run’s old `forest.sqlite3-wal` and `forest.sqlite3-shm` first. Confirm the copied fixture contains 2,000 trees and 20,000 pages before driving it.

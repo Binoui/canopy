@@ -366,7 +366,7 @@ fn main() -> Result<()> {
     ui.pages.go(Go::Visit(fresh))?;
     question(&ui)?;
     let tree = ui.chrome.current_tree().unwrap();
-    ui.pages.settle_tree(tree)?;
+    ui.pages.place_tree(tree, canopy::browser::Move::History)?;
     pump(700);
     assert!(!visible(&ui, "#form-return"));
     assert_eq!(server.hits("POST /post"), sent + 1);

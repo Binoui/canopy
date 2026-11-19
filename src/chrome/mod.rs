@@ -16,6 +16,7 @@ pub(crate) mod graph;
 mod loading;
 mod page_scale;
 mod palette;
+mod pinch;
 mod pins;
 mod start;
 mod tabs;
@@ -67,8 +68,12 @@ thread_local! {
 /// The query and rows last sent to the view, and their default row.
 type ShownPalette = (String, Vec<(Group, PaletteItem)>, usize);
 
+pub use forest_pane::CanopyLayout;
+
 /// Everything the chrome shows, read from SQLite in one go.
 pub struct ChromeFrame {
+    pub canopy_layout: CanopyLayout,
+    pub shown: crate::browser::Showings,
     pub mail: crate::mail::Mail,
     pub bookmarks: Vec<crate::browser::Bookmark>,
     pub forest: ForestProjection,
@@ -135,11 +140,13 @@ pub enum ChromeIntent {
     },
     Stop,
     SelectTree(TreeId),
-    MoveTree {
+    PlaceTree {
         tree: TreeId,
-        to_index: usize,
+        to: crate::browser::Move,
     },
-    SettleTree(TreeId),
+    DeleteTrees(Vec<TreeId>),
+    UndoDelete(crate::browser::DeleteId),
+    ForgetDeleted,
     Dismiss(VisitId),
     SettleBranch(VisitId),
     MoveBranch {
@@ -160,6 +167,7 @@ pub enum ChromeIntent {
     },
     Decline(crate::suggest::SuggestionKey),
     SetTheme(ThemeMode),
+    SetCanopyLayout(CanopyLayout),
     ShowTreesHelp(bool),
     CancelContinuation,
     Restore(VisitId),
@@ -198,10 +206,6 @@ pub enum ChromeIntent {
         save: bool,
     },
     RemoveBookmark(crate::browser::BookmarkId),
-    PinTree {
-        tree: TreeId,
-        pinned: bool,
-    },
     Find {
         session: crate::pages::FindId,
         action: crate::pages::FindAction,
@@ -282,6 +286,9 @@ struct Inner {
     /// The last palette results, so Enter runs exactly the row the view showed.
     palette: RefCell<Option<ShownPalette>>,
     workbench: RefCell<tree_view::Workbench>,
+    /// A page covers the window; the chrome and its toasts stay hidden.
+    fullscreen: Cell<bool>,
+    pinch: gtk::GestureZoom,
 }
 
 impl HtmlChrome {
@@ -316,6 +323,8 @@ impl HtmlChrome {
                 !(hit.context_is_editable() || hit.context_is_selection())
             });
         }
+        use wry::WebViewExtUnix;
+        let pinch = gtk::GestureZoom::new(&view.webview());
         let inner = Rc::new_cyclic(|me| Inner {
             view,
             container: container.clone(),
@@ -341,6 +350,8 @@ impl HtmlChrome {
             palette_scope: Cell::new(None),
             palette: RefCell::new(None),
             workbench: RefCell::default(),
+            fullscreen: Cell::new(false),
+            pinch,
         });
         {
             use gtk::prelude::*;
@@ -360,6 +371,7 @@ impl HtmlChrome {
                     false
                 });
         }
+        pinch::connect(&inner);
         *slot.borrow_mut() = Rc::downgrade(&inner);
         let weak = Rc::downgrade(&inner);
         favicons.connect_changed(move |url, revision| {
@@ -382,7 +394,7 @@ impl HtmlChrome {
         // would be current with no tab to stand under.
         if let Some(crate::browser::PendingTarget::Visit(visit)) = &frame.pending {
             let tree = frame.forest.tree_of(*visit);
-            if frame.forest.open().iter().any(|t| Some(t.id) == tree) {
+            if frame.forest.tabs().iter().any(|t| Some(t.id) == tree) {
                 frame.forest.show_current(*visit);
             }
         }
@@ -453,7 +465,7 @@ impl HtmlChrome {
             .borrow()
             .as_ref()?
             .forest
-            .open()
+            .tabs()
             .get(index)
             .map(|t| t.id)
     }
@@ -471,6 +483,18 @@ impl HtmlChrome {
         }
     }
 
+    pub fn forest_open(&self) -> bool {
+        self.inner.forest.borrow().is_open()
+    }
+    pub fn deleted(&self, id: Option<crate::browser::DeleteId>, text: String) {
+        self.inner.forest.borrow_mut().deleted(id, text);
+    }
+    pub fn rerank_suggestions(&self, forest: &crate::forest::ForestProjection) {
+        if let Some(host) = self.inner.host() {
+            *self.inner.suggested.borrow_mut() = host.suggestions(forest).unwrap_or_default();
+            self.inner.palette.borrow_mut().take();
+        }
+    }
     pub fn settle_current(&self) {
         match self.inner.escape_surface.get() {
             Some("list") | None => {
@@ -492,8 +516,35 @@ impl HtmlChrome {
         let _ = self.inner.view.focus();
     }
 
-    pub fn next_waiting(&self) {
-        self.inner.call("nextWaiting", &[]);
+    /// Opens the Ctrl+Tab list. `recent` reads the current tree's read pages, most
+    /// recently shown first, from the forest the chrome shows.
+    pub fn open_switcher(
+        &self,
+        recent: impl FnOnce(&ForestProjection, usize) -> Result<Vec<VisitId>>,
+    ) -> Result<()> {
+        let rows = {
+            let frame = self.inner.frame.borrow();
+            let Some(frame) = frame.as_ref() else {
+                return Ok(());
+            };
+            view::switcher_value(frame, &recent(&frame.forest, view::SWITCHER_READ)?)
+        };
+        self.inner.call("switcher", &[json!("open"), rows]);
+        Ok(())
+    }
+
+    /// Moves the Ctrl+Tab selection one row down, or up with `back`, wrapping at the ends.
+    pub fn step_switcher(&self, back: bool) {
+        self.inner.call(
+            "switcher",
+            &[json!("step"), json!(if back { -1 } else { 1 })],
+        );
+    }
+
+    /// Closes the Ctrl+Tab list, opening the selected page when `open` is set.
+    pub fn end_switcher(&self, open: bool) {
+        self.inner
+            .call("switcher", &[json!(if open { "commit" } else { "cancel" })]);
     }
 
     pub fn toggle_tree(&self) {
@@ -659,6 +710,24 @@ impl HtmlChrome {
         self.inner.present_error();
     }
 
+    /// Hides the chrome while a page is fullscreen, and brings it back after.
+    pub fn set_fullscreen(&self, on: bool) {
+        use gtk::prelude::WidgetExt;
+        use wry::WebViewExtUnix;
+        let inner = &self.inner;
+        if inner.fullscreen.replace(on) == on {
+            return;
+        }
+        inner.view.webview().set_visible(!on);
+        if on {
+            if let Some(error) = inner.error_view.borrow().as_ref() {
+                error.bounds(inner.size.get(), false);
+            }
+        } else {
+            inner.apply_bounds();
+        }
+    }
+
     /// Puts the chrome back above the page, after the page moved or took focus.
     pub fn raise(&self) {
         self.inner.raise();
@@ -758,7 +827,8 @@ impl Inner {
             window.raise();
         }
         if let Some(error) = self.error_view.borrow().as_ref() {
-            error.bounds(self.size.get(), self.errors.borrow().showing());
+            let showing = self.errors.borrow().showing() && !self.fullscreen.get();
+            error.bounds(self.size.get(), showing);
         }
     }
 
@@ -819,6 +889,24 @@ impl Inner {
     fn forest_reply(&self, reply: forest_pane::Reply) {
         match reply {
             forest_pane::Reply::Unchanged => {}
+            forest_pane::Reply::Act(intent) => {
+                if let Some(host) = self.host() {
+                    host.dispatch(intent);
+                }
+            }
+            forest_pane::Reply::Go(intent) => {
+                self.call("navigated", &[]);
+                if let Some(host) = self.host() {
+                    host.dispatch(intent);
+                    host.focus_page();
+                }
+            }
+            forest_pane::Reply::Return => {
+                self.call("navigated", &[]);
+                if let Some(host) = self.host() {
+                    host.focus_page();
+                }
+            }
             forest_pane::Reply::Close => self.call("escape", &[json!("overlay")]),
             forest_pane::Reply::Show(value) => self.call("forest", &[value]),
         }
@@ -862,10 +950,30 @@ impl Inner {
                 self.palette_scope
                     .set(message["id"].as_str().map(str::parse).transpose()?);
             }
+            "tree" => {
+                let tree = TreeId(message["tree"].as_str().context("Missing tree")?.parse()?);
+                let act = tree_card::Act::parse(message["act"].as_str().unwrap_or_default())
+                    .context("Unknown tree action")?;
+                let intent = {
+                    let frame = self.frame.borrow();
+                    frame
+                        .as_ref()
+                        .and_then(|f| f.forest.tree(tree))
+                        .and_then(|t| tree_card::intent(t, act))
+                };
+                if let (Some(intent), Some(host)) = (intent, self.host()) {
+                    host.dispatch(intent);
+                }
+            }
             "forest" => {
                 let input = forest_pane::Input::parse(&message)?;
-                if let Some(frame) = self.frame.borrow().as_ref() {
-                    let reply = self.forest.borrow_mut().input(input, frame);
+                let reply = {
+                    let frame = self.frame.borrow();
+                    frame
+                        .as_ref()
+                        .map(|frame| self.forest.borrow_mut().input(input, frame))
+                };
+                if let Some(reply) = reply {
                     self.forest_reply(reply);
                 }
             }
@@ -1192,13 +1300,23 @@ impl Inner {
                 to: parse_move_to(&message["to"])?,
             },
             "undo-settle" => ChromeIntent::UndoSettle,
-            "settle-tree" => ChromeIntent::SettleTree(TreeId(id("id")?)),
-            "settle-current" => ChromeIntent::SettleCurrent,
-            "select-tree" => ChromeIntent::SelectTree(TreeId(id("id")?)),
-            "move-tree" => ChromeIntent::MoveTree {
+
+            "place-tree" => ChromeIntent::PlaceTree {
                 tree: TreeId(id("id")?),
-                to_index: usize::try_from(message["index"].as_u64()?).ok()?,
+                to: match message["place"].as_str()? {
+                    "tabs" => crate::browser::Move::Tabs(if message["before"].is_null() {
+                        crate::browser::Slot::End
+                    } else {
+                        let before = TreeId(id("before")?);
+                        if !frame.forest.tree(before)?.place.is_tab() {
+                            return None;
+                        }
+                        crate::browser::Slot::Before(before)
+                    }),
+                    _ => return None,
+                },
             },
+            "settle-current" => ChromeIntent::SettleCurrent,
             "rename-tree" => {
                 ChromeIntent::RenameTree(TreeId(id("id")?), message["name"].as_str()?.to_owned())
             }
@@ -1235,10 +1353,6 @@ impl Inner {
                 offer: message["offer"].as_u64()?,
                 index: index()?,
             },
-            "pin-tree" => ChromeIntent::PinTree {
-                tree: TreeId(id("id")?),
-                pinned: message["pinned"].as_bool()?,
-            },
             "open-bookmark" => ChromeIntent::Navigate {
                 url: frame
                     .bookmarks
@@ -1267,6 +1381,39 @@ impl Inner {
 
 /// The chrome's own files, its font, and page icons, on the `canopy://` scheme. Only the
 /// chrome view registers it, so pages cannot read it.
+const FOREST_ASSETS: &[(&str, &str, &[u8])] = &[
+    (
+        "/forest.js",
+        "text/javascript",
+        include_bytes!("assets/forest.js"),
+    ),
+    (
+        "/forest.css",
+        "text/css",
+        include_bytes!("assets/forest.css"),
+    ),
+    (
+        "/forest-canopy.js",
+        "text/javascript",
+        include_bytes!("assets/forest-canopy.js"),
+    ),
+    (
+        "/forest-canopy.css",
+        "text/css",
+        include_bytes!("assets/forest-canopy.css"),
+    ),
+    (
+        "/forest-history.js",
+        "text/javascript",
+        include_bytes!("assets/forest-history.js"),
+    ),
+    (
+        "/forest-history.css",
+        "text/css",
+        include_bytes!("assets/forest-history.css"),
+    ),
+];
+
 fn serve(request: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
     let respond = |kind: &str, body: Cow<'static, [u8]>| {
         Response::builder()
@@ -1282,6 +1429,13 @@ fn serve(request: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
         ),
         "/chrome.css" => respond("text/css", Cow::Borrowed(CSS.as_bytes())),
         "/chrome.js" => respond("text/javascript", Cow::Borrowed(SCRIPT.as_bytes())),
+        path if FOREST_ASSETS.iter().any(|(name, _, _)| *name == path) => {
+            let (_, kind, bytes) = FOREST_ASSETS
+                .iter()
+                .find(|(name, _, _)| *name == request.uri().path())
+                .unwrap();
+            respond(kind, Cow::Borrowed(bytes))
+        }
         "/inter.ttf" => respond("font/ttf", Cow::Borrowed(INTER)),
         "/icon" => {
             let query = request.uri().query().unwrap_or_default();
@@ -1315,5 +1469,33 @@ fn rect(x: f64, y: f64, width: f64, height: f64) -> Rect {
     Rect {
         position: LogicalPosition::new(x, y).into(),
         size: LogicalSize::new(width.max(1.), height.max(1.)).into(),
+    }
+}
+
+#[cfg(test)]
+mod forest_asset_tests {
+    #[test]
+    fn chrome_markup_calls_the_map_canopy() {
+        assert!(INDEX.contains("title=\"Canopy · Ctrl+E\""));
+        assert!(INDEX.contains("aria-label=\"Canopy\""));
+        assert!(INDEX.contains("data-view=\"canopy\">Canopy"));
+        assert!(!INDEX.contains("forest-trees"));
+        assert!(!INDEX.contains(">Forest<"));
+        assert!(!SCRIPT.contains("<span>Forest</span>"));
+    }
+
+    use super::*;
+    #[test]
+    fn split_assets_are_served_and_ready_waits_for_all_scripts() {
+        for (name, _, bytes) in FOREST_ASSETS {
+            assert!(INDEX.contains(&format!("\"{}\"", &name[1..])));
+            assert!(!bytes.is_empty());
+        }
+        assert!(SCRIPT
+            .contains("document.addEventListener('DOMContentLoaded', () => post({ t: 'ready' }))"));
+        assert!(
+            SCRIPT.find("  forest(value)").unwrap()
+                < SCRIPT.find("for (const kind of ['present'").unwrap()
+        );
     }
 }

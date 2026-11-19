@@ -259,7 +259,8 @@ fn a_link_parent_in_another_tree_gets_its_own_branch() -> Result<()> {
         !f.ui.pages.selected_history_visits().contains(&b),
         "history cannot mix two trees"
     );
-    f.ui.pages.settle_tree(tree)?;
+    f.ui.pages
+        .place_tree(tree, canopy::browser::Move::History)?;
     common::wait("live landing selected", || {
         f.ui.snapshot().is_ok_and(|s| s.current == Some(b))
             && f.ui.pages.selected_page().native == landing
@@ -282,7 +283,8 @@ fn settling_a_tree_cancels_its_loading_child_candidate() -> Result<()> {
         target: canopy::browser::NavigationTarget::ChildOf(a),
     })?;
     common::wait("child candidate requested", || f.hits("/slow") == 1)?;
-    f.ui.pages.settle_tree(tree)?;
+    f.ui.pages
+        .place_tree(tree, canopy::browser::Move::History)?;
     common::pump(2400);
     assert_eq!(f.ui.snapshot()?.current, Some(b));
     assert!(
@@ -504,7 +506,8 @@ fn settle_removes_live_pages_and_disables_old_input() -> Result<()> {
         .unwrap();
     let b = f.root("/b")?;
     f.select(child)?;
-    f.ui.pages.settle_tree(tree)?;
+    f.ui.pages
+        .place_tree(tree, canopy::browser::Move::History)?;
     assert!(
         !native.is_sensitive(),
         "settled view rejects input immediately"
@@ -540,7 +543,8 @@ fn settled_page_rejects_clicks_while_dormant_landing_loads() -> Result<()> {
         .tree_of(old)
         .unwrap();
     let (x, y) = common::element_point(&f.ui, "link")?;
-    f.ui.pages.settle_tree(tree)?;
+    f.ui.pages
+        .place_tree(tree, canopy::browser::Move::History)?;
     assert!(!native.is_sensitive());
     common::xdo(&["mousemove", &x.to_string(), &y.to_string(), "click", "1"])?;
     common::pump(200);
@@ -580,7 +584,8 @@ fn commands_wait_for_a_settle_landing() -> Result<()> {
                 })?
                 .tree_of(old)
                 .unwrap();
-        f.ui.pages.settle_tree(tree)?;
+        f.ui.pages
+            .place_tree(tree, canopy::browser::Move::History)?;
         common::pump(100);
         if action == "address" {
             f.ui.pages.go(Go::Address {
@@ -687,7 +692,8 @@ fn audible_hidden_page_is_protected() -> Result<()> {
         .tree_of(a)
         .unwrap();
     f.select(a)?;
-    f.ui.pages.settle_tree(tree)?;
+    f.ui.pages
+        .place_tree(tree, canopy::browser::Move::History)?;
     assert!(
         native.is_muted(),
         "settling stops selected audio immediately, including while it covers a landing"

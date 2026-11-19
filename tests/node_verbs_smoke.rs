@@ -429,13 +429,14 @@ fn main() -> Result<()> {
         || f.ui.snapshot().is_ok_and(|s| s.current == Some(waiting)),
     )?;
     println!("PASS waiting-row node menu, Dismiss drops its background view and queue entry, reopening clears the mark, Ctrl+Tab reads remaining waiting.");
-    f.ui.pages.settle_tree(
+    f.ui.pages.place_tree(
         f.ui.pages
             .read(|b| {
                 canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)
             })?
             .tree_of(a)
             .unwrap(),
+        canopy::browser::Move::History,
     )?;
     common::wait("tree settle undo", || {
         common::visible(&f.ui, "#toast button")
@@ -710,7 +711,7 @@ fn page_move_picker() -> Result<()> {
     );
     common::click_chrome(&f.ui, "[data-node-action='choose-move-tree']")?;
     common::wait("Rust merge warning", || {
-        common::text(&f.ui, "#popover").contains("saved state and tab")
+        common::text(&f.ui, "#popover").contains("drops its name and tab")
     })?;
     common::key("Home")?;
     common::key("Return")?;
@@ -836,8 +837,24 @@ fn drag_store(f: &Fixture) -> Result<serde_json::Value> {
             Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let trees = db.prepare("SELECT root_id, last_visit_id, name, pin_order, tab_order FROM tree_state ORDER BY tab_order")?
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Option<i64>>(3)?, row.get::<_, i64>(4)?)))?
+    let trees = db
+        .prepare(
+            "SELECT root_id, last_visit_id, name, place, position, pinned, placed_at
+             FROM tree_state
+             ORDER BY CASE place WHEN 'tab' THEN 0 WHEN 'shelf' THEN 1 ELSE 2 END,
+                 pinned DESC, position, placed_at DESC, root_id",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, bool>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(serde_json::json!({"visits":visits, "trees":trees}))
 }
@@ -903,7 +920,7 @@ fn page_move_drag() -> Result<()> {
     println!("PASS empty strip creates a tree at the end of the stored tab order.");
 
     let target = common::chrome_point(&f.ui, &tab(d))?;
-    drag_branch(&f, &node(c), target, "!!document.querySelector('.tab.page-drop-allowed') && !document.getElementById('page-drag-warning').hidden && document.getElementById('page-drag-warning').textContent.includes('saved state and tab')", false)?;
+    drag_branch(&f, &node(c), target, "!!document.querySelector('.tab.page-drop-allowed') && !document.getElementById('page-drag-warning').hidden && document.getElementById('page-drag-warning').textContent.includes('drops its name and tab')", false)?;
     assert_eq!(stored_parent(&f, c)?, Some(d.to_string()));
     assert!(!drag_store(&f)?["trees"]
         .as_array()

@@ -1,4 +1,4 @@
-use super::{Browser, TreeId, VisitId};
+use super::{Browser, TreeId, VisitId, VisitState};
 use crate::{address::web_url, forest::ForestProjection, suggest::SuggestionKey};
 use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
@@ -89,13 +89,49 @@ impl Browser {
             for id in std::iter::once(destination).chain(source) {
                 let id: VisitId = id.parse()?;
                 if let Some(tree) = forest.tree_of(id) {
-                    if Some(tree) != current && forest.open().iter().any(|t| t.id == tree) {
+                    if Some(tree) != current && forest.tabs().iter().any(|t| t.id == tree) {
                         return Ok(Some(tree));
                     }
                 }
             }
         }
         Ok(None)
+    }
+
+    /// The current tree's read pages, most recently shown first, for the Ctrl+Tab list.
+    /// The current page and pages in put-away branches are left out.
+    pub fn recent_pages(&self, forest: &ForestProjection, limit: usize) -> Result<Vec<VisitId>> {
+        let Some(current) = forest.current() else {
+            return Ok(Vec::new());
+        };
+        let Some(tree) = forest.tree_of(current) else {
+            return Ok(Vec::new());
+        };
+        let opened = |id: VisitId| {
+            forest
+                .visit(id)
+                .is_some_and(|v| v.state == VisitState::Opened)
+        };
+        let root = tree.root();
+        // Once every read page of the tree has been seen, older events add nothing.
+        let total = forest.opened_descendant_count(root) + usize::from(opened(root));
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        let mut stmt = self
+            .connection
+            .prepare("SELECT visit_id FROM visit_events ORDER BY id DESC")?;
+        let mut rows = stmt.query([])?;
+        while out.len() < limit && seen.len() < total {
+            let Some(row) = rows.next()? else { break };
+            let id: VisitId = row.get::<_, String>(0)?.parse()?;
+            if forest.tree_of(id) != Some(tree) || !opened(id) || !seen.insert(id) {
+                continue;
+            }
+            if id != current && !forest.is_settled(id) {
+                out.push(id);
+            }
+        }
+        Ok(out)
     }
 
     pub fn declined(&self) -> Result<HashSet<SuggestionKey>> {
@@ -118,5 +154,84 @@ impl Browser {
             params![key.to_string()],
         )?;
         Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LogOrder(i64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Shown {
+    times: u32,
+    last: LogOrder,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Showings {
+    pages: std::collections::HashMap<VisitId, Shown>,
+}
+
+impl Showings {
+    pub fn times(&self, id: VisitId) -> u32 {
+        self.pages.get(&id).map_or(0, |s| s.times)
+    }
+    pub fn last_shown(&self, id: VisitId) -> Option<LogOrder> {
+        self.pages.get(&id).map(|s| s.last)
+    }
+    fn eligible(&self, forest: &ForestProjection, id: VisitId) -> bool {
+        forest.current().is_some_and(|current| {
+            id != current
+                && forest.tree_of(id) == forest.tree_of(current)
+                && !forest.is_settled(id)
+                && forest
+                    .visit(id)
+                    .is_some_and(|v| v.state == super::VisitState::Opened)
+        })
+    }
+    pub fn recent(&self, forest: &ForestProjection) -> Vec<VisitId> {
+        let mut pages: Vec<_> = self
+            .pages
+            .iter()
+            .filter(|(id, _)| self.eligible(forest, **id))
+            .collect();
+        pages.sort_unstable_by_key(|(_, s)| std::cmp::Reverse(s.last));
+        pages.into_iter().map(|(id, _)| *id).collect()
+    }
+    pub fn previous(&self, forest: &ForestProjection) -> Option<VisitId> {
+        self.pages
+            .iter()
+            .filter(|(id, _)| self.eligible(forest, **id))
+            .max_by_key(|(_, s)| s.last)
+            .map(|(id, _)| *id)
+    }
+}
+impl Browser {
+    pub fn showings(&self) -> Result<Showings> {
+        let mut stmt = self.connection.prepare(
+            "WITH RECURSIVE open(id) AS (
+            SELECT root_id FROM tree_state WHERE place='tab'
+            UNION ALL SELECT v.id FROM visits v JOIN open o ON v.parent_id=o.id)
+            SELECT e.visit_id, SUM(e.kind<>'reload'), MAX(e.id)
+            FROM open o JOIN visit_events e ON e.visit_id=o.id GROUP BY e.visit_id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, u32>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        let mut pages = std::collections::HashMap::new();
+        for row in rows {
+            let (id, times, last) = row?;
+            pages.insert(
+                id.parse()?,
+                Shown {
+                    times,
+                    last: LogOrder(last),
+                },
+            );
+        }
+        Ok(Showings { pages })
     }
 }

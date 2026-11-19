@@ -195,12 +195,12 @@ impl Fit {
         step_x: 20.,
         step_y: 18.,
     };
-    pub const PREVIEW: Self = Self {
-        columns: 12,
-        rows: 5,
-        icon: 16.,
-        step_x: 30.,
-        step_y: 26.,
+    pub const ROW: Self = Self {
+        columns: 4,
+        rows: 2,
+        icon: 12.,
+        step_x: 22.,
+        step_y: 18.,
     };
     pub const CARD: Self = Self {
         columns: 7,
@@ -397,7 +397,7 @@ fn cell_rect(column: usize, row: usize) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browser::{Lifecycle, Snapshot, TreeId, TreeState, Visit, VisitState};
+    use crate::browser::{Snapshot, TreeId, TreeState, Visit, VisitState};
     use std::collections::HashSet;
 
     #[test]
@@ -418,11 +418,12 @@ mod tests {
             vec![TreeState {
                 root: TreeId(ids[0]),
                 last_visit: ids[3],
-                lifecycle: Lifecycle::Open {
-                    tab: crate::browser::TabOrder::new(0),
+                spot: crate::browser::Spot::Tab {
+                    pinned: false,
+                    position: 0,
                 },
                 name: None,
-                pin: None,
+
                 last_event_at: None,
             }],
         )
@@ -501,11 +502,12 @@ mod tests {
                 vec![TreeState {
                     root: TreeId(ids[0]),
                     last_visit: ids[0],
-                    lifecycle: Lifecycle::Open {
-                        tab: crate::browser::TabOrder::new(0),
+                    spot: crate::browser::Spot::Tab {
+                        pinned: false,
+                        position: 0,
                     },
                     name: None,
-                    pin: None,
+
                     last_event_at: None,
                 }],
             )
@@ -637,12 +639,12 @@ mod tests {
                     current: Some(ids[current]),
                 },
                 vec![TreeState {
-                    pin: None,
                     last_event_at: None,
                     root: TreeId(ids[0]),
                     last_visit: ids[current],
-                    lifecycle: Lifecycle::Open {
-                        tab: crate::browser::TabOrder::new(0),
+                    spot: crate::browser::Spot::Tab {
+                        pinned: false,
+                        position: 0,
                     },
                     name: None,
                 }],

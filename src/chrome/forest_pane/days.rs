@@ -23,23 +23,30 @@ const MONTHS: [&str; 12] = [
 ];
 fn civil(t: DateTime) -> Civil {
     Civil {
-        date: t.format("%Y-%m-%d").unwrap().to_string(),
+        date: format!("{:04}-{:02}-{:02}", t.year(), t.month(), t.day_of_month()),
+        ordinal: DateTime::from_utc(t.year(), t.month(), t.day_of_month(), 12, 0, 0.)
+            .unwrap()
+            .to_unix()
+            .div_euclid(86400),
+        weekday: t.day_of_week(),
+        month: t.month(),
         year: t.year(),
-        day: t.day_of_year(),
         label: format!(
             "{} {} {}",
             WEEKDAYS[(t.day_of_week() - 1) as usize],
             t.day_of_month(),
             MONTHS[(t.month() - 1) as usize]
         ),
-        clock: t.format("%H:%M").unwrap().to_string(),
+        clock: format!("{:02}:{:02}", t.hour(), t.minute()),
     }
 }
 #[derive(Clone, Debug)]
 pub(super) struct Civil {
     pub date: String,
+    ordinal: i64,
+    weekday: i32,
+    month: i32,
     year: i32,
-    day: i32,
     label: String,
     pub clock: String,
 }
@@ -48,11 +55,7 @@ impl Civil {
         if self.date >= today.date {
             return "Today".into();
         }
-        let yesterday = DateTime::from_iso8601(&format!("{}T12:00:00Z", today.date), None)
-            .unwrap()
-            .add_days(-1)
-            .unwrap();
-        if self.year == yesterday.year() && self.day == yesterday.day_of_year() {
+        if self.ordinal == today.ordinal - 1 {
             return "Yesterday".into();
         }
         format!(
@@ -64,6 +67,46 @@ impl Civil {
                 format!(" {}", self.year)
             }
         )
+    }
+    pub fn bucket(&self, today: &Self) -> (String, String) {
+        let monday = today.ordinal - i64::from(today.weekday - 1);
+        let (key, label) = if self.ordinal >= today.ordinal {
+            ("today", "Today")
+        } else if self.ordinal == today.ordinal - 1 {
+            ("yesterday", "Yesterday")
+        } else if self.ordinal >= monday {
+            ("week", "Earlier this week")
+        } else if self.ordinal >= monday - 7 {
+            ("last-week", "Last week")
+        } else {
+            const MONTHS: [&str; 12] = [
+                "January",
+                "February",
+                "March",
+                "April",
+                "May",
+                "June",
+                "July",
+                "August",
+                "September",
+                "October",
+                "November",
+                "December",
+            ];
+            return (
+                format!("month-{:04}-{:02}", self.year, self.month),
+                format!(
+                    "{}{}",
+                    MONTHS[(self.month - 1) as usize],
+                    if self.year == today.year {
+                        String::new()
+                    } else {
+                        format!(" {}", self.year)
+                    }
+                ),
+            );
+        };
+        (key.into(), label.into())
     }
     pub fn when(&self, today: &Self) -> String {
         let label = self.label(today);
@@ -99,5 +142,35 @@ mod tests {
             at("2026-11-16T08:05:00Z").when(&at("2026-11-18T10:00:00Z")),
             "Mon 16 Nov at 08:05"
         );
+    }
+}
+
+#[cfg(test)]
+mod bucket_tests {
+    use super::*;
+    fn at(s: &str) -> Civil {
+        civil(DateTime::from_iso8601(s, None).unwrap())
+    }
+    #[test]
+    fn monday_month_end_and_clock_changes_partition_days() {
+        let monday = at("2026-11-02T00:05:00+01:00");
+        assert_eq!(
+            at("2026-11-01T23:55:00+01:00").bucket(&monday).1,
+            "Yesterday"
+        );
+        assert_eq!(
+            at("2026-10-31T12:00:00+01:00").bucket(&monday).1,
+            "Last week"
+        );
+        assert_eq!(at("2026-10-25T02:30:00+02:00").bucket(&monday).1, "October");
+        let wed = at("2026-11-04T08:00:00+01:00");
+        assert_eq!(monday.bucket(&wed).1, "Earlier this week");
+        assert_eq!(at("2026-11-03T08:00:00+01:00").bucket(&wed).1, "Yesterday");
+        let spring = at("2026-03-30T00:05:00+02:00");
+        assert_eq!(
+            at("2026-03-29T00:10:00+01:00").bucket(&spring).1,
+            "Yesterday"
+        );
+        assert_eq!(at("2025-11-18T08:05:00Z").bucket(&wed).1, "November 2025");
     }
 }

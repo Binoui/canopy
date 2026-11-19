@@ -140,23 +140,21 @@ fn main() -> Result<()> {
     hover_chrome(&ui, &format!(".tab[data-id='{beta}']"))?;
     xdo(&["click", "3"])?;
     wait("tab menu", || {
-        visible(&ui, "#popover [data-tab-action='pin']")
+        visible(&ui, "#popover [data-tab-action='save']")
     })?;
-    press(&ui, "#popover [data-tab-action='pin']")?;
+    press(&ui, "#popover [data-tab-action='save']")?;
     rename(&ui, gamma, "Menu refresh");
     held_back(&ui)?;
     release()?;
-    let menu = ui
-        .pages
-        .read(|b| b.tree_states())?
-        .iter()
-        .any(|t| t.root.root() == beta && t.pin.is_some());
+    let menu = ui.pages.read(|b| b.tree_states())?.iter().any(|t| {
+        t.root.root() == beta && matches!(t.place(), canopy::browser::Place::Shelf { .. })
+    });
     println!("menu row click across refresh: {menu}");
     key("Escape")?;
     if !menu {
-        ui.dispatch(ChromeIntent::PinTree {
+        ui.dispatch(ChromeIntent::PlaceTree {
             tree: tree(&ui, beta),
-            pinned: true,
+            to: canopy::browser::Move::Shelf(canopy::browser::Slot::First),
         });
         pump(300);
     }
@@ -258,26 +256,28 @@ fn main() -> Result<()> {
     println!("PASS open zoomed-tree icon updates immediately.");
     chrome(&ui, "(() => { canopy.toggleForest(); return true; })()")?;
     wait("on-demand forest", || {
-        chrome(&ui, "S.forest?.view === 'trees'").is_ok_and(|v| v == true)
+        chrome(&ui, "S.forest?.view === 'canopy'").is_ok_and(|v| v == true)
     })?;
     assert_eq!(chrome(&ui, "window.innerHeight === S.windowHeight && document.querySelector('#forest').getBoundingClientRect().height > 94")?, true);
-    chrome(&ui, "(() => { globalThis.__forestNode=document.querySelector('#forest-trees [data-id]'); canopy.toggleForest(); return true; })()")?;
+    chrome(&ui, "(() => { globalThis.__forestNode=document.querySelector('#forest-canopy [data-id]'); canopy.toggleForest(); return true; })()")?;
     pump(100);
     chrome(&ui, "(() => { canopy.toggleForest(); return true; })()")?;
     wait("unchanged forest reopened", || {
-        visible(&ui, "#forest-trees [data-id]")
+        visible(&ui, "#forest-canopy [data-id]")
     })?;
     assert_eq!(
         chrome(
             &ui,
-            "__forestNode === document.querySelector('#forest-trees [data-id]')"
+            "__forestNode === document.querySelector('#forest-canopy [data-id]')"
         )?,
         true
     );
     println!("PASS forest first appears at window height and unchanged reopen keeps its nodes.");
     rename(&ui, gamma, "Forest changed while open");
     wait("forest change", || {
-        text(&ui, "#forest-trees").contains("Forest changed while open")
+        text(&ui, "#forest-canopy")
+            .to_lowercase()
+            .contains("forest changed while open")
     })?;
     chrome(&ui, "(() => { canopy.toggleForest(); return true; })()")?;
     rename(&ui, gamma, "Forest closed again");
@@ -342,7 +342,7 @@ fn main() -> Result<()> {
             "strip" => "#strip-nodes",
             "list" => "#strip-list",
             "tree" => "#tree-sheet",
-            _ => "#forest-trees",
+            _ => "#forest-canopy",
         };
         let check = format!("(() => {{ const shown=[...document.querySelectorAll('{selector} .fav img')]; const images=[...document.querySelectorAll('.fav img')].filter(i=>new URL(i.src).searchParams.get('u').startsWith('{origin}/')); return shown.length >= 3 && images.length >= 3 && images.every(i=>i.complete && i.naturalWidth>0 && i.style.visibility!=='hidden'); }})()");
         wait("all site fallback images loaded", || {
