@@ -989,7 +989,9 @@ mod tests {
                 root: TreeId(ids[0]),
                 last_visit: ids[0],
                 name: None,
-                lifecycle: Lifecycle::Open,
+                lifecycle: Lifecycle::Open {
+                    tab: crate::browser::TabOrder::new(0),
+                },
             }],
         )
         .unwrap();
