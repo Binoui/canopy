@@ -72,6 +72,8 @@ Press **Menu** or **Shift+F10** on a focused page in the strip, an attached list
 
 **Move to tree…** puts the page and its branch under the first page of a tab you choose. The picker includes eligible tabs behind the overflow arrow. A root's menu offers **Merge into tree…** and explains which tree details the merge drops. Live pages follow the move, and the destination tab becomes active if you are reading a page that moved.
 
+Drag a page in the strip or its attached list to move it. Drop on another page to place the branch under that page, on a tab to place it under that tree's root, or on empty strip space to make it the last tab. Dragging a root to empty strip space moves its tab to the end. Press Escape to cancel.
+
 Settling a tree or branch shows **Settled ‘name’ · N waiting kept**. The toast appears at the bottom of the window. **Undo** stays available for six seconds and returns to the page you were reading. Waiting links are kept when you settle.
 
 ## Resume reading

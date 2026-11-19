@@ -63,7 +63,12 @@ svg.icon { width: 14px; height: 14px; flex: none; fill: none; stroke: currentCol
   padding: 0 4px 0 8px; min-width: 0; overflow: hidden; border-radius: 9px 9px 0 0; color: var(--muted); flex: none;
 }
 .tab img { -webkit-user-drag: none; }
-.tab.dragging { opacity: .45; }
+.dragging { opacity: .45 !important; }
+.page-drag-image { position: absolute; left: -10000px; top: 0; max-width: 240px; padding: 8px 12px; border: 1px solid var(--green); border-radius: 8px; background: var(--bg); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+:is(#strip-nodes, #strip-list) img { -webkit-user-drag: none; }
+.page-drop-allowed { outline: 2px solid var(--green) !important; outline-offset: -2px; }
+.page-drop-refused { outline: 1px dashed var(--muted) !important; outline-offset: -2px; }
+#page-drag-warning { position: absolute; z-index: 100; top: 96px; left: 12px; max-width: calc(100% - 24px); padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--muted); pointer-events: none; }
 #tab-row.drop-target::after { content: ""; position: absolute; z-index: 10; pointer-events: none; left: var(--tab-drop-x); top: 7px; bottom: 3px; width: 2px; border-radius: 1px; background: var(--green); }
 .tab:hover { background: var(--hover); color: var(--text); }
 .tab[aria-selected="true"] { background: var(--bg); color: var(--text); box-shadow: inset 1px 0 var(--border), inset -1px 0 var(--border), inset 0 1px var(--border); }

@@ -14,6 +14,8 @@ See [History](../../../../docs/forest-history.md). Drive Ctrl+H and select a row
 
 Open a page's menu, choose **Move to tree…**, and select a tab. Check that the page and its descendants appear in that tree and the current page stays selected if it moved. Open a root's **Merge into tree…** picker and check the warning. After restarting, check the new parent and tree in the private database.
 
+Drag a strip page onto a tab, then drag a tab among the pinned tabs. Open the Canopy map and find the moved page under its new tree. Restart and check the parent and pin order. Use native `canopy-verify drag` gestures.
+
 ## Verification
 
 Use a private stress launch and doctor. Check 390 px and at least 1920 px widths, both themes and English dates under LC_TIME=fr_FR.UTF-8. Run tree_places_smoke for the shared model, canopy_smoke for the map and forest_history_smoke for History rows and in-place outlines. Check schema 16 with tree_state(place,position,pinned,placed_at). Never open the real forest. Copy the schema-14 timing fixture before migrating it. When replacing the database in a stopped private run, remove that run’s old `forest.sqlite3-wal` and `forest.sqlite3-shm` first. Confirm the copied fixture contains 2,000 trees and 20,000 pages before driving it.
