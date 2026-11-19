@@ -7,6 +7,7 @@ pub mod import;
 pub mod instance;
 pub mod mail;
 pub mod naming;
+pub mod session;
 pub mod suggest;
 
 #[cfg(feature = "desktop")]

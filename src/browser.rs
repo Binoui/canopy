@@ -930,8 +930,22 @@ impl Browser {
             return Ok(false);
         }
         web_url(url.as_str())?;
-        let intent = intent.clone();
+        let mut intent = intent.clone();
         let previous = self.current_id()?;
+        // The same address loading again over an error or sign-in page (after signing in,
+        // or once the page exists) is that page working now, not a page under it.
+        if let Intent::New {
+            parent: Some(parent),
+            ..
+        } = intent
+        {
+            if visibility == Visibility::Selected && previous == Some(parent) {
+                let shown = self.visit(parent)?;
+                if shown.url == url && crate::naming::is_error_page(&shown.title, &shown.url) {
+                    intent = Intent::Restore { visit: parent };
+                }
+            }
+        }
         let kind = match &intent {
             Intent::New { .. } => "new",
             Intent::Restore { visit } if previous == Some(*visit) => "reload",
@@ -2362,6 +2376,34 @@ mod tests {
         let state = &b.tree_states().unwrap()[0];
         assert_eq!(state.last_visit, child);
         assert_eq!(state.last_event_at, Some(100));
+    }
+
+    #[test]
+    fn the_same_address_over_an_error_page_reloads_it_instead_of_branching() {
+        let mut b = memory();
+        let pull = follow(&mut b, "pull/32", NavigationTarget::Root);
+        b.title_changed(&url("pull/32"), "Page not found · GitHub")
+            .unwrap();
+        // Signed in, the page loads again at the same address: the root works now.
+        let again = follow_child(&mut b, "pull/32");
+        assert_eq!(again, pull);
+        assert_eq!(b.snapshot().unwrap().visits.len(), 1);
+        assert_eq!(events(&b.browser).last().unwrap().2, "reload");
+        b.title_changed(&url("pull/32"), "Keep logins · Pull Request #32")
+            .unwrap();
+        assert_eq!(
+            b.visit(pull).unwrap().title,
+            "Keep logins · Pull Request #32"
+        );
+
+        // A real page loaded again at its own address still makes the child it always did.
+        let child = follow_child(&mut b, "pull/32");
+        assert_ne!(child, pull);
+        assert_eq!(b.visit(child).unwrap().parent, Some(pull));
+        // So does another address under an error page.
+        b.title_changed(&url("pull/32"), "404 Not Found").unwrap();
+        let other = follow_child(&mut b, "pulls");
+        assert_eq!(b.visit(other).unwrap().parent, Some(child));
     }
 
     #[test]
