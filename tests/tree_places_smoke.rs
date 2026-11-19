@@ -79,7 +79,12 @@ fn main() -> Result<()> {
             &format!("{tab}.pinned:not(.icon-only) .tab-pinned-mark"),
         )
     })?;
-    // Short of room, the pin folds to its icon.
+    // Short of room, a pin that is not being read folds to its icon.
+    key("ctrl+2")?;
+    wait("another tree read", || {
+        ui.snapshot()
+            .is_ok_and(|s| s.current.is_some() && s.current != Some(ids[2]))
+    })?;
     ui.window.resize(560, 800);
     wait("pinned icon", || {
         visible(&ui, &format!("{tab}.pinned.icon-only"))
@@ -87,6 +92,10 @@ fn main() -> Result<()> {
     ui.window.resize(1240, 800);
     wait("pinned named again", || {
         visible(&ui, &format!("{tab}.pinned:not(.icon-only)"))
+    })?;
+    key("ctrl+1")?;
+    wait("pinned tree read again", || {
+        ui.snapshot().is_ok_and(|s| s.current == Some(ids[2]))
     })?;
     hover_chrome(&ui, &tab)?;
     xdo(&["click", "3"])?;
