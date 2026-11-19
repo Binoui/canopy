@@ -63,6 +63,7 @@ const S = {
   hovered: null,
   list: null,
   popover: null,
+  switcher: null,
   mailTab: 'all',
   palette: null,
   reader: null,
@@ -181,7 +182,7 @@ function syncLayer() {
   if (S.formReturn || S.palette || S.reader || S.overlay || S.surface !== 'reading') {
     height = null;
   } else {
-    for (const el of [S.list && $('strip-list'), S.popover && $('popover')]) {
+    for (const el of [S.list && $('strip-list'), S.popover && $('popover'), S.switcher?.shown && $('switcher')]) {
       if (!el) continue;
       const bottom = el.hidden ? HEADER + REST + 420 : el.getBoundingClientRect().bottom;
       height = Math.max(height, bottom + 30);
@@ -799,6 +800,85 @@ function openNextWaiting(id = S.frame?.waiting.ids[0]) {
   closePalette(false);
   closePopover(false);
   activate(id);
+}
+
+// ---------- Ctrl+Tab page list ----------
+// Rust owns the keys: Ctrl+Tab opens the list, each further Tab or Shift+Tab steps it, and
+// releasing Ctrl opens the selected row (Escape drops it). A quick tap never shows the list.
+
+const switcherRows = (sw) => [...sw.rows.waiting, ...sw.rows.read];
+
+function openSwitcher(rows) {
+  closeSwitcher();
+  const sw = { rows, index: 0, shown: false };
+  if (!switcherRows(sw).length) { canopy.toast('info', 'No other pages in this tree'); return; }
+  S.switcher = sw;
+  schedule('switcherShow', 160, showSwitcher);
+}
+
+function stepSwitcher(by) {
+  const sw = S.switcher;
+  if (!sw) return;
+  const count = switcherRows(sw).length;
+  sw.index = (sw.index + by + count) % count;
+  if (sw.shown) renderSwitcher();
+  else showSwitcher();
+}
+
+function showSwitcher() {
+  cancel('switcherShow');
+  if (!S.switcher) return;
+  closeReader(false);
+  closePalette(false);
+  closePopover(false);
+  hideList();
+  S.switcher.shown = true;
+  // The view is only as tall as the strip until this list makes it reach further down.
+  $('switcher').style.maxHeight = `${Math.max(120, Math.min(520, (S.windowHeight ?? window.innerHeight) - 130))}px`;
+  $('switcher').hidden = false;
+  renderSwitcher();
+  syncLayer();
+}
+
+function renderSwitcher() {
+  const { rows, index } = S.switcher;
+  let i = 0;
+  const row = (v, detail) => {
+    const selected = i === index;
+    return `<div class="menu-row switcher-row" role="option" id="switcher-${i++}" data-id="${v.id}" aria-selected="${selected}" aria-label="${esc(v.name)}">`
+      + `${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(detail)}</span></div>`;
+  };
+  // Waiting pages on the left, read pages on the right. Tab walks down the left column first.
+  const column = (kind, heading, pages, detail, empty, after = '') => `<div class="switcher-col" data-kind="${kind}"><div class="menu-heading">${heading}</div>`
+    + (pages.length ? pages.map((v) => row(v, detail(v) === v.label ? '' : detail(v))).join('') : `<div class="menu-hint">${empty}</div>`) + `${after}</div>`;
+  const waiting = rows.waiting.length + rows.moreWaiting;
+  $('switcher').innerHTML = '<div class="switcher-cols">'
+    + column('waiting', waiting ? `Waiting · ${waiting}` : 'Waiting', rows.waiting, (v) => v.detail, 'Nothing waiting',
+      rows.moreWaiting ? `<div class="menu-hint">${rows.moreWaiting} more waiting</div>` : '')
+    + column('read', 'Read', rows.read, (v) => v.site, 'No other read pages')
+    + '</div><div class="switcher-keys"><kbd>Tab</kbd> next · <kbd>Shift Tab</kbd> back · release <kbd>Ctrl</kbd> or click to open</div>';
+  const chosen = $('switcher').querySelector('[aria-selected="true"]');
+  $('switcher').setAttribute('aria-activedescendant', chosen?.id ?? '');
+  chosen?.scrollIntoView({ block: 'nearest' });
+  $('switcher').querySelectorAll('[data-id]').forEach((el) => el.addEventListener('click', () => {
+    closeSwitcher();
+    openNextWaiting(el.dataset.id);
+  }));
+}
+
+function closeSwitcher() {
+  cancel('switcherShow');
+  if (!S.switcher) return;
+  S.switcher = null;
+  $('switcher').hidden = true;
+  $('switcher').innerHTML = '';
+  syncLayer();
+}
+
+function commitSwitcher() {
+  const sw = S.switcher;
+  closeSwitcher();
+  if (sw) openNextWaiting(switcherRows(sw)[sw.index].id);
 }
 
 function enterWaitingPin() {
@@ -2032,7 +2112,12 @@ window.canopy = {
     renderLoginChip();
   },
   fillLogin() { fillLogin(); },
-  nextWaiting() { openNextWaiting(); },
+  switcher(action, value) {
+    if (action === 'open') openSwitcher(value);
+    else if (action === 'step') stepSwitcher(value);
+    else if (action === 'commit') commitSwitcher();
+    else closeSwitcher();
+  },
   openPalette(options) { openPalette(options); },
   help(value) { S.help = value; renderHelp(); },
   openErrors() { openPopover('errors', $('settings-button')); },

@@ -474,8 +474,35 @@ impl HtmlChrome {
         let _ = self.inner.view.focus();
     }
 
-    pub fn next_waiting(&self) {
-        self.inner.call("nextWaiting", &[]);
+    /// Opens the Ctrl+Tab list. `recent` reads the current tree's read pages, most
+    /// recently shown first, from the forest the chrome shows.
+    pub fn open_switcher(
+        &self,
+        recent: impl FnOnce(&ForestProjection, usize) -> Result<Vec<VisitId>>,
+    ) -> Result<()> {
+        let rows = {
+            let frame = self.inner.frame.borrow();
+            let Some(frame) = frame.as_ref() else {
+                return Ok(());
+            };
+            view::switcher_value(frame, &recent(&frame.forest, view::SWITCHER_READ)?)
+        };
+        self.inner.call("switcher", &[json!("open"), rows]);
+        Ok(())
+    }
+
+    /// Moves the Ctrl+Tab selection one row down, or up with `back`, wrapping at the ends.
+    pub fn step_switcher(&self, back: bool) {
+        self.inner.call(
+            "switcher",
+            &[json!("step"), json!(if back { -1 } else { 1 })],
+        );
+    }
+
+    /// Closes the Ctrl+Tab list, opening the selected page when `open` is set.
+    pub fn end_switcher(&self, open: bool) {
+        self.inner
+            .call("switcher", &[json!(if open { "commit" } else { "cancel" })]);
     }
 
     pub fn toggle_tree(&self) {
