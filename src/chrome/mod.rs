@@ -16,6 +16,7 @@ pub(crate) mod graph;
 mod loading;
 mod page_scale;
 mod palette;
+mod pinch;
 mod pins;
 mod start;
 mod tabs;
@@ -67,8 +68,11 @@ thread_local! {
 /// The query and rows last sent to the view, and their default row.
 type ShownPalette = (String, Vec<(Group, PaletteItem)>, usize);
 
+pub use forest_pane::CanopyLayout;
+
 /// Everything the chrome shows, read from SQLite in one go.
 pub struct ChromeFrame {
+    pub canopy_layout: CanopyLayout,
     pub shown: crate::browser::Showings,
     pub mail: crate::mail::Mail,
     pub bookmarks: Vec<crate::browser::Bookmark>,
@@ -146,6 +150,7 @@ pub enum ChromeIntent {
     },
     Decline(crate::suggest::SuggestionKey),
     SetTheme(ThemeMode),
+    SetCanopyLayout(CanopyLayout),
     ShowTreesHelp(bool),
     CancelContinuation,
     Restore(VisitId),
@@ -266,6 +271,7 @@ struct Inner {
     workbench: RefCell<tree_view::Workbench>,
     /// A page covers the window; the chrome and its toasts stay hidden.
     fullscreen: Cell<bool>,
+    pinch: gtk::GestureZoom,
 }
 
 impl HtmlChrome {
@@ -300,6 +306,8 @@ impl HtmlChrome {
                 !(hit.context_is_editable() || hit.context_is_selection())
             });
         }
+        use wry::WebViewExtUnix;
+        let pinch = gtk::GestureZoom::new(&view.webview());
         let inner = Rc::new_cyclic(|me| Inner {
             view,
             container: container.clone(),
@@ -326,6 +334,7 @@ impl HtmlChrome {
             palette: RefCell::new(None),
             workbench: RefCell::default(),
             fullscreen: Cell::new(false),
+            pinch,
         });
         {
             use gtk::prelude::*;
@@ -345,6 +354,7 @@ impl HtmlChrome {
                     false
                 });
         }
+        pinch::connect(&inner);
         *slot.borrow_mut() = Rc::downgrade(&inner);
         let weak = Rc::downgrade(&inner);
         favicons.connect_changed(move |url, revision| {

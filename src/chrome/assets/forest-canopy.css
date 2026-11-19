@@ -43,9 +43,9 @@
 #forest-canopy[data-level=near] .canopy-item[data-st=waiting] { border-style:dashed; border-color:var(--green); background:var(--bg); }
 #forest-canopy[data-level=near] .canopy-item[data-previous=true] { border-color:var(--text); outline:1px solid var(--text); outline-offset:2px; }
 #forest-canopy[data-level=near] .canopy-item[data-current=true] { border-color:var(--green); box-shadow:0 0 0 1px var(--green); }
-#canopy-zoom { min-width:172px; min-height:28px; display:flex; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
-#canopy-zoom button { padding:5px 10px; color:var(--muted); }
-#canopy-zoom [aria-pressed=true] { color:var(--green-ink); background:var(--green-soft); }
+:is(#canopy-zoom,#canopy-layout) { min-height:28px; display:flex; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+:is(#canopy-zoom,#canopy-layout) button { padding:5px 10px; color:var(--muted); }
+:is(#canopy-zoom,#canopy-layout) [aria-pressed=true] { color:var(--green-ink); background:var(--green-soft); }
 #canopy-back { max-width:360px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:5px 9px; border:1px solid var(--border); border-radius:8px; color:var(--muted); }
 #canopy-back b { color:var(--text); }
 #canopy-tip { position:absolute; z-index:8; max-width:min(330px,calc(100% - 16px)); padding:9px 12px; white-space:pre-line; overflow-wrap:anywhere; border:1px solid var(--tile-border); border-radius:9px; background:var(--tile); box-shadow:0 8px 28px var(--shadow); pointer-events:none; }

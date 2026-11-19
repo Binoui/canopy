@@ -79,6 +79,10 @@ fn main() -> Result<()> {
             println!("showings query sample={sample} {elapsed:.3} ms");
         }
     }
+    if let Ok(layout) = std::env::var("FOREST_LAYOUT") {
+        let layout = canopy::chrome::CanopyLayout::parse(&layout).expect("valid observer layout");
+        std::fs::write(dir.path().join("canopy-layout"), layout.name())?;
+    }
     start(dir.path())?;
     let ui = Ui::new(dir.path())?;
     ui.window.resize(1240, 900);

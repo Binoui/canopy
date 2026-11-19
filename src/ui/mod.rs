@@ -1,4 +1,5 @@
 mod appearance;
+mod canopy_layout;
 mod logins;
 mod save_watch;
 
@@ -32,6 +33,7 @@ pub struct Ui {
     pub mail: Rc<crate::mail::MailWatch>,
     /// The desktop's light or dark preference, which `Theme: System` follows.
     desktop: Rc<appearance::Desktop>,
+    canopy_layout: canopy_layout::Setting,
     refresh_scheduled: Cell<bool>,
     /// The Ctrl+Tab list is open and opens its selected page when Ctrl is released.
     switching: Cell<bool>,
@@ -122,6 +124,7 @@ impl Ui {
             Ui {
                 mail,
                 desktop,
+                canopy_layout: canopy_layout::Setting::load(data_dir),
                 window,
                 pages,
                 chrome,
@@ -370,6 +373,7 @@ impl Ui {
             };
             Ok(ChromeFrame {
                 shown: browser.showings()?,
+                canopy_layout: self.canopy_layout.get(),
                 mail: self.mail.mail(),
                 loaded: self.pages.loaded_visits(),
                 live: self.pages.hidden_visits(),
@@ -924,6 +928,11 @@ impl ChromeHost for Ui {
                 if show {
                     self.chrome.show_trees_help();
                 }
+                result
+            }
+            ChromeIntent::SetCanopyLayout(layout) => {
+                let result = self.canopy_layout.save(layout);
+                self.schedule_refresh();
                 result
             }
             ChromeIntent::SetTheme(mode) => {

@@ -8,7 +8,8 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use items::Facts;
-use place::{Layout, Point};
+pub use place::Layout;
+use place::Point;
 use serde_json::{json, Value};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,10 +77,15 @@ pub(in crate::chrome) enum Input {
         anchor: Option<VisitId>,
     },
     Go(VisitId),
+    Layout(Layout),
 }
 impl Input {
     pub fn parse(m: &Value) -> Result<Option<Self>> {
         Ok(match m["do"].as_str() {
+            Some("layout") => Some(Self::Layout(
+                Layout::parse(m["layout"].as_str().unwrap_or_default())
+                    .context("Unknown map layout")?,
+            )),
             Some("go") => Some(Self::Go(m["id"].as_str().context("Missing page")?.parse()?)),
             Some("zoom") => Some(Self::Zoom {
                 level: Level::parse(m["level"].as_str().unwrap_or_default())
@@ -95,7 +101,6 @@ pub(super) struct State {
     level: Level,
     request: u64,
     anchor: Option<VisitId>,
-    layout: Layout,
 }
 impl Default for State {
     fn default() -> Self {
@@ -103,13 +108,13 @@ impl Default for State {
             level: Level::Middle,
             request: 0,
             anchor: None,
-            layout: Layout::Flow,
         }
     }
 }
 impl State {
     pub fn input(&mut self, input: Input, frame: &ChromeFrame) -> Reply {
         match input {
+            Input::Layout(layout) => return Reply::Act(ChromeIntent::SetCanopyLayout(layout)),
             Input::Zoom {
                 level,
                 request,
@@ -154,7 +159,7 @@ impl State {
             .iter()
             .map(|t| items::fold(&facts, t, self.level))
             .collect();
-        let placed = self.layout.place(self.level, &folded, room);
+        let placed = frame.canopy_layout.place(self.level, &folded, room);
         let mut values = Vec::new();
         let mut points = Vec::new();
         let mut home = None;
@@ -205,9 +210,10 @@ impl State {
             .previous
             .and_then(|id| forest.visit(id))
             .map(|v| json!({"id":v.id.to_string(),"label":"Back to","title":v.label()}));
-        json!({"level":self.level.name(),"layout":self.layout.name(),"hint":self.level.hint(),"items":values,"visits":visits,"back":back,"edge":self.layout.edge(),
+        json!({"level":self.level.name(),"layout":frame.canopy_layout.name(),"hint":self.level.hint(),"items":values,"visits":visits,"back":back,"edge":frame.canopy_layout.edge(),
             "css":self.level.metrics().css(),"levels":Level::ALL.map(|l|{let b=l.band();json!({"level":l.name(),"label":l.label(),"min":b.min,"max":b.max,"rest":b.rest})}),
             "legend":[["current","you are here"],["previous","where you were"],["open","still open"],["visited","visited"],["waiting","waiting"]],
+            "layouts":Layout::choices(),
             "help":"wheel zooms · drag moves · a click goes to the page",
             "place":{"request":self.request,"anchor":anchor,"page":self.anchor.map(|id|id.to_string()),"pan":place::camera(&placed,home,room,1.),"k":b.rest}})
     }

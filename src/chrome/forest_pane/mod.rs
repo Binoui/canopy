@@ -1,4 +1,5 @@
 mod canopy;
+pub use canopy::Layout as CanopyLayout;
 mod days;
 mod history;
 mod index;
@@ -241,6 +242,9 @@ impl ForestPane {
         }
         self.present(frame)
     }
+    pub fn shows_canopy(&self) -> bool {
+        matches!(&self.state, State::Open(open) if matches!(open.shown, Shown::Canopy(_)))
+    }
     pub fn is_open(&self) -> bool {
         matches!(self.state, State::Open(_))
     }
@@ -327,6 +331,7 @@ mod tests {
             states[1..].reverse();
         }
         ChromeFrame {
+            canopy_layout: Default::default(),
             shown: Default::default(),
             forest: ForestProjection::from_snapshot(
                 Snapshot {
