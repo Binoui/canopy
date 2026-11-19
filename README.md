@@ -154,7 +154,7 @@ Each heading links to its part of the [guide](docs/guide.md).
 ### [Read now, read later](docs/guide.md#resume-reading)
 
 - **Ctrl+click** or **middle-click** a link and its page waits in the tree, with the comment or passage it was linked from.
-- A counter at the end of the strip shows how many pages wait. **Ctrl+Tab** opens the next one.
+- A counter at the end of the strip shows how many pages wait. **Ctrl+Tab** opens the next one. With nothing waiting it goes back to the page you read before, and holding **Ctrl** lists both to pick from.
 - Canopy saves the text of the pages you read, or only the passage you select with **Ctrl+S**. Form fields are left out, and a page showing a password form is not saved automatically.
 - **Ctrl+K** searches titles, addresses and saved text. A saved passage opens offline, with a way back to its source.
 
@@ -205,7 +205,7 @@ Each heading links to its part of the [guide](docs/guide.md).
 | **Alt+Up**, **Alt+Down** | Previous or next sibling. |
 | **Ctrl+Shift+Tab** | Switch to the previously shown open tree. |
 | **Ctrl+Shift+T** | Reopen the most recently settled tree or branch. |
-| **Ctrl+Tab** | Next waiting page of this tree. |
+| **Ctrl+Tab** | Next waiting page of this tree, or the page read before it when nothing waits. Hold **Ctrl** and press **Tab** again to pick from the waiting and read pages. |
 | **F6** | Move the keyboard between the page and the strip. **Left** and **Right** walk the path. **Down** or **Enter** opens its list. |
 | **Shift+F10**, **Menu** | Open the focused page, tab, pinned-card or bookmark menu. |
 | **Ctrl+D** | Bookmark the page, or remove its bookmark. |

@@ -484,6 +484,24 @@ pub(super) fn visit_value(
     })
 }
 
+/// Waiting pages the Ctrl+Tab list shows before the read ones; the rest are counted.
+const SWITCHER_WAITING: usize = 5;
+/// Read pages the Ctrl+Tab list shows.
+pub(crate) const SWITCHER_READ: usize = 8;
+
+/// The Ctrl+Tab list: the current tree's next waiting pages, then `recent`, its read pages
+/// most recently shown first. A quick Ctrl+Tab opens the first row.
+pub(crate) fn switcher_value(frame: &ChromeFrame, recent: &[VisitId]) -> Value {
+    let forest = &frame.forest;
+    let waiting = waiting::pages(forest);
+    let row = |visit: &Visit| visit_value(forest, visit, &frame.loaded, &frame.live);
+    json!({
+        "waiting": waiting.iter().take(SWITCHER_WAITING).map(|v| row(v)).collect::<Vec<_>>(),
+        "moreWaiting": waiting.len().saturating_sub(SWITCHER_WAITING),
+        "read": recent.iter().filter_map(|id| forest.visit(*id)).take(SWITCHER_READ).map(row).collect::<Vec<_>>(),
+    })
+}
+
 fn node_menu(forest: &ForestProjection, visit: &Visit) -> Vec<Value> {
     let row = |kind: &str, label: String| json!({ "kind": kind, "label": label });
     let mut rows = vec![
@@ -938,6 +956,84 @@ mod tests {
         assert_eq!(strip["room"], 800. - pins::NAV);
         assert_eq!(strip["left"], pins::NAV);
         assert_eq!(strip["pins"], json!([]));
+    }
+
+    #[test]
+    fn switcher_lists_five_waiting_pages_then_the_read_ones() {
+        use crate::browser::{Snapshot, TreeState, Visit, VisitState};
+        let ids: Vec<VisitId> = (0..8)
+            .map(|_| ulid::Ulid::new().to_string().parse().unwrap())
+            .collect();
+        // 0 is the root and current page, 1 a read child, 2..8 waiting children.
+        let visits = (0..8)
+            .map(|i| {
+                let opened = i < 2;
+                Visit {
+                    dismissed_at: None,
+                    branch_settled_at: None,
+                    id: ids[i],
+                    parent: (i > 0).then(|| ids[0]),
+                    url: url::Url::parse(&format!("https://example.org/{i}")).unwrap(),
+                    title: format!("Page {i}"),
+                    created_at: i as i64,
+                    opened_at: opened.then_some(i as i64),
+                    state: if opened {
+                        VisitState::Opened
+                    } else {
+                        VisitState::Queued
+                    },
+                    source: None,
+                }
+            })
+            .collect();
+        let forest = ForestProjection::from_snapshot(
+            Snapshot {
+                visits,
+                current: Some(ids[0]),
+            },
+            vec![TreeState {
+                last_event_at: None,
+                root: TreeId(ids[0]),
+                last_visit: ids[0],
+                name: None,
+                spot: Spot::Tab {
+                    pinned: false,
+                    position: 0,
+                },
+            }],
+        )
+        .unwrap();
+        let frame = ChromeFrame {
+            canopy_layout: Default::default(),
+            shown: Default::default(),
+            mail: crate::mail::Mail::default(),
+            forest,
+            loaded: Default::default(),
+            live: [ids[1]].into_iter().collect(),
+            capture_enabled: true,
+            trees_help: false,
+            theme: ThemeMode::Light,
+            declined: Default::default(),
+            bookmarks: vec![],
+            back: None,
+            forward: None,
+            pending: None,
+            files: vec![],
+        };
+        let value = super::switcher_value(&frame, &[ids[1]]);
+        let listed = |key: &str| {
+            value[key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["id"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        let id = |i: usize| ids[i].to_string();
+        assert_eq!(listed("waiting"), [id(7), id(6), id(5), id(4), id(3)]);
+        assert_eq!(value["moreWaiting"], 1);
+        assert_eq!(listed("read"), [id(1)]);
+        assert_eq!(value["read"][0]["live"], true);
     }
 
     #[test]
