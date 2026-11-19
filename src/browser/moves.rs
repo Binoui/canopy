@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use anyhow::Result;
 use rusqlite::{params, Transaction};
 
-use super::{forest_on, Browser, TreeId, VisitId, VisitState};
+use super::{forest_on, now_ms, places, Browser, Move, Place, Slot, TreeId, VisitId, VisitState};
 use crate::forest::ForestProjection;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,13 +44,10 @@ enum ResolvedMove {
         destination: TreeId,
         source: AttachSource,
     },
-    Detach {
-        source: SurvivingSource,
-        place: TabPlacement,
-    },
+    Detach(SurvivingSource),
     Reorder {
         tree: TreeId,
-        place: TabPlacement,
+        slot: Slot,
     },
 }
 
@@ -114,13 +111,7 @@ impl<'a> MoveContext<'a> {
     }
 
     fn surviving_source(&self, destination: Option<TreeId>) -> SurvivingSource {
-        let last = self
-            .forest
-            .trees()
-            .iter()
-            .find(|t| t.id == self.source)
-            .unwrap()
-            .last_visit;
+        let last = self.forest.tree(self.source).unwrap().last_visit;
         SurvivingSource {
             tree: self.source,
             last: if destination != Some(self.source) && self.branch.contains(&last) {
@@ -135,42 +126,41 @@ impl<'a> MoveContext<'a> {
         match to {
             MoveTo::Page(parent) => self.attach(parent),
             MoveTo::Tree(tree) => {
-                let target = self
-                    .forest
-                    .trees()
-                    .iter()
-                    .find(|t| t.id == tree)
-                    .ok_or(Refusal::Gone)?;
-                if !target.lifecycle.is_open() {
+                let target = self.forest.tree(tree).ok_or(Refusal::Gone)?;
+                if !target.place.is_tab() {
                     return Err(Refusal::PutAway);
                 }
                 self.attach(tree.root())
             }
+            MoveTo::OwnTree(place) if self.parent.is_some() => {
+                if place != TabPlacement::End {
+                    return Err(Refusal::BadAnchor);
+                }
+                detach_allowed(self.forest, self.head)?;
+                Ok(ResolvedMove::Detach(self.surviving_source(None)))
+            }
             MoveTo::OwnTree(place) => {
-                if let TabPlacement::Before(anchor) = place {
-                    if !self.forest.open().iter().any(|t| t.id == anchor) {
-                        return Err(Refusal::BadAnchor);
+                let tabs = self.forest.tabs();
+                let index = tabs
+                    .iter()
+                    .position(|tab| tab.id == self.source)
+                    .ok_or(Refusal::PutAway)?;
+                let before = match place {
+                    TabPlacement::End => None,
+                    TabPlacement::Before(anchor) => {
+                        if !tabs.iter().any(|tab| tab.id == anchor) {
+                            return Err(Refusal::BadAnchor);
+                        }
+                        Some(anchor)
                     }
+                };
+                if before == Some(self.source) || before == tabs.get(index + 1).map(|tab| tab.id) {
+                    return Err(Refusal::AlreadyThere);
                 }
-                if self.parent.is_none() {
-                    if !self.forest.open().iter().any(|t| t.id == self.source) {
-                        return Err(Refusal::PutAway);
-                    }
-                    let order: Vec<_> = self.forest.open().iter().map(|t| t.id).collect();
-                    if placed_order(&order, self.source, place) == order {
-                        return Err(Refusal::AlreadyThere);
-                    }
-                    Ok(ResolvedMove::Reorder {
-                        tree: self.source,
-                        place,
-                    })
-                } else {
-                    detach_allowed(self.forest, self.head)?;
-                    Ok(ResolvedMove::Detach {
-                        source: self.surviving_source(None),
-                        place,
-                    })
-                }
+                Ok(ResolvedMove::Reorder {
+                    tree: self.source,
+                    slot: before.map_or(Slot::End, Slot::Before),
+                })
             }
         }
     }
@@ -187,7 +177,7 @@ impl<'a> MoveContext<'a> {
             return Err(Refusal::NotOpened);
         }
         let destination = self.forest.tree_of(target.id).ok_or(Refusal::Gone)?;
-        if self.forest.is_settled(parent) || !self.forest.open().iter().any(|t| t.id == destination)
+        if self.forest.is_settled(parent) || !self.forest.tree(destination).unwrap().place.is_tab()
         {
             return Err(Refusal::PutAway);
         }
@@ -265,7 +255,7 @@ impl ForestProjection {
             }
             stack.extend(self.children(id));
         }
-        for tree in self.open() {
+        for tree in self.tabs() {
             if context.resolve(MoveTo::Tree(tree.id)).is_ok() {
                 choices.trees.push(TreeMoveChoice {
                     tree: tree.id,
@@ -274,7 +264,7 @@ impl ForestProjection {
             }
         }
         choices.own_tree = if context.parent.is_none() {
-            self.open()
+            self.tabs()
                 .iter()
                 .any(|t| t.id == context.source)
                 .then_some(OwnTreeMove::Reorder(context.source))
@@ -282,14 +272,16 @@ impl ForestProjection {
             self.can_detach_branch(head).then_some(OwnTreeMove::Detach)
         };
         if context.parent.is_none() {
-            let title = &self
-                .trees()
-                .iter()
-                .find(|t| t.id == context.source)
-                .unwrap()
-                .title;
+            let tree = self.tree(context.source).unwrap();
+            let place = match tree.place {
+                Place::Tab { pinned: true } => "pinned tab",
+                Place::Tab { pinned: false } => "tab",
+                Place::Shelf { .. } => "place on the shelf",
+                Place::History { .. } => "History entry",
+            };
             choices.warning = Some(format!(
-                "Merging \"{title}\" drops its name, saved state and tab. Its pages are kept."
+                "Merging \"{}\" drops its name and {place}. Its pages are kept.",
+                tree.title
             ));
         }
         choices
@@ -310,8 +302,8 @@ impl Browser {
         };
         let current = before.current().filter(|id| context.branch.contains(id));
         let outcome = match action {
-            ResolvedMove::Reorder { tree, place } => {
-                place_tab(&tx, tree, place)?;
+            ResolvedMove::Reorder { tree, slot } => {
+                places::place_in(&tx, tree, Move::Tabs(slot), now_ms()?)?;
                 MoveOutcome::TabReordered
             }
             ResolvedMove::Attach {
@@ -344,7 +336,7 @@ impl Browser {
                 }
                 MoveOutcome::BranchMoved { tree: destination }
             }
-            ResolvedMove::Detach { source, place } => {
+            ResolvedMove::Detach(source) => {
                 let last = match current {
                     Some(id) => id,
                     None => newest_opened(&tx, head)?,
@@ -354,11 +346,11 @@ impl Browser {
                     [head.to_string()],
                 )?;
                 repair_source(&tx, source)?;
-                tx.execute("INSERT INTO tree_state(root_id,last_visit_id,tab_order) VALUES(?1,?2,(SELECT COALESCE(MAX(tab_order), -1)+1 FROM tree_state))", params![head.to_string(),last.to_string()])?;
-                place_tab(&tx, TreeId(head), place)?;
+                places::append_tab(&tx, head, last, now_ms()?)?;
                 MoveOutcome::BranchMoved { tree: TreeId(head) }
             }
         };
+        places::compact_tabs(&tx)?;
         forest_on(&tx)?;
         tx.commit()?;
         Ok(outcome)
@@ -378,51 +370,6 @@ fn repair_source(tx: &Transaction<'_>, source: SurvivingSource) -> Result<()> {
         tx.execute(
             "UPDATE tree_state SET last_visit_id=?2 WHERE root_id=?1",
             params![source.tree.root().to_string(), last.to_string()],
-        )?;
-    }
-    Ok(())
-}
-
-fn placed_order(order: &[TreeId], tree: TreeId, place: TabPlacement) -> Vec<TreeId> {
-    if place == TabPlacement::Before(tree) {
-        return order.to_vec();
-    }
-    let mut next: Vec<_> = order.iter().copied().filter(|id| *id != tree).collect();
-    let index = match place {
-        TabPlacement::End => next.len(),
-        TabPlacement::Before(anchor) => next.iter().position(|id| *id == anchor).unwrap(),
-    };
-    next.insert(index, tree);
-    next
-}
-
-fn place_tab(tx: &Transaction<'_>, tree: TreeId, place: TabPlacement) -> Result<()> {
-    let order = tx
-        .prepare("SELECT root_id FROM tree_state WHERE settled_at IS NULL ORDER BY tab_order")?
-        .query_map([], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let ids: Vec<_> = order
-        .iter()
-        .map(|id| id.parse().map(TreeId))
-        .collect::<std::result::Result<_, _>>()?;
-    let next = placed_order(&ids, tree, place);
-    if next != ids {
-        write_tab_order(
-            tx,
-            &next
-                .iter()
-                .map(|t| t.root().to_string())
-                .collect::<Vec<_>>(),
-        )?;
-    }
-    Ok(())
-}
-
-pub(super) fn write_tab_order(tx: &Transaction<'_>, order: &[String]) -> Result<()> {
-    for (index, id) in order.iter().enumerate() {
-        tx.execute(
-            "UPDATE tree_state SET tab_order=?2 WHERE root_id=?1 AND tab_order<>?2",
-            params![id, index],
         )?;
     }
     Ok(())

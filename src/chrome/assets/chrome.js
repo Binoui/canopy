@@ -33,10 +33,10 @@ const ICONS = {
 const $ = (id) => document.getElementById(id);
 const post = (message) => window.ipc.postMessage(JSON.stringify(message));
 /// The old GTK buttons did not take focus from the page.
-const NAVIGATES = new Set(['reload', 'back', 'forward', 'stop', 'restore', 'select-tree', 'settle-tree', 'settle-current', 'open-suggestion', 'open-bookmark', 'open-mail', 'open-inbox', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
+const NAVIGATES = new Set(['reload', 'back', 'forward', 'stop', 'restore', 'settle-current', 'open-suggestion', 'open-bookmark', 'open-mail', 'open-inbox', 'open-citation', 'open-saved', 'branch-queued', 'fill-login', 'save-login']);
 const intent = (kind, extra = {}) => {
   post({ t: 'intent', kind, ...extra });
-  if (NAVIGATES.has(kind) && !(S.overlay === 'forest' && kind === 'settle-tree')) post({ t: 'focus', target: 'page' });
+  if (NAVIGATES.has(kind)) post({ t: 'focus', target: 'page' });
 };
 const esc = (text) => String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const icon = (name) => `<svg class="icon" viewBox="0 0 24 24">${ICONS[name]}</svg>`;
@@ -63,13 +63,14 @@ const S = {
   hovered: null,
   list: null,
   popover: null,
+  switcher: null,
   mailTab: 'all',
   palette: null,
   reader: null,
   find: null,
   errors: { recent: [], toast: null, unread: false },
   forest: null,
-  forestWants: 'trees',
+  forestWants: 'canopy',
   reported: '',
 };
 
@@ -102,7 +103,7 @@ function returnFocus(kind) {
 const tabKey = (event) => ['Tab', 'ISO_Left_Tab'].includes(event.key) || event.code === 'Tab' || event.keyCode === 9;
 const controlsIn = (root) => [...root.querySelectorAll('button:not(:disabled), input, [tabindex="0"]')].filter((el) => el.tabIndex >= 0 && el.getClientRects().length);
 
-const visit = (id) => S.frame?.visits[id];
+const visit = (id) => S.frame?.visits[id] ?? S.forest?.canopy?.visits?.[id];
 const current = () => S.frame?.current ?? null;
 /// The files downloaded from a page of the current tree, oldest first.
 const filesOf = (id) => S.frame?.files?.[id] ?? [];
@@ -181,7 +182,7 @@ function syncLayer() {
   if (S.formReturn || S.palette || S.reader || S.overlay || S.surface !== 'reading') {
     height = null;
   } else {
-    for (const el of [S.list && $('strip-list'), S.popover && $('popover')]) {
+    for (const el of [S.list && $('strip-list'), S.popover && $('popover'), S.switcher?.shown && $('switcher')]) {
       if (!el) continue;
       const bottom = el.hidden ? HEADER + REST + 420 : el.getBoundingClientRect().bottom;
       height = Math.max(height, bottom + 30);
@@ -212,19 +213,36 @@ function applyTheme() {
 function patchChildren(container, html) {
   const template = document.createElement('template');
   template.innerHTML = html;
-  const kept = new Map([...container.children].map((el) => [el.dataset.key || el.dataset.id, el]));
+  patchInto(container, template.content);
+}
+const keyOf = el => el.dataset.key || el.dataset.id;
+const allKeyed = el => el.childNodes.length > 0 && [...el.childNodes].every(n => n.nodeType === Node.ELEMENT_NODE ? !!keyOf(n) : !n.textContent.trim());
+function patchInto(container, fresh) {
+  const previous = [...container.children], used = new Set();
+  const kept = new Map(previous.filter(el => keyOf(el)).map(el => [keyOf(el), el]));
   let cursor = container.firstElementChild;
-  for (const fresh of [...template.content.children]) {
-    const el = kept.get(fresh.dataset.key || fresh.dataset.id) || fresh;
-    kept.delete(fresh.dataset.key || fresh.dataset.id);
-    if (el !== fresh) {
-      for (const attr of fresh.attributes) if (el.getAttribute(attr.name) !== attr.value) el.setAttribute(attr.name, attr.value);
-      if (el.innerHTML !== fresh.innerHTML) el.innerHTML = fresh.innerHTML;
+  for (const next of [...fresh.children]) {
+    const key = keyOf(next), el = (key && kept.get(key)) || next;
+    if (key) kept.delete(key);
+    used.add(el);
+    if (el !== next) {
+      for (const attr of next.attributes) if (el.getAttribute(attr.name) !== attr.value) el.setAttribute(attr.name, attr.value);
+      for (const attr of [...el.attributes]) if (!next.hasAttribute(attr.name)) el.removeAttribute(attr.name);
+      if (allKeyed(el) && allKeyed(next)) patchInto(el, next);
+      else if (el.innerHTML !== next.innerHTML) el.innerHTML = next.innerHTML;
     }
     if (el !== cursor) container.insertBefore(el, cursor);
     cursor = el.nextElementSibling;
   }
-  for (const el of kept.values()) el.remove();
+  for (const el of previous) if (!used.has(el)) el.remove();
+}
+function treeAct(tree, act) {
+  if (S.overlay === 'forest') { post({t:'forest',do:'act',tree,act}); return; }
+  const navigates = act === 'open';
+  const lands = ['save','settle'].includes(act) && S.overlay !== 'forest' && S.surface !== 'start';
+  if (navigates) uncover();
+  post({t:'tree', tree, act});
+  if (navigates || lands) post({t:'focus', target:'page'});
 }
 
 function renderTabs() {
@@ -237,6 +255,7 @@ function renderTabs() {
   $('new-tree-tab').setAttribute('aria-label', opening ? `${opening}, loading` : 'New tree');
   $('new-tree-close').hidden = !current();
   const row = $('tab-row');
+  const focusedTab = document.hasFocus() && row.contains(document.activeElement) ? document.activeElement.closest('.tab')?.dataset.id : null;
   const trees = S.frame?.tabs ?? [];
   const kept = new Map([...row.children].map((tab) => [tab.dataset.id, tab]));
   const nodes = trees.map((tree, index) => {
@@ -245,12 +264,11 @@ function renderTabs() {
     const root = visit(tree.id);
     const pages = `${tree.pages} page${tree.pages === 1 ? '' : 's'}`;
     const pending = tree.pending ? `, ${tree.pending} waiting` : '';
-    const pinned = tree.pinned ? ', saved' : '';
+    const pinned = tree.pinned ? ', pinned' : '';
     const key = index < 9 ? ` · Ctrl+${index + 1}` : '';
-    const html = `<button class="tab" draggable="true" role="tab" tabindex="${active ? 0 : -1}" aria-selected="${active}" data-id="${tree.id}" title="${esc(`${tree.title}${sub ? ` · ${sub}` : ''} · ${pages}${pending}${pinned}${key}`)}" aria-label="${esc((sub ? `${tree.name}, on ${sub}` : tree.name) + pending)}">`
+    const html = `<button class="tab${tree.pinned ? ' pinned' : ''}" draggable="true" role="tab" tabindex="${active ? 0 : -1}" aria-selected="${active}" data-id="${tree.id}" title="${esc(`${tree.title}${sub ? ` · ${sub}` : ''} · ${pages}${pending}${pinned}${key}`)}" aria-label="${esc((sub ? `${tree.name}, on ${sub}` : tree.name) + pending)}">`
       + (root ? `<span class="mk">${visitFav(root, 14)}</span>` : '')
       + `<span class="tab-title${sub ? ' two-line' : ''}"><span class="tab-name">${esc(tree.title)}</span>${sub ? `<span class="tab-sub">${esc(sub)}</span>` : ''}</span>`
-      + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Saved">${icon('pinned')}</span>` : '')
       + (tree.pending ? '<i class="unread-dot" aria-hidden="true"></i>' : '')
       + `<span class="tab-settle" data-settle="${tree.id}" title="Settle${active ? ' · Ctrl+W' : ''}" aria-hidden="true">${icon('close')}</span>`
       + '</button>';
@@ -259,6 +277,7 @@ function renderTabs() {
     const fresh = template.content.firstChild;
     const tab = kept.get(tree.id) ?? fresh;
     if (tab !== fresh) {
+      tab.classList.toggle('pinned', tree.pinned);
       tab.setAttribute('aria-selected', String(active));
       setTooltip(tab, fresh.title);
       tab.setAttribute('aria-label', fresh.getAttribute('aria-label'));
@@ -274,6 +293,7 @@ function renderTabs() {
   nodes.forEach((tab, index) => { if (row.children[index] !== tab) row.insertBefore(tab, row.children[index] ?? null); });
   if (S.frame?.tabFit) window.canopy.tabsFit(S.frame.tabFit);
   fitTabs();
+  if (focusedTab) nodes.find(tab => tab.dataset.id === focusedTab && !tab.hidden)?.focus({preventScroll:true});
   const focused = row.contains(document.activeElement) && !document.activeElement.hidden ? document.activeElement : row.querySelector('[aria-selected="true"]') ?? row.querySelector('.tab:not([hidden])');
   for (const tab of row.children) tab.tabIndex = tab === focused ? 0 : -1;
 }
@@ -801,6 +821,85 @@ function openNextWaiting(id = S.frame?.waiting.ids[0]) {
   activate(id);
 }
 
+// ---------- Ctrl+Tab page list ----------
+// Rust owns the keys: Ctrl+Tab opens the list, each further Tab or Shift+Tab steps it, and
+// releasing Ctrl opens the selected row (Escape drops it). A quick tap never shows the list.
+
+const switcherRows = (sw) => [...sw.rows.waiting, ...sw.rows.read];
+
+function openSwitcher(rows) {
+  closeSwitcher();
+  const sw = { rows, index: 0, shown: false };
+  if (!switcherRows(sw).length) { canopy.toast('info', 'No other pages in this tree'); return; }
+  S.switcher = sw;
+  schedule('switcherShow', 160, showSwitcher);
+}
+
+function stepSwitcher(by) {
+  const sw = S.switcher;
+  if (!sw) return;
+  const count = switcherRows(sw).length;
+  sw.index = (sw.index + by + count) % count;
+  if (sw.shown) renderSwitcher();
+  else showSwitcher();
+}
+
+function showSwitcher() {
+  cancel('switcherShow');
+  if (!S.switcher) return;
+  closeReader(false);
+  closePalette(false);
+  closePopover(false);
+  hideList();
+  S.switcher.shown = true;
+  // The view is only as tall as the strip until this list makes it reach further down.
+  $('switcher').style.maxHeight = `${Math.max(120, Math.min(520, (S.windowHeight ?? window.innerHeight) - 130))}px`;
+  $('switcher').hidden = false;
+  renderSwitcher();
+  syncLayer();
+}
+
+function renderSwitcher() {
+  const { rows, index } = S.switcher;
+  let i = 0;
+  const row = (v, detail) => {
+    const selected = i === index;
+    return `<div class="menu-row switcher-row" role="option" id="switcher-${i++}" data-id="${v.id}" aria-selected="${selected}" aria-label="${esc(v.name)}">`
+      + `${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(detail)}</span></div>`;
+  };
+  // Waiting pages on the left, read pages on the right. Tab walks down the left column first.
+  const column = (kind, heading, pages, detail, empty, after = '') => `<div class="switcher-col" data-kind="${kind}"><div class="menu-heading">${heading}</div>`
+    + (pages.length ? pages.map((v) => row(v, detail(v) === v.label ? '' : detail(v))).join('') : `<div class="menu-hint">${empty}</div>`) + `${after}</div>`;
+  const waiting = rows.waiting.length + rows.moreWaiting;
+  $('switcher').innerHTML = '<div class="switcher-cols">'
+    + column('waiting', waiting ? `Waiting · ${waiting}` : 'Waiting', rows.waiting, (v) => v.detail, 'Nothing waiting',
+      rows.moreWaiting ? `<div class="menu-hint">${rows.moreWaiting} more waiting</div>` : '')
+    + column('read', 'Read', rows.read, (v) => v.site, 'No other read pages')
+    + '</div><div class="switcher-keys"><kbd>Tab</kbd> next · <kbd>Shift Tab</kbd> back · release <kbd>Ctrl</kbd> or click to open</div>';
+  const chosen = $('switcher').querySelector('[aria-selected="true"]');
+  $('switcher').setAttribute('aria-activedescendant', chosen?.id ?? '');
+  chosen?.scrollIntoView({ block: 'nearest' });
+  $('switcher').querySelectorAll('[data-id]').forEach((el) => el.addEventListener('click', () => {
+    closeSwitcher();
+    openNextWaiting(el.dataset.id);
+  }));
+}
+
+function closeSwitcher() {
+  cancel('switcherShow');
+  if (!S.switcher) return;
+  S.switcher = null;
+  $('switcher').hidden = true;
+  $('switcher').innerHTML = '';
+  syncLayer();
+}
+
+function commitSwitcher() {
+  const sw = S.switcher;
+  closeSwitcher();
+  if (sw) openNextWaiting(switcherRows(sw)[sw.index].id);
+}
+
 function enterWaitingPin() {
   cancel('waitingClose');
   if (S.layer !== 'none' || S.popover) return;
@@ -1040,15 +1139,14 @@ function renderPopover() {
   } else if (kind === 'tree') {
     const rows = TREE_MENUS[data.source](data.id);
     if (!rows) { closePopover(false); return; }
-    patchChildren(popover, rows.map((r) => `<button class="menu-row" role="menuitem" data-key="${r.kind}" data-tab-action="${r.kind}">${esc(r.label)}</button>`).join(''));
+    patchChildren(popover, rows.map((r) => `<button class="menu-row" role="menuitem" data-key="${r.act}" data-tab-action="${r.act}">${esc(r.label)}</button>`).join(''));
     popover.querySelectorAll('[data-tab-action]').forEach((el, i) => { el.onclick = () => {
       const row = rows[i], anchor = S.popover.anchor;
       closePopover();
-      if (row.kind === 'rename') {
+      if (row.act === 'rename') {
         openPopover('rename', anchor, { ...data, name: row.name });
         S.popover.field.focus(); S.popover.field.select();
-      } else if (row.kind === 'pin') intent('pin-tree', { id: data.id, pinned: row.pinned });
-      else intent('settle-tree', { id: data.id });
+      } else treeAct(data.id, row.act);
     }; });
   } else if (kind === 'bookmark') {
     popover.innerHTML = '<button class="menu-row" role="menuitem" data-remove-bookmark>Remove bookmark</button>';
@@ -1145,8 +1243,7 @@ function renderPopover() {
       row.className = 'overflow-tree';
       row.dataset.tree = tree.id;
       const html = `<button class="menu-row" data-id="${tree.id}">${root ? visitFav(root, 16) : ''}<span class="grow">${esc(tree.title)}</span>`
-        + (tree.pinned ? `<span class="tab-pinned-mark" aria-label="Saved">${icon('pinned')}</span>` : '')
-        + (tree.pending ? `<span class="count" aria-label="${tree.pending} waiting">${tree.pending}</span>` : '') + '</button>'
+          + (tree.pending ? `<span class="count" aria-label="${tree.pending} waiting">${tree.pending}</span>` : '') + '</button>'
         + `<button class="overflow-settle" data-settle="${tree.id}" title="Settle tree" aria-label="Settle ${esc(tree.title)}">${icon('close')}</button>`;
       if (row.dataset.html !== html) {
         row.dataset.html = html;
@@ -1161,10 +1258,10 @@ function renderPopover() {
         row.querySelector('[data-id]').onclick = () => {
           closePopover();
           uncover();
-          intent('select-tree', { id: tree.id });
+          treeAct(tree.id, 'open');
         };
         row.querySelector('[data-settle]').onclick = () => {
-          intent('settle-tree', { id: tree.id });
+          treeAct(tree.id, 'settle');
         };
       }
       return row;
@@ -1559,7 +1656,8 @@ function setOverlay(kind) {
     if (overlay.leavesStart) setSurface('reading');
     hideList();
     closePopover(false);
-    $(overlay.el).hidden = kind === 'forest';
+    $(overlay.el).hidden = false;
+    if (kind === 'forest') { $('forest').dataset.pending = ''; $('forest-canopy').hidden = S.forestWants !== 'canopy'; $('canopy-legend').hidden = S.forestWants !== 'canopy'; $('forest-history').hidden = S.forestWants !== 'history'; }
     $(overlay.button).setAttribute('aria-pressed', 'true');
     if (kind !== 'forest') overlay.show(true);
   }
@@ -1567,13 +1665,13 @@ function setOverlay(kind) {
   syncLayer();
   if (forestChanged) {
     if (kind === 'forest') requestForest();
-    else { S.forest = null; post({ t: 'forest', do: 'close' }); }
+    else { resetCanopy(); S.forest = null; post({ t: 'forest', do: 'close' }); }
   }
 }
 
 function requestForest() {
-  if (S.overlay === 'forest' && $('forest').hidden && window.innerHeight >= S.windowHeight - 1) {
-    post({ t: 'forest', do: 'open', view: S.forestWants });
+  if (S.overlay === 'forest' && $('forest').hasAttribute('data-pending') && window.innerHeight >= S.windowHeight - 1) {
+    post({ t: 'forest', do: 'open', view: S.forestWants, ...canopyRoom() });
   }
 }
 window.addEventListener('resize', requestForest);
@@ -1645,9 +1743,9 @@ function miniHtml(mini) {
 }
 
 const TREE_MENUS = {
-  forest: (id) => S.forest?.trees?.items.find(i => i.id === id)?.menu ?? S.forest?.history?.items.find(i => i.id === id)?.menu,
+  forest: (id) => forestMenu(id),
   tab: (id) => S.frame?.tabs.find((t) => t.id === id)?.menu,
-  start: (id) => S.frame?.start?.pinned.find((c) => c.id === id)?.menu,
+  start: (id) => S.frame?.start?.shelf.find((c) => c.id === id)?.menu,
 };
 
 function treeCard(t, attrs) {
@@ -1658,11 +1756,11 @@ function treeCard(t, attrs) {
     + `</span>${t.page ? `<span class="pc-page">${esc(t.page)}</span>` : ''}<span class="pc-meta">${esc(t.meta)}</span></button>`;
 }
 
-function pinnedBand(start) {
-  return '<section>' + bandHead('Saved trees', 'Opens the tree where you left it')
-    + (start.pinned.length ? '<div class="pinned-row">' + start.pinned.map((t) =>
+function shelfBand(start) {
+  return '<section>' + bandHead(start.shelfTitle, start.shelfHint)
+    + (start.shelf.length ? '<div class="shelf-row">' + start.shelf.map((t) =>
       treeCard(t, 'data-start="tree"')).join('') + '</div>'
-      : '<div class="hint-line">Save a tree from its tab menu. It stays here and never settles on its own.</div>') + '</section>';
+      : `<div class="hint-line">${esc(start.shelfHint)}</div>`) + '</section>';
 }
 
 function suggestedBand(start) {
@@ -1695,13 +1793,13 @@ function togglePopover(kind, anchor, data) {
   $('popover').querySelector('button')?.focus();
 }
 
-const BANDS = [pinnedBand, bookmarksBand, suggestedBand];
+const BANDS = [shelfBand, bookmarksBand, suggestedBand];
 const START = {
   bookmark: { open: (id) => { closePopover(false); uncoverForPage(); intent('open-bookmark', { id: Number(id) }); }, menu: 'bookmark' },
   folder: { open: (name, el) => togglePopover('folder', el, { folder: name }) },
   more: { open: (_, el) => togglePopover('folder', el, { more: true }) },
   folders: { open: (_, el) => togglePopover('folder', el, { hidden: true }) },
-  tree: { open: (id) => { uncover(); intent('select-tree', { id }); }, menu: 'tree' },
+  tree: { open: (id) => treeAct(id, 'open'), menu: 'tree' },
   suggestion: { open: (key) => { intent('open-suggestion', { key }); uncoverForPage(); } },
   keep: { open: (key) => intent('keep-suggestion', { key }) },
   decline: { open: (key) => intent('decline-suggestion', { key }) },
@@ -1750,127 +1848,6 @@ function renderStart() {
       setTooltip(next, next.getAttribute('title'));
     } else closePopover(false);
   }
-}
-
-// ---------- forest view ----------
-
-function toggleForest(view = 'trees', fromChrome = true) {
-  if (S.overlay !== 'forest') {
-    S.forestWants = view;
-    toggleOverlay('forest');
-    if (!fromChrome && S.overlay === 'forest') rememberFocus('overlay', document.body);
-  } else if (!S.forest) closeOverlay();
-  else post({ t: 'forest', do: 'toggle', view });
-}
-function focusForest() {
-  post({ t: 'focus', target: 'chrome' });
-  const target = S.forest?.view === 'trees'
-    ? $('forest-trees').querySelector('.tree-card[aria-current="true"]') ?? $('forest-trees').querySelector('.tree-card')
-    : $('forest-list').querySelector('[aria-selected="true"]');
-  (target ?? $('forest-find')).focus({ preventScroll: true });
-  target?.scrollIntoView({ block: 'nearest' });
-}
-function renderForest() {
-  const f = S.forest;
-  if (!f || S.overlay !== 'forest') return;
-  const within = $('forest').contains(document.activeElement);
-  $('forest-count').textContent = f.count;
-  if (document.activeElement !== $('forest-find') || !f.query) $('forest-find').value = f.query;
-  for (const b of $('forest-views').children) b.setAttribute('aria-pressed', String(b.dataset.view === f.view));
-  $('forest-trees').hidden = f.view !== 'trees';
-  $('forest-history').hidden = f.view !== 'history';
-  if (f.view === 'trees') patchChildren($('forest-trees'), f.trees.items.map(treesItemHtml).join(''));
-  else renderHistory(f.history);
-  const empty = f.view === 'trees' ? f.trees.empty : f.history.empty;
-  $('forest-empty').hidden = !empty;
-  $('forest-empty').textContent = empty ?? '';
-  if (within && (!$('forest').contains(document.activeElement) || !document.activeElement.getClientRects().length)) focusForest();
-}
-function treesItemHtml(i) {
-  if (i.kind === 'band') return `<div class="band-head" data-key="${i.key}"><span>${esc(i.title)}</span><span class="hint">${esc(i.detail)}</span></div>`;
-  if (i.kind === 'hint') return `<div class="hint-line" data-key="${i.key}">${esc(i.text)}</div>`;
-  return treeCard(i, `data-key="${i.key}" data-id="${i.id}" data-forest="card" data-tree-menu aria-current="${i.current}"`);
-}
-function renderHistory(h) {
-  const list = $('forest-list');
-  const inList = list.contains(document.activeElement);
-  patchChildren(list, h.items.map(historyItemHtml).join('') + (h.more ? `<button class="forest-more" data-key="more" data-forest="more" data-seen="${h.more.seen}">${esc(h.more.label)}</button>` : ''));
-  patchChildren($('forest-preview'), h.preview ? forestPreviewHtml(h.preview) : '');
-  $('forest-preview').hidden = !h.preview;
-  if (inList) {
-    const row = list.querySelector('[aria-selected="true"]');
-    row?.focus({ preventScroll: true }); row?.scrollIntoView({ block: 'nearest' });
-  }
-}
-function forestPreviewHtml(p) {
-  return `<div class="pv-art" data-key="${p.key}-art">${miniHtml(p.mini)}</div>`
-    + `<div class="pv-title" data-key="${p.key}-title"><b>${esc(p.title)}</b><span>${esc(p.meta)}</span></div>`
-    + p.actions.map(a => `<button class="action pv-action" data-key="${p.key}-${a.kind}" data-forest="${a.kind}" data-id="${p.id}">${esc(a.label)}</button>`).join('')
-    + p.outline.map(r => `<button class="pv-row${r.last ? ' last' : ''}${r.waiting ? ' waiting' : ''}" data-key="${p.key}-${r.id}" data-forest="page" data-id="${r.id}" aria-label="${esc(r.label)}" style="padding-left:${Math.min(r.depth,6)*16}px">${fav(r.url,!r.waiting,14)}<span>${esc(r.name)}</span></button>`).join('')
-    + (p.cut ? `<div class="pv-cut" data-key="${p.key}-cut">${esc(p.cut)}</div>` : '');
-}
-function historyItemHtml(i) {
-  if (i.kind === 'day') return `<div class="forest-day" data-key="${i.key}" role="presentation"><b>${esc(i.label)}</b><span>${esc(i.count)}</span></div>`;
-  return `<button class="forest-row" role="option" data-key="${i.key}" data-id="${i.id}" data-forest="row" data-tree-menu aria-selected="${i.selected}" tabindex="${i.selected ? 0 : -1}" aria-label="${esc(i.name)}">`
-    + `<span class="tm">${esc(i.time)}</span><span class="forest-icons">${i.icons.map(n => fav(n.url, true, 16)).join('')}${i.more ? `<span>${esc(i.more)}</span>` : ''}</span>`
-    + `<span class="nm">${esc(i.title)}</span><span class="st">${esc(i.sites)}</span><span class="pg">${esc(i.pages)}</span></button>`;
-}
-function openForestTree(id) { uncover(); intent('select-tree', { id }); }
-$('forest').addEventListener('click', (e) => {
-  const el = e.target.closest('[data-forest]');
-  if (!el) return;
-  const id = el.dataset.id;
-  if (el.dataset.forest === 'card') openForestTree(id);
-  else if (el.dataset.forest === 'row') post({ t: 'forest', do: 'select', tree: id });
-  else if (el.dataset.forest === 'reopen') openForestTree(id);
-  else if (el.dataset.forest === 'more') post({ t: 'forest', do: 'more', seen: Number(el.dataset.seen) });
-  else if (el.dataset.forest === 'save') intent('pin-tree', { id, pinned: true });
-  else if (el.dataset.forest === 'page') { uncover(); intent('restore', { id }); }
-});
-$('forest').addEventListener('contextmenu', (e) => {
-  const el = e.target.closest('[data-tree-menu]');
-  if (!el) return;
-  e.preventDefault();
-  openPopover('tree', el, { source: 'forest', id: el.dataset.id });
-  post({ t: 'focus', target: 'chrome' });
-  $('popover').querySelector('button')?.focus();
-});
-$('forest').addEventListener('dblclick', (e) => {
-  const row = e.target.closest('[data-forest="row"]');
-  if (row) openForestTree(row.dataset.id);
-});
-$('forest-views').addEventListener('click', (e) => {
-  const b = e.target.closest('[data-view]');
-  if (b) post({ t: 'forest', do: 'show', view: b.dataset.view });
-});
-$('forest-find').addEventListener('input', () => post({ t: 'forest', do: 'find', query: $('forest-find').value }));
-$('forest-close').addEventListener('click', closeOverlay);
-$('forest').querySelector('.scrim').addEventListener('mousedown', closeOverlay);
-$('forest').addEventListener('keydown', (e) => {
-  if (S.popover || e.ctrlKey || e.altKey || e.metaKey || e.isComposing) return;
-  const field = e.target === $('forest-find');
-  const row = e.target.closest('.forest-row'), card = e.target.closest('.tree-card');
-  if (!field && [...e.key].length === 1 && e.key !== ' ') {
-    $('forest-find').focus(); $('forest-find').value += e.key;
-    post({ t: 'forest', do: 'find', query: $('forest-find').value });
-  } else if (field && e.key === 'ArrowDown') focusForest();
-  else if (row && ['ArrowUp', 'ArrowDown'].includes(e.key)) post({ t: 'forest', do: 'step', by: e.key === 'ArrowUp' ? -1 : 1 });
-  else if (row && e.key === 'Enter') openForestTree(row.dataset.id);
-  else if (card && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) moveForestCard(card, e.key);
-  else return;
-  e.preventDefault();
-});
-function moveForestCard(card, key) {
-  const cards = [...$('forest-trees').querySelectorAll('.tree-card')];
-  let next;
-  if (key === 'ArrowLeft' || key === 'ArrowRight') next = cards[clamp(cards.indexOf(card) + (key === 'ArrowRight' ? 1 : -1), 0, cards.length - 1)];
-  else {
-    const a = card.getBoundingClientRect(), down = key === 'ArrowDown';
-    next = cards.map(c => [c, c.getBoundingClientRect()])
-      .filter(([,r]) => down ? r.top > a.bottom - 1 : r.bottom < a.top + 1)
-      .sort(([,r],[,s]) => (down ? r.top - s.top : s.bottom - r.bottom) || Math.abs(r.left-a.left)-Math.abs(s.left-a.left))[0]?.[0];
-  }
-  next?.focus();
 }
 
 // ---------- reader ----------
@@ -1936,6 +1913,7 @@ function renderPageScale() {
 let nextMoveRequest = 0;
 
 window.canopy = {
+  navigated() { uncover(); },
   branchMoveChoices(reply) {
     const picker = S.popover;
     if (picker?.kind !== 'move-tree' || picker.data.request !== reply.request || picker.data.head !== reply.head) return;
@@ -1955,7 +1933,10 @@ window.canopy = {
   },
   forest(value) {
     if (S.overlay !== 'forest') return;
+    if (value.view === 'canopy' && !acceptCanopy(value.canopy)) return;
     const first = !S.forest || S.forest.view !== value.view;
+    if (first) resetCanopy();
+    delete $('forest').dataset.pending;
     S.forest = value;
     $('forest').hidden = false;
     renderForest();
@@ -2064,7 +2045,12 @@ window.canopy = {
     renderLoginChip();
   },
   fillLogin() { fillLogin(); },
-  nextWaiting() { openNextWaiting(); },
+  switcher(action, value) {
+    if (action === 'open') openSwitcher(value);
+    else if (action === 'step') stepSwitcher(value);
+    else if (action === 'commit') commitSwitcher();
+    else closeSwitcher();
+  },
   openPalette(options) { openPalette(options); },
   help(value) { S.help = value; renderHelp(); },
   openErrors() { openPopover('errors', $('settings-button')); },
@@ -2079,7 +2065,7 @@ window.canopy = {
     focusStart();
     syncLayer();
   },
-  toggleForest(view = 'trees', fromChrome = true) { toggleForest(view, fromChrome); },
+  toggleForest(view = 'canopy', fromChrome = true) { toggleForest(view, fromChrome); },
   workbench(view) {
     if (!S.frame) return;
     const id = document.activeElement?.closest('[data-id]')?.dataset.id;
@@ -2322,7 +2308,7 @@ $('nav-back').innerHTML = icon('back');
 $('nav-forward').innerHTML = icon('forward');
 $('new-tree-tab').querySelector('.mk').innerHTML = icon('forest');
 $('new-tree-close').innerHTML = icon('close');
-$('forest-button').innerHTML = icon('forest') + '<span>Forest</span>';
+$('forest-button').innerHTML = icon('forest') + '<span>Canopy</span>';
 $('settings-button').innerHTML = icon('settings');
 $('tab-overflow').innerHTML = icon('chevron');
 $('search-pill').insertAdjacentHTML('afterbegin', icon('search'));
@@ -2369,8 +2355,8 @@ function tabDropAt(x) {
   const r = anchor.getBoundingClientRect();
   const tabs = S.frame.tabs;
   const gap = tabs.findIndex(t => t.id === anchor.dataset.id) + (before ? 0 : 1);
-  const from = tabs.findIndex(t => t.id === tabDrag);
-  return { index: gap - Number(from < gap), x: (before ? r.left - 1 : r.right + 1) - row.getBoundingClientRect().left };
+  const beforeId = tabs.slice(gap).find(t => t.id !== tabDrag)?.id ?? null;
+  return { before: beforeId, x: (before ? r.left - 1 : r.right + 1) - row.getBoundingClientRect().left };
 }
 
 $('tab-row').addEventListener('dragstart', event => {
@@ -2406,7 +2392,7 @@ $('tab-row').addEventListener('drop', event => {
   event.preventDefault();
   const drop = tabDropAt(event.clientX);
   finishTabDrag();
-  if (drop) intent('move-tree', { id, index: drop.index });
+  if (drop) intent('place-tree', { id, place: 'tabs', before: drop.before });
 });
 $('tab-row').addEventListener('dragend', finishTabDrag);
 
@@ -2426,13 +2412,13 @@ $('tab-row').addEventListener('click', (event) => {
   settlePress = null;
   const close = event.target.closest('[data-settle]');
   if (close) {
-    if (close === pressed && event.detail <= 1) intent('settle-tree', { id: close.dataset.settle });
+    if (close === pressed && event.detail <= 1) treeAct(close.dataset.settle, 'settle');
     return;
   }
   const tab = event.target.closest('[data-id]');
   if (!tab) return;
   uncover();
-  intent('select-tree', { id: tab.dataset.id });
+  treeAct(tab.dataset.id, 'open');
 });
 $('tab-row').addEventListener('focusin', (event) => {
   for (const tab of $('tab-row').children) tab.tabIndex = tab === event.target ? 0 : -1;
@@ -2451,7 +2437,7 @@ $('tab-row').addEventListener('mousedown', (event) => {
 });
 $('tab-row').addEventListener('auxclick', (event) => {
   const tab = event.target.closest('[data-id]');
-  if (event.button === 1 && tab) intent('settle-tree', { id: tab.dataset.id });
+  if (event.button === 1 && tab) treeAct(tab.dataset.id, 'settle');
 });
 $('tab-row').addEventListener('contextmenu', (event) => {
   const tab = event.target.closest('[data-id]');
@@ -2522,7 +2508,7 @@ document.addEventListener('mousedown', (event) => {
 new ResizeObserver(() => fitTabs()).observe($('tabs'));
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
 
-post({ t: 'ready' });
+document.addEventListener('DOMContentLoaded', () => post({ t: 'ready' }));
 
 function answerFormReturn(proceed, focusPage = true) {
   if (!S.formReturn) return;
@@ -2553,7 +2539,7 @@ document.addEventListener('focusin', (event) => {
   }
 }, true);
 
-const NODE_TARGETS = '#strip-nodes [data-page], #strip-list [data-id], #strip-list [data-page], #tree-nodes [data-id], #tree-list [data-id], #popover.waiting [data-id]';
+const NODE_TARGETS = '#strip-nodes [data-page], #strip-list [data-id], #strip-list [data-page], #tree-nodes [data-id], #tree-list [data-id], #popover.waiting [data-id], #forest-canopy [data-page]';
 document.addEventListener('keydown', (event) => {
   if (event.defaultPrevented || S.popover || !(event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) return;
   const el = event.target.closest(NODE_TARGETS);

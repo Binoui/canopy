@@ -8,8 +8,8 @@ pub(crate) mod stack;
 use crate::{
     address::WebOrigin,
     browser::{
-        Browser, Landing, LoadTicket, MoveOutcome, MoveTo, NavigationTarget, ThemeMode, TreeId,
-        VisitId,
+        Browser, Landing, LoadTicket, MoveOutcome, MoveTo, NavigationTarget, TabPlacement,
+        ThemeMode, TreeId, VisitId,
     },
     chrome::{Favicons, CHROME_HEIGHT},
     forest::ForestProjection,
@@ -49,7 +49,15 @@ pub enum PageEvent {
     FormReturn(Option<u64>),
     Selected,
     Settled(String),
-    Waiting { parent: VisitId, label: String },
+    Saved(String),
+    Deleted {
+        id: Option<crate::browser::DeleteId>,
+        text: String,
+    },
+    Waiting {
+        parent: VisitId,
+        label: String,
+    },
     Changed,
     BranchMoved,
     Loading(bool),
@@ -57,9 +65,13 @@ pub enum PageEvent {
     Error(String),
     Remembered(i64),
     Download(DownloadEvent),
-    OpenBranchPalette { visit: VisitId },
+    OpenBranchPalette {
+        visit: VisitId,
+    },
     Login(LoginEvent),
     Find(FindUpdate),
+    // The selected page went fullscreen (a video, say) or came back; the chrome steps aside.
+    Fullscreen(bool),
 }
 
 /// What the selected page reports about signing in.
@@ -190,20 +202,34 @@ enum Command {
 
 #[derive(Clone, Copy)]
 enum SettleTarget {
-    Tree(TreeId),
+    Tree(TreeId, Away),
     Branch(VisitId),
+}
+
+#[derive(Clone, Copy)]
+enum Away {
+    History,
+    Shelf(crate::browser::Slot),
+}
+impl Away {
+    fn to_move(self) -> crate::browser::Move {
+        match self {
+            Self::History => crate::browser::Move::History,
+            Self::Shelf(s) => crate::browser::Move::Shelf(s),
+        }
+    }
 }
 
 impl SettleTarget {
     fn head(self) -> VisitId {
         match self {
-            Self::Tree(tree) => tree.root(),
+            Self::Tree(tree, _) => tree.root(),
             Self::Branch(head) => head,
         }
     }
     fn contains(self, forest: &ForestProjection, visit: VisitId) -> bool {
         match self {
-            Self::Tree(tree) => forest.tree_of(visit) == Some(tree),
+            Self::Tree(tree, _) => forest.tree_of(visit) == Some(tree),
             Self::Branch(head) => forest.path(visit).contains(&head),
         }
     }
@@ -315,6 +341,9 @@ pub struct Pages {
     observer: RefCell<Option<Observer>>,
     start: Cell<Option<StartPage>>,
     settle_undo: RefCell<Option<SettleUndo>>,
+    /// The page shown fullscreen: it covers the whole window, chrome included.
+    fullscreen: RefCell<Option<glib::WeakRef<webkit2gtk::WebView>>>,
+    deleted: RefCell<Option<crate::browser::Deleted>>,
 }
 
 impl Pages {
@@ -366,6 +395,8 @@ impl Pages {
             observer: RefCell::new(None),
             start: Cell::new(None),
             settle_undo: RefCell::new(None),
+            fullscreen: RefCell::new(None),
+            deleted: RefCell::new(None),
         });
         let weak = Rc::downgrade(&pages);
         container.connect_size_allocate(move |container, a| {
@@ -399,6 +430,9 @@ impl Pages {
                 let pages = weak
                     .upgrade()
                     .ok_or_else(|| anyhow::anyhow!("The window was closed."))?;
+                if !pages.read(|b| b.contains_visit(visit))? {
+                    return Ok(());
+                }
                 let result = pages
                     .browser
                     .borrow_mut()
@@ -513,6 +547,32 @@ impl Pages {
 
     fn selected_changed(&self) {
         self.publish_loading();
+        // Another page took the window; the fullscreen one cannot keep covering it.
+        let fullscreen = self.fullscreen.borrow().as_ref().map(|w| w.upgrade());
+        if let Some(view) = fullscreen {
+            let selected = self
+                .branches
+                .live
+                .borrow()
+                .as_ref()
+                .map(|p| p.native.clone());
+            if view.is_none() || selected != view {
+                *self.fullscreen.borrow_mut() = None;
+                self.fullscreen_changed(false);
+            }
+            if let Some(view) = view.filter(|v| selected.as_ref() != Some(v)) {
+                view.evaluate_javascript(
+                    "document.exitFullscreen?.().catch(() => {})",
+                    None,
+                    None,
+                    None::<&gio::Cancellable>,
+                    |_| {},
+                );
+                if let Some(window) = self.container.toplevel().and_downcast::<gtk::Window>() {
+                    window.unfullscreen();
+                }
+            }
+        }
         let observer = self.observer.borrow().clone();
         if let Some(observer) = observer {
             observer(PageEvent::Selected);
@@ -753,7 +813,7 @@ impl Pages {
                 || forest
                     .trees()
                     .iter()
-                    .any(|t| Some(t.id) == forest.tree_of(visit) && !t.lifecycle.is_open())
+                    .any(|t| Some(t.id) == forest.tree_of(visit) && !t.place.is_tab())
         } else {
             false
         };
@@ -1106,7 +1166,7 @@ impl Pages {
                             forest
                                 .trees()
                                 .iter()
-                                .any(|t| t.id == id && t.lifecycle.is_open())
+                                .any(|t| t.id == id && t.place.is_tab())
                         }),
                 )
             })
@@ -1390,6 +1450,13 @@ impl Pages {
     }
 
     fn remember_checkpoint(&self, saved: live::Checkpoint) {
+        if saved
+            .entries
+            .iter()
+            .any(|e| !self.read(|b| b.contains_visit(e.visit)).unwrap_or(false))
+        {
+            return;
+        }
         let mut dormant = self.branches.dormant.borrow_mut();
         let index = dormant
             .iter()
@@ -1596,6 +1663,21 @@ impl Pages {
     }
 
     pub fn go(&self, go: Go) -> Result<()> {
+        let target = match &go {
+            Go::Visit(v) | Go::Citation(v) => Some(*v),
+            Go::Tree(t) => Some(t.root()),
+            Go::Address {
+                target: NavigationTarget::ChildOf(v),
+                ..
+            } => Some(*v),
+            _ => None,
+        };
+        if let Some(visit) = target {
+            if !self.read(|b| b.contains_visit(visit))? {
+                return Ok(());
+            }
+        }
+
         if self.has_form_return() {
             self.answer_form_return(false);
             let weak = self.me.clone();
@@ -1713,6 +1795,9 @@ impl Pages {
                 }
             }
             Go::Tree(tree) => {
+                self.browser
+                    .borrow_mut()
+                    .place_tree(tree, crate::browser::Move::Open)?;
                 let visit = self.tree_target(tree)?;
                 self.route(visit)
             }
@@ -1827,8 +1912,239 @@ impl Pages {
                 });
     }
 
-    pub fn settle_tree(&self, tree: TreeId) -> Result<()> {
-        self.settle(SettleTarget::Tree(tree))
+    pub fn move_current_tree(&self, next: bool) -> Result<()> {
+        let tree = self.read(|b| -> Result<Option<TreeId>> {
+            let forest = ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)?;
+            Ok(forest.current().and_then(|id| forest.tree_of(id)))
+        })?;
+        if let Some(tree) = tree {
+            self.step_tree(tree, next)?;
+        }
+        Ok(())
+    }
+
+    pub fn step_tree(&self, tree: TreeId, next: bool) -> Result<()> {
+        let to = self.read(|b| b.tree_step(tree, next))?;
+        if let Some(to) = to {
+            self.place_tree(tree, to)?;
+        }
+        Ok(())
+    }
+
+    pub fn place_tree(&self, tree: TreeId, to: crate::browser::Move) -> Result<()> {
+        use crate::browser::Move;
+        let tab = self
+            .read(|b| b.tree_states())?
+            .iter()
+            .any(|s| s.root == tree && s.spot.place().is_tab());
+        if tab {
+            match to {
+                Move::History => return self.settle(SettleTarget::Tree(tree, Away::History)),
+                Move::Shelf(slot) => {
+                    return self.settle(SettleTarget::Tree(tree, Away::Shelf(slot)))
+                }
+                _ => {}
+            }
+        }
+        let landing = self.browser.borrow_mut().place_tree(tree, to)?;
+        self.receive(PageEvent::Changed);
+        self.land(landing)
+    }
+
+    pub fn delete_trees(&self, trees: &[TreeId]) -> Result<()> {
+        let forest =
+            self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
+        let result = self.browser.borrow_mut().delete_trees(trees)?;
+        let Some((id, record, mut landing)) = result else {
+            return Ok(());
+        };
+        let title = record
+            .trees()
+            .first()
+            .and_then(|t| forest.tree(*t))
+            .map(|t| t.title.clone())
+            .unwrap_or_default();
+        let cleanup = (|| -> Result<()> {
+            let belongs = |page: &LivePage| {
+                page.current_visit()
+                    .into_iter()
+                    .chain(page.pending_anchor())
+                    .chain(page.background_visit())
+                    .chain(page.history_visits())
+                    .any(|v| record.holds(v))
+            };
+            self.branches
+                .queued
+                .borrow_mut()
+                .retain(|(_, v)| !record.holds(*v));
+            self.commands.borrow_mut().retain(|c| match c {
+                Command::Go(go, _, _) => match &**go {
+                    Go::Visit(v) | Go::Citation(v) => !record.holds(*v),
+                    Go::Address {
+                        target: NavigationTarget::ChildOf(v),
+                        ..
+                    } => !record.holds(*v),
+                    Go::Tree(t) => !record.holds(t.root()),
+                    _ => true,
+                },
+                Command::Settle(t) => !record.holds(t.head()),
+                Command::Dismiss(v) => !record.holds(*v),
+                Command::MoveBranch { head, to } => {
+                    !record.holds(*head)
+                        && match to {
+                            MoveTo::Page(v) => !record.holds(*v),
+                            MoveTo::Tree(t) | MoveTo::OwnTree(TabPlacement::Before(t)) => {
+                                !record.holds(t.root())
+                            }
+                            MoveTo::OwnTree(TabPlacement::End) => true,
+                        }
+                }
+                _ => true,
+            });
+            let mut removed = vec![];
+            if self
+                .hold
+                .borrow()
+                .as_ref()
+                .is_some_and(|h| belongs(&h.outgoing))
+            {
+                if let Some(hold) = self.hold.borrow_mut().take() {
+                    hold.cancel.cancel();
+                    if let Some(cap) = hold.cap {
+                        cap.remove();
+                    }
+                    removed.push(hold.outgoing);
+                }
+            }
+
+            for list in [&self.branches.hidden, &self.branches.background] {
+                list.borrow_mut().retain(|h| {
+                    if belongs(&h.page) {
+                        removed.push(h.page.clone());
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+            self.retiring.borrow_mut().retain(|p| {
+                if belongs(p) {
+                    removed.push(p.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            if self
+                .branches
+                .candidate
+                .borrow()
+                .as_ref()
+                .is_some_and(|p| belongs(p))
+            {
+                self.cancel_candidate();
+            }
+            if self
+                .branches
+                .live
+                .borrow()
+                .as_ref()
+                .is_some_and(|p| belongs(p))
+            {
+                if landing == Landing::Unchanged {
+                    if let Some(current) = self.browser.borrow().snapshot()?.current {
+                        landing = Landing::Restore(current);
+                    }
+                }
+                if let Some(page) = self.branches.live.borrow_mut().take() {
+                    removed.push(page);
+                }
+                let page = Rc::new(LivePage::new(
+                    &self.container,
+                    self.me.clone(),
+                    &self.context,
+                )?);
+                self.promote(page);
+            }
+            for page in removed {
+                page.discard_deleted();
+            }
+            self.branches
+                .dormant
+                .borrow_mut()
+                .retain(|c| !c.entries.iter().any(|e| record.holds(e.visit)));
+            if self
+                .branches
+                .candidate_saved
+                .borrow()
+                .as_ref()
+                .is_some_and(|(_, c)| c.entries.iter().any(|e| record.holds(e.visit)))
+            {
+                self.branches.candidate_saved.borrow_mut().take();
+            }
+            #[cfg(feature = "gui-smoke")]
+            if self
+                .checkpoint
+                .borrow()
+                .as_ref()
+                .is_some_and(|c| c.entries.iter().any(|e| record.holds(e.visit)))
+            {
+                self.checkpoint.borrow_mut().take();
+            }
+            if self
+                .settle_undo
+                .borrow()
+                .as_ref()
+                .is_some_and(|u| record.holds(u.head) || record.holds(u.reopen))
+            {
+                self.settle_undo.borrow_mut().take();
+            }
+            if self
+                .continuation
+                .borrow()
+                .as_ref()
+                .is_some_and(|c| match c.state {
+                    ContinuationState::Committed { visit, .. }
+                    | ContinuationState::Ready { visit, .. } => record.holds(visit),
+                    _ => false,
+                })
+            {
+                self.cancel_continuation();
+            }
+            Ok(())
+        })();
+        let count = record.trees().len();
+        *self.deleted.borrow_mut() = Some(record);
+        self.receive(PageEvent::Deleted {
+            id: Some(id),
+            text: if count == 1 {
+                format!("Deleted ‘{title}’")
+            } else {
+                format!("Deleted {count} trees")
+            },
+        });
+        self.receive(PageEvent::Changed);
+        cleanup?;
+        self.land(landing)
+    }
+    pub fn undo_delete(&self, id: crate::browser::DeleteId) -> Result<()> {
+        {
+            let deleted = self.deleted.borrow();
+            let Some(record) = deleted.as_ref().filter(|r| r.id() == id) else {
+                return Ok(());
+            };
+            self.browser.borrow_mut().undo_delete(id, record)?;
+        }
+        self.deleted.borrow_mut().take();
+        self.receive(PageEvent::Deleted {
+            id: None,
+            text: String::new(),
+        });
+        self.receive(PageEvent::Changed);
+        Ok(())
+    }
+    pub fn forget_deleted(&self) {
+        self.deleted.borrow_mut().take();
     }
 
     pub fn settle_branch(&self, head: VisitId) -> Result<()> {
@@ -2009,7 +2325,7 @@ impl Pages {
         }
         let head = target.head();
         let name = match target {
-            SettleTarget::Tree(tree) => forest
+            SettleTarget::Tree(tree, _) => forest
                 .trees()
                 .iter()
                 .find(|t| t.id == tree)
@@ -2029,27 +2345,37 @@ impl Pages {
             })
             .count();
         let landing = match target {
-            SettleTarget::Tree(tree) => self.browser.borrow_mut().settle_tree(tree)?,
+            SettleTarget::Tree(tree, away) => {
+                self.browser.borrow_mut().place_tree(tree, away.to_move())?
+            }
             SettleTarget::Branch(head) => self.browser.borrow_mut().settle_branch(head)?,
         };
-        *self.settle_undo.borrow_mut() = Some(SettleUndo {
-            head,
-            reopen: forest
-                .current()
-                .filter(|id| target.contains(&forest, *id))
-                .unwrap_or_else(|| match target {
-                    SettleTarget::Tree(tree) => forest
-                        .trees()
-                        .iter()
-                        .find(|t| t.id == tree)
-                        .map_or(head, |t| t.last_visit),
-                    SettleTarget::Branch(_) => head,
-                }),
-        });
-        self.receive(PageEvent::Settled(format!(
-            "Settled ‘{name}’ · {waiting} waiting kept"
-        )));
+        if matches!(target, SettleTarget::Tree(_, Away::Shelf(_))) {
+            self.receive(PageEvent::Saved(format!("Saved ‘{name}’ for later")));
+        } else {
+            *self.settle_undo.borrow_mut() = Some(SettleUndo {
+                head,
+                reopen: forest
+                    .current()
+                    .filter(|id| target.contains(&forest, *id))
+                    .unwrap_or_else(|| match target {
+                        SettleTarget::Tree(tree, _) => forest
+                            .trees()
+                            .iter()
+                            .find(|t| t.id == tree)
+                            .map_or(head, |t| t.last_visit),
+                        SettleTarget::Branch(_) => head,
+                    }),
+            });
+            self.receive(PageEvent::Settled(format!(
+                "Settled ‘{name}’ · {waiting} waiting kept"
+            )));
+        }
         self.receive(PageEvent::Changed);
+        self.land(landing)
+    }
+
+    fn land(&self, landing: Landing) -> Result<()> {
         match landing {
             Landing::Unchanged => Ok(()),
             Landing::Restore(visit) => self.go(Go::Visit(visit)),
@@ -2078,9 +2404,9 @@ impl Pages {
             if forest
                 .trees()
                 .iter()
-                .any(|t| t.id == tree && !t.lifecycle.is_open())
+                .any(|t| t.id == tree && !t.place.is_tab())
             {
-                start = match self.browser.borrow_mut().settle_tree(tree)? {
+                start = match self.browser.borrow_mut().resume_landing()? {
                     Landing::Restore(visit) => StartPage::Show(visit),
                     Landing::Start => StartPage::Blank,
                     Landing::Unchanged => StartPage::Reload,
@@ -2216,32 +2542,6 @@ impl Pages {
     pub fn decline(&self, key: &crate::suggest::SuggestionKey) -> Result<()> {
         self.browser.borrow_mut().decline(key)
     }
-    pub fn move_tree(&self, tree: TreeId, to_index: usize) -> Result<()> {
-        self.browser.borrow_mut().move_tree(tree, to_index)
-    }
-
-    pub fn move_current_tree(&self, next: bool) -> Result<()> {
-        let mut browser = self.browser.borrow_mut();
-        let forest = ForestProjection::from_snapshot(browser.snapshot()?, browser.tree_states()?)?;
-        let Some(tree) = forest.current().and_then(|id| forest.tree_of(id)) else {
-            return Ok(());
-        };
-        let Some(index) = forest.open().iter().position(|t| t.id == tree) else {
-            return Ok(());
-        };
-        browser.move_tree(
-            tree,
-            if next {
-                index + 1
-            } else {
-                index.saturating_sub(1)
-            },
-        )
-    }
-
-    pub fn set_pinned(&self, tree: TreeId, pinned: bool) -> Result<()> {
-        self.browser.borrow_mut().set_pinned(tree, pinned)
-    }
     pub fn rename_tree(&self, tree: TreeId, name: &str) -> Result<()> {
         self.browser.borrow_mut().rename_tree(tree, name)
     }
@@ -2251,15 +2551,48 @@ impl Pages {
             page.focus();
         }
     }
+    fn fullscreen_view(&self) -> Option<webkit2gtk::WebView> {
+        self.fullscreen.borrow().as_ref().and_then(|w| w.upgrade())
+    }
+
+    /// Whether a page covers the window, chrome included.
+    pub fn is_fullscreen(&self) -> bool {
+        self.fullscreen_view().is_some()
+    }
+
+    /// The selected `view` entered fullscreen: it takes the whole window.
+    fn fullscreen_entered(&self, view: &webkit2gtk::WebView) {
+        *self.fullscreen.borrow_mut() = Some(view.downgrade());
+        self.fullscreen_changed(true);
+    }
+
+    /// `view` left fullscreen, or must: it goes back below the chrome.
+    fn fullscreen_left(&self, view: &webkit2gtk::WebView) {
+        if self.fullscreen_view().as_ref() != Some(view) {
+            return;
+        }
+        *self.fullscreen.borrow_mut() = None;
+        self.fullscreen_changed(false);
+    }
+
+    fn fullscreen_changed(&self, on: bool) {
+        let (width, height) = self.viewport.get();
+        self.resize(f64::from(width), f64::from(height));
+        let observer = self.observer.borrow().clone();
+        if let Some(observer) = observer {
+            observer(PageEvent::Fullscreen(on));
+        }
+    }
+
     /// Every view uses the current content rectangle; page churn cannot size the chrome.
     fn place_view(&self, view: &webkit2gtk::WebView) {
         let (width, height) = self.viewport.get();
-        let rect = gtk::Allocation::new(
-            0,
-            CHROME_HEIGHT as i32,
-            width.max(1),
-            (height - CHROME_HEIGHT as i32).max(1),
-        );
+        let top = if self.fullscreen_view().as_ref() == Some(view) {
+            0
+        } else {
+            CHROME_HEIGHT as i32
+        };
+        let rect = gtk::Allocation::new(0, top, width.max(1), (height - top).max(1));
         if view.size_request() != (rect.width(), rect.height()) {
             view.set_size_request(rect.width(), rect.height());
         }

@@ -216,10 +216,10 @@ mod tests {
                 current: Some(root),
             },
             vec![TreeState {
-                pin: None,
                 last_event_at: None,
-                lifecycle: crate::browser::Lifecycle::Open {
-                    tab: crate::browser::TabOrder::new(0),
+                spot: crate::browser::Spot::Tab {
+                    pinned: false,
+                    position: 0,
                 },
                 root: TreeId(root),
                 last_visit: root,

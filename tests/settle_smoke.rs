@@ -56,7 +56,8 @@ fn reopen_scroll(
     let forest = ui.pages.read(|b| {
         canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)
     })?;
-    ui.pages.settle_tree(forest.tree_of(a).unwrap())?;
+    ui.pages
+        .place_tree(forest.tree_of(a).unwrap(), canopy::browser::Move::History)?;
     wait("home", || {
         ui.pages.selected_page().native.uri().as_deref() == Some("about:blank")
             && !ui.pages.selected_page().native.is_loading()
@@ -194,6 +195,17 @@ fn main() -> Result<()> {
     wait("history reopens its last page", || {
         tabs(&ui) == 1 && shown(&ui, ids[0])
     })?;
+    ui.pages.go(canopy::pages::Go::Address {
+        url: web_url(&format!("http://{address}/Alpha-child"))?,
+        target: NavigationTarget::ChildOf(ids[0]),
+    })?;
+    wait("Alpha child loaded", || {
+        ui.snapshot()
+            .unwrap()
+            .current_visit()
+            .is_some_and(|v| v.title == "Settling /Alpha-child")
+            && !ui.pages.selected_page().native.is_loading()
+    })?;
     key("ctrl+w")?;
     wait("settle again", || tabs(&ui) == 0)?;
     key("ctrl+e")?;
@@ -201,7 +213,21 @@ fn main() -> Result<()> {
     click_chrome(&ui, "#forest-views [data-view=history]")?;
     wait("history again", || visible(&ui, ".forest-row"))?;
     click_chrome(&ui, &format!(".forest-row[data-id='{}']", ids[0]))?;
-    click_chrome(&ui, &format!(".pv-row[data-id='{}']", ids[0]))?;
+    wait("unfolded History page", || {
+        visible(&ui, &format!(".history-page[data-id='{}']", ids[0]))
+    })?;
+    assert_eq!(
+        chrome(&ui, "document.querySelectorAll('.history-page').length")?,
+        2
+    );
+    assert!(text(&ui, ".history-page").contains("Alpha"));
+    assert!(
+        chrome(
+            &ui,
+            "document.querySelector('.history-page.last').textContent.includes('Alpha-child')"
+        )? == true
+    );
+    click_chrome(&ui, &format!(".history-page[data-id='{}']", ids[0]))?;
     wait("history reopens Alpha", || {
         tabs(&ui) == 1 && shown(&ui, ids[0])
     })?;
@@ -262,12 +288,18 @@ fn main() -> Result<()> {
             roots.push(browser.snapshot()?.current.unwrap());
         }
         assert_eq!(
-            browser.settle_tree(browser.tree_states()?[1].root)?,
+            browser.place_tree(
+                browser.tree_states()?[1].root,
+                canopy::browser::Move::History
+            )?,
             Landing::Restore(roots[0])
         );
         if all_settled {
             assert_eq!(
-                browser.settle_tree(browser.tree_states()?[0].root)?,
+                browser.place_tree(
+                    browser.tree_states()?[0].root,
+                    canopy::browser::Move::History
+                )?,
                 Landing::Start
             );
         }

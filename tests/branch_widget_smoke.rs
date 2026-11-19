@@ -729,8 +729,9 @@ fn chrome_after_changes() -> Result<()> {
     let trees =
         u.ui.pages
             .read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
-    for t in trees.open() {
-        u.ui.pages.settle_tree(t.id)?;
+    for t in trees.tabs() {
+        u.ui.pages
+            .place_tree(t.id, canopy::browser::Move::History)?;
         pump(100);
     }
     geometry(&u)?;
@@ -775,7 +776,8 @@ fn overlay_check(ui: &Ui, state: &str, surface: &str) -> Result<()> {
         std::fs::create_dir_all(&dir)?;
         image.savev(format!("{dir}/{state}-{surface}.png"), "png", &[])?;
     }
-    let pop = screen_pixel(&image, (x + w - 20.) as i32, (y + h - 16.) as i32);
+    // The map legend reaches this edge; sample its padding rather than a glyph.
+    let pop = screen_pixel(&image, (x + w - 20.) as i32, (y + h - 4.) as i32);
     let dim = screen_pixel(&image, 5, image.height() / 2);
     let chrome = ui.chrome.native().window().unwrap();
     for (i, window) in chrome.parent().unwrap().children().iter().enumerate() {
@@ -914,7 +916,8 @@ fn forest_click_survives_frame() -> Result<()> {
             .read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?
             .tree_of(a)
             .unwrap();
-    u.ui.pages.settle_tree(tree)?;
+    u.ui.pages
+        .place_tree(tree, canopy::browser::Move::History)?;
     wait("last tree settled", || u.cursor().is_none() && !u.loading())?;
     key("ctrl+e")?;
     wait("forest", || visible(&u.ui, "#forest"))?;

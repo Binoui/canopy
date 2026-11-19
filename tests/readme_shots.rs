@@ -171,7 +171,8 @@ fn name_tree(ui: &Ui, root: VisitId, name: &str, pin: bool) -> Result<()> {
         .context("tree")?;
     ui.pages.rename_tree(tree, name)?;
     if pin {
-        ui.pages.set_pinned(tree, true)?;
+        ui.pages
+            .place_tree(tree, canopy::browser::Move::Pin(true))?;
     }
     Ok(())
 }

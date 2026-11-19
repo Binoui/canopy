@@ -85,34 +85,83 @@ fn fit(count: usize, active: Option<usize>, natural: f64, room: f64) -> (Vec<(Mo
     (result, overflow)
 }
 
+fn fit_pinned(
+    count: usize,
+    pins: usize,
+    active: Option<usize>,
+    natural: f64,
+    room: f64,
+) -> (Vec<(Mode, f64)>, bool) {
+    if pins == 0 {
+        return fit(count, active, natural, room);
+    }
+    if count == pins && room >= pins as f64 * 36. - 2. {
+        return (vec![(Mode::Icon, 34.); pins], false);
+    }
+    if count == pins + 1 && active == Some(pins) && room >= pins as f64 * 36. + 34. {
+        let (rest, overflow) = fit(1, Some(0), natural, room - pins as f64 * 36.);
+        let mut items = vec![(Mode::Icon, 34.); pins];
+        items.extend(rest);
+        return (items, overflow);
+    }
+    let reserve = pins as f64 * 36.;
+    let need_current = if active.is_some_and(|a| a >= pins) {
+        34.
+    } else {
+        0.
+    };
+    if room >= reserve + need_current + 32. {
+        let (rest, overflow) = fit(
+            count - pins,
+            active.filter(|a| *a >= pins).map(|a| a - pins),
+            natural,
+            (room - reserve).max(0.),
+        );
+        let mut items = vec![(Mode::Icon, 34.); pins];
+        items.extend(rest);
+        return (items, overflow);
+    }
+    let mut items = vec![(Mode::Hidden, 0.); count];
+    let capacity = (((room - 32.).max(0.) + 2.) / 36.).floor() as usize;
+    let mut selected = active.into_iter().chain(0..count).collect::<Vec<_>>();
+    selected.dedup();
+    let mut shown = 0;
+    for i in selected {
+        if !matches!(items[i].0, Mode::Hidden) {
+            continue;
+        }
+        if shown >= capacity.max(usize::from(active.is_some())) {
+            break;
+        }
+        items[i] = (Mode::Icon, 34.);
+        shown += 1;
+    }
+    (items, true)
+}
+
 pub(super) fn layout(forest: &ForestProjection, room: f64, start: bool) -> Value {
     let current = forest
         .current()
         .filter(|_| !start)
         .and_then(|id| forest.tree_of(id));
-    let active = forest.open().iter().position(|t| Some(t.id) == current);
-    let (items, overflow) = fit(
-        forest.open().len(),
+    let active = forest.tabs().iter().position(|t| Some(t.id) == current);
+    let (items, overflow) = fit_pinned(
+        forest.tabs().len(),
+        forest.tabs().partition_point(|t| t.place.pinned()),
         active,
         active
             .map(|i| {
-                let tree = &forest.open()[i];
+                let tree = &forest.tabs()[i];
                 let sub =
                     subtitle(forest, tree).map_or(0., |s| super::view::text_width(&s, 11., 0.53));
-                let title = super::view::text_width(&tree.title, 12.5, 0.56).max(sub) + 64.;
-                title
-                    + if tree.pin.is_some() && title >= 160. {
-                        17.
-                    } else {
-                        0.
-                    }
+                super::view::text_width(&tree.title, 12.5, 0.56).max(sub) + 64.
             })
             .unwrap_or(110.),
         room,
     );
     json!({
         "overflow": overflow,
-        "items": forest.open().iter().zip(items).map(|(tree, (mode, width))| {
+        "items": forest.tabs().iter().zip(items).map(|(tree, (mode, width))| {
             json!({"id": tree.id.root().to_string(), "mode": match mode { Mode::Title => "title", Mode::Icon => "icon", Mode::Hidden => "hidden" }, "width": width, "short": width < 160.})
         }).collect::<Vec<_>>()
     })
@@ -122,6 +171,24 @@ pub(super) fn layout(forest: &ForestProjection, room: f64, start: bool) -> Value
 mod tests {
     use super::*;
 
+    #[test]
+    fn pinned_icons_stay_first_and_current_survives_pin_overflow() {
+        for room in [1000., 600., 300., 150., 60.] {
+            let (tabs, overflow) = fit_pinned(20, 4, Some(10), 200., room);
+            assert!(!matches!(tabs[10].0, Mode::Hidden));
+            if room >= 4. * 36. + 34. + 32. {
+                for t in &tabs[..4] {
+                    assert!(matches!(t.0, Mode::Icon));
+                    assert_eq!(t.1, 34.);
+                }
+            }
+            if room < 20. * 36. {
+                assert!(overflow);
+            }
+        }
+        let (tabs, _) = fit_pinned(8, 4, Some(2), 200., 800.);
+        assert!(matches!(tabs[2].0, Mode::Icon));
+    }
     #[test]
     fn active_title_gets_room_before_other_trees() {
         for room in [900., 600., 300., 240., 120., 40.] {
