@@ -202,6 +202,7 @@ impl Ui {
                         .open_palette(PaletteScope::From(visit), PaletteSeed::Empty);
                 }
                 PageEvent::Find(update) => ui.chrome.find(update),
+                PageEvent::Fullscreen(on) => ui.chrome.set_fullscreen(on),
             }
         });
         let weak = Rc::downgrade(&ui);
@@ -471,6 +472,10 @@ impl Ui {
     }
 
     fn shortcut(&self, event: &gdk::EventKey) -> glib::Propagation {
+        // The fullscreen page gets every key; the chrome its shortcuts drive is hidden.
+        if self.pages.is_fullscreen() {
+            return glib::Propagation::Proceed;
+        }
         let shortcut = Shortcut::of(event);
         if self.switching.get() {
             match shortcut {

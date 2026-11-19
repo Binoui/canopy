@@ -261,6 +261,8 @@ struct Inner {
     /// The last palette results, so Enter runs exactly the row the view showed.
     palette: RefCell<Option<ShownPalette>>,
     workbench: RefCell<tree_view::Workbench>,
+    /// A page covers the window; the chrome and its toasts stay hidden.
+    fullscreen: Cell<bool>,
 }
 
 impl HtmlChrome {
@@ -320,6 +322,7 @@ impl HtmlChrome {
             palette_scope: Cell::new(None),
             palette: RefCell::new(None),
             workbench: RefCell::default(),
+            fullscreen: Cell::new(false),
         });
         {
             use gtk::prelude::*;
@@ -664,6 +667,24 @@ impl HtmlChrome {
         self.inner.present_error();
     }
 
+    /// Hides the chrome while a page is fullscreen, and brings it back after.
+    pub fn set_fullscreen(&self, on: bool) {
+        use gtk::prelude::WidgetExt;
+        use wry::WebViewExtUnix;
+        let inner = &self.inner;
+        if inner.fullscreen.replace(on) == on {
+            return;
+        }
+        inner.view.webview().set_visible(!on);
+        if on {
+            if let Some(error) = inner.error_view.borrow().as_ref() {
+                error.bounds(inner.size.get(), false);
+            }
+        } else {
+            inner.apply_bounds();
+        }
+    }
+
     /// Puts the chrome back above the page, after the page moved or took focus.
     pub fn raise(&self) {
         self.inner.raise();
@@ -763,7 +784,8 @@ impl Inner {
             window.raise();
         }
         if let Some(error) = self.error_view.borrow().as_ref() {
-            error.bounds(self.size.get(), self.errors.borrow().showing());
+            let showing = self.errors.borrow().showing() && !self.fullscreen.get();
+            error.bounds(self.size.get(), showing);
         }
     }
 
