@@ -170,6 +170,8 @@ body[data-find] #search-pill :is(span, kbd) { display: none; }
 .bl-head > div { min-width: 0; }
 .bl-head div > span { display: block; font-size: 11.5px; color: var(--muted); margin-top: 2px; overflow-wrap: anywhere; }
 .bl-snippet { margin: 3px 8px 8px; color: var(--muted); line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+@keyframes list-enter { from { opacity: 0; transform: translateY(-4px); } }
+.list-enter { animation: list-enter 120ms ease-out; }
 #strip-list .more { border-top: 1px solid var(--border); color: var(--muted); border-radius: 0; margin-top: 4px; }
 .list-entry { position: relative; }
 .list-entry:has(.leaves) .menu-row { padding-right: 35px; }

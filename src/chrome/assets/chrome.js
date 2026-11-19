@@ -328,7 +328,7 @@ const applyMotionPreference = () => document.documentElement.classList.toggle('r
 reducedMotion.addEventListener('change', applyMotionPreference);
 applyMotionPreference();
 
-function animateStrip(duration) {
+function animateStrip(duration, growingPage = null) {
   if (reducedMotion.matches) duration = 0;
   const layout = targetLayout();
   if (!layout) return;
@@ -355,7 +355,8 @@ function animateStrip(duration) {
     syncLayer();
     return;
   }
-  strip.anim = { start: performance.now(), duration };
+  strip.anim = { start: performance.now(), duration, growingPage };
+  if (growingPage) step(strip.anim.start, 0);
   syncLayer();
   strip.raf = requestAnimationFrame(tick);
 }
@@ -506,6 +507,10 @@ function step(now, t) {
   const nodes = new Map();
   const targets = new Map(to.nodes.map((n) => [n.id, n]));
   for (const n of to.nodes) {
+    if (n.id === strip.anim?.growingPage) {
+      nodes.set(n.id, { x: n.x, y: n.y, w: n.w, s: n.s, o: ease(2 * t - 1) });
+      continue;
+    }
     const a = from.nodes.get(n.id) || { x: n.x, y: n.y, w: 0, s: 0, o: 0 };
     nodes.set(n.id, { x: mix(a.x, n.x, k), y: mix(a.y, n.y, k), w: mix(a.w, n.w, k), s: mix(a.s, n.s, k), o: mix(a.o, 1, k) });
   }
@@ -516,7 +521,19 @@ function step(now, t) {
   for (const e of to.edges) {
     const key = `${e.from}>${e.to}`;
     const a = from.edges.get(key)?.c || e.c;
-    edges.set(key, { kind: e.kind, to: e.to, c: e.c.map((p, i) => [mix(a[i][0], p[0], k), mix(a[i][1], p[1], k)]) });
+    const c = e.c.map((p, i) => [mix(a[i][0], p[0], k), mix(a[i][1], p[1], k)]);
+    if (e.to === strip.anim?.growingPage) {
+      // The strip's trunk is horizontal. Grow from the moving parent to the child's left edge.
+      const parent = nodes.get(e.from);
+      const start = parent.x + parent.w / 2;
+      const gap = e.c[3][0] - e.c[0][0];
+      const child = nodes.get(e.to);
+      child.x = start + gap + child.w / 2;
+      const end = start + gap * k;
+      c[0][0] = c[1][0] = start;
+      c[2][0] = c[3][0] = end;
+    }
+    edges.set(key, { kind: e.kind, to: e.to, c });
   }
   const pan = mix(from.pan, to.pan, k);
   strip.shown = { height: mix(from.height, to.height, k), pan, nodes, edges, width: to.width };
@@ -554,6 +571,7 @@ function drawStrip() {
   const glow = $('glow');
   dot.hidden = glow.hidden = !r;
   if (r) {
+    dot.style.opacity = glow.style.opacity = r.o;
     dot.style.transform = `translate(${r.x + r.w / 2 - ACCESSORY}px,${r.y - 9}px)`;
     const reach = 40;
     const x = r.x - r.w / 2 + 16;
@@ -614,8 +632,19 @@ function showList(key, origin = inputOrigin) {
   for (const [id, el] of strip.elements) el.setAttribute('aria-expanded', String(id === key));
   const previous = S.list;
   S.list = { key, origin: previous?.key === key ? previous.origin : origin, preview: previous?.key === key ? previous.preview : null };
+  if (previous?.key !== key) $('strip-list').classList.remove('list-enter');
   renderList();
+  if (previous?.key !== key && ['run', 'earlier', 'after'].includes(item.kind)) {
+    playEntrance($('strip-list'), 'list-enter');
+  }
   requestListPreview();
+}
+
+function playEntrance(el, name) {
+  if (!el || reducedMotion.matches) return;
+  el.classList.remove(name);
+  void el.offsetWidth; // Restart even when moving directly between adjacent groups.
+  el.classList.add(name);
 }
 
 function requestListPreview() {
@@ -630,6 +659,7 @@ function hideList() {
   cancel('showList');
   cancel('hideList');
   S.list = null;
+  $('strip-list').classList.remove('list-enter');
   for (const el of strip.elements.values()) el.setAttribute('aria-expanded', 'false');
   $('strip-list').hidden = true;
   syncLayer();
@@ -1950,7 +1980,10 @@ window.canopy = {
     S.forest = value;
     $('forest').hidden = false;
     renderForest();
-    if (first) focusForest();
+    if (first) {
+      focusForest();
+      if (value.view === 'canopy') playEntrance(nodeOfPage(current())?.el, 'forest-locate');
+    }
     if (S.popover?.data?.source === 'forest') refreshPopover();
   },
   loading(value) {
@@ -1963,6 +1996,7 @@ window.canopy = {
   },
   present(frame) {
     const previous = current();
+    const newChild = previous && frame.visits[frame.current]?.parent === previous && !visit(frame.current);
     const previousTree = S.frame?.tabs.find((tab) => tab.active)?.id;
     const previousNewTree = S.frame?.newTree?.url ?? null;
     const previousCommitted = S.frame?.committed ?? null;
@@ -1998,7 +2032,8 @@ window.canopy = {
     if (S.popover?.kind === 'rename' && !TREE_MENUS[S.popover.data.source](S.popover.data.id)) closePopover();
     renderTabs();
     renderPageScale();
-    animateStrip(previous === null && strip.shown.nodes.size === 0 ? 0 : MOVE);
+    if (newChild) animateStrip(160, frame.current);
+    else animateStrip(previous === null && strip.shown.nodes.size === 0 ? 0 : MOVE);
     renderStart();
     renderPlaceholder();
     renderForest();

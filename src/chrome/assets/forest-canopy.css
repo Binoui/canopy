@@ -67,3 +67,6 @@
 
 #forest-canopy[data-level=middle] .canopy-item[data-current=true] .lb,
 #forest-canopy[data-level=middle] .canopy-item[data-previous=true] .lb { width:170px; }
+
+@keyframes forest-locate { from { outline: 3px solid var(--green); } to { outline: 3px solid transparent; } }
+.canopy-item[data-current=true].forest-locate { animation: forest-locate 250ms ease-out; }
