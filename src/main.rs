@@ -36,7 +36,7 @@ Ctrl+W          Settle the tree, or close the open overlay
 Ctrl+Shift+T    Reopen the most recently settled tree or branch
 Ctrl+1…9        Switch to a tree
 Ctrl+Shift+Tab  Switch to the previously shown open tree
-Ctrl+Tab        Open the next waiting page
+Ctrl+Tab        Next waiting page, else the last read one; hold Ctrl to pick
 F1              How trees work
 F6              Move between the page and the tree strip
 Alt+←           Back to the parent page
