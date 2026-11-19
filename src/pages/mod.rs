@@ -1131,6 +1131,61 @@ impl Pages {
             .map(|h| h.page.native.clone())
     }
 
+    /// The shown page is loading.
+    pub fn selected_loading(&self) -> bool {
+        self.branches
+            .live
+            .borrow()
+            .as_ref()
+            .is_some_and(|page| page.native.is_loading())
+    }
+
+    /// The shown page's visible text, cut at `limit` characters. A page that has not
+    /// answered in 3 s gives an error, so a stuck page cannot hold the asker.
+    pub fn selected_text(&self, limit: usize, done: impl FnOnce(Result<String>) + 'static) {
+        use javascriptcore::ValueExt;
+        let Some(native) = self
+            .branches
+            .live
+            .borrow()
+            .as_ref()
+            .map(|p| p.native.clone())
+        else {
+            return done(Err(anyhow::anyhow!("No page is shown.")));
+        };
+        let done = Rc::new(RefCell::new(Some(done)));
+        let cancel = gio::Cancellable::new();
+        let timeout = glib::timeout_add_local_once(std::time::Duration::from_secs(3), {
+            let (done, cancel) = (done.clone(), cancel.clone());
+            move || {
+                cancel.cancel();
+                if let Some(done) = done.borrow_mut().take() {
+                    done(Err(anyhow::anyhow!(
+                        "The shown page did not give its text in time."
+                    )));
+                }
+            }
+        });
+        // An isolated world, so the page's own scripts cannot change what is read.
+        native.evaluate_javascript(
+            &format!("String(document.body ? document.body.innerText : '').slice(0, {limit})"),
+            Some("canopy-session"),
+            None,
+            Some(&cancel),
+            move |value| {
+                let Some(done) = done.borrow_mut().take() else {
+                    return;
+                };
+                timeout.remove();
+                done(
+                    value
+                        .map(|value| value.to_str().to_string())
+                        .map_err(|error| anyhow::anyhow!("Could not read the page. {error}")),
+                );
+            },
+        );
+    }
+
     /// Current documents of retained, previously shown pages; no database reads.
     pub fn hidden_visits(&self) -> std::collections::HashSet<VisitId> {
         self.branches

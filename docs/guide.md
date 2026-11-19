@@ -209,6 +209,18 @@ xdg-settings set default-web-browser canopy.desktop
 
 The running window holds a lock on `instance.lock` in its data folder and listens on `instance.sock` next to it. The system releases the lock when Canopy quits or crashes, so a crash never blocks the next start. If the window cannot open the addresses, the second launch prints the reason and exits with an error.
 
+## Let agents see what is open
+
+`canopy session` prints what the running window shows: the page on screen, each open tree with its pages indented under the page they came from, and the trees saved for later. Marks say which page is shown, which pages are waiting, and which are still in memory.
+
+```sh
+canopy session                 # text
+canopy session --json          # the same as JSON
+canopy session --text          # adds the shown page's visible text
+```
+
+It reads through `instance.sock`, so it answers only for a running Canopy on the same data folder and never starts one. A window started before this command existed does not answer, so restart it once. Only processes running as you can reach the socket. `--text` reads the page on screen, mail included, so give it only to tools you would show that page to. Coding agents learn the command from the `canopy-session` skill in `.claude/skills`.
+
 ## Sandbox and video
 
 Canopy runs page and chrome processes inside WebKit's Linux sandbox, which needs `bubblewrap` and `xdg-dbus-proxy`. If the sandbox cannot start, WebKit stops with a fatal error. Setting `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1` starts Canopy without it, and Canopy then prints a warning.
