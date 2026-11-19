@@ -14,6 +14,8 @@ A fresh profile shows **How trees work** above Saved for later on the new-tree p
 
 Returning to a page still open preserves its forms, scripts and scroll position. Released pages reload when reopened. A restart restores the recorded scroll position, but not forms or scripts.
 
+A page playing sound is never released to save memory. Wherever its icon appears (its tab, the strip, menus, Canopy) it wears a violet speaker, and in the strip a violet ring. When it is not the page on screen, a violet **playing** button at the right of the strip shows its icon, in any tree. Clicking it goes to that page. With several pages playing, the button counts them and goes to the one shown most recently. The marks follow the sound, so they leave when it stops.
+
 On a page's attached list, **New branch here** opens the palette from that page without loading it, so the next address you type becomes its child. A tree's tab reopens the page you were last reading in that tree.
 
 ## Find your way around

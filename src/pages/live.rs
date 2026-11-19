@@ -984,6 +984,20 @@ impl LivePage {
                 }),
             ));
         }
+        {
+            // The chrome marks pages that play sound, so a start or stop redraws it.
+            let weak = Rc::downgrade(&state);
+            signals.push((
+                native.clone().upcast(),
+                native.connect_is_playing_audio_notify(move |native| {
+                    if let Some(state) = Pages::enter_native(&weak) {
+                        if !native.is_muted() {
+                            state.emit(PageEvent::Changed);
+                        }
+                    }
+                }),
+            ));
+        }
         if let Some(list) = native.back_forward_list() {
             let weak = Rc::downgrade(&state);
             signals.push((

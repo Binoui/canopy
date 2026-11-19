@@ -1196,6 +1196,21 @@ impl Pages {
             .collect()
     }
 
+    /// Pages the owner can hear: the selected page and hidden ones, when WebKit reports them
+    /// playing sound and they are not muted. Never-seen background pages stay muted, so they
+    /// never count.
+    pub fn playing_visits(&self) -> std::collections::HashSet<VisitId> {
+        let audible = |page: &LivePage| page.native.is_playing_audio() && !page.native.is_muted();
+        let live = self.branches.live.borrow();
+        let hidden = self.branches.hidden.borrow();
+        live.iter()
+            .map(|page| &**page)
+            .chain(hidden.iter().map(|h| &*h.page))
+            .filter(|page| audible(page))
+            .filter_map(LivePage::current_visit)
+            .collect()
+    }
+
     /// The page Back would open from the selected page, for the chrome to name.
     pub fn back_target(&self) -> Option<VisitId> {
         let page = self.branches.live.borrow().clone()?;

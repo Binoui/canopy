@@ -11,6 +11,7 @@
   --faint: #b3b2ad; --hover: rgba(55, 53, 47, .06); --tile: #ffffff; --tile-border: #e3e3e0;
   --line: #d2d2ce; --memory: #8a8985; --green: #2f9e5f; --green-soft: rgba(47, 158, 95, .13); --green-ink: #1f7a47;
   --scrim: rgba(15, 15, 15, .16); --shadow: rgba(15, 15, 15, .10); --danger: #c63d38;
+  --playing: #6a4fd1; --playing-soft: rgba(106, 79, 209, .14);
   --header: 42px; --rest: 52px;
   color-scheme: light;
 }
@@ -19,6 +20,7 @@
   --faint: #5c5c5c; --hover: rgba(255, 255, 255, .06); --tile: #1b1b1b; --tile-border: #2d2d2d;
   --line: #3a3a3a; --memory: #a8a8a8; --green: #3fcf7d; --green-soft: rgba(63, 207, 125, .15); --green-ink: #7fe3a9;
   --scrim: rgba(0, 0, 0, .5); --shadow: rgba(0, 0, 0, .55); --danger: #c63d38;
+  --playing: #a48bff; --playing-soft: rgba(164, 139, 255, .18);
   color-scheme: dark;
 }
 
@@ -196,6 +198,10 @@ body[data-find] #search-pill :is(span, kbd) { display: none; }
 .pin > * { pointer-events: none; }
 .pin:hover { border-color: var(--faint); box-shadow: 0 0 0 3px var(--hover); }
 #waiting-pin { display: flex; align-items: center; gap: 7px; padding: 0 6px 0 7px; }
+#playing-pin { display: flex; align-items: center; gap: 5px; padding: 0 6px 0 7px; border-color: var(--playing); box-shadow: 0 0 0 3px var(--playing-soft); color: var(--playing); }
+#playing-pin:hover { box-shadow: 0 0 0 4px var(--playing-soft); }
+#playing-pin svg.icon { width: 14px; height: 14px; }
+#playing-pin .count { margin-left: 1px; }
 
 .icon-pin { display: grid; place-items: center; }
 #zoom-pin[aria-pressed="true"] { background: var(--green-soft); border-color: transparent; color: var(--green-ink); }
@@ -443,6 +449,16 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .form-return-box p { line-height: 1.5; }
 .form-return-box > div { display: flex; justify-content: flex-end; gap: 12px; }
 .form-return-box button { padding: 8px 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--tile); }
+
+/* Violet means the page is playing sound: a speaker on its icon, wherever the icon is drawn. */
+.playing-mark { position: absolute; right: -5px; bottom: -5px; width: 13px; height: 13px; display: grid; place-items: center; border-radius: 50%; background: var(--playing); color: #fff; box-shadow: 0 0 0 1.5px var(--chrome); pointer-events: none; }
+.playing-mark svg.icon { width: 9px; height: 9px; }
+.node.playing:not([aria-current="page"]) { border-color: var(--playing); box-shadow: 0 0 0 3px var(--playing-soft); }
+.node.earlier.playing { padding-right: 18px; }
+.node.earlier > .playing-mark { right: 4px; bottom: auto; }
+.tab.playing .mk .playing-mark { right: -4px; bottom: -4px; width: 11px; height: 11px; }
+.tab.playing .mk .playing-mark svg.icon { width: 8px; height: 8px; }
+.tab[aria-selected="true"] .playing-mark { box-shadow: 0 0 0 1.5px var(--bg); }
 
 /* Grey means the page is still open. Green stays for pages not read yet. */
 .live-dot { position: absolute; left: -2px; bottom: -2px; width: 8px; height: 8px; border-radius: 50%; background: var(--memory); box-shadow: 0 0 0 1.5px var(--chrome); pointer-events: none; }

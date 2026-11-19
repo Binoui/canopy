@@ -121,6 +121,7 @@ fn main() -> Result<()> {
             declined: b.declined()?,
             loaded: Default::default(),
             live: Default::default(),
+            playing: Default::default(),
             files: vec![],
             back: None,
             forward: None,

@@ -150,6 +150,7 @@ impl State {
             forest,
             previous: frame.shown.previous(forest),
             live: &frame.live,
+            playing: &frame.playing,
             shown: &frame.shown,
         };
         let current = forest.current().and_then(|id| forest.tree_of(id));
@@ -194,6 +195,7 @@ impl State {
                                 forest.visit(*id).unwrap(),
                                 &frame.loaded,
                                 &frame.live,
+                                &frame.playing,
                             ),
                         );
                     }
@@ -212,7 +214,7 @@ impl State {
             .map(|v| json!({"id":v.id.to_string(),"label":"Back to","title":v.label()}));
         json!({"level":self.level.name(),"layout":frame.canopy_layout.name(),"hint":self.level.hint(),"items":values,"visits":visits,"back":back,"edge":frame.canopy_layout.edge(),
             "css":self.level.metrics().css(),"levels":Level::ALL.map(|l|{let b=l.band();json!({"level":l.name(),"label":l.label(),"min":b.min,"max":b.max,"rest":b.rest})}),
-            "legend":[["current","you are here"],["previous","where you were"],["open","still open"],["visited","visited"],["waiting","waiting"]],
+            "legend":[["current","you are here"],["previous","where you were"],["open","still open"],["visited","visited"],["waiting","waiting"],["playing","playing sound"]],
             "layouts":Layout::choices(),
             "help":"wheel zooms · drag moves · a click goes to the page",
             "place":{"request":self.request,"anchor":anchor,"page":self.anchor.map(|id|id.to_string()),"pan":place::camera(&placed,home,room,1.),"k":b.rest}})

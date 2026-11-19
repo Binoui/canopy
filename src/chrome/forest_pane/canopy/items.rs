@@ -9,6 +9,8 @@ pub(super) struct Facts<'a> {
     pub forest: &'a ForestProjection,
     pub previous: Option<VisitId>,
     pub live: &'a HashSet<VisitId>,
+    /// Pages playing sound. Each keeps its own item at every level, never folded into a site.
+    pub playing: &'a HashSet<VisitId>,
     pub shown: &'a Showings,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +39,7 @@ impl Memory {
 pub(super) struct Appearance {
     pub current: bool,
     pub previous: bool,
+    pub playing: bool,
     pub memory: Memory,
 }
 #[derive(Debug)]
@@ -75,7 +78,8 @@ pub(super) fn fold(facts: &Facts<'_>, tree: &TreeSummary, level: Level) -> Vec<I
         let notable = Some(id) == facts.forest.current()
             || Some(id) == facts.previous
             || facts.shown.times(id) >= 3;
-        let alone = level == Level::Near || (level == Level::Middle && notable);
+        let playing = facts.playing.contains(&id);
+        let alone = level == Level::Near || (level == Level::Middle && notable) || playing;
         let parent: Option<usize> = facts
             .forest
             .visit(id)
@@ -98,6 +102,7 @@ pub(super) fn fold(facts: &Facts<'_>, tree: &TreeSummary, level: Level) -> Vec<I
                 appearance: Appearance {
                     current: false,
                     previous: false,
+                    playing: false,
                     memory: Memory::Visited,
                 },
                 shown: 0,
@@ -116,6 +121,7 @@ pub(super) fn fold(facts: &Facts<'_>, tree: &TreeSummary, level: Level) -> Vec<I
                 .iter()
                 .any(|id| Some(*id) == facts.forest.current()),
             previous: item.pages.iter().any(|id| Some(*id) == facts.previous),
+            playing: item.pages.iter().any(|id| facts.playing.contains(id)),
             memory: if item.pages.iter().all(|id| facts.forest.is_waiting(*id)) {
                 Memory::Waiting
             } else if item
@@ -211,7 +217,11 @@ impl Item {
             Level::Middle => (self.shown > 1).then(|| format!("shown {}×", self.shown)),
             Level::Near => Some(format!(
                 "{site} · {}{}",
-                self.appearance.memory.label(),
+                if self.appearance.playing {
+                    "playing sound"
+                } else {
+                    self.appearance.memory.label()
+                },
                 if self.shown > 1 {
                     format!(" · {}×", self.shown)
                 } else {
@@ -224,6 +234,9 @@ impl Item {
             page.label(),
             self.appearance.memory.label()
         );
+        if self.appearance.playing {
+            tip.push_str(" · playing sound");
+        }
         if run {
             tip.push_str(&format!(
                 "\n{} · A click opens {}",
@@ -237,7 +250,7 @@ impl Item {
         json!({"k":self.key(), "kind":if run {"run"} else {"page"}, "go":self.go.to_string(), "page":self.go.to_string(),
             "anchorPage":if self.appearance.current {facts.forest.current().unwrap()} else {self.go}.to_string(),
             "pages":self.pages.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            "st":self.appearance.memory.name(), "current":self.appearance.current, "previous":self.appearance.previous,
+            "st":self.appearance.memory.name(), "current":self.appearance.current, "playing":self.appearance.playing, "previous":self.appearance.previous,
             "sz":size(self.shown, level.metrics().icon), "t":title, "sub":sub, "n":run.then_some(self.pages.len()),
             "tags": ([self.appearance.current.then_some("You are here"), (self.appearance.previous && level != Level::Far).then_some("Back")].into_iter().flatten().collect::<Vec<_>>()),
             "tip":tip,"url":page.url.as_str(),"e":if self.appearance.memory == Memory::Waiting {"waiting"} else {"plain"}})

@@ -408,6 +408,7 @@ impl Ui {
                 mail: self.mail.mail(),
                 loaded: self.pages.loaded_visits(),
                 live: self.pages.hidden_visits(),
+                playing: self.pages.playing_visits(),
                 forest,
                 capture_enabled: browser.capture_enabled()?,
                 trees_help: browser.trees_help()?,

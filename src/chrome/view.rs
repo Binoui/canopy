@@ -51,6 +51,7 @@ pub(crate) fn frame(
                 "name": format!("{}, {}{}{}{}", tree.title, plural(tree.page_count, "page"), if tree.pending_count > 0 { format!(", {} waiting", tree.pending_count) } else { String::new() }, if tree.place.pinned() { ", pinned" } else { "" }, if frame.live.contains(&tree.last_visit) { ", still open" } else { "" }),
                 "pages": tree.page_count,
                 "live": frame.live.contains(&tree.last_visit),
+                "playing": frame.playing.iter().any(|id| forest.tree_of(*id) == Some(tree.id)),
                 "pending": tree.pending_count,
                 "active": Some(tree.id) == active,
                 "pinned": tree.place.pinned(),
@@ -72,6 +73,7 @@ pub(crate) fn frame(
         }
     }
     visible.extend(surfaces.palette);
+    visible.extend(frame.playing.iter().copied());
     visible.extend(forest.tabs().iter().map(|t| t.id.root()));
     if let Some(start) = &start {
         for mini in start["shelf"]
@@ -99,7 +101,7 @@ pub(crate) fn frame(
         if let Some(visit) = forest.visit(id) {
             visits.insert(
                 id.to_string(),
-                visit_value(forest, visit, &frame.loaded, &frame.live),
+                visit_value(forest, visit, &frame.loaded, &frame.live, &frame.playing),
             );
         }
     }
@@ -201,8 +203,21 @@ pub(crate) fn tree_view_value(
     })
 }
 
+/// Pages playing sound, the one shown most recently first.
+fn playing_order(frame: &ChromeFrame) -> Vec<VisitId> {
+    let mut playing: Vec<_> = frame.playing.iter().copied().collect();
+    playing.sort_by_key(|id| {
+        (
+            std::cmp::Reverse(frame.shown.last_shown(*id)),
+            id.to_string(),
+        )
+    });
+    playing
+}
+
 pub(crate) fn strip_for_frame(frame: &ChromeFrame, width: f64) -> Value {
-    let mut strip = strip(&frame.forest, &frame.mail, width);
+    let playing = playing_order(frame);
+    let mut strip = strip(&frame.forest, &frame.mail, &playing, width);
     let target = |id: Option<VisitId>| {
         id.and_then(|id| frame.forest.visit(id))
             .map(|v| json!({ "id": v.id.to_string(), "label": v.label() }))
@@ -213,7 +228,7 @@ pub(crate) fn strip_for_frame(frame: &ChromeFrame, width: f64) -> Value {
     let state = |id: &str| {
         let id: VisitId = id.parse().unwrap();
         format!(
-            "{}{}",
+            "{}{}{}",
             if frame.loaded.contains(&id) && frame.forest.is_waiting(id) {
                 ", loaded"
             } else {
@@ -221,6 +236,11 @@ pub(crate) fn strip_for_frame(frame: &ChromeFrame, width: f64) -> Value {
             },
             if frame.live.contains(&id) {
                 ", still open"
+            } else {
+                ""
+            },
+            if frame.playing.contains(&id) {
+                ", playing sound"
             } else {
                 ""
             }
@@ -259,9 +279,22 @@ fn branch_name(label: &str, pages: usize, waiting: usize, queued: bool) -> Strin
     name
 }
 
-/// The current path folded to fit the room left by the pinned controls.
-pub(crate) fn strip(forest: &ForestProjection, mail: &crate::mail::Mail, width: f64) -> Value {
-    let pins = pins::pins(forest, mail, width);
+/// The current path folded to fit the room left by the pinned controls. `playing` lists the
+/// pages playing sound, most recently shown first: every one but the page on screen gets the
+/// Playing pin, so a page the owner hears always stays one click away.
+pub(crate) fn strip(
+    forest: &ForestProjection,
+    mail: &crate::mail::Mail,
+    playing: &[VisitId],
+    width: f64,
+) -> Value {
+    let elsewhere: Vec<_> = playing
+        .iter()
+        .copied()
+        .filter(|id| Some(*id) != forest.current())
+        .collect();
+    let pins = pins::pins(forest, mail, elsewhere.len(), width);
+    let elsewhere: Vec<_> = elsewhere.iter().map(ToString::to_string).collect();
     let placed: Vec<_> = pins
         .placed
         .iter()
@@ -275,7 +308,7 @@ pub(crate) fn strip(forest: &ForestProjection, mail: &crate::mail::Mail, width: 
     };
     let room = (pins.room - left).max(0.);
     let Some(current) = forest.current() else {
-        return json!({ "left": left, "room": room, "pins": placed, "height": graph::REST_HEIGHT, "nodes": [], "edges": [], "trunk": [], "width": 0, "pan": 0 });
+        return json!({ "left": left, "room": room, "pins": placed, "playing": elsewhere, "height": graph::REST_HEIGHT, "nodes": [], "edges": [], "trunk": [], "width": 0, "pan": 0 });
     };
     let layout = graph::strip_layout(
         forest,
@@ -333,6 +366,7 @@ pub(crate) fn strip(forest: &ForestProjection, mail: &crate::mail::Mail, width: 
             "moreTarget": if let StripItem::Earlier { ids } = &node.item { ids.first().copied().unwrap_or(current).to_string() } else { current.to_string() },
             "id": if kind == "after" { format!("after-{current}") } else { id.to_string() },
             "page": id.to_string(), "ids": ids.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "playing": ids.iter().any(|id| playing.contains(id)),
             "named": kind == "root" && forest.visit(current).unwrap().parent == Some(id),
             "kind": kind, "name": if kind == "after" { format!("After {title}{}{}", if waiting > 0 { format!(", {} waiting {}", waiting, if waiting == 1 { "page" } else { "pages" }) } else { String::new() }, if read > 0 { format!(", {read} read {}", if read == 1 { "page" } else { "pages" }) } else { String::new() }) } else { branch_name(&title, node.branches.pages, node.branches.waiting, forest.is_waiting(id)) }, "label": label, "title": title, "meta": meta, "heading": heading, "more": more, "rows": rows,
             "branches": { "pages": node.branches.pages, "waiting": node.branches.waiting },
@@ -346,7 +380,7 @@ pub(crate) fn strip(forest: &ForestProjection, mail: &crate::mail::Mail, width: 
         json!({"from": nodes[0]["id"], "to": nodes[1]["id"], "kind": if nodes[1]["kind"] == "after" { "pending" } else { "path" },
             "c": [[x,a.y], [x+5.,a.y], [end-5.,b.y], [end,b.y]]})
     }).collect();
-    json!({ "left": left, "room": room, "pins": placed, "height": graph::REST_HEIGHT, "width": room, "pan": 0,
+    json!({ "left": left, "room": room, "pins": placed, "playing": elsewhere, "height": graph::REST_HEIGHT, "width": room, "pan": 0,
         "metrics": { "left": graph::ITEM_LEFT, "right": graph::ITEM_RIGHT, "border": graph::ITEM_BORDER, "icon": graph::ITEM_ICON, "parentGap": graph::PARENT_GAP, "runGap": graph::RUN_GAP },
         "trunk": nodes.iter().map(|n| n["id"].clone()).collect::<Vec<_>>(), "nodes": nodes, "edges": edges })
 }
@@ -416,6 +450,7 @@ pub(super) fn visit_value(
     visit: &Visit,
     loaded: &HashSet<VisitId>,
     live: &HashSet<VisitId>,
+    playing: &HashSet<VisitId>,
 ) -> Value {
     let wait = if forest.is_settled(visit.id) {
         None
@@ -423,7 +458,7 @@ pub(super) fn visit_value(
         WaitState::of(visit, loaded)
     };
     let a11y_state = format!(
-        "{}{}{}",
+        "{}{}{}{}",
         if forest.is_waiting(visit.id) {
             ", waiting"
         } else {
@@ -436,6 +471,11 @@ pub(super) fn visit_value(
         },
         if live.contains(&visit.id) {
             ", still open"
+        } else {
+            ""
+        },
+        if playing.contains(&visit.id) {
+            ", playing sound"
         } else {
             ""
         }
@@ -476,6 +516,7 @@ pub(super) fn visit_value(
         "nodeMenu": node_menu(forest, visit),
         "loaded": wait == Some(WaitState::Loaded),
         "live": live.contains(&visit.id),
+        "playing": playing.contains(&visit.id),
         "detail": detail,
         "when": match wait { Some(WaitState::NotLoaded) => String::new(), Some(WaitState::Loaded) => "loaded".into(), None => ago(visit.opened_at.unwrap_or(visit.created_at)) },
         "source": source,
@@ -492,7 +533,8 @@ pub(crate) const SWITCHER_READ: usize = 8;
 pub(crate) fn switcher_value(frame: &ChromeFrame, recent: &[VisitId]) -> Value {
     let forest = &frame.forest;
     let waiting = waiting::pages(forest);
-    let row = |visit: &Visit| visit_value(forest, visit, &frame.loaded, &frame.live);
+    let row =
+        |visit: &Visit| visit_value(forest, visit, &frame.loaded, &frame.live, &frame.playing);
     json!({
         "waiting": waiting.iter().take(SWITCHER_WAITING).map(|v| row(v)).collect::<Vec<_>>(),
         "moreWaiting": waiting.len().saturating_sub(SWITCHER_WAITING),
@@ -774,6 +816,82 @@ mod tests {
     }
 
     #[test]
+    fn a_page_playing_sound_gets_the_pin_unless_it_is_on_screen() {
+        let (forest, ids) = chain_length(
+            Spot::Tab {
+                pinned: false,
+                position: 0,
+            },
+            6,
+        );
+        let current = ids[4];
+        let frame = ChromeFrame {
+            canopy_layout: Default::default(),
+            shown: Default::default(),
+            mail: crate::mail::Mail::default(),
+            loaded: HashSet::new(),
+            live: HashSet::new(),
+            playing: [ids[0], current].into_iter().collect(),
+            forest,
+            capture_enabled: true,
+            trees_help: false,
+            theme: ThemeMode::Light,
+            declined: Default::default(),
+            bookmarks: vec![],
+            back: None,
+            forward: None,
+            pending: None,
+            files: vec![],
+        };
+        let value = super::frame(
+            &frame,
+            &[],
+            (1240., 800.),
+            &tree_view::Workbench::default(),
+            Surfaces::default(),
+        );
+        let strip = &value["strip"];
+        assert_eq!(strip["playing"], json!([ids[0].to_string()]));
+        assert_eq!(strip["pins"][0]["kind"], "playing");
+        let node = |id: VisitId| {
+            strip["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|n| {
+                    n["ids"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&json!(id.to_string()))
+                })
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(node(ids[0])["playing"], true);
+        assert_eq!(node(current)["playing"], true);
+        assert_eq!(node(ids[3])["playing"], false);
+        assert!(node(current)["name"]
+            .as_str()
+            .unwrap()
+            .ends_with(", playing sound"));
+        assert_eq!(value["tabs"][0]["playing"], true);
+        assert_eq!(value["visits"][ids[0].to_string()]["playing"], true);
+        assert_eq!(value["visits"][ids[3].to_string()]["playing"], false);
+
+        let quiet = ChromeFrame {
+            playing: [current].into_iter().collect(),
+            ..frame
+        };
+        let strip = strip_for_frame(&quiet, 1240.);
+        assert_eq!(strip["playing"], json!([]));
+        assert!(strip["pins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["kind"] != "playing"));
+    }
+
+    #[test]
     fn back_and_forward_name_their_pages_and_the_tree_starts_after_them() {
         let (forest, ids) = chain_length(
             crate::browser::Spot::Tab {
@@ -789,6 +907,7 @@ mod tests {
                 mail: crate::mail::Mail::default(),
                 loaded: HashSet::new(),
                 live: HashSet::new(),
+                playing: Default::default(),
                 forest,
                 capture_enabled: true,
                 trees_help: true,
@@ -825,6 +944,7 @@ mod tests {
             )
             .0,
             &crate::mail::Mail::default(),
+            0,
             1240.,
         );
         assert_eq!(strip["room"], pins.room - pins::NAV);
@@ -869,6 +989,7 @@ mod tests {
             )
             .0,
             &crate::mail::Mail::default(),
+            0,
             390.,
         );
         assert_eq!(narrow["room"], pins.room);
@@ -888,7 +1009,7 @@ mod tests {
     #[test]
     fn fully_listed_waiting_children_have_no_empty_more_row() {
         let (forest, _) = chain();
-        let value = strip(&forest, &crate::mail::Mail::default(), 1240.);
+        let value = strip(&forest, &crate::mail::Mail::default(), &[], 1240.);
         let after = value["nodes"]
             .as_array()
             .unwrap()
@@ -938,7 +1059,7 @@ mod tests {
             40,
         );
         for width in [390., 800., 1240., 1440.] {
-            let strip = super::strip(&forest, &crate::mail::Mail::default(), width);
+            let strip = super::strip(&forest, &crate::mail::Mail::default(), &[], width);
             let room = strip["room"].as_f64().unwrap();
             assert!(room < width);
             let layout = &strip;
@@ -960,7 +1081,7 @@ mod tests {
             vec![],
         )
         .unwrap();
-        let strip = super::strip(&empty, &crate::mail::Mail::default(), 800.);
+        let strip = super::strip(&empty, &crate::mail::Mail::default(), &[], 800.);
         assert_eq!(strip["room"], 800. - pins::NAV);
         assert_eq!(strip["left"], pins::NAV);
         assert_eq!(strip["pins"], json!([]));
@@ -1016,6 +1137,7 @@ mod tests {
             forest,
             loaded: Default::default(),
             live: [ids[1]].into_iter().collect(),
+            playing: Default::default(),
             canopy_layout: Default::default(),
             shown: Default::default(),
             capture_enabled: true,
@@ -1074,6 +1196,7 @@ mod tests {
             .unwrap(),
             loaded: Default::default(),
             live: Default::default(),
+            playing: Default::default(),
             capture_enabled: true,
             trees_help: true,
             theme: ThemeMode::Light,
@@ -1129,6 +1252,7 @@ mod tests {
             forest,
             loaded: HashSet::new(),
             live: HashSet::new(),
+            playing: Default::default(),
             capture_enabled: true,
             trees_help: true,
             theme: ThemeMode::Dark,
@@ -1196,9 +1320,12 @@ mod tests {
         let mut visit = forest.visit(ids[2]).unwrap().clone();
         let loaded = HashSet::from([visit.id]);
         let empty = HashSet::new();
-        assert_eq!(visit_value(&forest, &visit, &empty, &empty)["detail"], "");
         assert_eq!(
-            visit_value(&forest, &visit, &loaded, &empty)["detail"],
+            visit_value(&forest, &visit, &empty, &empty, &empty)["detail"],
+            ""
+        );
+        assert_eq!(
+            visit_value(&forest, &visit, &loaded, &empty, &empty)["detail"],
             "loaded"
         );
         visit.source = Some(crate::browser::SourceContext {
@@ -1209,7 +1336,7 @@ mod tests {
         });
         for state in [&empty, &loaded] {
             assert_eq!(
-                visit_value(&forest, &visit, state, &empty)["detail"],
+                visit_value(&forest, &visit, state, &empty, &empty)["detail"],
                 "Why this link matters"
             );
         }
@@ -1248,6 +1375,7 @@ mod tests {
             mail: crate::mail::Mail::default(),
             loaded: HashSet::new(),
             live: HashSet::new(),
+            playing: Default::default(),
             forest,
             capture_enabled: true,
             trees_help: true,
@@ -1284,6 +1412,7 @@ mod tests {
             mail: crate::mail::Mail::default(),
             loaded: HashSet::new(),
             live: HashSet::new(),
+            playing: Default::default(),
             forest,
             capture_enabled: true,
             trees_help: true,
@@ -1318,6 +1447,7 @@ mod tests {
             mail: crate::mail::Mail::default(),
             loaded: HashSet::new(),
             live: HashSet::new(),
+            playing: Default::default(),
             forest,
             capture_enabled: true,
             trees_help: true,
@@ -1380,6 +1510,7 @@ mod tests {
             mail: crate::mail::Mail::default(),
             loaded: HashSet::new(),
             live: HashSet::new(),
+            playing: Default::default(),
             forest,
             capture_enabled: true,
             trees_help: true,
@@ -1451,7 +1582,7 @@ mod tests {
     #[test]
     fn edges_carry_four_control_points() {
         let (forest, _) = chain();
-        let strip = strip(&forest, &crate::mail::Mail::default(), 1240.);
+        let strip = strip(&forest, &crate::mail::Mail::default(), &[], 1240.);
         let edge = &strip["edges"][0];
         assert_eq!(edge["c"].as_array().unwrap().len(), 4);
         assert_eq!(edge["c"][0].as_array().unwrap().len(), 2);
@@ -1496,6 +1627,7 @@ mod tests {
             forest,
             loaded: ids.iter().copied().collect(),
             live: HashSet::new(),
+            playing: Default::default(),
             capture_enabled: true,
             trees_help: true,
             theme: ThemeMode::Dark,
