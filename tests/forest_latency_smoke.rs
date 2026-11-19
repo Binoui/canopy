@@ -8,6 +8,7 @@ fn main() -> Result<()> {
     if std::env::var_os("FOREST_LATENCY").is_none() {
         return Ok(());
     }
+    let _runtime = private_runtime()?;
     let dir = tempfile::tempdir()?;
     let database = dir.path().join("forest.sqlite3");
     if let Some(source) = std::env::var_os("FOREST_FIXTURE") {
@@ -52,7 +53,7 @@ fn main() -> Result<()> {
           globalThis.painted=null;
           const check=()=>{
             const forest=document.querySelector('#forest');
-            const ready=!forest.hidden && (document.querySelector('#forest-nodes [data-id]') || document.querySelector('#forest-trees .tree-card') || document.querySelector('#forest-list .forest-row'));
+            const ready=!forest.hidden && S.forest?.view==='history' && document.querySelectorAll('#forest-list .forest-row').length===20 && S.forest.count;
             if(!ready) { requestAnimationFrame(check); return; }
             requestAnimationFrame(()=>requestAnimationFrame(()=>{painted=performance.timeOrigin+performance.now();}));
           };
@@ -83,6 +84,43 @@ fn main() -> Result<()> {
             elapsed,
             started.elapsed().as_secs_f64() * 1000.
         );
+        println!(
+            "payload {} bytes, rows {}",
+            chrome(
+                &ui,
+                "new TextEncoder().encode(JSON.stringify(S.forest)).length"
+            )?,
+            chrome(&ui, "document.querySelectorAll('.forest-row').length")?
+        );
+        if round == 0 && std::env::var_os("FOREST_FIND").is_some() {
+            for (label, letter, query) in [("first-letter", "a", "a"), ("next-letter", "g", "ag")] {
+                chrome(
+                    &ui,
+                    &format!(
+                        r#"(() => {{ globalThis.painted=null;
+                    const check=()=>{{ if(S.forest?.query!=={query:?} || !(document.querySelector('#forest-list .forest-row') || !$('forest-empty').hidden)) {{requestAnimationFrame(check);return;}}
+                    requestAnimationFrame(()=>requestAnimationFrame(()=>{{painted=performance.timeOrigin+performance.now();}})); }};
+                    requestAnimationFrame(check);return true; }})()"#
+                    ),
+                )?;
+                let wall = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_secs_f64()
+                    * 1000.;
+                let injection = Instant::now();
+                xdo(&["key", "--clearmodifiers", letter])?;
+                let injection_ms = injection.elapsed().as_secs_f64() * 1000.;
+                wait("Find paint", || {
+                    chrome(&ui, "painted!==null").is_ok_and(|v| v == true)
+                })?;
+                println!(
+                    "find {label} {:.3} ms (input {:.3} ms)",
+                    chrome(&ui, "painted")?.as_f64().unwrap() - wall,
+                    injection_ms
+                );
+            }
+            key("Escape")?;
+        }
         key("Escape")?;
         pump(500);
     }

@@ -1,5 +1,3 @@
-const PAGE: usize = 60;
-
 mod days;
 mod history;
 mod index;
@@ -101,13 +99,13 @@ struct Open {
 }
 enum Shown {
     Trees(trees::State),
-    History(history::State),
+    History(Box<history::State>),
 }
 impl Shown {
     fn new(view: View) -> Self {
         match view {
             View::Trees => Self::Trees(trees::State::default()),
-            View::History => Self::History(history::State::default()),
+            View::History => Self::History(Box::default()),
         }
     }
     fn query(&self) -> &str {
@@ -138,7 +136,7 @@ impl ForestPane {
                 State::Open(Open {
                     shown: Shown::History(c),
                     ..
-                }) => c.selected(&Index::build(&frame.forest, &*self.calendar)),
+                }) => c.selected(&Index::build(&frame.forest, &*self.calendar), &frame.forest),
                 _ => None,
             };
             return tree
