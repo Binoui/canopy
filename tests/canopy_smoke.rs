@@ -334,6 +334,46 @@ fn main() -> Result<()> {
     assert!(visible(&ui, "#forest"));
     println!("PASS continuous real wheel, title refresh and reversal of a held threshold reply preserve the page anchor.");
     level(&ui, "middle")?;
+    page(&ui, ids[6])?;
+    // A wheel over empty space: the nearest page must not jump when a new level is laid out.
+    // Start from the point farthest from every item, so it stays empty through the wheel.
+    chrome(
+        &ui,
+        r#"(()=>{const v=$('forest-canopy').getBoundingClientRect(),c=[...mapView.nodes.values()].map(n=>screenOf(n));let best=null;for(let x=120;x<v.width-120;x+=10)for(let y=120;y<v.height-120;y+=10){if(document.elementFromPoint(v.left+x,v.top+y)?.closest('.canopy-item'))continue;const d=Math.min(...c.map(p=>Math.hypot(p[0]-x,p[1]-y)));if(!best||d>best.d)best={d,x,y};}globalThis.empty=[best.x,best.y];return true;})()"#,
+    )?;
+    let viewport = rect(&ui, "#forest-canopy")?;
+    let at = chrome(&ui, "empty")?;
+    move_to(
+        (viewport.0 + at[0].as_f64().unwrap()).round() as i32,
+        (viewport.1 + at[1].as_f64().unwrap()).round() as i32,
+    )?;
+    chrome(&ui, "(()=>{const v=$('forest-canopy').getBoundingClientRect();empty=[Math.round(v.left+empty[0])-v.left,Math.round(v.top+empty[1])-v.top];return true;})()")?;
+    let mut crossed = 0;
+    for button in ["4", "4", "4", "5", "5", "5", "5", "5"] {
+        if chrome(&ui, "(()=>{const v=$('forest-canopy').getBoundingClientRect();return !!document.elementFromPoint(v.left+empty[0],v.top+empty[1])?.closest('.canopy-item');})()")? == true {
+            break;
+        }
+        chrome(&ui, "(()=>{const n=nearestPage(empty);globalThis.before={page:n.page,off:n.off,k:mapView.k,drawn:mapView.drawn};return true;})()")?;
+        xdo(&["click", button])?;
+        wait("empty wheel reply", || {
+            chrome(&ui, "mapView.asked === null").is_ok_and(|v| v == true)
+        })?;
+        pump(40);
+        if chrome(&ui, "mapView.drawn !== before.drawn")? == true {
+            crossed += 1;
+        }
+        let error = chrome(&ui, r#"(()=>{const n=nodeOfPage(before.page),[x,y]=screenOf(n),f=mapView.k/before.k;return Math.hypot(empty[0]-x-before.off[0]*f,empty[1]-y-before.off[1]*f);})()"#)?.as_f64().unwrap();
+        assert!(
+            error <= 1.5,
+            "empty-space wheel moved the nearest page by {error} CSS px"
+        );
+    }
+    assert!(
+        crossed >= 2,
+        "empty-space wheel crossed only {crossed} thresholds"
+    );
+    println!("PASS real wheel over empty space keeps the nearest page in place when the map is laid out again, in and out.");
+    level(&ui, "middle")?;
     let target = page(&ui, ids[6])?;
     let (x, y) = chrome_point(&ui, &target)?;
     move_to(x, y)?;
