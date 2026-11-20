@@ -548,6 +548,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 #popover.mail { width: min(430px, calc(100vw - 16px)); min-width: 360px; max-width: 440px; }
 .mail-tabs { flex: 1; min-width: 0; margin: 2px 2px 6px; border-radius: 9px; }
 .mail-tabs .mail-tab { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; padding: 5px 6px; border-radius: 7px; }
+.mail-tabs .mail-tab[data-key="all"] { flex: none; }
 .mail-tabs .mail-tab[aria-selected="true"] { background: var(--bg); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px var(--shadow); }
 .mail-tab-label, .mail-heading > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mail-tab:not([aria-selected="true"]) .count { padding: 0; background: none; color: var(--muted); }
@@ -561,7 +562,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .mail-inbox:hover { color: var(--text); }
 .mail-inbox .mail-account-dot { margin-right: 13px; }
 .mail-item { position: relative; display: flex; border-radius: 10px; }
-.mail-item:is(:hover, :focus-within) { background: var(--hover); }
+.mail-item:is(:hover, :has(:focus-visible)) { background: var(--hover); }
 .mail-row { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 10px; text-align: left; }
 .mail-row:focus-visible, .mail-mark:focus-visible { outline-offset: -2px; }
 .mail-tile { position: relative; flex: none; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; background: var(--sender-color); }
@@ -587,10 +588,10 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .mail-unmarked { font-size: 11.5px; color: var(--danger); }
 .mail-mark { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); width: 28px; height: 28px; border-radius: 8px; color: var(--muted); background: var(--bg); box-shadow: 0 0 0 1px var(--border); opacity: 0; pointer-events: none; }
 .mail-mark svg.icon { width: 15px; height: 15px; }
-.mail-item:is(:hover, :focus-within) > .mail-mark { opacity: 1; pointer-events: auto; }
+.mail-item:is(:hover, :has(:focus-visible)) > .mail-mark { opacity: 1; pointer-events: auto; }
 .mail-mark:hover { background: var(--bg); color: var(--green-ink); box-shadow: 0 0 0 1px var(--green); }
-.mail-item:has(> .mail-mark):is(:hover, :focus-within) .mail-when { visibility: hidden; }
-.mail-item:has(> .mail-mark):is(:hover, :focus-within) :is(.mail-preview, .mail-unmarked) { padding-right: 34px; }
+.mail-item:has(> .mail-mark):is(:hover, :has(:focus-visible)) .mail-when { visibility: hidden; }
+.mail-item:has(> .mail-mark):is(:hover, :has(:focus-visible)) :is(.mail-preview, .mail-unmarked) { padding-right: 34px; }
 .mail-notice, .mail-empty { font-size: 11.5px; color: var(--muted); padding: 6px 8px; }
 #page-scale { margin-right: 4px; color: var(--green-ink); background: var(--green-soft); border-color: transparent; font-variant-numeric: tabular-nums; }
 #page-scale:hover { border-color: var(--green); }
