@@ -70,6 +70,12 @@ impl Favicons {
         })
     }
 
+    pub(super) fn sender_png(self: &Rc<Self>, host: &str) -> Option<Rc<[u8]>> {
+        sender_candidates(host)
+            .iter()
+            .find_map(|url| self.png(url, true))
+    }
+
     fn request(self: &Rc<Self>, url: String) {
         if !self.requested.borrow_mut().insert(url.clone()) {
             return;
@@ -101,6 +107,24 @@ impl Favicons {
             }
         }
     }
+}
+
+fn sender_candidates(host: &str) -> Vec<url::Url> {
+    let parent = host
+        .split_once('.')
+        .map(|(_, rest)| rest)
+        .filter(|rest| rest.contains('.'));
+    [Some(host), parent]
+        .into_iter()
+        .flatten()
+        .flat_map(|domain| [domain.to_owned(), format!("www.{domain}")])
+        .filter_map(|domain| url::Url::parse(&format!("https://{domain}/")).ok())
+        .fold(Vec::new(), |mut urls, url| {
+            if !urls.contains(&url) {
+                urls.push(url);
+            }
+            urls
+        })
 }
 
 fn normalize(surface: &cairo::Surface) -> Option<Rc<[u8]>> {
@@ -157,7 +181,38 @@ impl<K: std::hash::Hash + Eq + Clone, V> Bounded<K, V> {
 
 #[cfg(test)]
 mod tests {
-    use super::Bounded;
+    use super::{sender_candidates, Bounded};
+
+    #[test]
+    fn sender_icons_try_the_host_and_parent_with_www_fallbacks() {
+        let candidates = |host| {
+            sender_candidates(host)
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            candidates("mail.example.org"),
+            [
+                "https://mail.example.org/",
+                "https://www.mail.example.org/",
+                "https://example.org/",
+                "https://www.example.org/"
+            ]
+        );
+        assert_eq!(
+            candidates("example.org"),
+            ["https://example.org/", "https://www.example.org/"]
+        );
+        assert_eq!(
+            candidates("www.example.org"),
+            [
+                "https://www.example.org/",
+                "https://www.www.example.org/",
+                "https://example.org/"
+            ]
+        );
+    }
 
     #[test]
     fn the_cache_forgets_the_least_recently_used_page() {

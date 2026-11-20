@@ -1,7 +1,9 @@
 mod appearance;
 mod canopy_layout;
 mod logins;
+mod mail_popup;
 mod save_watch;
+mod settings;
 
 use std::{
     cell::{Cell, RefCell},
@@ -18,8 +20,8 @@ use crate::{
         Browser, Download, ImportedPage, SearchHit, Snapshot, ThemeMode, VisitId, VisitPreview,
     },
     chrome::{
-        ChromeFrame, ChromeHost, ChromeIntent, HtmlChrome, PageFile, PaletteScope, PaletteSeed,
-        Toast,
+        ChromeFrame, ChromeHost, ChromeIntent, HtmlChrome, MailView, PageFile, PaletteScope,
+        PaletteSeed, Toast,
     },
     forest::ForestProjection,
     logins::{Login, LoginProvider, SavedLogin},
@@ -34,6 +36,7 @@ pub struct Ui {
     /// The desktop's light or dark preference, which `Theme: System` follows.
     desktop: Rc<appearance::Desktop>,
     canopy_layout: canopy_layout::Setting,
+    mail_popup: mail_popup::Setting,
     refresh_scheduled: Cell<bool>,
     /// The Ctrl+Tab list is open and opens its selected page when Ctrl is released.
     switching: Cell<bool>,
@@ -126,6 +129,7 @@ impl Ui {
                 mail,
                 desktop,
                 canopy_layout: canopy_layout::Setting::load(data_dir),
+                mail_popup: mail_popup::Setting::load(data_dir),
                 window,
                 pages,
                 chrome,
@@ -409,6 +413,7 @@ impl Ui {
                 shown: browser.showings()?,
                 canopy_layout: self.canopy_layout.get(),
                 mail: self.mail.mail(),
+                mail_view: MailView::new(self.mail_popup.get().new_after()),
                 loaded: self.pages.loaded_visits(),
                 live: self.pages.hidden_visits(),
                 playing: self.pages.playing_visits(),
@@ -438,6 +443,11 @@ impl Ui {
                 ui.refresh();
             }
         });
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn set_mail_now(&self, now_ms: i64) {
+        self.mail_popup.set_now_ms(now_ms);
     }
 
     fn mail_checked(&self, signed_out: &[String]) {
@@ -902,9 +912,20 @@ impl ChromeHost for Ui {
 
     fn dispatch(&self, intent: ChromeIntent) {
         let Some(ui) = self.me.upgrade() else { return };
-        if let ChromeIntent::Mail(ask) = intent {
-            self.mail.ask(ask);
-            return;
+        match intent {
+            ChromeIntent::Mail(ask) => {
+                self.mail.ask(ask);
+                return;
+            }
+            ChromeIntent::MailOpened => {
+                if let Err(error) = self.mail_popup.open() {
+                    self.report_error(&error.to_string());
+                }
+                self.mail.check_soon();
+                self.schedule_refresh();
+                return;
+            }
+            _ => {}
         }
         if let ChromeIntent::AnswerFormReturn { question, proceed } = intent {
             self.pages.answer_form_return_for(question, proceed);
@@ -944,7 +965,9 @@ impl ChromeHost for Ui {
             self.schedule_refresh();
         }
         let result = match intent {
-            ChromeIntent::AnswerFormReturn { .. } | ChromeIntent::Mail(_) => unreachable!(),
+            ChromeIntent::AnswerFormReturn { .. }
+            | ChromeIntent::Mail(_)
+            | ChromeIntent::MailOpened => unreachable!(),
             ChromeIntent::CancelContinuation => Ok(()),
             ChromeIntent::OpenPath { first, second } => self.pages.open_path(first, second),
             ChromeIntent::Bookmark { url, title } => {

@@ -26,15 +26,8 @@ impl Setting {
         self.layout.get()
     }
     pub fn save(&self, layout: CanopyLayout) -> Result<()> {
-        let temporary = self.directory.join("canopy-layout.tmp");
-        let result = (|| {
-            std::fs::write(&temporary, format!("{}\n", layout.name()))?;
-            std::fs::rename(&temporary, self.directory.join(FILE))
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&temporary);
-        }
-        result.context("Could not save the Canopy layout")?;
+        super::settings::write(&self.directory.join(FILE), format!("{}\n", layout.name()))
+            .context("Could not save the Canopy layout")?;
         self.layout.set(layout);
         Ok(())
     }

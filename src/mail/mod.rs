@@ -129,6 +129,7 @@ pub struct Account {
 pub struct Message {
     pub id: MessageId,
     pub from: String,
+    pub from_address: Option<String>,
     pub subject: String,
     pub snippet: String,
     pub issued: Option<i64>,

@@ -116,6 +116,12 @@ Canopy records where the file was saved and leaves the file there. If you move o
 
 Canopy has no list of all downloads yet, and it cannot pause or resume one.
 
+## Read unread mail
+
+When Canopy finds a signed-in Gmail account, the mail button shows the total unread count. Open it to see the newest messages first, under day headings. For multiple accounts, choose **All** or an account tab. The colored dots identify each account. A green dot on a sender tile marks mail that arrived since you last opened the list.
+
+Select a message to open it. Hover over a message or focus it with Tab to reveal **Mark read**. Select an account at the bottom to open its inbox.
+
 ## Sign in with a saved login
 
 When a page asks you to sign in and the vault holds a login for that site, a key button appears in the top row with the account name. Click it, or press **Ctrl+Shift+L**, and Canopy types the user name and password into the page. With several accounts for the site, the button opens a list to choose from. You then sign in yourself: Canopy does not submit the form.

@@ -92,8 +92,10 @@ fn parse(xml: &str, origin: &Origin, number: AccountNumber) -> Option<Account> {
                 return None;
             }
             let author = child(entry, "author");
+            let from_address = author.and_then(|a| text(a, "email"));
             let from = author
-                .and_then(|a| text(a, "name").or_else(|| text(a, "email")))
+                .and_then(|a| text(a, "name"))
+                .or(from_address)
                 .unwrap_or("Unknown sender")
                 .to_owned();
             let link = entry
@@ -106,6 +108,7 @@ fn parse(xml: &str, origin: &Origin, number: AccountNumber) -> Option<Account> {
                 unmarked: None,
                 id: MessageId(id.to_owned()),
                 from,
+                from_address: from_address.map(str::to_owned),
                 subject: text(entry, "title").unwrap_or("(no subject)").to_owned(),
                 snippet: text(entry, "summary")
                     .unwrap_or("")
@@ -224,12 +227,14 @@ mod tests {
         assert_eq!(first.subject, "Tom & Jerry's lunch");
         assert_eq!(first.snippet, "Are you free on Friday?");
         assert_eq!(first.from, "Jo Smith");
+        assert_eq!(first.from_address.as_deref(), Some("jo@example.test"));
         assert_eq!(first.id.as_str(), "1782938475629384756");
         assert_eq!(first.issued, Some(1_794_906_753_000));
         assert!(first.link.as_str().contains("message_id=111&view=conv"));
         let second = &account.messages[1];
         assert_eq!(second.subject, "(no subject)");
         assert_eq!(second.from, "bo@example.test");
+        assert_eq!(second.from_address.as_deref(), Some("bo@example.test"));
         assert_eq!(second.issued, None);
         assert_eq!(second.link, account.inbox);
     }
@@ -255,6 +260,7 @@ mod tests {
         let fallback = xml.replace("</feed>", "<entry><id>x</id></entry></feed>");
         let a = parse(&fallback, &Origin::gmail(), AccountNumber(0)).unwrap();
         assert_eq!(a.messages[0].from, "Unknown sender");
+        assert_eq!(a.messages[0].from_address, None);
         assert_eq!(a.messages[0].snippet, "");
     }
 

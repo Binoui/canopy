@@ -67,6 +67,7 @@ const S = {
   popover: null,
   switcher: null,
   mailTab: 'all',
+  mailIconRevision: 0,
   palette: null,
   reader: null,
   find: null,
@@ -120,13 +121,17 @@ function hostOf(url) {
   try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return '?'; }
 }
 
+function monogramColor(name) {
+  let hash = 2166136261;
+  for (let i = 0; i < name.length; i++) hash = Math.imul(hash ^ (name.charCodeAt(i) & 255), 16777619) >>> 0;
+  return MONOGRAM[hash % MONOGRAM.length];
+}
+
 /// A page icon from Rust's cache, over the host's monogram, which shows until (or unless)
 /// the icon loads.
 function fav(url, opened, size) {
   const host = hostOf(url);
-  let hash = 2166136261;
-  for (let i = 0; i < host.length; i++) hash = Math.imul(hash ^ (host.charCodeAt(i) & 255), 16777619) >>> 0;
-  const color = MONOGRAM[hash % MONOGRAM.length];
+  const color = monogramColor(host);
   const letter = esc((host[0] || '?').toUpperCase());
   const src = `icon?u=${encodeURIComponent(url)}&o=${opened ? 1 : 0}&r=${S.revisions.get(iconSite(url)) ?? 0}`;
   return `<span class="fav" style="width:${size}px;height:${size}px;background:${color};border-radius:${Math.min(3, size / 4)}px">`
@@ -1228,6 +1233,44 @@ function visibleMailAccounts(mail) {
   return mail.accounts.filter((account) => S.mailTab === 'all' || account.address === S.mailTab);
 }
 
+const MAIL_HUES = ['#3b7ad6', '#d9962e', '#d1547a', '#49a888', '#8f6ed0'];
+
+function mailAccountDot(account) {
+  return account?.hue === undefined ? ''
+    : `<span class="mail-account-dot" style="background:${MAIL_HUES[account.hue % MAIL_HUES.length]}" title="${esc(account.address ?? account.name)}" aria-hidden="true"></span>`;
+}
+
+function mailTile(row) {
+  const { shape, icon } = row.tile;
+  const letter = esc((Array.from(row.from)[0] || '?').toUpperCase());
+  const image = icon
+    ? `<img src="icon?sender=1&u=${encodeURIComponent(icon)}&r=${S.mailIconRevision}" alt="" onload="this.parentElement.classList.add('has-icon')" onerror="this.parentElement.classList.remove('has-icon')">` : '';
+  const dot = row.fresh ? '<i class="mail-new"></i>' : '';
+  return `<span class="mail-tile ${shape}" style="--sender-color:${monogramColor(row.from)}" aria-hidden="true"><b>${letter}</b>${image}${dot}</span>`;
+}
+
+function mailMark(row) {
+  return row.markName ? `<button class="icon-button mail-mark" data-account="${esc(row.account)}" data-id="${esc(row.id)}" title="Mark read" aria-label="${esc(row.markName)}">${icon('read')}</button>` : '';
+}
+
+function mailRow(row, accountDot, when) {
+  return `<div class="mail-item${row.fresh ? ' fresh' : ''}"><button class="mail-row" data-account="${esc(row.account)}" data-id="${esc(row.id)}" aria-label="${esc(row.name)}">`
+    + mailTile(row) + '<span class="mail-body">'
+    + `<span class="mail-line"><span class="mail-from">${esc(row.from)}</span><span class="mail-when">${esc(when)}</span></span>`
+    + `<span class="mail-line mail-preview"><span class="mail-subject">${esc(row.subject)}</span><span class="mail-snippet">${esc(row.snippet)}</span>${accountDot}</span>`
+    + (row.unmarked ? `<span class="mail-unmarked">${esc(row.unmarked)}</span>` : '')
+    + '</span></button>' + mailMark(row) + '</div>';
+}
+
+function mailTimeline(rows, rowDot) {
+  let previousDay;
+  return rows.map((row) => {
+    const heading = previousDay === row.day ? '' : `<div class="mail-day" role="heading" aria-level="2">${esc(row.day)}</div>`;
+    previousDay = row.day;
+    return heading + mailRow(row, rowDot(row), row.when);
+  }).join('');
+}
+
 // A refresh rebuilds an open popover's rows. The row that had the keyboard keeps it.
 function refreshPopover() {
   if (!S.popover) return;
@@ -1237,7 +1280,7 @@ function refreshPopover() {
     const address = active?.dataset.account;
     const id = active?.dataset.id;
     const key = active?.dataset.key;
-    const role = ['mail-tab', 'mail-row', 'mail-mark', 'mail-inbox', 'mail-more'].find((c) => active?.classList.contains(c));
+    const role = ['mail-tab', 'mail-row', 'mail-mark', 'mail-inbox'].find((c) => active?.classList.contains(c));
     const item = active?.closest('.mail-item');
     const items = item ? [...item.parentElement.querySelectorAll('.mail-item')] : [];
     const index = items.indexOf(item);
@@ -1351,19 +1394,19 @@ function renderPopover() {
     if (!mail.accounts.length) { closePopover(false); return; }
     popover.setAttribute('aria-label', 'Unread mail');
     const accounts = visibleMailAccounts(mail);
-    popover.innerHTML = (mail.tabs ? '<div class="segmented mail-tabs" role="tablist" aria-label="Mail accounts">'
-      + mail.tabs.map((tab) => `<button class="mail-tab" role="tab" data-key="${esc(tab.key)}" aria-selected="${tab.key === S.mailTab}" tabindex="${tab.key === S.mailTab ? 0 : -1}" title="${esc(tab.name)}" aria-label="${esc(tab.name)}"><span class="mail-tab-label">${esc(tab.label)}</span>${tab.count ? `<span class="count">${esc(tab.count)}</span>` : ''}</button>`).join('') + '</div>' : '')
+    const byAddress = new Map(accounts.map((a) => [a.address, a]));
+    const rows = mail.rows.filter((row) => byAddress.has(row.account));
+    const rowDot = (row) => mail.tabs && S.mailTab === 'all' ? mailAccountDot(byAddress.get(row.account)) : '';
+    const header = mail.tabs ? '<div class="segmented mail-tabs" role="tablist" aria-label="Mail accounts">'
+      + mail.tabs.map((tab) => `<button class="mail-tab" role="tab" data-key="${esc(tab.key)}" aria-selected="${tab.key === S.mailTab}" tabindex="${tab.key === S.mailTab ? 0 : -1}" title="${esc(tab.name)}" aria-label="${esc(tab.name)}">${mailAccountDot(tab)}<span class="mail-tab-label">${esc(tab.label)}</span>${tab.count ? `<span class="count">${esc(tab.count)}</span>` : ''}</button>`).join('') + '</div>'
+      : `<div class="mail-heading" role="heading" aria-level="1"><span>${esc(accounts[0].address)}</span><span class="menu-detail">${esc(accounts[0].count)}</span></div>`;
+    popover.innerHTML = header
       + (mail.notice ? `<div class="mail-notice" role="status">${esc(mail.notice)}</div>` : '')
-      + accounts.map((a) => '<section class="mail-account">'
-        + `<button class="menu-row mail-inbox" data-account="${esc(a.account)}" aria-label="${esc(a.name)}"><span class="grow">${esc(a.address)}</span><span class="menu-detail">${esc(a.count)}</span></button>`
-        + a.rows.map((r) => `<div class="mail-item"><button class="menu-row mail-row" data-account="${esc(a.account)}" data-id="${esc(r.id)}" aria-label="${esc(r.name)}">`
-          + `<span class="mail-line"><span class="mail-from">${esc(r.from)}</span><span class="menu-detail">${esc(r.when)}</span></span>`
-          + `<span class="mail-subject">${esc(r.subject)}</span><span class="mail-snippet">${esc(r.snippet)}</span>`
-          + (r.unmarked ? `<span class="mail-unmarked">${esc(r.unmarked)}</span>` : '') + '</button>'
-          + (r.markName ? `<button class="icon-button mail-mark" data-account="${esc(a.account)}" data-id="${esc(r.id)}" title="Mark read" aria-label="${esc(r.markName)}">${icon('read')}</button>` : '')
-          + '</div>').join('')
-        + (a.more ? `<button class="menu-row mail-more" data-account="${esc(a.account)}">${esc(a.more)}</button>` : '')
-        + '</section>').join('');
+      + (rows.length ? mailTimeline(rows, rowDot) : '<div class="mail-empty">No unread mail</div>')
+      + '<div class="mail-footers">' + accounts.map((a) =>
+        `<button class="menu-row mail-inbox" data-account="${esc(a.account)}" aria-label="${esc(a.name + (a.more ? '. ' + a.more : ''))}">`
+        + (mail.tabs ? mailAccountDot(a) : '')
+        + `<span class="grow">${esc(a.address)}</span><span class="menu-detail">${esc(a.more ?? 'Open inbox')}</span></button>`).join('') + '</div>';
     popover.querySelectorAll('.mail-tab').forEach((tab) => {
       const select = (key) => {
         S.mailTab = key;
@@ -1390,7 +1433,7 @@ function renderPopover() {
       closePopover(false);
       intent('open-mail', { account: row.dataset.account, id: row.dataset.id });
     }));
-    popover.querySelectorAll('.mail-inbox, .mail-more').forEach((row) => row.addEventListener('click', () => {
+    popover.querySelectorAll('.mail-inbox').forEach((row) => row.addEventListener('click', () => {
       closePopover(false);
       intent('open-inbox', { account: row.dataset.account });
     }));
@@ -2279,6 +2322,12 @@ window.canopy = {
       src.searchParams.set('r', revision);
       img.src = src.href;
     }
+    S.mailIconRevision = revision;
+    for (const img of document.querySelectorAll('.mail-tile img')) {
+      const src = new URL(img.src);
+      src.searchParams.set('r', revision);
+      img.src = src.href;
+    }
   },
   logins(offer) {
     S.logins = offer.names.length ? offer : null;
@@ -2973,7 +3022,7 @@ window.addEventListener('focus', () => {
 
 function openMail() {
   openPopover('mail', $('mail-pin'));
-  intent('check-mail');
+  intent('mail-opened');
 }
 $('mail-pin').addEventListener('click', (event) => {
   event.stopPropagation();

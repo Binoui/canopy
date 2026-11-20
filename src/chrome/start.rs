@@ -54,6 +54,7 @@ mod tests {
             canopy_layout: Default::default(),
             shown: Default::default(),
             mail: crate::mail::Mail::default(),
+            mail_view: Default::default(),
             forest: ForestProjection::from_snapshot(
                 browser.snapshot().unwrap(),
                 browser.tree_states().unwrap(),
@@ -106,6 +107,7 @@ mod tests {
             canopy_layout: Default::default(),
             shown: Default::default(),
             mail: crate::mail::Mail::default(),
+            mail_view: Default::default(),
             forest: ForestProjection::from_snapshot(
                 browser.snapshot().unwrap(),
                 browser.tree_states().unwrap(),
