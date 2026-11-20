@@ -163,7 +163,6 @@ body[data-find] #search-pill :is(span, kbd) { display: none; }
 .wait-count { display: flex; align-items: center; gap: 4px; }
 .wait-count i { width: 7px; height: 7px; border: 1.5px solid var(--green); border-radius: 50%; }
 .branch-count { position: absolute; min-width: 16px; height: 15px; padding: 0 4px; border: 1px solid var(--tile-border); border-radius: 8px; background: var(--chrome); color: var(--muted); font: 600 10.5px/13px "Inter", sans-serif; text-align: center; pointer-events: none; }
-.branch-count.waiting { border-color: var(--green); color: var(--green-ink); }
 #strip-list { position: absolute; padding: 6px; overflow-y: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 1px 2px var(--shadow), 0 10px 30px var(--shadow); }
 .bl-head { display: flex; gap: 9px; align-items: flex-start; padding: 7px 8px 6px; }
 .bl-head > .mk, .bl-glyph { margin-top: 2px; flex: none; }

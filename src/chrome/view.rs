@@ -374,8 +374,8 @@ pub(crate) fn strip(
             "page": id.to_string(), "ids": ids.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "playing": ids.iter().any(|id| playing.contains(id)),
             "named": kind == "root" && forest.visit(current).unwrap().parent == Some(id),
-            "kind": kind, "name": if kind == "after" { format!("After {title}{}{}", if waiting > 0 { format!(", {} waiting {}", waiting, if waiting == 1 { "page" } else { "pages" }) } else { String::new() }, if read > 0 { format!(", {read} read {}", if read == 1 { "page" } else { "pages" }) } else { String::new() }) } else { branch_name(&title, node.branches.pages, node.branches.waiting, forest.is_waiting(id)) }, "label": label, "title": title, "meta": meta, "heading": heading, "more": more, "rows": rows,
-            "branches": { "pages": node.branches.pages, "waiting": node.branches.waiting },
+            "kind": kind, "name": if kind == "after" { format!("After {title}{}{}", if waiting > 0 { format!(", {} waiting {}", waiting, if waiting == 1 { "page" } else { "pages" }) } else { String::new() }, if read > 0 { format!(", {read} read {}", if read == 1 { "page" } else { "pages" }) } else { String::new() }) } else { branch_name(&title, node.branches.read, 0, forest.is_waiting(id)) }, "label": label, "title": title, "meta": meta, "heading": heading, "more": more, "rows": rows,
+            "badge": (kind != "pill" && node.branches.read > 0).then_some(node.branches.read),
             "waiting": waiting, "read": read,
             "x": node.rect.x, "y": node.rect.y, "w": node.rect.w, "s": node.rect.s,
         })
@@ -1706,7 +1706,7 @@ mod tests {
             .iter()
             .find(|n| n["kind"] == "pill")
             .unwrap();
-        assert_eq!(pill["branches"], json!({"pages":1,"waiting":0}));
+        assert!(pill["badge"].is_null());
         assert!(pill["rows"]
             .as_array()
             .unwrap()

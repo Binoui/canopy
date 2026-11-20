@@ -318,8 +318,7 @@ pub(super) fn help() -> Value {
             [{"mark": "unread", "text": "not read yet"}],
             [{"mark": "live", "text": "still open"}],
             [{"mark": "leaf", "text": "downloaded file"}],
-            [{"mark": "branches", "text": "other branches"},
-             {"mark": "waiting-branches", "text": "some waiting"}]
+            [{"mark": "branches", "text": "read on other branches"}]
         ]
     })
 }

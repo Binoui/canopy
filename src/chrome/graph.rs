@@ -1,4 +1,7 @@
-use crate::{browser::VisitId, forest::ForestProjection};
+use crate::{
+    browser::{VisitId, VisitState},
+    forest::ForestProjection,
+};
 
 pub(crate) const REST_HEIGHT: f64 = 52.;
 pub(crate) const TRUNK_Y: f64 = REST_HEIGHT / 2.;
@@ -80,6 +83,7 @@ impl StripItem {
 pub(crate) struct BranchCounts {
     pub pages: usize,
     pub waiting: usize,
+    pub read: usize,
 }
 
 pub(crate) struct StripNode {
@@ -117,6 +121,7 @@ pub(crate) fn branch_counts(forest: &ForestProjection, heads: &[VisitId]) -> Bra
         }
         counts.pages += 1;
         counts.waiting += usize::from(forest.is_waiting(id));
+        counts.read += usize::from(forest.visit(id).unwrap().state == VisitState::Opened);
         stack.extend(forest.children(id));
     }
     counts
@@ -481,7 +486,8 @@ mod tests {
             nodes[0].branches,
             BranchCounts {
                 pages: 13,
-                waiting: 2
+                waiting: 2,
+                read: 11,
             }
         );
         assert_eq!(nodes[0].total_rows, 12);

@@ -453,14 +453,14 @@ function buildStrip(layout) {
       el.dataset.html = html;
     }
     let badge = strip.badges.get(n.id);
-    if (n.branches.pages && n.kind !== 'pill') {
+    if (n.badge != null) {
       if (!badge) {
         badge = document.createElement('i');
         canvas.appendChild(badge);
         strip.badges.set(n.id, badge);
       }
-      badge.className = `branch-count${n.branches.waiting ? ' waiting' : ''}`;
-      badge.textContent = n.branches.pages;
+      badge.className = 'branch-count';
+      badge.textContent = n.badge;
     } else if (badge) {
       badge.remove(); strip.badges.delete(n.id);
     }
@@ -1867,7 +1867,7 @@ function helpDrawing(kind) {
   if (kind === 'unread') return markedFav({ ...page, queued: true, loaded: true }, 16);
   if (kind === 'live') return markedFav({ ...page, live: true }, 16);
   if (kind === 'leaf') return '<span class="leaf"></span>';
-  if (kind === 'branches' || kind === 'waiting-branches') return `<span class="branch-count${kind === 'waiting-branches' ? ' waiting' : ''} help-count">3</span>`;
+  if (kind === 'branches') return '<span class="branch-count help-count">3</span>';
   if (kind === 'settle') return icon('close');
   return miniHtml({ w: 62, h: 22, s: 14, cut: false,
     nodes: [{ x: 0, y: 4, url: page.url }, { x: 40, y: 4, url: page.url, last: true }],

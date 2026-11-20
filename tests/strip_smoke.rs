@@ -67,7 +67,9 @@ fn main() -> Result<()> {
                 "docs".into()
             };
             let url = format!("http://{host}.localhost:{port}{path}");
-            let waiting = i >= depth && (shape != "thread" || i < depth + 14);
+            let waiting = i >= depth
+                && (shape != "thread" || i < depth + 14)
+                && (shape != "fan" || i > depth);
             serial += 1000;
             db.execute("INSERT INTO visits(id,parent_id,url,title,created_at,opened_at) VALUES(?1,?2,?3,?4,?5,?6)", rusqlite::params![id.to_string(), parent.map(|id: VisitId| id.to_string()), url, title, serial, (!waiting).then_some(serial)])?;
             db.execute("INSERT INTO captures(visit_id,document_url,title,body,captured_at,kind) VALUES(?1,?2,?3,?4,?5,'selection')", rusqlite::params![id.to_string(),url,title,"Saved notes about this page. The complete text remains searchable in Saved text. This preview wraps across two lines while the named branches remain visible below it.",serial])?;
@@ -228,9 +230,9 @@ fn main() -> Result<()> {
                         assert_eq!(text(&ui, ".node.parent .item-label"), "Framing");
                     }
                     "fan" => {
-                        assert_eq!(text(&ui, ".branch-count"), "12");
+                        assert_eq!(text(&ui, ".branch-count"), "1");
                         assert_eq!(text(&ui, ".node.parent .item-label"), "this month?");
-                        assert!(visible(&ui, ".branch-count.waiting"));
+                        assert!(!visible(&ui, ".branch-count.waiting"));
                         assert!(text(&ui, "#strip-list .more").contains("6 more"));
                     }
                     "trail" => {
