@@ -68,6 +68,7 @@ const S = {
   switcher: null,
   mailTab: 'all',
   mailIconRevision: 0,
+  openMailSenders: new Set(),
   palette: null,
   reader: null,
   find: null,
@@ -1137,12 +1138,16 @@ function mailMark(row) {
   return row.markName ? `<button class="icon-button mail-mark" data-account="${esc(row.account)}" data-id="${esc(row.id)}" title="Mark read" aria-label="${esc(row.markName)}">${icon('read')}</button>` : '';
 }
 
+function mailNote(row) {
+  return row.unmarked ? `<span class="mail-unmarked">${esc(row.unmarked)}</span>` : '';
+}
+
 function mailRow(row, accountDot, when) {
-  return `<div class="mail-item${row.fresh ? ' fresh' : ''}"><button class="mail-row" data-account="${esc(row.account)}" data-id="${esc(row.id)}" aria-label="${esc(row.name)}">`
+  return `<div class="mail-item${row.fresh ? ' fresh' : ''}"><button class="mail-row" data-account="${esc(row.account)}" data-id="${esc(row.id)}" data-sender="${esc(row.sender)}" aria-label="${esc(row.name)}">`
     + mailTile(row) + '<span class="mail-body">'
     + `<span class="mail-line"><span class="mail-from">${esc(row.from)}</span><span class="mail-when">${esc(when)}</span></span>`
     + `<span class="mail-line mail-preview"><span class="mail-subject">${esc(row.subject)}</span><span class="mail-snippet">${esc(row.snippet)}</span>${accountDot}</span>`
-    + (row.unmarked ? `<span class="mail-unmarked">${esc(row.unmarked)}</span>` : '')
+    + mailNote(row)
     + '</span></button>' + mailMark(row) + '</div>';
 }
 
@@ -1155,6 +1160,43 @@ function mailTimeline(rows, rowDot) {
   }).join('');
 }
 
+function mailChild(row, accountDot, showFrom) {
+  return `<div class="mail-item mail-kid${row.fresh ? ' fresh' : ''}"><button class="mail-row" data-account="${esc(row.account)}" data-id="${esc(row.id)}" data-sender="${esc(row.sender)}" aria-label="${esc(row.name)}">`
+    + '<span class="mail-body"><span class="mail-line mail-preview">'
+    + (row.fresh ? '<i class="mail-child-new" aria-hidden="true"></i>' : '')
+    + (showFrom ? `<span class="mail-from">${esc(row.from)}</span>` : '')
+    + `<span class="mail-subject">${esc(row.subject)}</span><span class="mail-snippet">${esc(row.snippet)}</span>${accountDot}<span class="mail-when">${esc(row.ago)}</span></span>`
+    + mailNote(row) + '</span></button>' + mailMark(row) + '</div>';
+}
+
+function mailSenders(rows, rowDot) {
+  const groups = new Map();
+  for (const row of rows) {
+    if (!groups.has(row.sender)) groups.set(row.sender, []);
+    groups.get(row.sender).push(row);
+  }
+  return [...groups].map(([sender, group]) => {
+    const newest = group[0];
+    if (group.length === 1) return mailRow(newest, rowDot(newest), newest.ago);
+
+    const open = S.openMailSenders.has(sender);
+    const newCount = group.filter((row) => row.fresh).length;
+    const namesDiffer = group.some((row) => row.from !== newest.from);
+    const from = namesDiffer ? newest.senderSite ?? newest.from : newest.from;
+    const summary = `${newCount ? `${newCount} new, ` : ''}${group.length} unread`;
+    const more = `and ${group.length - 1} more`;
+    const name = [from, open ? summary : `${newest.subject}, ${more}`, newest.ago].filter(Boolean).join(', ');
+
+    return `<div class="mail-item${newCount ? ' fresh' : ''}"><button class="mail-group-head" data-sender="${esc(sender)}" aria-expanded="${open}" aria-label="${esc(name)}">`
+      + mailTile({ ...newest, from, fresh: newCount > 0 })
+      + `<span class="mail-body"><span class="mail-line"><span class="mail-from">${esc(from)}</span><span class="count mail-fold">${group.length}${icon('chevron')}</span><span class="mail-when">${esc(newest.ago)}</span></span>`
+      + `<span class="mail-line mail-preview"><span class="mail-subject">${esc(open ? summary : newest.subject)}</span>`
+      + (open ? '' : `<span class="mail-snippet">${more}</span>`)
+      + '</span></span></button></div>'
+      + (open ? '<div class="mail-kids">' + group.map((row) => mailChild(row, rowDot(row), namesDiffer)).join('') + '</div>' : '');
+  }).join('');
+}
+
 // A refresh rebuilds an open popover's rows. The row that had the keyboard keeps it.
 function refreshPopover() {
   if (!S.popover) return;
@@ -1164,24 +1206,34 @@ function refreshPopover() {
     const address = active?.dataset.account;
     const id = active?.dataset.id;
     const key = active?.dataset.key;
-    const role = ['mail-tab', 'mail-row', 'mail-mark', 'mail-inbox'].find((c) => active?.classList.contains(c));
-    const item = active?.closest('.mail-item');
-    const items = item ? [...item.parentElement.querySelectorAll('.mail-item')] : [];
-    const index = items.indexOf(item);
-    const near = index < 0 ? [] : [...items.slice(index + 1), ...items.slice(0, index).reverse()]
-      .map((el) => el.querySelector('.mail-row').dataset.id);
+    const sender = active?.dataset.sender ?? active?.closest('.mail-kid')?.querySelector('.mail-row')?.dataset.sender;
+    const role = ['mail-tab', 'mail-row', 'mail-mark', 'mail-inbox', 'mail-group-head', 'mail-group-toggle']
+      .find((c) => active?.classList.contains(c));
+    const ids = address ? [...popover.querySelectorAll('.mail-row')].filter((row) => row.dataset.account === address)
+      .map((row) => row.dataset.id) : [];
+    const index = ids.indexOf(id);
+    const near = index < 0 ? [] : [...ids.slice(index + 1), ...ids.slice(0, index).reverse()];
     const hadFocus = popover.contains(active);
+    const scrollTop = popover.scrollTop;
     renderPopover();
     if (!S.popover) return;
     keepPopoverInside();
+    popover.scrollTop = scrollTop;
     if (hadFocus) {
       const controls = role ? [...popover.querySelectorAll(`.${role}`)] : [];
-      const row = role === 'mail-row' || role === 'mail-mark'
-        ? [id, ...near].map((wanted) => controls.find((el) => el.dataset.account === address && el.dataset.id === wanted)).find(Boolean)
-        : controls.find((el) => role === 'mail-tab' ? el.dataset.key === key : el.dataset.account === address);
+      const sameMessage = (wanted) => controls.find((el) => el.dataset.account === address && el.dataset.id === wanted);
+      let row = role === 'mail-row' || role === 'mail-mark' ? sameMessage(id)
+        : controls.find((el) => role === 'mail-tab' ? el.dataset.key === key
+          : role === 'mail-group-head' ? el.dataset.sender === sender : el.dataset.account === address);
+      row ||= near.map(sameMessage).find(Boolean);
+      if (!row && sender !== undefined && S.frame.mail.grouping === 'sender') {
+        const related = [...popover.querySelectorAll('.mail-group-head, .mail-row')];
+        row = related.find((el) => el.dataset.sender === sender);
+      }
       (row || (role === 'mail-tab' && popover.querySelector('.mail-tab[aria-selected="true"]')) || popover).focus({ preventScroll: true });
       row?.scrollIntoView({ block: 'nearest' });
     }
+    syncLayer();
     return;
   }
   const index = [...popover.querySelectorAll('button')].indexOf(document.activeElement);
@@ -1273,9 +1325,12 @@ function renderPopover() {
     const header = mail.tabs ? '<div class="segmented mail-tabs" role="tablist" aria-label="Mail accounts">'
       + mail.tabs.map((tab) => `<button class="mail-tab" role="tab" data-key="${esc(tab.key)}" aria-selected="${tab.key === S.mailTab}" tabindex="${tab.key === S.mailTab ? 0 : -1}" title="${esc(tab.name)}" aria-label="${esc(tab.name)}">${mailAccountDot(tab)}<span class="mail-tab-label">${esc(tab.label)}</span>${tab.count ? `<span class="count">${esc(tab.count)}</span>` : ''}</button>`).join('') + '</div>'
       : `<div class="mail-heading" role="heading" aria-level="1"><span>${esc(accounts[0].address)}</span><span class="menu-detail">${esc(accounts[0].count)}</span></div>`;
-    popover.innerHTML = header
+    const bySender = mail.grouping === 'sender';
+    popover.innerHTML = '<div class="mail-header">' + header
+      + `<button class="label-button mail-group-toggle" aria-pressed="${bySender}" aria-label="Group by sender" title="Group by sender">${icon('forest')}</button></div>`
       + (mail.notice ? `<div class="mail-notice" role="status">${esc(mail.notice)}</div>` : '')
-      + (rows.length ? mailTimeline(rows, rowDot) : '<div class="mail-empty">No unread mail</div>')
+      + (rows.length ? (bySender ? mailSenders(rows, rowDot) : mailTimeline(rows, rowDot))
+        : '<div class="mail-empty">No unread mail</div>')
       + '<div class="mail-footers">' + accounts.map((a) =>
         `<button class="menu-row mail-inbox" data-account="${esc(a.account)}" aria-label="${esc(a.name + (a.more ? '. ' + a.more : ''))}">`
         + (mail.tabs ? mailAccountDot(a) : '')
@@ -1296,6 +1351,17 @@ function renderPopover() {
         event.stopPropagation();
         select(tabs[next].key);
       });
+    });
+    popover.querySelector('.mail-group-toggle').onclick = (event) => {
+      event.currentTarget.focus({ preventScroll: true });
+      intent('mail-grouping', { grouping: bySender ? 'day' : 'sender' });
+    };
+    popover.querySelectorAll('.mail-group-head').forEach((head) => head.onclick = () => {
+      head.focus({ preventScroll: true });
+      const sender = head.dataset.sender;
+      if (S.openMailSenders.has(sender)) S.openMailSenders.delete(sender);
+      else S.openMailSenders.add(sender);
+      refreshPopover();
     });
     popover.querySelectorAll('.mail-mark').forEach((button) => button.addEventListener('click', (event) => {
       // Reflow can put the next mail under the second click of a double click.

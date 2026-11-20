@@ -1712,23 +1712,49 @@ mod tests {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Grouping {
+    #[default]
+    Day,
+    Sender,
+}
+
+impl Grouping {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Day => "day",
+            Self::Sender => "sender",
+        }
+    }
+
+    pub(crate) fn parse(name: &str) -> Option<Self> {
+        match name {
+            "day" => Some(Self::Day),
+            "sender" => Some(Self::Sender),
+            _ => None,
+        }
+    }
+}
+
 pub struct MailView {
     today: Civil,
     new_after: Option<i64>,
+    grouping: Grouping,
 }
 
 impl MailView {
-    pub(crate) fn new(new_after: Option<i64>) -> Self {
+    pub(crate) fn new(new_after: Option<i64>, grouping: Grouping) -> Self {
         Self {
             today: LocalCalendar.now(),
             new_after,
+            grouping,
         }
     }
 }
 
 impl Default for MailView {
     fn default() -> Self {
-        Self::new(None)
+        Self::new(None, Grouping::Day)
     }
 }
 
@@ -1766,15 +1792,20 @@ const PERSONAL_MAIL: &[&str] = &[
     "zoho.com",
 ];
 
-fn sender_tile(address: Option<&str>) -> Value {
-    let domain = address
-        .and_then(|s| s.rsplit_once('@'))
-        .and_then(|(_, domain)| url::Host::parse(domain).ok());
+fn sender_domain(address: Option<&str>) -> Option<String> {
+    let (_, domain) = address?.rsplit_once('@')?;
+    match url::Host::parse(domain).ok()? {
+        url::Host::Domain(domain) => Some(domain),
+        _ => None,
+    }
+}
+
+fn sender_tile(domain: Option<&str>) -> Value {
     match domain {
-        Some(url::Host::Domain(domain)) if PERSONAL_MAIL.contains(&domain.as_str()) => {
+        Some(domain) if PERSONAL_MAIL.contains(&domain) => {
             json!({"shape": "round", "icon": null})
         }
-        Some(url::Host::Domain(domain)) => {
+        Some(domain) => {
             json!({"shape": "square", "icon": format!("https://{domain}/")})
         }
         _ => json!({"shape": "square", "icon": null}),
@@ -1831,11 +1862,13 @@ fn mail_value(mail: &crate::mail::Mail, view: &MailView) -> Value {
         if fresh {
             name.insert_str(0, "New. ");
         }
+        let sender = m.from_address.as_ref().map_or_else(|| m.from.clone(), |s| s.to_lowercase());
+        let domain = sender_domain(m.from_address.as_deref());
         json!({
-            "fresh": fresh,
+            "fresh": fresh, "sender": sender, "senderSite": domain,
             "account": a.address, "id": m.id.as_str(), "from": m.from, "subject": m.subject,
             "snippet": m.snippet, "day": day, "when": when, "ago": ago, "name": name,
-            "tile": sender_tile(m.from_address.as_deref()),
+            "tile": sender_tile(domain.as_deref()),
             "markName": (m.link != a.inbox).then(|| format!("Mark read: {}, {}", m.from, m.subject)),
             "unmarked": note,
         })
@@ -1844,6 +1877,7 @@ fn mail_value(mail: &crate::mail::Mail, view: &MailView) -> Value {
         "pin": pin,
         "notice": notice,
         "rows": rows,
+        "grouping": view.grouping.name(),
         "accounts": mail.accounts.iter().enumerate().map(|(hue, a)| {
             let count = if a.unread == 0 { "No unread mail".to_owned() } else { format!("{} unread", a.unread) };
             let more = a.unread.saturating_sub(a.messages.len() as u32);
@@ -1990,6 +2024,15 @@ mod mail_tests {
             rows[4]["tile"],
             json!({"shape": "square", "icon": "https://mail.example.org/"})
         );
+        assert_eq!(rows[0]["sender"], "jo@gmail.com");
+        assert_eq!(rows[1]["sender"], "A sender");
+        assert_eq!(rows[4]["sender"], "bot@mail.example.org");
+        assert_eq!(rows[4]["senderSite"], "mail.example.org");
+        assert_eq!(frame["grouping"], "day");
+        assert_eq!(
+            mail_value(&mail, &MailView::new(None, Grouping::Sender))["grouping"],
+            "sender"
+        );
         assert_eq!(rows[2]["account"], "bo@example.test");
         assert_eq!(frame["accounts"][0]["hue"], 0);
         assert_eq!(frame["accounts"][1]["hue"], 1);
@@ -2019,7 +2062,7 @@ mod mail_tests {
         };
         assert_eq!(fresh(MailView::default()), [false, false, false, false]);
         assert_eq!(
-            fresh(MailView::new(Some(issued))),
+            fresh(MailView::new(Some(issued), Grouping::Day)),
             [true, false, false, false]
         );
     }

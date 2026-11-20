@@ -70,7 +70,7 @@ thread_local! {
 type ShownPalette = (String, Vec<(Group, PaletteItem)>, usize);
 
 pub use forest_pane::CanopyLayout;
-pub use view::MailView;
+pub use view::{Grouping, MailView};
 
 /// Everything the chrome shows, read from SQLite in one go.
 pub struct ChromeFrame {
@@ -139,6 +139,7 @@ pub enum PaletteSeed {
 pub enum ChromeIntent {
     Mail(crate::mail::MailAsk),
     MailOpened,
+    SetMailGrouping(Grouping),
     PageScale(crate::pages::PageScaleAction),
     AnswerFormReturn {
         question: u64,
@@ -1308,6 +1309,9 @@ impl Inner {
         let index = || message["index"].as_u64().map(|i| i as usize);
         Some(match message["kind"].as_str()? {
             "mail-opened" => ChromeIntent::MailOpened,
+            "mail-grouping" => {
+                ChromeIntent::SetMailGrouping(Grouping::parse(message["grouping"].as_str()?)?)
+            }
             "check-mail" => ChromeIntent::Mail(crate::mail::MailAsk::Check),
             "mark-mail-read" => ChromeIntent::Mail(crate::mail::MailAsk::MarkRead {
                 address: message["account"].as_str()?.to_owned(),

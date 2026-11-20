@@ -398,6 +398,7 @@ fn main() -> Result<()> {
         Duration::from_millis(1500),
     );
     freshness(&fresh_ui, &fixture)?;
+    sender_groups(&fresh_ui, &fixture)?;
     fixture.seen.lock().unwrap().conversation = Conversation::Stalls;
     click_chrome(&fresh_ui, &mark_button("111"))?;
     wait("shutdown mark starts", || {
@@ -411,6 +412,21 @@ fn main() -> Result<()> {
     pump(1300);
     assert_eq!(visit_events(fresh.path())?, events);
     println!("PASS mail mark stop: window close cancels its hidden page without a visit.");
+    drop(fresh_ui);
+    fixture.seen.lock().unwrap().conversation = Conversation::Inert;
+    let reopened = Ui::new(fresh.path())?;
+    reopened.window.show_all();
+    ready(&reopened)?;
+    reopened.open(&[fixture.url("/signin")])?;
+    wait("account found after restart", || {
+        visible(&reopened, "#mail-pin")
+    })?;
+    click_chrome(&reopened, "#mail-pin")?;
+    assert!(visible(&reopened, ".mail-group-toggle[aria-pressed=true]"));
+    assert!(visible(&reopened, ".mail-group-head[aria-expanded=false]"));
+    assert!(!visible(&reopened, ".mail-kid"));
+    reopened.window.close();
+    println!("PASS mail sender grouping persists when the same profile is reopened.");
     println!("PASS mail first failure: a profile with no successfully read account keeps the button hidden.");
     println!("PASS mail fetch: HttpOnly cookies and page User-Agent match, redirects remain unfollowed, cancellation answers once.");
     Ok(())
@@ -877,6 +893,74 @@ fn freshness(ui: &Ui, fixture: &Fixture) -> Result<()> {
     Ok(())
 }
 
+fn sender_groups(ui: &Ui, fixture: &Fixture) -> Result<()> {
+    click_chrome(ui, ".mail-group-toggle")?;
+    wait("sender grouping switches on", || {
+        visible(ui, ".mail-group-toggle[aria-pressed=true]")
+    })?;
+    assert!(!visible(ui, ".mail-day"));
+    assert_eq!(text(ui, ".mail-group-head .mail-from"), "code.example.test");
+    assert_eq!(text(ui, ".mail-group-head .mail-snippet"), "and 2 more");
+    assert!(visible(ui, ".mail-group-head .mail-new"));
+    assert!(
+        visible(ui, ".mail-row[data-id='555']"),
+        "single mail stays a row"
+    );
+    assert!(!visible(ui, ".mail-kid"));
+
+    click_chrome(ui, ".mail-group-head")?;
+    assert!(visible(ui, ".mail-group-head[aria-expanded=true]"));
+    assert_eq!(
+        text(ui, ".mail-group-head .mail-subject"),
+        "1 new, 3 unread"
+    );
+    assert_eq!(text(ui, ".mail-kid .mail-from"), "Jordan");
+    let (_, top, _, height) = rect(ui, "#popover")?;
+    wait("the chrome view covers the expanded sender popup", || {
+        f64::from(ui.chrome.native().allocated_height()) >= top + height
+    })?;
+    recheck(ui)?;
+    assert!(chrome_focused(ui, ".mail-group-head[aria-expanded=true]"));
+
+    key("Return")?;
+    assert!(visible(ui, ".mail-group-head[aria-expanded=false]"));
+    assert!(!visible(ui, ".mail-kid"));
+    key("Return")?;
+    assert!(visible(ui, ".mail-kid .mail-row[data-id='222']"));
+    chrome(
+        ui,
+        r#"document.querySelector(".mail-kid .mail-row[data-id='222']").focus(), true"#,
+    )?;
+    recheck(ui)?;
+    assert!(chrome_focused(ui, ".mail-kid .mail-row[data-id='222']"));
+    {
+        let mut seen = fixture.seen.lock().unwrap();
+        seen.conversation = Conversation::Marks;
+        seen.allow_mark = true;
+    }
+    key("Tab")?;
+    assert!(chrome_focused(ui, ".mail-kid .mail-mark[data-id='222']"));
+    key("Return")?;
+    wait("Mark read removes the child and updates the group", || {
+        !visible(ui, ".mail-kid .mail-row[data-id='222']")
+            && text(ui, ".mail-group-head .mail-subject") == "1 new, 2 unread"
+    })?;
+    wait("fixture receives Mark read from a child", || {
+        fixture
+            .seen
+            .lock()
+            .unwrap()
+            .read
+            .contains(&(0, "222".into()))
+    })?;
+    wait("child mark releases its hidden page", || {
+        ui.pages.errand_pages() == 0
+    })?;
+    recheck(ui)?;
+    println!("PASS mail sender grouping: folded preview, branch toggling, refresh focus and Mark read from a child.");
+    Ok(())
+}
+
 fn atom(
     origin: &str,
     n: usize,
@@ -918,7 +1002,13 @@ fn atom(
             } else {
                 "2026-11-17T09:12:33Z".into()
             };
-            format!("<entry><id>tag:gmail.google.com,2004:{id}</id><title>Tom &amp; Jerry&#39;s lunch</title><summary>{SNIPPET}</summary><author><name>{SENDER}</name></author><issued>{issued}</issued><link href=\"{origin}/mail/u/{n}?message_id={id}\"/></entry>")
+            let (from, address) = match (mode, *id) {
+                (Mode::Arrival, "666") => ("Jordan", "reviews@code.example.test"),
+                (Mode::Arrival, "555") => ("Camille", "camille@gmail.com"),
+                (Mode::Arrival, _) => ("Maya", "REVIEWS@CODE.EXAMPLE.TEST"),
+                _ => (SENDER, ""),
+            };
+            format!("<entry><id>tag:gmail.google.com,2004:{id}</id><title>Tom &amp; Jerry&#39;s lunch</title><summary>{SNIPPET}</summary><author><name>{from}</name><email>{address}</email></author><issued>{issued}</issued><link href=\"{origin}/mail/u/{n}?message_id={id}\"/></entry>")
         }).collect::<String>();
     format!("<feed xmlns=\"http://purl.org/atom/ns#\"><title>Inbox for {address}</title><fullcount>{count}</fullcount>{rows}</feed>")
 }
