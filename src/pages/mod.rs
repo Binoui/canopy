@@ -54,6 +54,7 @@ pub enum PageEvent {
         id: Option<crate::browser::DeleteId>,
         text: String,
     },
+    Queued(VisitId),
     Waiting {
         parent: VisitId,
         label: String,

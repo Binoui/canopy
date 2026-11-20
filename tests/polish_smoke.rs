@@ -102,7 +102,7 @@ fn main() -> Result<()> {
     let (x, y) = element_point(&ui, "waiting")?;
     move_to(x, y)?;
     xdo(&["click", "2"])?;
-    wait("waiting counter", || visible(&ui, "#waiting-pin"))?;
+    wait("waiting tab", || visible(&ui, ".node.tab"))?;
     for enabled in [false, true] {
         gtk::Settings::default()
             .unwrap()
@@ -130,7 +130,6 @@ fn main() -> Result<()> {
             chrome(&ui, "S.frame.theme").is_ok_and(|v| v == theme)
         })?;
         for (name, selector, button) in [
-            ("waiting", "#waiting-pin", None),
             ("settings", "#settings-button", Some("1")),
             ("overflow", "#tab-overflow", Some("1")),
             ("tab", ".tab", Some("3")),
@@ -158,7 +157,7 @@ fn main() -> Result<()> {
             chrome(&ui, "(closePopover(false), true)")?;
             move_to(1300, 900)?;
         }
-        println!("PASS {theme} stationary pointer tooltip queries refuse waiting, settings, overflow and refreshed tab menus after 1 s.");
+        println!("PASS {theme} stationary pointer tooltip queries refuse settings, tree overflow and refreshed tab menus after 1 s.");
         hover_chrome(&ui, "#settings-button")?;
         pump(1000);
         assert!(
@@ -199,20 +198,18 @@ fn main() -> Result<()> {
         key("Escape")?;
         println!("PASS {theme} selected reader text offers native Copy.");
         chrome(&ui, "(closePopover(false), true)")?;
-        item_list(&ui, "#strip-nodes .after")?;
-        wait("waiting list", || {
-            visible(&ui, "#strip-list .menu-row[data-id]")
-        })?;
+        item_list(&ui, "#strip-nodes .node.tab")?;
+        wait("waiting list", || visible(&ui, "#strip-list .bl-head"))?;
         assert!(text(&ui, "#strip-list").contains("Waiting"));
         assert!(!text(&ui, "#strip-list").contains("pending"));
         shot(&ui, &format!("{theme}-waiting-list"))?;
-        hover_chrome(&ui, "#strip-list .menu-row[data-id]")?;
+        hover_chrome(&ui, "#strip-nodes .node.tab")?;
         xdo(&["click", "3"])?;
         wait("page actions", || {
             visible(&ui, "#popover [data-node-action]")
         })?;
         pump(1000);
-        assert!(!tooltip_query(&ui, "#strip-list .menu-row[data-id]")?);
+        assert!(!tooltip_query(&ui, "#strip-nodes .node.tab")?);
         assert!(text(&ui, "#popover").contains("Dismiss"));
         shot(&ui, &format!("{theme}-waiting-menu"))?;
         key("Escape")?;
@@ -271,7 +268,10 @@ fn main() -> Result<()> {
         chrome(&ui, "reducedMotion.matches").is_ok_and(|v| v == true)
     })?;
     assert!(chrome(&ui, "(animateStrip(300), !strip.anim)")? == true);
-    chrome(&ui, "canopy.waiting('Waiting quietly')")?;
+    chrome(
+        &ui,
+        "canopy.waiting('Waiting quietly', S.frame.waiting.ids[0])",
+    )?;
     assert_eq!(
         chrome(&ui, "document.querySelectorAll('.waiting-pulse').length")?,
         0

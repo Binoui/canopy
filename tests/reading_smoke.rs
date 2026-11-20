@@ -154,7 +154,6 @@ fn main() -> Result<()> {
     loaded(&ui, "/discussion")?;
     assert!(!visible(&ui, "#palette"));
     assert_eq!(queued(&ui), 2);
-    item_list(&ui, "#strip-nodes .after")?;
     for sibling in ui
         .snapshot()?
         .visits
