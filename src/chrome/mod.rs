@@ -447,7 +447,14 @@ impl HtmlChrome {
         inner.present_error();
         if previous.0 != width {
             if let Some(frame) = inner.frame.borrow().as_ref() {
-                inner.call("strip", &[view::strip_for_frame(frame, width)]);
+                inner.call(
+                    "strip",
+                    &[view::strip(
+                        frame,
+                        width,
+                        &waiting::Waiting::of(&frame.forest),
+                    )],
+                );
             }
         }
     }
@@ -624,6 +631,11 @@ impl HtmlChrome {
     /// Fills the only offered login, or opens the list when there are several.
     pub fn fill_login(&self) {
         self.inner.call("fillLogin", &[]);
+    }
+
+    pub fn queued(&self, child: VisitId) {
+        self.inner
+            .call("waiting", &[Value::Null, json!(child.to_string())]);
     }
 
     pub fn waiting(&self, parent: VisitId, label: &str) {

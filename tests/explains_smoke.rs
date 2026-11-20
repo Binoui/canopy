@@ -19,17 +19,18 @@ fn main() -> Result<()> {
     for mode in [ThemeMode::Dark, ThemeMode::Light] {
         ui.dispatch(ChromeIntent::SetTheme(mode));
         pump(200);
+        assert!(text(&ui, "#trees-help").contains("waits as a tab after the current page"));
         assert!(text(&ui, "#trees-help").contains("Ctrl+Tab"));
         assert!(text(&ui, "#trees-help").contains("Ctrl+Shift+T"));
         assert!(text(&ui, "#trees-help").contains("still open"));
         assert_eq!(
             chrome(&ui, "document.querySelectorAll('.help-legend-mark').length")?,
-            6
+            5
         );
         assert_eq!(chrome(&ui, "(() => { const r=$('trees-help').getBoundingClientRect(); return r.bottom < $('start-content').getBoundingClientRect().top; })()")?, true);
     }
     assert_eq!(chrome(&ui, "(() => { const r=$('trees-help').getBoundingClientRect(), s=$('start-search').getBoundingClientRect(); return r.x === s.x && r.width === s.width; })()")?, true);
-    assert_eq!(chrome(&ui, "(() => { const marks=[...document.querySelector('.help-legend-group:last-child').children]; return marks.length === 2 && marks[0].offsetTop === marks[1].offsetTop && !marks[0].querySelector('.waiting') && !!marks[1].querySelector('.waiting'); })()")?, true);
+    assert!(text(&ui, ".help-legend-group:last-child").contains("read on other branches"));
     click_chrome(&ui, "#trees-help-dismiss")?;
     wait("help dismissed", || !visible(&ui, "#trees-help"))?;
     assert!(!ui.pages.read(|b| b.trees_help())?);

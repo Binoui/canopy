@@ -1,32 +1,20 @@
 # Waiting pages
 
-Ctrl+click, a middle click, or a link meant for a new window adds the destination to the tree as a waiting page, drawn dashed, without loading it. The counter at the end of the strip and the badge on the tab count them. Ctrl+Tab opens the newest one.
+Ctrl+click, a middle click, or a link meant for a new window adds a waiting tab after the current page. A hollow unread mark shows that the page has yet to load. A full dot shows that it has loaded in the background. Waiting descendants of the current page come first, newest first. Other waiting pages follow in their own newest-first group.
 
 ## Sub-features
 
-- `waiting-add` adds a waiting page by middle-clicking a link.
-- `waiting-count` shows the count on the strip counter and the tab badge.
-- `waiting-next` opens the newest waiting page with Ctrl+Tab.
-- `page-switcher`: with nothing waiting, Ctrl+Tab opens the read page before this one; holding Ctrl and pressing Tab again shows `#switcher` (waiting rows in the left `.switcher-col[data-kind="waiting"]`, read rows in the right one; Tab walks left then right; a click opens a row), and releasing Ctrl opens the selected row.
-
-## How to get to it (user POV)
-
-- Middle click or Ctrl+click a link on a page.
-- Ctrl+Tab, or the counter at the right end of the strip.
+- `waiting-add` queues a link, briefly pulses its strip tab or the overflow button, and announces the queued link.
+- `waiting-next` opens the first waiting tab by click, Enter or Ctrl+Tab.
+- `waiting-dismiss` dismisses a tab by middle click, its visible cross, Delete, or Dismiss on its attached card or page menu.
+- `waiting-overflow` opens the complete queue from **+N** on click, keyboard Enter, or a 120 ms pointer rest.
+- `page-switcher` opens the previous read page with Ctrl+Tab when the queue is empty. Holding Ctrl and pressing Tab again shows up to five waiting pages on the left and up to eight recently read pages on the right. Tab walks both columns, Shift+Tab walks backward, and releasing Ctrl opens the selected row.
 
 ## Driving it with canopy-verify
 
-Preconditions:
+Start with a fresh stress launch and a clean doctor.
 
-- A fresh stress launch and a clean doctor.
-
-- **Counter.** Run `$V key ctrl+2`, `sleep 3`, `$V shot waiting-before`. The strip counter and the tab badge both read 9.
-- **Next waiting.** Run `$V db "SELECT opened_at FROM visits WHERE title = 'Best gaming keyboards 2026'"` (empty), then `$V key ctrl+Tab`, `sleep 3`, `$V shot waiting-next`. The page is "Best gaming keyboards 2026", the newest waiting page under the root, and the counter reads 8.
-- **Stored.** Run the same `db` query again with a name, `waiting-opened`. `opened_at` now has a value.
-- **Add.** Run `$V click 390 328 middle`, `sleep 2`, `$V shot waiting-add`. The heading does not change, a dashed "1" appears after the current page in the strip, and the counter reads 9 again. Confirm with `$V db "SELECT title, opened_at FROM visits ORDER BY created_at DESC LIMIT 1" waiting-added`, which returns "Best gaming keyboards 2026 1" with no `opened_at`.
-
-## Gotchas
-
-- Ctrl+Tab picks the newest waiting page of the current tree, not the closest one in the strip.
-- `$V key ctrl+Tab` is a quick press: it opens the first row and never shows the list. To see the list, hold Ctrl with `xdotool keydown ctrl`, press `key Tab` twice, take the shot, then `keyup ctrl` (which opens the selected row). Shift+Tab under a held Ctrl steps back.
-- Under Xvfb, GDK does not mark Shift or Ctrl presses as modifiers (`EventKey::is_modifier` is false), so the code matches modifier keyvals itself.
+- **Queue.** Switch to keyboard research with `$V key ctrl+4`. Inspect the waiting tabs at 1240, 712 and 390 px. Click **+N** when present and compare its rows to the tab order. The first row shows **Ctrl Tab**. Escape returns focus to the overflow button.
+- **Next waiting.** Read the first waiting tab and use `$V key ctrl+Tab`. Verify the displayed page matches that tab and the stored visit has a value in `opened_at`. Use F6, Right and Enter to open another tab.
+- **Add.** Middle-click a fixture link. Confirm it appears first with a dashed line from the current page or its read count. Read the newest visit in the private database and check that `opened_at` is empty.
+- **Actions.** Rest on a waiting tab to see its title, site, source, Open and Dismiss. Right-click or use Shift+F10 for the page menu. Dismiss different tabs with the cross, middle click and Delete. Verify Delete moves focus to the successor or the current page.

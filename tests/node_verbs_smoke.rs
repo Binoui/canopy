@@ -280,8 +280,7 @@ fn main() -> Result<()> {
         common::wait("theme", || {
             common::chrome(&f.ui, "canopy.state().dark").is_ok_and(|v| v == (theme == "dark"))
         })?;
-        common::item_list(&f.ui, "#strip-nodes .after")?;
-        f.menu(&format!("#strip-list [data-id='{waiting}']"))?;
+        f.menu(&common::node(waiting))?;
         assert!(common::text(&f.ui, ".node-menu-title").contains("unread"));
         assert_eq!(
             common::chrome(
@@ -373,11 +372,7 @@ fn main() -> Result<()> {
     for theme in ["dark", "light"] {
         common::chrome(&f.ui, &format!("intent('theme', {{mode:'{theme}'}})"))?;
         common::pump(200);
-        common::hover_chrome(&f.ui, "#waiting-pin")?;
-        common::wait("waiting list", || {
-            common::visible(&f.ui, &format!("#popover [data-id='{skipped}']"))
-        })?;
-        f.menu(&format!("#popover [data-id='{skipped}']"))?;
+        f.menu(&common::node(skipped))?;
         assert!(common::visible(&f.ui, "[data-node-action='dismiss']"));
         assert!(!common::visible(&f.ui, "[data-node-action='move-to-tree']"));
         f.shot("waiting-menu", theme)?;
@@ -987,6 +982,20 @@ fn page_move_drag() -> Result<()> {
     assert_eq!(drag_store(&f)?["trees"][0][0], d.to_string());
     assert_eq!(stored_parent(&f, d)?, None);
     println!("PASS root on a tab-row gap reorders its tab without merging.");
+    let waiting = f.queue("/drag-waiting")?;
+    let target = common::chrome_point(&f.ui, &tab(d))?;
+    drag_branch(
+        &f,
+        &node(waiting),
+        target,
+        "!!document.querySelector('.tab.page-drop-allowed')",
+        false,
+    )?;
+    common::wait("waiting tab moves to the drop target", || {
+        stored_parent(&f, waiting).is_ok_and(|p| p == Some(d.to_string()))
+    })?;
+    println!("PASS a waiting tab starts the native page drag and moves to the destination tree.");
+
     let before = drag_store(&f)?;
 
     f.ui.window.close();

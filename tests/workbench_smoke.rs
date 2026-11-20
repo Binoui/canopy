@@ -406,7 +406,9 @@ fn main() -> Result<()> {
         )?,
         true
     );
-    hover_chrome(&ui, "#waiting-pin")?;
+    ui.window.resize(480, 800);
+    settle(&ui)?;
+    hover_chrome(&ui, ".node.overflow")?;
     wait("waiting list", || {
         visible(&ui, "#popover.waiting [data-id]")
     })?;
@@ -429,6 +431,8 @@ fn main() -> Result<()> {
         true
     );
     key("Escape")?;
+    ui.window.resize(820, 800);
+    settle(&ui)?;
     println!("PASS 7. Node menus from the sheet, strip, attached list, and waiting list support arrows and Escape return; Home, End, Enter and Menu key work.");
     key("ctrl+shift+e")?;
     wait("filter tests open", || visible(&ui, "#tree-sheet"))?;

@@ -155,7 +155,7 @@ Each heading links to its part of the [guide](docs/guide.md).
 ### [Read now, read later](docs/guide.md#resume-reading)
 
 - **Ctrl+click** or **middle-click** a link and its page waits in the tree, with the comment or passage it was linked from.
-- A counter at the end of the strip shows how many pages wait. **Ctrl+Tab** opens the next one. With nothing waiting it goes back to the page you read before, and holding **Ctrl** lists both to pick from.
+- Waiting pages appear as tabs after the current page in the strip. **Ctrl+Tab** opens the first one. With nothing waiting it goes back to the page you read before, and holding **Ctrl** lists both to pick from.
 - Canopy saves the text of the pages you read, or only the passage you select with **Ctrl+S**. Form fields are left out, and a page showing a password form is not saved automatically.
 - **Ctrl+K** searches titles, addresses and saved text. A saved passage opens offline, with a way back to its source.
 
