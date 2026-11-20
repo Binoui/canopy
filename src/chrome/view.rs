@@ -785,6 +785,7 @@ mod tests {
             canopy_layout: Default::default(),
             shown: Default::default(),
             mail: Default::default(),
+            mail_view: Default::default(),
             loaded: Default::default(),
             live: Default::default(),
             playing: Default::default(),
