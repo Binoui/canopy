@@ -9,6 +9,7 @@ use std::{
 use serde_json::{json, Value};
 
 use super::{
+    days::{Calendar, Civil, LocalCalendar},
     graph::{self, EdgeKind, StripItem},
     palette::{Group, PaletteItem},
     pins, tree_view,
@@ -142,7 +143,7 @@ pub(crate) fn frame(
                 .iter()
                 .any(|mark| mark.url.as_str() == visit.url.as_str())
         }),
-        "mail": mail_value(&frame.mail),
+        "mail": mail_value(&frame.mail, &MailView::default()),
         "treesHelp": frame.trees_help,
         "theme": match frame.theme {
             ThemeMode::System => "system",
@@ -1701,7 +1702,68 @@ mod tests {
     }
 }
 
-fn mail_value(mail: &crate::mail::Mail) -> Value {
+struct MailView {
+    today: Civil,
+}
+
+impl Default for MailView {
+    fn default() -> Self {
+        Self {
+            today: LocalCalendar.now(),
+        }
+    }
+}
+
+const PERSONAL_MAIL: &[&str] = &[
+    "aol.com",
+    "fastmail.com",
+    "free.fr",
+    "gmail.com",
+    "gmx.com",
+    "gmx.de",
+    "googlemail.com",
+    "hey.com",
+    "hotmail.com",
+    "hotmail.fr",
+    "icloud.com",
+    "laposte.net",
+    "live.com",
+    "live.fr",
+    "mac.com",
+    "mail.com",
+    "me.com",
+    "msn.com",
+    "orange.fr",
+    "outlook.com",
+    "outlook.fr",
+    "pm.me",
+    "proton.me",
+    "protonmail.com",
+    "protonmail.ch",
+    "sfr.fr",
+    "wanadoo.fr",
+    "yahoo.com",
+    "yahoo.fr",
+    "ymail.com",
+    "zoho.com",
+];
+
+fn sender_tile(address: Option<&str>) -> Value {
+    let domain = address
+        .and_then(|s| s.rsplit_once('@'))
+        .and_then(|(_, domain)| url::Host::parse(domain).ok());
+    match domain {
+        Some(url::Host::Domain(domain)) if PERSONAL_MAIL.contains(&domain.as_str()) => {
+            json!({"shape": "round", "icon": null})
+        }
+        Some(url::Host::Domain(domain)) => {
+            json!({"shape": "square", "icon": format!("https://{domain}/")})
+        }
+        _ => json!({"shape": "square", "icon": null}),
+    }
+}
+
+fn mail_value(mail: &crate::mail::Mail, view: &MailView) -> Value {
     use crate::mail::Trouble;
     let unread = mail.unread();
     let accounts = plural(mail.accounts.len(), "Gmail account");
@@ -1727,10 +1789,39 @@ fn mail_value(mail: &crate::mail::Mail) -> Value {
             "name": if mail.trouble.is_some() { format!("{name}. {updated}") } else { name },
         })
     });
+    let mut listed: Vec<_> = mail
+        .accounts
+        .iter()
+        .flat_map(|a| a.messages.iter().map(move |m| (a, m)))
+        .collect();
+    listed.sort_by_key(|(_, m)| std::cmp::Reverse(m.issued));
+    let rows: Vec<_> = listed.into_iter().map(|(a, m)| {
+        let (day, when) = m.issued.map_or_else(
+            || ("No date".into(), String::new()),
+            |ms| LocalCalendar.civil(ms).timeline(&view.today),
+        );
+        let ago = m.issued.map(ago).unwrap_or_default();
+        let note = m.unmarked.map(unmarked_words);
+        let mut name = format!("{}, {}", m.from, m.subject);
+        if !ago.is_empty() {
+            name.push_str(&format!(", {ago}"));
+        }
+        if let Some(note) = note {
+            name.push_str(&format!(". {note}"));
+        }
+        json!({
+            "account": a.address, "id": m.id.as_str(), "from": m.from, "subject": m.subject,
+            "snippet": m.snippet, "day": day, "when": when, "ago": ago, "name": name,
+            "tile": sender_tile(m.from_address.as_deref()),
+            "markName": (m.link != a.inbox).then(|| format!("Mark read: {}, {}", m.from, m.subject)),
+            "unmarked": note,
+        })
+    }).collect();
     let mut value = json!({
         "pin": pin,
         "notice": notice,
-        "accounts": mail.accounts.iter().map(|a| {
+        "rows": rows,
+        "accounts": mail.accounts.iter().enumerate().map(|(hue, a)| {
             let count = if a.unread == 0 { "No unread mail".to_owned() } else { format!("{} unread", a.unread) };
             let more = a.unread.saturating_sub(a.messages.len() as u32);
             json!({
@@ -1739,15 +1830,7 @@ fn mail_value(mail: &crate::mail::Mail) -> Value {
                 "count": count,
                 "name": format!("Open the inbox of {}, {count}", a.address),
                 "more": (more > 0).then(|| format!("{more} more in the inbox")),
-                "rows": a.messages.iter().map(|m| {
-                    let when = m.issued.map(ago).unwrap_or_default();
-                    let note = m.unmarked.map(unmarked_words);
-                    let name = format!("{}, {}, {when}", m.from, m.subject);
-                    json!({"id": m.id.as_str(), "from": m.from, "subject": m.subject, "snippet": m.snippet,
-                        "when": when, "name": note.map_or_else(|| name.clone(), |n| format!("{name}. {n}")),
-                        "markName": (m.link != a.inbox).then(|| format!("Mark read: {}, {}", m.from, m.subject)),
-                        "unmarked": note})
-                }).collect::<Vec<_>>(),
+                "hue": hue,
             })
         }).collect::<Vec<_>>(),
     });
@@ -1762,7 +1845,7 @@ fn mail_value(mail: &crate::mail::Mail) -> Value {
         };
         let local = |address: &str| address.split('@').next().unwrap_or(address).to_owned();
         let mut tabs = vec![tab("all", "All", "All accounts", unread)];
-        tabs.extend(mail.accounts.iter().map(|a| {
+        tabs.extend(mail.accounts.iter().enumerate().map(|(hue, a)| {
             let short = local(&a.address);
             let shared = mail
                 .accounts
@@ -1770,12 +1853,14 @@ fn mail_value(mail: &crate::mail::Mail) -> Value {
                 .filter(|other| local(&other.address) == short)
                 .count()
                 > 1;
-            tab(
+            let mut value = tab(
                 &a.address,
                 if shared { &a.address } else { &short },
                 &a.address,
                 a.unread,
-            )
+            );
+            value["hue"] = json!(hue);
+            value
         }));
         value["tabs"] = json!(tabs);
     }
@@ -1796,13 +1881,104 @@ mod mail_tests {
     use super::*;
     use crate::mail::{Mail, Trouble};
 
+    fn value(mail: &Mail) -> Value {
+        mail_value(mail, &MailView::default())
+    }
+
+    #[test]
+    fn unread_rows_interleave_keep_feed_order_for_ties_and_draw_sender_tiles() {
+        let local = |day, hour| {
+            glib::DateTime::from_local(2026, 11, day, hour, 12, 0.)
+                .unwrap()
+                .to_unix()
+                * 1000
+        };
+        let mut mail = crate::mail::fixture();
+        let entry = |subject: &str, issued, from_address: Option<&str>| {
+            let mut row = mail.accounts[0].messages[0].clone();
+            row.subject = subject.to_owned();
+            row.issued = issued;
+            row.from_address = from_address.map(str::to_owned);
+            row
+        };
+        let today = local(18, 9);
+        let ana_rows = vec![
+            entry("today", Some(today), Some("jo@GMAIL.COM")),
+            entry("tie in feed", Some(today), None),
+            entry("older", Some(local(16, 11)), Some("bot@mail.example.org")),
+            entry("undated first", None, None),
+            entry("undated second", None, None),
+        ];
+        let mut bo = mail.accounts[0].clone();
+        bo.address = "bo@example.test".into();
+        bo.messages = vec![
+            entry("tie in second account", Some(today), None),
+            entry("yesterday", Some(local(17, 10)), None),
+            entry("undated last", None, None),
+        ];
+        mail.accounts[0].messages = ana_rows;
+        mail.accounts.push(bo);
+        let frame = mail_value(
+            &mail,
+            &MailView {
+                today: LocalCalendar.civil(today),
+            },
+        );
+        let rows = frame["rows"].as_array().unwrap();
+        let field = |key: &str| {
+            rows.iter()
+                .map(|r| r[key].as_str().unwrap())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            field("subject"),
+            [
+                "today",
+                "tie in feed",
+                "tie in second account",
+                "yesterday",
+                "older",
+                "undated first",
+                "undated second",
+                "undated last",
+            ]
+        );
+        assert_eq!(
+            field("day"),
+            [
+                "Today",
+                "Today",
+                "Today",
+                "Yesterday",
+                "Earlier this week",
+                "No date",
+                "No date",
+                "No date",
+            ]
+        );
+        assert_eq!(
+            field("when"),
+            ["09:12", "09:12", "09:12", "10:12", "16 Nov", "", "", ""]
+        );
+        assert_eq!(rows[0]["tile"], json!({"shape": "round", "icon": null}));
+        assert_eq!(rows[1]["tile"], json!({"shape": "square", "icon": null}));
+        assert_eq!(
+            rows[4]["tile"],
+            json!({"shape": "square", "icon": "https://mail.example.org/"})
+        );
+        assert_eq!(rows[2]["account"], "bo@example.test");
+        assert_eq!(frame["accounts"][0]["hue"], 0);
+        assert_eq!(frame["accounts"][1]["hue"], 1);
+        assert!(frame["accounts"][0].get("rows").is_none());
+    }
+
     #[test]
     fn marks_name_real_targets_and_explain_each_failure() {
         let mut mail = crate::mail::fixture();
-        assert!(mail_value(&mail)["accounts"][0]["rows"][0]["markName"].is_null());
+        assert!(value(&mail)["rows"][0]["markName"].is_null());
         mail.accounts[0].messages[0].link =
             url::Url::parse("https://mail.google.com/mail/u/0?message_id=111").unwrap();
-        let row = |m: &crate::mail::Mail| mail_value(m)["accounts"][0]["rows"][0].clone();
+        let row = |m: &crate::mail::Mail| value(m)["rows"][0].clone();
         assert_eq!(row(&mail)["markName"], "Mark read: A sender, A subject");
         assert!(row(&mail)["unmarked"].is_null());
         for (why, words) in [
@@ -1832,41 +2008,41 @@ mod mail_tests {
     #[test]
     fn account_tabs_have_stable_keys_unambiguous_labels_and_unread_names() {
         let mut mail = crate::mail::fixture();
-        assert!(mail_value(&Mail::default()).get("tabs").is_none());
-        assert!(mail_value(&mail).get("tabs").is_none());
+        assert!(value(&Mail::default()).get("tabs").is_none());
+        assert!(value(&mail).get("tabs").is_none());
         let mut second = mail.accounts[0].clone();
         second.address = "bo@example.test".into();
         second.unread = 0;
         mail.accounts.push(second);
         assert_eq!(
-            mail_value(&mail)["tabs"],
+            value(&mail)["tabs"],
             json!([
                 {"key":"all", "label":"All", "count":"3", "name":"All accounts, 3 unread"},
-                {"key":"ana@example.test", "label":"ana", "count":"3", "name":"ana@example.test, 3 unread"},
-                {"key":"bo@example.test", "label":"bo", "count":"", "name":"bo@example.test, no unread mail"}
+                {"key":"ana@example.test", "label":"ana", "count":"3", "name":"ana@example.test, 3 unread","hue":0},
+                {"key":"bo@example.test", "label":"bo", "count":"", "name":"bo@example.test, no unread mail","hue":1}
             ])
         );
         mail.accounts[1].address = "ana@work.test".into();
         mail.accounts[0].unread = 0;
-        let value = mail_value(&mail);
-        assert_eq!(value["tabs"][0]["count"], "");
-        assert_eq!(value["tabs"][0]["name"], "All accounts, no unread mail");
-        assert_eq!(value["tabs"][1]["label"], "ana@example.test");
-        assert_eq!(value["tabs"][2]["label"], "ana@work.test");
+        let frame = value(&mail);
+        assert_eq!(frame["tabs"][0]["count"], "");
+        assert_eq!(frame["tabs"][0]["name"], "All accounts, no unread mail");
+        assert_eq!(frame["tabs"][1]["label"], "ana@example.test");
+        assert_eq!(frame["tabs"][2]["label"], "ana@work.test");
     }
 
     #[test]
     fn the_frame_hides_mail_without_accounts_and_names_counts_rows_and_staleness() {
-        assert!(mail_value(&Mail::default())["pin"].is_null());
+        assert!(value(&Mail::default())["pin"].is_null());
         let mut mail = crate::mail::fixture();
-        let value = mail_value(&mail);
-        assert_eq!(value["pin"]["count"], "3");
-        assert_eq!(value["pin"]["name"], "3 unread in 1 Gmail account");
-        assert_eq!(value["pin"]["stale"], false);
-        assert_eq!(value["accounts"][0]["account"], "ana@example.test");
-        assert_eq!(value["accounts"][0]["more"], "2 more in the inbox");
+        let frame = value(&mail);
+        assert_eq!(frame["pin"]["count"], "3");
+        assert_eq!(frame["pin"]["name"], "3 unread in 1 Gmail account");
+        assert_eq!(frame["pin"]["stale"], false);
+        assert_eq!(frame["accounts"][0]["account"], "ana@example.test");
+        assert_eq!(frame["accounts"][0]["more"], "2 more in the inbox");
         assert_eq!(
-            value["accounts"][0]["rows"][0]["when"],
+            frame["rows"][0]["ago"],
             ago(mail.accounts[0].messages[0].issued.unwrap())
         );
         for (trouble, prefix) in [
@@ -1874,22 +2050,22 @@ mod mail_tests {
             (Trouble::Unreadable, "Gmail's feed changed"),
         ] {
             mail.trouble = Some(trouble);
-            let value = mail_value(&mail);
-            assert_eq!(value["pin"]["stale"], true);
-            assert!(value["notice"].as_str().unwrap().starts_with(prefix));
-            assert!(value["pin"]["name"]
+            let frame = value(&mail);
+            assert_eq!(frame["pin"]["stale"], true);
+            assert!(frame["notice"].as_str().unwrap().starts_with(prefix));
+            assert!(frame["pin"]["name"]
                 .as_str()
                 .unwrap()
                 .contains("Last update"));
         }
         mail.accounts[0].unread = 0;
-        let value = mail_value(&mail);
-        assert_eq!(value["pin"]["count"], "");
-        assert!(value["pin"]["name"]
+        let frame = value(&mail);
+        assert_eq!(frame["pin"]["count"], "");
+        assert!(frame["pin"]["name"]
             .as_str()
             .unwrap()
             .starts_with("No unread mail"));
-        assert_eq!(value["accounts"][0]["count"], "No unread mail");
-        assert!(value["accounts"][0]["more"].is_null());
+        assert_eq!(frame["accounts"][0]["count"], "No unread mail");
+        assert!(frame["accounts"][0]["more"].is_null());
     }
 }

@@ -1,16 +1,15 @@
 mod canopy;
 pub use canopy::Layout as CanopyLayout;
-mod days;
 mod history;
 mod index;
 
 use super::{
+    days::{Calendar, LocalCalendar},
     tree_card::{self, Act},
     ChromeFrame,
 };
 use crate::browser::TreeId;
 use anyhow::{bail, Context, Result};
-use days::{Calendar, LocalCalendar};
 use index::Index;
 use serde_json::{json, Value};
 

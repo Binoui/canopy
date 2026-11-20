@@ -30,6 +30,7 @@ enum Mode {
     Three,
     Four,
     Long,
+    Timeline,
     Gap,
     Trim,
     Empty,
@@ -495,7 +496,7 @@ fn mark_scenario(ui: &Ui, fixture: &Fixture, data: &std::path::Path) -> Result<(
     wait("mark hides row and every count together", || {
         !visible(ui, ".mail-row[data-id=\"111\"]")
             && text(ui, "#mail-pin .count") == "2"
-            && text(ui, ".mail-inbox .menu-detail") == "2 unread"
+            && text(ui, ".mail-inbox .menu-detail") == "1 more in the inbox"
             && text(ui, ".mail-tab[data-key=all] .count") == "2"
             && text(ui, ".mail-tab[data-key=\"ana@example.test\"] .count") == "2"
     })?;
@@ -846,7 +847,9 @@ fn atom(
     mode: Mode,
     read: &HashSet<(usize, String)>,
 ) -> String {
-    let ids: &[&str] = if n != 0 || mode == Mode::Empty {
+    let ids: &[&str] = if mode == Mode::Timeline && n == 1 {
+        &["555"]
+    } else if n != 0 || mode == Mode::Empty {
         &[]
     } else if mode == Mode::Four {
         &["111", "222", "333", "444"]
@@ -859,9 +862,26 @@ fn atom(
         (if mode == Mode::Four { 5usize } else { 3usize })
             .saturating_sub(read.iter().filter(|(account, _)| *account == n).count())
     } else {
-        0
+        ids.len()
     };
-    let rows = ids.iter().filter(|id| !read.contains(&(n, id.to_string()))).map(|id| format!("<entry><id>tag:gmail.google.com,2004:{id}</id><title>Tom &amp; Jerry&#39;s lunch</title><summary>{SNIPPET}</summary><author><name>{SENDER}</name></author><issued>2026-11-17T09:12:33Z</issued><link href=\"{origin}/mail/u/{n}?message_id={id}\"/></entry>")).collect::<String>();
+    let rows = ids
+        .iter()
+        .filter(|id| !read.contains(&(n, id.to_string())))
+        .map(|id| {
+            let issued = if mode == Mode::Timeline {
+                let minute = match *id {
+                    "111" => 30,
+                    "555" => 20,
+                    _ => 10,
+                };
+                let now = glib::DateTime::now_local().unwrap();
+                glib::DateTime::from_local(now.year(), now.month(), now.day_of_month(), 12, minute, 0.)
+                    .unwrap().to_utc().unwrap().format("%Y-%m-%dT%H:%M:%SZ").unwrap().to_string()
+            } else {
+                "2026-11-17T09:12:33Z".into()
+            };
+            format!("<entry><id>tag:gmail.google.com,2004:{id}</id><title>Tom &amp; Jerry&#39;s lunch</title><summary>{SNIPPET}</summary><author><name>{SENDER}</name></author><issued>{issued}</issued><link href=\"{origin}/mail/u/{n}?message_id={id}\"/></entry>")
+        }).collect::<String>();
     format!("<feed xmlns=\"http://purl.org/atom/ns#\"><title>Inbox for {address}</title><fullcount>{count}</fullcount>{rows}</feed>")
 }
 
@@ -879,16 +899,33 @@ fn recheck(ui: &Ui) -> Result<()> {
         let frame = mail(ui);
         let data = ui.mail.mail();
         let accounts = frame["accounts"].as_array().unwrap();
-        accounts.len() == data.accounts.len()
-            && accounts.iter().zip(&data.accounts).all(|(drawn, account)| {
-                drawn["account"] == account.address
-                    && drawn["rows"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .map(|r| r["id"].as_str().unwrap())
-                        .eq(account.messages.iter().map(|m| m.id.as_str()))
+        let drawn: HashSet<_> = frame["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                (
+                    row["account"].as_str().unwrap(),
+                    row["id"].as_str().unwrap(),
+                )
             })
+            .collect();
+        let expected: HashSet<_> = data
+            .accounts
+            .iter()
+            .flat_map(|account| {
+                account
+                    .messages
+                    .iter()
+                    .map(|row| (account.address.as_str(), row.id.as_str()))
+            })
+            .collect();
+        accounts.len() == data.accounts.len()
+            && accounts
+                .iter()
+                .zip(&data.accounts)
+                .all(|(drawn, account)| drawn["account"] == account.address)
+            && drawn == expected
     })
 }
 
@@ -910,7 +947,7 @@ fn scenario(ui: &Ui, fixture: &Fixture, data: &std::path::Path) -> Result<()> {
         "Tom & Jerry's lunch",
         "XML entities are decoded"
     );
-    assert_eq!(text(ui, ".mail-more"), "1 more in the inbox");
+    assert_eq!(text(ui, ".mail-inbox .menu-detail"), "1 more in the inbox");
     assert_eq!(
         chrome(ui, "document.querySelector('.mail-row').dataset.account")?,
         "ana@example.test",
@@ -927,7 +964,8 @@ fn scenario(ui: &Ui, fixture: &Fixture, data: &std::path::Path) -> Result<()> {
         !visible(ui, ".mail-row"),
         "the empty account hides other accounts' messages"
     );
-    assert!(!visible(ui, ".mail-more"));
+    assert_eq!(text(ui, ".mail-empty"), "No unread mail");
+    assert_eq!(text(ui, ".mail-inbox .menu-detail"), "Open inbox");
     assert_eq!(text(ui, "#mail-pin .count"), "3");
     click_chrome(ui, "#mail-pin")?;
     click_chrome(ui, "#mail-pin")?;
@@ -979,6 +1017,20 @@ fn scenario(ui: &Ui, fixture: &Fixture, data: &std::path::Path) -> Result<()> {
         assert_eq!(chrome(ui, "(() => { const p = document.querySelector('#popover'); const tabs = [...p.querySelectorAll('.mail-tab')]; return tabs.length === 4 && p.offsetWidth >= 360 && p.offsetWidth <= 440 && p.scrollWidth <= p.clientWidth && tabs.every(t => t.getBoundingClientRect().top === tabs[0].getBoundingClientRect().top && t.scrollWidth <= t.clientWidth); })()")?, true, "three long account tabs fit on one line without scrolling");
     }
     mail_tabs_shot(ui, "long-accounts")?;
+    fixture.set(Mode::Timeline);
+    recheck(ui)?;
+    assert_eq!(
+        chrome(ui, "Array.from(document.querySelector('#popover').children).filter(el => el.matches('.mail-day, .mail-item')).map(el => el.querySelector('.mail-row')?.dataset.id ?? el.textContent)")?,
+        serde_json::json!(["Today", "111", "555", "222"])
+    );
+    assert_eq!(
+        chrome(
+            ui,
+            "document.querySelectorAll('.mail-preview .mail-account-dot').length"
+        )?,
+        3
+    );
+    println!("PASS mail timeline: the All tab interleaves two accounts under one day heading.");
     fixture.set(Mode::Normal);
     recheck(ui)?;
     println!("PASS mail tabs: account filtering, total badge, session selection, refresh focus and keyboard navigation.");
@@ -1003,7 +1055,7 @@ fn scenario(ui: &Ui, fixture: &Fixture, data: &std::path::Path) -> Result<()> {
         chrome(ui, "canopy.state().popover")?.is_null(),
         "row closes the list"
     );
-    println!("PASS mail list: grouped accounts, decoded text, overflow line, address-keyed row opens a new tree.");
+    println!("PASS mail list: decoded text, inbox footer and address-keyed row opens a new tree.");
 
     for (mode, notice) in [
         (Mode::Drop, "Could not reach Gmail"),
@@ -1017,7 +1069,10 @@ fn scenario(ui: &Ui, fixture: &Fixture, data: &std::path::Path) -> Result<()> {
                 .is_some_and(|s| s.starts_with(notice))
         })?;
         assert_eq!(mail(ui)["pin"]["stale"], true);
-        assert_eq!(mail(ui)["accounts"][0]["rows"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            chrome(ui, "document.querySelectorAll('.mail-row').length")?,
+            2
+        );
         click_chrome(ui, "#mail-pin")?;
     }
     fixture.set(Mode::Normal);
@@ -1073,7 +1128,7 @@ fn scenario(ui: &Ui, fixture: &Fixture, data: &std::path::Path) -> Result<()> {
     assert_eq!(
         chrome(ui, "document.activeElement.dataset.account")?,
         "bo@example.test",
-        "account-header focus follows the address"
+        "inbox footer focus follows the address"
     );
     click_chrome(ui, ".mail-tab[data-key=\"bo@example.test\"]")?;
     chrome(ui, "document.querySelector('.mail-inbox').focus(), true")?;
@@ -1091,7 +1146,7 @@ fn scenario(ui: &Ui, fixture: &Fixture, data: &std::path::Path) -> Result<()> {
     assert_eq!(
         chrome(ui, "document.activeElement.id")?,
         "popover",
-        "removed header falls back to popover"
+        "removed inbox footer falls back to popover"
     );
     assert_eq!(
         text(ui, ".mail-tab[aria-selected=true] .mail-tab-label"),

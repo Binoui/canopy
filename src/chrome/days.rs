@@ -31,12 +31,7 @@ fn civil(t: DateTime) -> Civil {
         weekday: t.day_of_week(),
         month: t.month(),
         year: t.year(),
-        label: format!(
-            "{} {} {}",
-            WEEKDAYS[(t.day_of_week() - 1) as usize],
-            t.day_of_month(),
-            MONTHS[(t.month() - 1) as usize]
-        ),
+        day: t.day_of_month(),
         clock: format!("{:02}:{:02}", t.hour(), t.minute()),
     }
 }
@@ -47,7 +42,7 @@ pub(super) struct Civil {
     weekday: i32,
     month: i32,
     year: i32,
-    label: String,
+    day: i32,
     pub clock: String,
 }
 impl Civil {
@@ -59,14 +54,26 @@ impl Civil {
             return "Yesterday".into();
         }
         format!(
-            "{}{}",
-            self.label,
-            if self.year == today.year {
-                String::new()
-            } else {
-                format!(" {}", self.year)
-            }
+            "{} {}",
+            WEEKDAYS[(self.weekday - 1) as usize],
+            self.short_date(today)
         )
+    }
+    fn short_date(&self, today: &Self) -> String {
+        let month = MONTHS[(self.month - 1) as usize];
+        if self.year == today.year {
+            format!("{} {month}", self.day)
+        } else {
+            format!("{} {month} {}", self.day, self.year)
+        }
+    }
+    pub fn timeline(&self, today: &Self) -> (String, String) {
+        let (bucket, heading) = self.bucket(today);
+        let when = match bucket.as_str() {
+            "today" | "yesterday" => self.clock.clone(),
+            _ => self.short_date(today),
+        };
+        (heading, when)
     }
     pub fn bucket(&self, today: &Self) -> (String, String) {
         let monday = today.ordinal - i64::from(today.weekday - 1);
