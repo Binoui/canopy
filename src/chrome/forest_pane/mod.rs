@@ -342,6 +342,7 @@ mod tests {
             .unwrap(),
             pending: None,
             mail: Default::default(),
+            mail_view: Default::default(),
             loaded: Default::default(),
             live: Default::default(),
             playing: Default::default(),

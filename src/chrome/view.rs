@@ -143,7 +143,7 @@ pub(crate) fn frame(
                 .iter()
                 .any(|mark| mark.url.as_str() == visit.url.as_str())
         }),
-        "mail": mail_value(&frame.mail, &MailView::default()),
+        "mail": mail_value(&frame.mail, &frame.mail_view),
         "treesHelp": frame.trees_help,
         "theme": match frame.theme {
             ThemeMode::System => "system",
@@ -848,6 +848,7 @@ mod tests {
             canopy_layout: Default::default(),
             shown: Default::default(),
             mail: crate::mail::Mail::default(),
+            mail_view: Default::default(),
             loaded: HashSet::new(),
             live: HashSet::new(),
             playing: [ids[0], current].into_iter().collect(),
@@ -924,6 +925,7 @@ mod tests {
                 canopy_layout: Default::default(),
                 shown: Default::default(),
                 mail: crate::mail::Mail::default(),
+                mail_view: Default::default(),
                 loaded: HashSet::new(),
                 live: HashSet::new(),
                 playing: Default::default(),
@@ -1153,6 +1155,7 @@ mod tests {
         .unwrap();
         let frame = ChromeFrame {
             mail: crate::mail::Mail::default(),
+            mail_view: Default::default(),
             forest,
             loaded: Default::default(),
             live: [ids[1]].into_iter().collect(),
@@ -1208,6 +1211,7 @@ mod tests {
             canopy_layout: Default::default(),
             shown: Default::default(),
             mail: crate::mail::Mail::default(),
+            mail_view: Default::default(),
             forest: ForestProjection::from_snapshot(
                 browser.snapshot().unwrap(),
                 browser.tree_states().unwrap(),
@@ -1268,6 +1272,7 @@ mod tests {
             canopy_layout: Default::default(),
             shown: Default::default(),
             mail: crate::mail::Mail::default(),
+            mail_view: Default::default(),
             forest,
             loaded: HashSet::new(),
             live: HashSet::new(),
@@ -1392,6 +1397,7 @@ mod tests {
             canopy_layout: Default::default(),
             shown: Default::default(),
             mail: crate::mail::Mail::default(),
+            mail_view: Default::default(),
             loaded: HashSet::new(),
             live: HashSet::new(),
             playing: Default::default(),
@@ -1429,6 +1435,7 @@ mod tests {
             canopy_layout: Default::default(),
             shown: Default::default(),
             mail: crate::mail::Mail::default(),
+            mail_view: Default::default(),
             loaded: HashSet::new(),
             live: HashSet::new(),
             playing: Default::default(),
@@ -1464,6 +1471,7 @@ mod tests {
             canopy_layout: Default::default(),
             shown: Default::default(),
             mail: crate::mail::Mail::default(),
+            mail_view: Default::default(),
             loaded: HashSet::new(),
             live: HashSet::new(),
             playing: Default::default(),
@@ -1528,6 +1536,7 @@ mod tests {
             canopy_layout: Default::default(),
             shown: Default::default(),
             mail: crate::mail::Mail::default(),
+            mail_view: Default::default(),
             loaded: HashSet::new(),
             live: HashSet::new(),
             playing: Default::default(),
@@ -1644,6 +1653,7 @@ mod tests {
             canopy_layout: Default::default(),
             shown: Default::default(),
             mail: crate::mail::Mail::default(),
+            mail_view: Default::default(),
             forest,
             loaded: ids.iter().copied().collect(),
             live: HashSet::new(),
@@ -1702,15 +1712,23 @@ mod tests {
     }
 }
 
-struct MailView {
+pub struct MailView {
     today: Civil,
+    new_after: Option<i64>,
+}
+
+impl MailView {
+    pub(crate) fn new(new_after: Option<i64>) -> Self {
+        Self {
+            today: LocalCalendar.now(),
+            new_after,
+        }
+    }
 }
 
 impl Default for MailView {
     fn default() -> Self {
-        Self {
-            today: LocalCalendar.now(),
-        }
+        Self::new(None)
     }
 }
 
@@ -1802,6 +1820,7 @@ fn mail_value(mail: &crate::mail::Mail, view: &MailView) -> Value {
         );
         let ago = m.issued.map(ago).unwrap_or_default();
         let note = m.unmarked.map(unmarked_words);
+        let fresh = m.issued.zip(view.new_after).is_some_and(|(issued, after)| issued > after);
         let mut name = format!("{}, {}", m.from, m.subject);
         if !ago.is_empty() {
             name.push_str(&format!(", {ago}"));
@@ -1809,7 +1828,11 @@ fn mail_value(mail: &crate::mail::Mail, view: &MailView) -> Value {
         if let Some(note) = note {
             name.push_str(&format!(". {note}"));
         }
+        if fresh {
+            name.insert_str(0, "New. ");
+        }
         json!({
+            "fresh": fresh,
             "account": a.address, "id": m.id.as_str(), "from": m.from, "subject": m.subject,
             "snippet": m.snippet, "day": day, "when": when, "ago": ago, "name": name,
             "tile": sender_tile(m.from_address.as_deref()),
@@ -1922,6 +1945,7 @@ mod mail_tests {
             &mail,
             &MailView {
                 today: LocalCalendar.civil(today),
+                ..MailView::default()
             },
         );
         let rows = frame["rows"].as_array().unwrap();
@@ -1970,6 +1994,34 @@ mod mail_tests {
         assert_eq!(frame["accounts"][0]["hue"], 0);
         assert_eq!(frame["accounts"][1]["hue"], 1);
         assert!(frame["accounts"][0].get("rows").is_none());
+    }
+
+    #[test]
+    fn only_dated_mail_strictly_after_the_previous_look_is_fresh() {
+        let mut mail = crate::mail::fixture();
+        let sample = &mail.accounts[0].messages[0];
+        let issued = sample.issued.unwrap();
+        mail.accounts[0].messages = [Some(issued + 1), Some(issued), Some(issued - 1), None]
+            .into_iter()
+            .map(|date| {
+                let mut row = sample.clone();
+                row.issued = date;
+                row
+            })
+            .collect();
+        let fresh = |view: MailView| {
+            mail_value(&mail, &view)["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["fresh"].as_bool().unwrap())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(fresh(MailView::default()), [false, false, false, false]);
+        assert_eq!(
+            fresh(MailView::new(Some(issued))),
+            [true, false, false, false]
+        );
     }
 
     #[test]

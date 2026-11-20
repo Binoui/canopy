@@ -116,6 +116,7 @@ fn main() -> Result<()> {
             canopy_layout: Default::default(),
             shown: b.showings()?,
             mail: canopy::mail::Mail::default(),
+            mail_view: Default::default(),
             forest: ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)?,
             bookmarks: b.bookmarks()?,
             declined: b.declined()?,

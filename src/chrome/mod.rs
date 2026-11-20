@@ -70,12 +70,14 @@ thread_local! {
 type ShownPalette = (String, Vec<(Group, PaletteItem)>, usize);
 
 pub use forest_pane::CanopyLayout;
+pub use view::MailView;
 
 /// Everything the chrome shows, read from SQLite in one go.
 pub struct ChromeFrame {
     pub canopy_layout: CanopyLayout,
     pub shown: crate::browser::Showings,
     pub mail: crate::mail::Mail,
+    pub mail_view: MailView,
     pub bookmarks: Vec<crate::browser::Bookmark>,
     pub forest: ForestProjection,
     /// Waiting pages that already have a live view. Nothing fills it yet: background
@@ -136,6 +138,7 @@ pub enum PaletteSeed {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ChromeIntent {
     Mail(crate::mail::MailAsk),
+    MailOpened,
     PageScale(crate::pages::PageScaleAction),
     AnswerFormReturn {
         question: u64,
@@ -1304,6 +1307,7 @@ impl Inner {
         let frame = frame.as_ref()?;
         let index = || message["index"].as_u64().map(|i| i as usize);
         Some(match message["kind"].as_str()? {
+            "mail-opened" => ChromeIntent::MailOpened,
             "check-mail" => ChromeIntent::Mail(crate::mail::MailAsk::Check),
             "mark-mail-read" => ChromeIntent::Mail(crate::mail::MailAsk::MarkRead {
                 address: message["account"].as_str()?.to_owned(),

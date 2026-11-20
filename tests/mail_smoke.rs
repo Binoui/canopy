@@ -31,6 +31,7 @@ enum Mode {
     Four,
     Long,
     Timeline,
+    Arrival,
     Gap,
     Trim,
     Empty,
@@ -389,11 +390,15 @@ fn main() -> Result<()> {
         !visible(&fresh_ui, "#mail-pin"),
         "first-check failure stays hidden"
     );
-    fixture.set(Mode::Normal);
     fresh_ui.mail.set_gap(Duration::ZERO);
+    fresh_ui.mail.set_mark_pace(
+        Duration::from_millis(1100),
+        Duration::from_millis(800),
+        Duration::from_millis(100),
+        Duration::from_millis(1500),
+    );
+    freshness(&fresh_ui, &fixture)?;
     fixture.seen.lock().unwrap().conversation = Conversation::Stalls;
-    recheck(&fresh_ui)?;
-    click_chrome(&fresh_ui, "#mail-pin")?;
     click_chrome(&fresh_ui, &mark_button("111"))?;
     wait("shutdown mark starts", || {
         fresh_ui.pages.errand_pages() == 1
@@ -840,6 +845,38 @@ fn account_at(mode: Mode, n: usize) -> Option<&'static str> {
     }
 }
 
+fn today_at_noon(minute: i32) -> glib::DateTime {
+    let now = glib::DateTime::now_local().unwrap();
+    glib::DateTime::from_local(now.year(), now.month(), now.day_of_month(), 12, minute, 0.).unwrap()
+}
+
+fn freshness(ui: &Ui, fixture: &Fixture) -> Result<()> {
+    fixture.set(Mode::Timeline);
+    ui.set_mail_now(today_at_noon(35).to_unix() * 1000);
+    recheck(ui)?;
+    click_chrome(ui, "#mail-pin")?;
+    assert!(!visible(ui, ".mail-new"));
+    fixture.set(Mode::Arrival);
+    ui.set_mail_now(today_at_noon(41).to_unix() * 1000);
+    recheck(ui)?;
+    assert!(visible(ui, ".mail-row[data-id='666']"));
+    assert!(
+        !visible(ui, ".mail-new"),
+        "a check while open keeps the same look"
+    );
+    key("Escape")?;
+    click_chrome(ui, "#mail-pin")?;
+    wait("new arrival gets the green mark on the next look", || {
+        visible(ui, ".mail-item.fresh [data-id='666'] .mail-new")
+    })?;
+    assert_eq!(
+        chrome(ui, "document.querySelectorAll('.mail-new').length")?,
+        1
+    );
+    println!("PASS mail freshness: a message that arrives during a look gets its green mark on the next look.");
+    Ok(())
+}
+
 fn atom(
     origin: &str,
     n: usize,
@@ -847,7 +884,9 @@ fn atom(
     mode: Mode,
     read: &HashSet<(usize, String)>,
 ) -> String {
-    let ids: &[&str] = if mode == Mode::Timeline && n == 1 {
+    let ids: &[&str] = if mode == Mode::Arrival && n == 1 {
+        &["666", "555"]
+    } else if mode == Mode::Timeline && n == 1 {
         &["555"]
     } else if n != 0 || mode == Mode::Empty {
         &[]
@@ -868,15 +907,14 @@ fn atom(
         .iter()
         .filter(|id| !read.contains(&(n, id.to_string())))
         .map(|id| {
-            let issued = if mode == Mode::Timeline {
+            let issued = if matches!(mode, Mode::Timeline | Mode::Arrival) {
                 let minute = match *id {
+                    "666" => 40,
                     "111" => 30,
                     "555" => 20,
                     _ => 10,
                 };
-                let now = glib::DateTime::now_local().unwrap();
-                glib::DateTime::from_local(now.year(), now.month(), now.day_of_month(), 12, minute, 0.)
-                    .unwrap().to_utc().unwrap().format("%Y-%m-%dT%H:%M:%SZ").unwrap().to_string()
+                today_at_noon(minute).to_utc().unwrap().format("%Y-%m-%dT%H:%M:%SZ").unwrap().to_string()
             } else {
                 "2026-11-17T09:12:33Z".into()
             };

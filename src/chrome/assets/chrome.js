@@ -1129,7 +1129,8 @@ function mailTile(row) {
   const letter = esc((Array.from(row.from)[0] || '?').toUpperCase());
   const image = icon
     ? `<img src="icon?sender=1&u=${encodeURIComponent(icon)}&r=${S.mailIconRevision}" alt="" onload="this.parentElement.classList.add('has-icon')" onerror="this.parentElement.classList.remove('has-icon')">` : '';
-  return `<span class="mail-tile ${shape}" style="--sender-color:${monogramColor(row.from)}" aria-hidden="true"><b>${letter}</b>${image}</span>`;
+  const dot = row.fresh ? '<i class="mail-new"></i>' : '';
+  return `<span class="mail-tile ${shape}" style="--sender-color:${monogramColor(row.from)}" aria-hidden="true"><b>${letter}</b>${image}${dot}</span>`;
 }
 
 function mailMark(row) {
@@ -1137,7 +1138,7 @@ function mailMark(row) {
 }
 
 function mailRow(row, accountDot, when) {
-  return `<div class="mail-item"><button class="mail-row" data-account="${esc(row.account)}" data-id="${esc(row.id)}" aria-label="${esc(row.name)}">`
+  return `<div class="mail-item${row.fresh ? ' fresh' : ''}"><button class="mail-row" data-account="${esc(row.account)}" data-id="${esc(row.id)}" aria-label="${esc(row.name)}">`
     + mailTile(row) + '<span class="mail-body">'
     + `<span class="mail-line"><span class="mail-from">${esc(row.from)}</span><span class="mail-when">${esc(when)}</span></span>`
     + `<span class="mail-line mail-preview"><span class="mail-subject">${esc(row.subject)}</span><span class="mail-snippet">${esc(row.snippet)}</span>${accountDot}</span>`
@@ -2884,7 +2885,7 @@ window.addEventListener('focus', () => {
 
 function openMail() {
   openPopover('mail', $('mail-pin'));
-  intent('check-mail');
+  intent('mail-opened');
 }
 $('mail-pin').addEventListener('click', (event) => {
   event.stopPropagation();

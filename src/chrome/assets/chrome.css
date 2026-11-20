@@ -571,6 +571,10 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .mail-tile.has-icon b { visibility: hidden; }
 .mail-tile img { position: absolute; width: 62%; height: 62%; border-radius: 3px; visibility: hidden; }
 .mail-tile.has-icon img { visibility: visible; }
+.mail-new { position: absolute; top: -3px; right: -3px; width: 10px; height: 10px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 2px var(--bg); }
+.mail-item.fresh .mail-from { font-weight: 650; }
+.mail-item.fresh .mail-subject { color: var(--text); font-weight: 500; }
+.mail-item.fresh .mail-when { color: var(--green-ink); font-weight: 600; }
 .mail-body { flex: 1; min-width: 0; display: grid; gap: 2px; }
 .mail-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .mail-from { flex: 0 1 auto; font-weight: 500; }
