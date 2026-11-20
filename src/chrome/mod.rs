@@ -431,7 +431,14 @@ impl HtmlChrome {
         inner.present_error();
         if previous.0 != width {
             if let Some(frame) = inner.frame.borrow().as_ref() {
-                inner.call("strip", &[view::strip_for_frame(frame, width)]);
+                inner.call(
+                    "strip",
+                    &[view::strip(
+                        frame,
+                        width,
+                        &waiting::Waiting::of(&frame.forest),
+                    )],
+                );
             }
         }
     }
