@@ -1,6 +1,6 @@
 # Tabs and the strip
 
-The tab row holds one tab per open tree. Under it, the strip draws the current tree: the path to the current page, badges for side branches, and a counter of waiting pages. Resting the pointer on a page shows its card. The zoomed tree shows the whole tree as a tree or as a list.
+The tab row holds one tab per tree in Tabs, in stored order with pinned icons first. Under it, the strip draws the current tree: the path to the current page, badges for side branches, and a counter of waiting pages. Resting the pointer on a page shows its card. The zoomed tree shows the whole tree as a tree or as a list.
 
 ## Sub-features
 
@@ -22,8 +22,8 @@ Preconditions:
 
 - A fresh stress launch and a clean doctor. Canopy opens on tree 1, "Tokio tutorial · Async in depth".
 
-- **Switch.** Run `$V key ctrl+2`, `sleep 3`, `$V shot strip-tree-b`. The second tab is active, the page is "NuPhy Halo75 V2", and the strip ends with a waiting counter reading 9.
-- **Switch back.** Run `$V key ctrl+1`, `sleep 3`. The page is "Tokio tutorial · Async in depth" again.
+- **Switch.** Run `$V key ctrl+4`, `sleep 3`, `$V shot strip-tree-b`. The keyboard research tab is active, the page is "NuPhy Halo75 V2", and the strip ends with a waiting counter reading 9.
+- **Switch back.** Run `$V key ctrl+3`, `sleep 3`. The page is "Tokio tutorial · Async in depth" again.
 - **Card.** Run `$V hover 70 68`, `$V shot strip-card`. A card for the root page shows below the strip.
 - **Keyboard walk.** Run `$V key F6`, `$V key Left`, `$V key Return`, `$V shot strip-f6-card`. Focus is on "Framing" and its card is open with Open focused. Run `$V key Return`, `sleep 2`, then `$V db "SELECT v.title FROM session s JOIN visits v ON v.id = s.current_id" strip-f6`. It returns "Tokio tutorial · Framing".
 - **Zoomed tree.** Run `$V key ctrl+shift+e`, `sleep 1.5`, `$V shot strip-zoom`. A sheet under the tabs reads "Tokio tutorial · Getting started, 10 pages · 0 waiting" with Tree and List switches and the whole tree. `$V key Escape` closes it.

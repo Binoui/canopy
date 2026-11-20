@@ -1,0 +1,77 @@
+#forest[data-pending] { visibility:hidden; }
+#forest-canopy { position:relative; padding:0; overflow:hidden; touch-action:none; cursor:grab; user-select:none; }
+#forest-canopy.dragging { cursor:grabbing; }
+.canopy-world { position:absolute; left:0; top:0; width:0; height:0; transform:translate(calc(var(--px) * 1px),calc(var(--py) * 1px)); }
+.canopy-edges { position:absolute; left:0; top:0; width:1px; height:1px; overflow:visible; pointer-events:none; }
+.canopy-edges g { transform:scale(var(--s)); }
+.canopy-edges path { fill:none; stroke:var(--line); stroke-width:1.4; vector-effect:non-scaling-stroke; }
+.canopy-edges path[data-e=waiting] { stroke-dasharray:3 3; }
+.canopy-item { position:absolute; left:0; top:0; transform:translate(calc(var(--x) * var(--s) * 1px),calc(var(--y) * var(--s) * 1px)) translate(-50%,-50%); display:flex; align-items:center; justify-content:center; padding:0; border:0; background:none; border-radius:9px; color:var(--text); }
+.canopy-item:hover { z-index:4; }
+.canopy-item:focus-visible { outline:none; }
+.canopy-item:focus-visible .mk { outline:2px solid var(--text); outline-offset:7px; }
+.canopy-item[data-kind=tree]:focus-visible, #forest-canopy[data-level=near] .canopy-item:focus-visible { outline:2px solid var(--text); outline-offset:3px; }
+#forest-canopy[data-level=near] .canopy-item:focus-visible .mk { outline:none; }
+.canopy-item .fav { box-shadow:0 0 0 2px var(--bg),0 0 0 3px var(--line); }
+.canopy-item[data-st=visited] .fav { opacity:.5; filter:saturate(.3); box-shadow:0 0 0 2px var(--bg); }
+.canopy-item[data-st=waiting] .fav { opacity:.5; box-shadow:none; outline:1.5px dashed var(--green); outline-offset:2px; }
+.canopy-item[data-previous=true] .fav { box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--text); }
+.canopy-item[data-current=true] .fav { box-shadow:0 0 0 2px var(--bg),0 0 0 4.5px var(--green); opacity:1; filter:none; }
+.canopy-item[data-current=true][data-previous=true] .mk { outline:1px solid var(--text); outline-offset:6px; }
+.canopy-item .mk { position:relative; display:inline-flex; align-items:center; justify-content:center; gap:5px; }
+.canopy-item .cnt { font-style:normal; font-size:10px; color:var(--muted); }
+.canopy-item .tags { position:absolute; left:50%; bottom:calc(50% + 30px); transform:translateX(-50%); display:flex; gap:3px; white-space:nowrap; }
+.canopy-item .tag { padding:2px 7px; border-radius:6px; background:var(--green); color:var(--bg); font-style:normal; font-size:10px; font-weight:700; }
+.canopy-item .tag.back { background:var(--text); }
+.canopy-item .lb { position:absolute; left:50%; top:calc(50% + 25px); transform:translateX(-50%); display:flex; flex-direction:column; align-items:center; width:var(--label-w); }
+.canopy-item .lb b { max-width:100%; font-size:11px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.canopy-item .lb em { max-width:100%; overflow:hidden; text-overflow:ellipsis; font-style:normal; font-size:10px; color:var(--muted); white-space:nowrap; }
+.canopy-item[data-kind=run] .mk { padding:4px 6px; border:1px solid var(--line); border-radius:9px; background:var(--tile); }
+.canopy-item[data-kind=run][data-current=true] .mk { border-color:var(--green); }
+.canopy-item[data-kind=run][data-previous=true] .mk { outline:1px solid var(--text); outline-offset:3px; }
+.canopy-item[data-kind=run] .mk .fav { box-shadow:none; }
+#forest-canopy[data-level=middle] .canopy-item[data-kind=run] .mk { box-shadow:3px 3px 0 -1px var(--bg),3px 3px 0 0 var(--line); }
+.canopy-item[data-kind=tree] { justify-content:flex-start; white-space:nowrap; font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; text-align:left; }
+.canopy-item[data-kind=tree] b { overflow:hidden; text-overflow:ellipsis; }
+.canopy-item[data-kind=tree] i { margin-left:5px; font-style:normal; font-weight:400; text-transform:none; letter-spacing:0; color:var(--faint); }
+.canopy-item[data-kind=tree][data-current=true] { color:var(--green-ink); }
+#forest-canopy[data-level=near] .canopy-item:not([data-kind=tree]) { padding:7px 9px; gap:9px; justify-content:flex-start; border:1px solid var(--tile-border); background:var(--tile); min-height:var(--card-h); height:auto !important; }
+#forest-canopy[data-level=near] .canopy-item .lb { position:static; transform:none; align-items:flex-start; min-width:0; flex:1; }
+#forest-canopy[data-level=near] .canopy-item .tags { bottom:calc(100% + 7px); }
+#forest-canopy[data-level=near] .canopy-item .fav { box-shadow:none; outline:none; }
+#forest-canopy[data-level=near] .canopy-item[data-st=visited] { background:var(--bg); }
+#forest-canopy[data-level=near] .canopy-item[data-st=waiting] { border-style:dashed; border-color:var(--green); background:var(--bg); }
+#forest-canopy[data-level=near] .canopy-item[data-previous=true] { border-color:var(--text); outline:1px solid var(--text); outline-offset:2px; }
+#forest-canopy[data-level=near] .canopy-item[data-current=true] { border-color:var(--green); box-shadow:0 0 0 1px var(--green); }
+:is(#canopy-zoom,#canopy-layout) { min-height:28px; display:flex; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+:is(#canopy-zoom,#canopy-layout) button { padding:5px 10px; color:var(--muted); }
+:is(#canopy-zoom,#canopy-layout) [aria-pressed=true] { color:var(--green-ink); background:var(--green-soft); }
+#canopy-back { max-width:360px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:5px 9px; border:1px solid var(--border); border-radius:8px; color:var(--muted); }
+#canopy-back b { color:var(--text); }
+#canopy-tip { position:absolute; z-index:8; max-width:min(330px,calc(100% - 16px)); padding:9px 12px; white-space:pre-line; overflow-wrap:anywhere; border:1px solid var(--tile-border); border-radius:9px; background:var(--tile); box-shadow:0 8px 28px var(--shadow); pointer-events:none; }
+#canopy-legend { min-height:32px; flex:none; display:flex; flex-wrap:wrap; gap:6px 16px; padding:8px 14px; border-top:1px solid var(--border); font-size:11px; color:var(--muted); }
+#canopy-legend span { display:inline-flex; gap:6px; align-items:center; }
+.legend-mark { width:12px; height:12px; border-radius:3px; background:var(--muted); }
+.legend-mark.current { outline:2px solid var(--green); outline-offset:2px; }
+.legend-mark.previous { outline:2px solid var(--text); outline-offset:2px; }
+.legend-mark.open { background:var(--text); }
+.legend-mark.visited { opacity:.35; }
+.legend-mark.waiting { border:1px dashed var(--green); background:none; }
+.legend-mark.playing { background:var(--playing); box-shadow:0 0 0 2px var(--playing-soft); }
+.canopy-item[data-playing=true]:not([data-current=true]) .fav { box-shadow:0 0 0 2px var(--bg),0 0 0 4.5px var(--playing); opacity:1; filter:none; }
+.canopy-item[data-playing=true] .mk > .playing-mark { right:-6px; bottom:-6px; width:15px; height:15px; box-shadow:0 0 0 2px var(--bg); }
+.canopy-item[data-playing=true] .mk > .playing-mark svg.icon { width:10px; height:10px; }
+.canopy-item[data-kind=run][data-playing=true]:not([data-current=true]) .mk { border-color:var(--playing); }
+#canopy-legend .map-help { margin-left:auto; }
+@container (max-width:700px) { #canopy-back { max-width:calc(100% - 44px); order:2; } #forest-count { display:none; } #canopy-legend .map-help { display:none; } }
+
+.canopy-item[data-st=visited] .lb b { color:var(--muted); font-weight:500; }
+.canopy-item[data-current=true] .mk { opacity:1; }
+
+#forest-canopy[data-level=far] .canopy-item .tags { bottom:calc(50% + 20px); }
+
+#forest-canopy[data-level=middle] .canopy-item[data-current=true] .lb,
+#forest-canopy[data-level=middle] .canopy-item[data-previous=true] .lb { width:170px; }
+
+@keyframes forest-locate { from { outline: 3px solid var(--green); } to { outline: 3px solid transparent; } }
+.canopy-item[data-current=true].forest-locate { animation: forest-locate 250ms ease-out; }

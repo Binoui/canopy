@@ -573,7 +573,8 @@ fn tree_boundary() -> Result<()> {
     f.pages.selected_page().native.go_back();
     settle();
     assert_eq!(f.pages.read(|b| b.snapshot())?.current, Some(other));
-    f.pages.settle_tree(old_tree)?;
+    f.pages
+        .place_tree(old_tree, canopy::browser::Move::History)?;
     f.release()?;
     assert!(!f.revive(other)?);
     f.pages.selected_page().native.go_back();
@@ -873,7 +874,9 @@ fn commands_during_release() -> Result<()> {
         "open_roots must reject before adding visits"
     );
     assert!(
-        f.pages.settle_tree(tree).is_err(),
+        f.pages
+            .place_tree(tree, canopy::browser::Move::History)
+            .is_err(),
         "settle must reject before changing the forest"
     );
     assert_eq!(f.pages.read(|b| b.snapshot()).unwrap().current, Some(a));

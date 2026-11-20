@@ -127,7 +127,7 @@ fn forest_closed(ui: &Ui, surface: &str) -> Result<()> {
 }
 
 fn forest_popin(ui: &Ui) -> Result<()> {
-    assert_eq!(text(ui, "#forest-button"), "Forest");
+    assert_eq!(text(ui, "#forest-button"), "Canopy");
     assert_eq!(
         chrome(ui, "document.querySelectorAll('#forest-button').length")?,
         1
@@ -169,64 +169,24 @@ fn forest_popin(ui: &Ui) -> Result<()> {
     }
     forest_open(ui)?;
     assert!(visible(ui, "#forest-count"));
+    for width in [1240, 1920] {
+        ui.window.resize(width, 800);
+        pump(300);
+        assert_eq!(chrome(ui, "(() => { const r=document.querySelector('.forest-pop').getBoundingClientRect(); return [r.left, innerWidth-r.right]; })()")?, serde_json::json!([22, 22]));
+    }
+    ui.window.resize(1240, 800);
+    pump(300);
     let id = ui.snapshot()?.current.unwrap();
-    let node = format!(".forest-node[data-id='{id}']");
-    let scale = || {
-        chrome(
-            ui,
-            "new DOMMatrix(getComputedStyle(document.querySelector('#forest-layer')).transform).a",
-        )
-        .unwrap()
-        .as_f64()
-        .unwrap()
-    };
-    assert!(chrome(ui, "S.frame.forest.labels.width > innerWidth")? == true);
-    let before = scale();
-    let (x, y) = chrome_point(ui, "#forest-canvas")?;
-    move_to(x, y)?;
-    xdo(&["keydown", "ctrl", "click", "5", "keyup", "ctrl"])?;
-    pump(100);
-    assert!(scale() < before);
-    click_chrome(ui, "#forest-fit")?;
-    pump(300);
-    let expected = chrome(ui, "Math.max(0.3, Math.min(1, (document.querySelector('#forest-canvas').clientWidth - 20) / Math.max(S.frame.forest.labels.width, 1)))")?.as_f64().unwrap();
-    assert!((scale() - expected).abs() < 0.00001);
-    move_to(x, y)?;
-    xdo(&["click", "5"])?;
-    pump(100);
-    let out = scale();
-    assert!(out < expected, "Plain wheel down zooms out");
-    xdo(&["click", "4", "click", "4"])?;
-    pump(100);
-    assert!(scale() > out, "Plain wheel up zooms in");
-    let before = rect(ui, &node)?;
-    xdo(&[
-        "mousedown",
-        "1",
-        "mousemove_relative",
-        "--sync",
-        "40",
-        "20",
-        "mouseup",
-        "1",
-    ])?;
-    pump(100);
-    assert!(rect(ui, &node)?.0 > before.0);
-    click_chrome(ui, "#forest-fit")?;
-    pump(300);
-    click_chrome(ui, "#forest-titles")?;
-    wait("forest icons", || visible(ui, ".forest-node.icon-only"))?;
-    click_chrome(ui, "#forest-titles")?;
-    pump(300);
-    click_chrome(ui, &node)?;
+    click_chrome(
+        ui,
+        "#forest-canopy .canopy-item[data-current=true][data-page]",
+    )?;
     forest_closed(ui, "reading")?;
     assert_eq!(ui.snapshot()?.current, Some(id));
-    wait("current forest node returns page focus", || {
+    wait("card returns page focus", || {
         ui.pages.selected_page().native.has_focus()
     })?;
-    println!(
-        "PASS forest toolbar, Ctrl and plain wheel zoom, drag, canvas-width Fit and current-node activation."
-    );
+    println!("PASS forest uses the window width and current card returns to the page.");
     key("ctrl+t")?;
     forest_open(ui)?;
     key("Escape")?;
@@ -247,12 +207,11 @@ fn forest_popin(ui: &Ui) -> Result<()> {
         if let Some(dir) = &shots {
             save_window(ui, &format!("{dir}/forest-popin-{theme}.png"))?;
         }
-        click_chrome(ui, "#forest-titles")?;
-        pump(300);
+        click_chrome(ui, "#forest-views [data-view=history]")?;
+        pump(200);
         if let Some(dir) = &shots {
-            save_window(ui, &format!("{dir}/forest-icons-{theme}.png"))?;
+            save_window(ui, &format!("{dir}/forest-history-{theme}.png"))?;
         }
-        click_chrome(ui, "#forest-titles")?;
         key("Escape")?;
         key("ctrl+t")?;
         forest_open(ui)?;
@@ -269,7 +228,8 @@ fn forest_popin(ui: &Ui) -> Result<()> {
         ui.snapshot().unwrap().current.is_none()
     })?;
     forest_open(ui)?;
-    assert!(visible(ui, ".forest-divider") && visible(ui, ".forest-node.settled"));
+    click_chrome(ui, "#forest-views [data-view=history]")?;
+    wait("history rows", || visible(ui, ".forest-row"))?;
     key("Escape")?;
     forest_closed(ui, "start")?;
     if let Some(dir) = &shots {
@@ -284,6 +244,6 @@ fn forest_popin(ui: &Ui) -> Result<()> {
             forest_closed(ui, "start")?;
         }
     }
-    println!("PASS forest preserves the start surface and Escape closes it without a current page; settled band remains.");
+    println!("PASS forest preserves the start surface and Escape closes it without a current page; History remains available.");
     Ok(())
 }

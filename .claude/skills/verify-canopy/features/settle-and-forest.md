@@ -1,32 +1,21 @@
 # Settle and the forest
 
-Settling a tree takes its tab away and keeps every page, waiting ones included. A toast offers Undo. The forest view lists every tree and keeps settled ones under Settled, where opening a page brings the tab back.
+A tree is in Tabs, Saved for later or History. Pins belong only to Tabs. Leaving Tabs retires its pages and clears its pin. Ctrl+W settles even pinned tabs. Settle keeps its existing toast Undo and Ctrl+Shift+T recovery.
 
-## Sub-features
+## Canopy
 
-- `settle-tree` settles the current tree.
-- `settle-undo` brings it back from the toast.
-- `forest-view` shows open and settled trees with their page counts.
+See [Canopy](../../../../docs/canopy.md). Open with Ctrl+E and the Canopy button. From a deep linked page, click the hub, reopen and return through Back to or a folded site. Repeat in Flow and Islands. Switch layouts with the current page in view, then quit and start the same private profile to check the remembered choice at Middle. Resize after every start. On a physical touchpad, pinch over a page across both thresholds and back, then check wheel, keys and preset buttons. Pinch delivery cannot be proven on Xvfb. In Islands, check that a three-item chain follows one spoke and that the current tree opens clear of the header and footer. Check all three zooms, current and previous marks, waiting and visited state, showing sizes, hover text, wheel anchoring, native stepped drag, arrows, Enter, Tab containment, Escape and both menus. Non-navigation menu actions keep the map open. Saved trees reopen from the new-tree shelf. Check stored tab order across a restart.
 
-## How to get to it (user POV)
+## History
 
-- Ctrl+W, a middle click on a tab, the × on a tab, or right-click a tab then Settle tree.
-- Undo in the toast, or Ctrl+Shift+T.
-- Ctrl+E or the Forest button at the left of the tab row.
+See [History](../../../../docs/forest-history.md). Drive Ctrl+H and select a row to unfold its pages in place. Choose an outline page and confirm the tree reopens there. Check the time, miniature, title, page trail, sites and page count. Drive page-name Find and its marked trail, Escape, When jumps with loading at both edges, site filters and narrow site chips. Check a tall window fills. Drive Reopen, Save for later, Delete, Delete day and Undo. Check captures and download records disappear, bookmarks and files remain, and restored captures are searchable. Delete without Undo persists across restart.
 
-## Driving it with canopy-verify
+## Move a branch
 
-Preconditions:
+Open a page's menu, choose **Move to tree…**, and select a tab. Check that the page and its descendants appear in that tree and the current page stays selected if it moved. Open a root's **Merge into tree…** picker and check the warning. After restarting, check the new parent and tree in the private database.
 
-- A fresh stress launch and a clean doctor.
+Drag a strip page onto a tab, then drag a tab among the pinned tabs. Open the Canopy map and find the moved page under its new tree. Restart and check the parent and pin order. Use native `canopy-verify drag` gestures.
 
-- **Settle.** Run `$V key ctrl+2`, `sleep 3`, `$V key ctrl+w`, `sleep 2`, `$V shot settle-toast`. The "best 75%" tab is gone, and a toast reads "Settled 'best 75% mechanical keyboard 2026 at Search' · 9 waiting kept" with Undo.
-- **Stored.** Run `$V db "SELECT t.settled_at IS NOT NULL AS settled FROM tree_state t JOIN visits r ON r.id = t.root_id WHERE r.title LIKE 'best 75%'" settle-row`. Returns 1.
-- **Forest.** Run `$V key ctrl+e`, `sleep 2`, `$V shot settle-forest`. The header counts one more settled tree than before (4 settled on the stress seed), and the current tree is listed first.
-- **Undo.** Right after the settle, run `$V key ctrl+shift+t`, `sleep 2`, `$V shot settle-undo`. The tab returns on the page it was on, and the same query, saved as `settle-undo-row`, returns 0.
+## Verification
 
-## Gotchas
-
-- After settling, Canopy moves to another open tree. Do not assume which one.
-- With the palette, new-tree page or forest open, Ctrl+W closes that overlay instead of settling. Press Escape first.
-- The toast stays on screen for a while after Undo. Assert the tab and the query, not the toast.
+Use a private stress launch and doctor. Check 390 px and at least 1920 px widths, both themes and English dates under LC_TIME=fr_FR.UTF-8. Run tree_places_smoke for the shared model, canopy_smoke for the map and forest_history_smoke for History rows and in-place outlines. Check schema 16 with tree_state(place,position,pinned,placed_at). Never open the real forest. Copy the schema-14 timing fixture before migrating it. When replacing the database in a stopped private run, remove that run’s old `forest.sqlite3-wal` and `forest.sqlite3-shm` first. Confirm the copied fixture contains 2,000 trees and 20,000 pages before driving it.

@@ -1,8 +1,14 @@
+mod places;
+pub(crate) use places::Spot;
+pub use places::{DeleteId, Deleted, Move, Place, Slot};
 mod bookmarks;
 mod history;
+mod moves;
 mod page_scale;
 pub use bookmarks::{Bookmark, BookmarkId, BookmarkToggle, ImportedBookmark};
-pub use history::{Arrival, ArrivalKind};
+pub use history::{Arrival, ArrivalKind, LogOrder, Showings};
+pub(crate) use moves::OwnTreeMove;
+pub use moves::{MoveOutcome, MoveTo, TabPlacement};
 pub use page_scale::PageScale;
 use std::{
     collections::HashSet,
@@ -65,22 +71,6 @@ pub struct ImportedPage {
     pub last_visit: Option<i64>,
 }
 
-/// Whether a tree has a tab. A settled tree keeps every page and reopens when one is visited.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Lifecycle {
-    Open,
-    /// `since` is in ms and orders the settled trees, newest first.
-    Settled {
-        since: i64,
-    },
-}
-
-impl Lifecycle {
-    pub fn is_open(self) -> bool {
-        matches!(self, Self::Open)
-    }
-}
-
 /// Where the window goes after a tree is settled.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Landing {
@@ -94,25 +84,20 @@ pub enum Landing {
     Start,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct PinOrder(std::num::NonZeroI64);
-
-impl PinOrder {
-    fn from_sql(value: i64) -> Result<Self> {
-        anyhow::ensure!(value > 0, "Invalid pin order.");
-        Ok(Self(std::num::NonZeroI64::new(value).unwrap()))
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TreeState {
-    pub pin: Option<PinOrder>,
     pub last_event_at: Option<i64>,
     pub root: TreeId,
     pub last_visit: VisitId,
     /// The name the user gave the tree. Without one, the tree is named after its pages.
     pub name: Option<String>,
-    pub lifecycle: Lifecycle,
+    pub(crate) spot: Spot,
+}
+
+impl TreeState {
+    pub fn place(&self) -> Place {
+        self.spot.place()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -318,7 +303,7 @@ impl Browser {
              INSERT OR IGNORE INTO session(singleton, current_id) VALUES(1, NULL);",
         )?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version > 14 {
+        if version > 16 {
             bail!("This database comes from a newer version of Canopy.");
         }
         if version == 0 {
@@ -392,23 +377,7 @@ impl Browser {
                     WHERE root_id IN (SELECT id FROM ancestry WHERE parent_id IS NULL);
                  PRAGMA user_version = 2;",
             )?;
-            for action in ["INSERT", "UPDATE"] {
-                transaction.execute_batch(&format!(
-                    "CREATE TRIGGER tree_state_validate_{action} BEFORE {action} ON tree_state
-                     BEGIN
-                        SELECT RAISE(ABORT, 'Invalid tree target') WHERE NOT EXISTS (
-                            WITH RECURSIVE ancestry(id, parent_id, opened_at) AS (
-                                SELECT id, parent_id, opened_at FROM visits WHERE id=NEW.last_visit_id
-                                UNION
-                                SELECT v.id, v.parent_id, v.opened_at FROM visits v
-                                    JOIN ancestry a ON v.id=a.parent_id
-                            )
-                            SELECT 1 FROM ancestry WHERE id=NEW.root_id AND parent_id IS NULL
-                                AND (SELECT opened_at FROM visits WHERE id=NEW.last_visit_id) IS NOT NULL
-                        );
-                     END;"
-                ))?;
-            }
+            places::create_tree_state_triggers(&transaction)?;
             transaction.commit()?;
         }
         if version < 3 {
@@ -524,6 +493,23 @@ impl Browser {
             tx.execute_batch("ALTER TABLE session ADD COLUMN trees_help INTEGER NOT NULL DEFAULT 1; PRAGMA user_version=14;")?;
             tx.commit()?;
         }
+        if version < 15 {
+            let tx = connection.transaction()?;
+            tx.execute_batch(
+                "ALTER TABLE tree_state ADD COLUMN tab_order INTEGER CHECK(tab_order >= 0);
+                 WITH positions AS (
+                     SELECT t.root_id, ROW_NUMBER() OVER (ORDER BY r.created_at, r.rowid) - 1 AS position
+                     FROM tree_state t JOIN visits r ON r.id=t.root_id WHERE t.settled_at IS NULL
+                 ) UPDATE tree_state SET tab_order=(SELECT position FROM positions WHERE positions.root_id=tree_state.root_id);
+                 PRAGMA user_version=15;",
+            )?;
+            tx.commit()?;
+        }
+        if version < 16 {
+            let tx = connection.transaction()?;
+            places::migrate_16(&tx)?;
+            tx.commit()?;
+        }
         Ok(Self { connection })
     }
 
@@ -582,37 +568,7 @@ impl Browser {
     }
 
     pub fn snapshot(&self) -> Result<Snapshot> {
-        let mut statement = self.connection.prepare(
-            "SELECT v.id, v.parent_id, v.url, v.title, v.created_at, v.opened_at,
-                o.source_page_url, o.source_citation_url, o.source_link_text, o.source_excerpt, v.dismissed_at, v.branch_settled_at
-             FROM visits v LEFT JOIN origins o ON o.visit_id=v.id ORDER BY v.created_at, v.rowid",
-        )?;
-        let mut rows = statement.query([])?;
-        let mut visits = Vec::new();
-        while let Some(row) = rows.next()? {
-            let opened_at: Option<i64> = row.get(5)?;
-            visits.push(Visit {
-                dismissed_at: row.get(10)?,
-                branch_settled_at: row.get(11)?,
-                id: row.get::<_, String>(0)?.parse()?,
-                parent: row
-                    .get::<_, Option<String>>(1)?
-                    .map(|id| id.parse())
-                    .transpose()?,
-                url: web_url(&row.get::<_, String>(2)?)?,
-                title: row.get(3)?,
-                created_at: row.get(4)?,
-                opened_at,
-                state: if opened_at.is_some() {
-                    VisitState::Opened
-                } else {
-                    VisitState::Queued
-                },
-                source: source_from_row(row, 6)?,
-            });
-        }
-        let current = self.current_id()?;
-        Ok(Snapshot { visits, current })
+        snapshot_on(&self.connection)
     }
 
     pub fn preview(&self, id: VisitId) -> Result<VisitPreview> {
@@ -646,128 +602,13 @@ impl Browser {
     }
 
     pub fn tree_states(&self) -> Result<Vec<TreeState>> {
-        let mut statement = self.connection.prepare(
-            "WITH RECURSIVE members(root_id, visit_id) AS (
-    SELECT id, id FROM visits WHERE parent_id IS NULL
-    UNION ALL
-    SELECT m.root_id, v.id FROM visits v JOIN members m ON v.parent_id=m.visit_id
-), activity(root_id, latest_event_at) AS (
-    SELECT m.root_id, MAX(e.at)
-    FROM members m LEFT JOIN visit_events e ON e.visit_id=m.visit_id
-    GROUP BY m.root_id
-)
-SELECT t.root_id, t.last_visit_id, t.name, t.settled_at, t.pin_order,
-       a.latest_event_at
-FROM tree_state t
-JOIN visits r ON r.id=t.root_id
-LEFT JOIN activity a ON a.root_id=t.root_id
-ORDER BY r.created_at, r.rowid",
-        )?;
-        let mut rows = statement.query([])?;
-        let mut states = Vec::new();
-        while let Some(row) = rows.next()? {
-            states.push(TreeState {
-                pin: row
-                    .get::<_, Option<i64>>(4)?
-                    .map(PinOrder::from_sql)
-                    .transpose()?,
-                last_event_at: row.get(5)?,
-                root: TreeId(row.get::<_, String>(0)?.parse()?),
-                last_visit: row.get::<_, String>(1)?.parse()?,
-                name: row.get(2)?,
-                lifecycle: row
-                    .get::<_, Option<i64>>(3)?
-                    .map_or(Lifecycle::Open, |since| Lifecycle::Settled { since }),
-            });
-        }
-        Ok(states)
+        tree_states_on(&self.connection)
     }
 
-    pub fn set_pinned(&mut self, tree: TreeId, pinned: bool) -> Result<()> {
-        let tx = self
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let order: Option<Option<i64>> = tx
-            .query_row(
-                "SELECT pin_order FROM tree_state WHERE root_id=?1",
-                [tree.root().to_string()],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if order.is_none() || (pinned && order.flatten().is_some()) {
-            return Ok(());
-        }
-        if pinned {
-            let next: i64 = tx.query_row(
-                "SELECT COALESCE(MAX(pin_order), 0) FROM tree_state",
-                [],
-                |r| r.get(0),
-            )?;
-            let next = next.checked_add(1).context("Too many pinned trees.")?;
-            tx.execute(
-                "UPDATE tree_state SET pin_order=?2 WHERE root_id=?1 AND pin_order IS NULL",
-                params![tree.root().to_string(), next],
-            )?;
-        } else {
-            tx.execute(
-                "UPDATE tree_state SET pin_order=NULL WHERE root_id=?1",
-                [tree.root().to_string()],
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Takes `tree` out of the tabs and says where the window goes. Settling a settled tree
-    /// changes nothing and gives the landing again, so a failed landing can be retried.
     pub fn show_start(&mut self) -> Result<()> {
         self.connection
             .execute("UPDATE session SET current_id=NULL WHERE singleton=1", [])?;
         Ok(())
-    }
-
-    pub fn settle_tree(&mut self, tree: TreeId) -> Result<Landing> {
-        let tx = self.connection.transaction()?;
-        let root = tree.0.to_string();
-        if tx.execute(
-            "UPDATE tree_state SET settled_at=COALESCE(settled_at, ?2) WHERE root_id=?1",
-            params![root, now_ms()?],
-        )? == 0
-        {
-            bail!("This tree no longer exists.");
-        }
-        // A window already resting in a settled tree, after a landing that failed or has not
-        // committed, gets a landing again whichever tree is settled now.
-        let stranded: Option<bool> = tx.query_row(
-            "WITH RECURSIVE ancestry(id, parent_id) AS (
-                SELECT id, parent_id FROM visits WHERE id=(SELECT current_id FROM session WHERE singleton=1)
-                UNION
-                SELECT v.id, v.parent_id FROM visits v JOIN ancestry a ON v.id=a.parent_id
-             ) SELECT t.settled_at IS NOT NULL FROM ancestry a JOIN tree_state t ON t.root_id=a.id
-               WHERE a.parent_id IS NULL",
-            [], |row| row.get(0),
-        ).optional()?;
-        if stranded != Some(true) {
-            tx.commit()?;
-            return Ok(Landing::Unchanged);
-        }
-        let next: Option<String> = tx.query_row(
-            "SELECT t.last_visit_id FROM tree_state t JOIN visits r ON r.id=t.root_id
-             WHERE t.settled_at IS NULL
-             ORDER BY (SELECT MAX(e.id) FROM visit_events e WHERE e.visit_id=t.last_visit_id) IS NULL,
-                      (SELECT MAX(e.id) FROM visit_events e WHERE e.visit_id=t.last_visit_id) DESC,
-                      r.created_at DESC, r.rowid DESC LIMIT 1",
-            [], |row| row.get(0),
-        ).optional()?;
-        if let Some(next) = next {
-            let visit = next.parse()?;
-            tx.commit()?;
-            Ok(Landing::Restore(visit))
-        } else {
-            tx.execute("UPDATE session SET current_id=NULL WHERE singleton=1", [])?;
-            tx.commit()?;
-            Ok(Landing::Start)
-        }
     }
 
     pub fn dismiss(&mut self, head: VisitId) -> Result<()> {
@@ -816,49 +657,15 @@ ORDER BY r.created_at, r.rowid",
             "UPDATE visits SET branch_settled_at=NULL WHERE id=?1",
             [head.to_string()],
         )?;
-        tx.execute(
-            "UPDATE tree_state SET settled_at=NULL WHERE root_id=?1",
+        if tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tree_state WHERE root_id=?1)",
             [head.to_string()],
-        )?;
+            |r| r.get::<_, bool>(0),
+        )? {
+            places::place_in(&tx, TreeId(head), Move::Open, now_ms()?)?;
+        }
         tx.commit()?;
         Ok(())
-    }
-
-    pub fn move_to_tree(&mut self, head: VisitId) -> Result<TreeId> {
-        let forest =
-            crate::forest::ForestProjection::from_snapshot(self.snapshot()?, self.tree_states()?)?;
-        anyhow::ensure!(
-            self.visit(head)?.parent.is_some(),
-            "This page is already a root."
-        );
-        let old = forest.tree_of(head).context("Missing tree.")?;
-        let tx = self.connection.transaction()?;
-        let newest = |inside: bool| -> Result<VisitId> {
-            let id: String = tx.query_row(
-                "WITH RECURSIVE branch(id) AS (SELECT ?1 UNION ALL SELECT v.id FROM visits v JOIN branch b ON v.parent_id=b.id),
-                 tree(id) AS (SELECT ?2 UNION ALL SELECT v.id FROM visits v JOIN tree t ON v.parent_id=t.id)
-                 SELECT v.id FROM visits v JOIN tree t ON v.id=t.id WHERE v.opened_at IS NOT NULL
-                 AND (v.id IN (SELECT id FROM branch))=?3
-                 ORDER BY (SELECT MAX(e.id) FROM visit_events e WHERE e.visit_id=v.id) DESC, v.opened_at DESC, v.rowid DESC LIMIT 1",
-                params![head.to_string(),old.root().to_string(),inside], |r|r.get(0))?;
-            Ok(id.parse()?)
-        };
-        let target = newest(true).context("The branch has no opened page.")?;
-        let old_target = newest(false)?;
-        tx.execute(
-            "UPDATE visits SET parent_id=NULL, branch_settled_at=NULL WHERE id=?1",
-            [head.to_string()],
-        )?;
-        tx.execute(
-            "UPDATE tree_state SET last_visit_id=?2 WHERE root_id=?1",
-            params![old.root().to_string(), old_target.to_string()],
-        )?;
-        tx.execute(
-            "INSERT INTO tree_state(root_id,last_visit_id) VALUES(?1,?2)",
-            params![head.to_string(), target.to_string()],
-        )?;
-        tx.commit()?;
-        Ok(TreeId(head))
     }
 
     pub fn forward(&self, current: VisitId) -> Result<Option<VisitId>> {
@@ -973,14 +780,16 @@ ORDER BY r.created_at, r.rowid",
     }
 
     fn current_id(&self) -> Result<Option<VisitId>> {
-        let id: Option<String> = self.connection.query_row(
-            "SELECT current_id FROM session WHERE singleton = 1",
-            [],
-            |row| row.get(0),
-        )?;
-        id.map(|id| id.parse().map_err(Into::into)).transpose()
+        current_id_on(&self.connection)
     }
 
+    pub(crate) fn contains_visit(&self, id: VisitId) -> Result<bool> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM visits WHERE id=?1)",
+            [id.to_string()],
+            |r| r.get(0),
+        )?)
+    }
     pub fn visit(&self, id: VisitId) -> Result<Visit> {
         self.snapshot()?
             .visits
@@ -1037,10 +846,7 @@ ORDER BY r.created_at, r.rowid",
                 "INSERT INTO visits(id, parent_id, url, title, created_at, opened_at) VALUES (?1, NULL, ?2, '', ?3, ?3)",
                 params![id.to_string(), url.as_str(), now_ms()?],
             )?;
-            transaction.execute(
-                "INSERT INTO tree_state(root_id, last_visit_id) VALUES (?1, ?1)",
-                [id.to_string()],
-            )?;
+            places::append_tab(&transaction, id, id, now_ms()?)?;
             roots.push(id);
         }
         transaction.commit()?;
@@ -1124,8 +930,22 @@ ORDER BY r.created_at, r.rowid",
             return Ok(false);
         }
         web_url(url.as_str())?;
-        let intent = intent.clone();
+        let mut intent = intent.clone();
         let previous = self.current_id()?;
+        // The same address loading again over an error or sign-in page (after signing in,
+        // or once the page exists) is that page working now, not a page under it.
+        if let Intent::New {
+            parent: Some(parent),
+            ..
+        } = intent
+        {
+            if visibility == Visibility::Selected && previous == Some(parent) {
+                let shown = self.visit(parent)?;
+                if shown.url == url && crate::naming::is_error_page(&shown.title, &shown.url) {
+                    intent = Intent::Restore { visit: parent };
+                }
+            }
+        }
         let kind = match &intent {
             Intent::New { .. } => "new",
             Intent::Restore { visit } if previous == Some(*visit) => "reload",
@@ -1331,6 +1151,9 @@ ORDER BY r.created_at, r.rowid",
         navigation: &mut Navigation,
         child: VisitId,
     ) -> Result<Option<Url>> {
+        if !forest_on(&self.connection)?.citation_parent_matches(child) {
+            return Ok(None);
+        }
         let visit = self.visit(child)?;
         let Some(parent) = visit.parent else {
             return Ok(None);
@@ -1713,18 +1536,108 @@ fn record_selection(
         "UPDATE session SET current_id = ?1 WHERE singleton = 1",
         [id.to_string()],
     )?;
+    let root: String = transaction.query_row(
+        "WITH RECURSIVE ancestry(id,parent_id) AS (SELECT id,parent_id FROM visits WHERE id=?1 UNION ALL SELECT v.id,v.parent_id FROM visits v JOIN ancestry a ON v.id=a.parent_id) SELECT id FROM ancestry WHERE parent_id IS NULL",
+        [id.to_string()], |r|r.get(0))?;
+    let root = root.parse()?;
+    places::append_tab(transaction, root, id, now)?;
     transaction.execute(
-        "WITH RECURSIVE ancestry(id, parent_id) AS (
-                SELECT id, parent_id FROM visits WHERE id=?1
-                UNION
-                SELECT v.id, v.parent_id FROM visits v JOIN ancestry a ON v.id=a.parent_id
-             )
-             INSERT INTO tree_state(root_id, last_visit_id)
-                SELECT id, ?1 FROM ancestry WHERE parent_id IS NULL
-             ON CONFLICT(root_id) DO UPDATE SET last_visit_id=excluded.last_visit_id, settled_at=NULL",
-        [id.to_string()],
+        "UPDATE tree_state SET last_visit_id=?2 WHERE root_id=?1",
+        params![root.to_string(), id.to_string()],
     )?;
+    places::place_in(transaction, TreeId(root), Move::Open, now)?;
     Ok(())
+}
+
+fn snapshot_on(connection: &Connection) -> Result<Snapshot> {
+    let mut statement = connection.prepare(
+            "SELECT v.id, v.parent_id, v.url, v.title, v.created_at, v.opened_at,
+                o.source_page_url, o.source_citation_url, o.source_link_text, o.source_excerpt, v.dismissed_at, v.branch_settled_at
+             FROM visits v LEFT JOIN origins o ON o.visit_id=v.id ORDER BY v.created_at, v.rowid",
+        )?;
+    let mut rows = statement.query([])?;
+    let mut visits = Vec::new();
+    while let Some(row) = rows.next()? {
+        let opened_at: Option<i64> = row.get(5)?;
+        visits.push(Visit {
+            dismissed_at: row.get(10)?,
+            branch_settled_at: row.get(11)?,
+            id: row.get::<_, String>(0)?.parse()?,
+            parent: row
+                .get::<_, Option<String>>(1)?
+                .map(|id| id.parse())
+                .transpose()?,
+            url: web_url(&row.get::<_, String>(2)?)?,
+            title: row.get(3)?,
+            created_at: row.get(4)?,
+            opened_at,
+            state: if opened_at.is_some() {
+                VisitState::Opened
+            } else {
+                VisitState::Queued
+            },
+            source: source_from_row(row, 6)?,
+        });
+    }
+    let current = current_id_on(connection)?;
+    Ok(Snapshot { visits, current })
+}
+
+fn tree_states_on(connection: &Connection) -> Result<Vec<TreeState>> {
+    let mut statement = connection.prepare(
+        format!(
+            "WITH RECURSIVE members(root_id, visit_id) AS (
+    SELECT id, id FROM visits WHERE parent_id IS NULL
+    UNION ALL
+    SELECT m.root_id, v.id FROM visits v JOIN members m ON v.parent_id=m.visit_id
+), activity(root_id, latest_event_at) AS (
+    SELECT m.root_id, MAX(e.at)
+    FROM members m LEFT JOIN visit_events e ON e.visit_id=m.visit_id
+    GROUP BY m.root_id
+)
+SELECT t.root_id, t.last_visit_id, t.name, t.place, t.position,
+       a.latest_event_at, t.pinned, t.placed_at
+FROM tree_state t
+JOIN visits r ON r.id=t.root_id
+LEFT JOIN activity a ON a.root_id=t.root_id
+ORDER BY {}",
+            places::ORDER.replace("root_id", "t.root_id")
+        )
+        .as_str(),
+    )?;
+    let mut rows = statement.query([])?;
+    let mut states = Vec::new();
+    while let Some(row) = rows.next()? {
+        states.push(TreeState {
+            last_event_at: row.get(5)?,
+            root: TreeId(row.get::<_, String>(0)?.parse()?),
+            last_visit: row.get::<_, String>(1)?.parse()?,
+            name: row.get(2)?,
+            spot: Spot::from_row(
+                &row.get::<_, String>(3)?,
+                row.get(4)?,
+                row.get(6)?,
+                row.get(7)?,
+            )?,
+        });
+    }
+    Ok(states)
+}
+
+fn current_id_on(connection: &Connection) -> Result<Option<VisitId>> {
+    let id: Option<String> = connection.query_row(
+        "SELECT current_id FROM session WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    id.map(|id| id.parse().map_err(Into::into)).transpose()
+}
+
+fn forest_on(connection: &Connection) -> Result<crate::forest::ForestProjection> {
+    crate::forest::ForestProjection::from_snapshot(
+        snapshot_on(connection)?,
+        tree_states_on(connection)?,
+    )
 }
 
 #[cfg(test)]
@@ -1822,9 +1735,8 @@ mod tests {
         fn requested_restore(&self) -> Option<VisitId> {
             self.browser.requested_restore(&self.navigation)
         }
-        // The view owner drops its load when the window is left with no page.
-        fn settle_tree(&mut self, tree: TreeId) -> Result<Landing> {
-            let landing = self.browser.settle_tree(tree)?;
+        fn place_tree(&mut self, tree: TreeId, to: Move) -> Result<Landing> {
+            let landing = self.browser.place_tree(tree, to)?;
             if landing == Landing::Start {
                 self.navigation.clear();
             }
@@ -1868,6 +1780,110 @@ mod tests {
             tx.commit().unwrap();
         }
         connection
+    }
+
+    fn recent_pages_oracle(
+        b: &Browser,
+        forest: &crate::forest::ForestProjection,
+        limit: usize,
+    ) -> Vec<VisitId> {
+        let Some(current) = forest.current() else {
+            return vec![];
+        };
+        let Some(tree) = forest.tree_of(current) else {
+            return vec![];
+        };
+        let opened = |id| {
+            forest
+                .visit(id)
+                .is_some_and(|v| v.state == VisitState::Opened)
+        };
+        let root = tree.root();
+        let total = forest.opened_descendant_count(root) + usize::from(opened(root));
+        let mut seen = std::collections::HashSet::new();
+        let mut out = vec![];
+        let mut stmt = b
+            .connection
+            .prepare("SELECT visit_id FROM visit_events ORDER BY id DESC")
+            .unwrap();
+        let mut rows = stmt.query([]).unwrap();
+        while out.len() < limit && seen.len() < total {
+            let Some(row) = rows.next().unwrap() else {
+                break;
+            };
+            let id: VisitId = row.get::<_, String>(0).unwrap().parse().unwrap();
+            if forest.tree_of(id) != Some(tree) || !opened(id) || !seen.insert(id) {
+                continue;
+            }
+            if id != current && !forest.is_settled(id) {
+                out.push(id);
+            }
+        }
+        out
+    }
+    #[test]
+    fn showings_count_new_and_return_rows_not_reloads() {
+        let mut b = memory();
+        let root = follow(&mut b, "root", NavigationTarget::Root);
+        let child = follow_child(&mut b, "child");
+        let load = b.restore(root).unwrap();
+        b.started(load.clone()).unwrap();
+        b.committed(load).unwrap();
+        let load = b.reload().unwrap().unwrap();
+        b.started(load.clone()).unwrap();
+        b.committed(load).unwrap();
+        let shown = b.showings().unwrap();
+        assert_eq!(shown.times(root), 2);
+        assert_eq!(shown.times(child), 1);
+        assert!(shown.last_shown(root) > shown.last_shown(child));
+    }
+    #[test]
+    fn previous_follows_the_recent_pages_rule_also_while_loading() {
+        let mut b = memory();
+        let root = follow(&mut b, "hub", NavigationTarget::Root);
+        let a = follow_child(&mut b, "a");
+        let hidden = follow_child(&mut b, "put-away");
+        let load = b.restore(a).unwrap();
+        b.started(load.clone()).unwrap();
+        b.committed(load).unwrap();
+        b.settle_branch(hidden).unwrap();
+        let c = follow_child(&mut b, "c");
+        let other = follow(&mut b, "other", NavigationTarget::Root);
+        let load = b.restore(c).unwrap();
+        b.started(load.clone()).unwrap();
+        b.committed(load).unwrap();
+        b.connection
+            .execute("UPDATE visit_events SET at=1", [])
+            .unwrap();
+        let mut forest = crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap();
+        let shown = b.showings().unwrap();
+        assert_eq!(shown.previous(&forest), Some(a));
+        assert_eq!(shown.recent(&forest), recent_pages_oracle(&b, &forest, 100));
+        assert!(!shown.recent(&forest).contains(&hidden));
+        assert!(!shown.recent(&forest).contains(&other));
+        let loading = b.restore(root).unwrap();
+        b.started(loading).unwrap();
+        forest.show_current(root);
+        assert_eq!(shown.previous(&forest), Some(c));
+        assert_eq!(
+            shown.previous(&forest),
+            recent_pages_oracle(&b, &forest, 1).first().copied()
+        );
+    }
+    #[test]
+    fn showings_leave_out_trees_that_are_not_tabs() {
+        let mut b = memory();
+        let root = follow(&mut b, "root", NavigationTarget::Root);
+        follow(&mut b, "other", NavigationTarget::Root);
+        b.place_tree(TreeId(root), Move::Shelf(Slot::First))
+            .unwrap();
+        assert_eq!(b.showings().unwrap().times(root), 0);
+        b.place_tree(TreeId(root), Move::History).unwrap();
+        assert_eq!(b.showings().unwrap().last_shown(root), None);
     }
 
     #[test]
@@ -1950,7 +1966,7 @@ mod tests {
                 .unwrap();
             b.connection
                 .execute(
-                    "INSERT INTO tree_state(root_id,last_visit_id,settled_at) VALUES(?1,?1,?2)",
+                    "INSERT INTO tree_state(root_id,last_visit_id,place,placed_at) VALUES(?1,?1,'history',?2)",
                     params![id, now],
                 )
                 .unwrap();
@@ -2087,8 +2103,44 @@ mod tests {
         drop(b);
         let mut b = TestBrowser::open(&path).unwrap();
         assert_eq!(b.previous_tree().unwrap(), Some(TreeId(c)));
-        b.settle_tree(TreeId(c)).unwrap();
+        b.place_tree(TreeId(c), crate::browser::Move::History)
+            .unwrap();
         assert_eq!(b.previous_tree().unwrap(), None);
+    }
+
+    #[test]
+    fn recent_pages_are_the_current_trees_read_pages_newest_first() {
+        let mut b = memory();
+        let other = follow(&mut b, "other", NavigationTarget::Root);
+        let root = follow(&mut b, "root", NavigationTarget::Root);
+        let x = follow_child(&mut b, "x");
+        let y = follow_child(&mut b, "y");
+        let recent = |b: &TestBrowser, limit| {
+            let forest = crate::forest::ForestProjection::from_snapshot(
+                b.snapshot().unwrap(),
+                b.tree_states().unwrap(),
+            )
+            .unwrap();
+            b.recent_pages(&forest, limit).unwrap()
+        };
+        assert_eq!(recent(&b, 8), [x, root]);
+        let load = b.restore(root).unwrap();
+        b.started(load.clone()).unwrap();
+        b.committed(load).unwrap();
+        assert_eq!(recent(&b, 8), [y, x], "the other tree is left out");
+        assert_eq!(recent(&b, 1), [y]);
+        let load = b.restore(x).unwrap();
+        b.started(load.clone()).unwrap();
+        b.committed(load).unwrap();
+        assert_eq!(recent(&b, 8), [root, y]);
+        b.connection
+            .execute(
+                "UPDATE visits SET branch_settled_at=1 WHERE id=?1",
+                [y.to_string()],
+            )
+            .unwrap();
+        assert_eq!(recent(&b, 8), [root], "put-away pages are left out");
+        assert!(!recent(&b, 8).contains(&other));
     }
 
     #[test]
@@ -2284,46 +2336,27 @@ mod tests {
         let b = Browser::with_connection(connection).unwrap();
         let states = b.tree_states().unwrap();
         assert_eq!(states.len(), 1);
-        assert!(states[0].pin.is_none());
+        assert!(!states[0].spot.place().pinned());
         assert_eq!(states[0].last_event_at, None);
-        assert!(!states[0].lifecycle.is_open());
+        assert!(!states[0].spot.place().is_tab());
         assert_eq!(
             b.connection
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            14
+            16
         );
     }
 
-    #[test]
-    fn pin_order_is_stable_idempotent_and_independent_of_lifecycle() {
-        let mut b = memory();
-        let a = follow(&mut b, "a", NavigationTarget::Root);
-        let child = follow_child(&mut b, "child");
-        let c = follow(&mut b, "c", NavigationTarget::Root);
-        b.set_pinned(TreeId(c), true).unwrap();
-        b.set_pinned(TreeId(a), true).unwrap();
-        let pins = b.tree_states().unwrap();
-        b.set_pinned(TreeId(c), true).unwrap();
-        assert_eq!(b.tree_states().unwrap(), pins);
-        b.settle_tree(TreeId(a)).unwrap();
-        assert_eq!(b.tree_states().unwrap()[0].pin, pins[0].pin);
-        b.restore(child).unwrap();
-        let request = url("child");
-        b.started(request.clone()).unwrap();
-        b.committed(request).unwrap();
-        let states = b.tree_states().unwrap();
-        assert!(states[0].lifecycle.is_open());
-        assert_eq!(states[0].pin, pins[0].pin);
-        let projection =
-            crate::forest::ForestProjection::from_snapshot(b.snapshot().unwrap(), states).unwrap();
-        assert_eq!(
-            projection.pinned().iter().map(|t| t.id).collect::<Vec<_>>(),
-            vec![TreeId(c), TreeId(a)]
-        );
-        b.set_pinned(TreeId(c), false).unwrap();
-        b.set_pinned(TreeId(c), true).unwrap();
-        assert!(b.tree_states().unwrap()[1].pin > b.tree_states().unwrap()[0].pin);
+    fn tab_roots(b: &Browser) -> Vec<TreeId> {
+        crate::forest::ForestProjection::from_snapshot(
+            b.snapshot().unwrap(),
+            b.tree_states().unwrap(),
+        )
+        .unwrap()
+        .tabs()
+        .iter()
+        .map(|tree| tree.id)
+        .collect()
     }
 
     #[test]
@@ -2343,6 +2376,34 @@ mod tests {
         let state = &b.tree_states().unwrap()[0];
         assert_eq!(state.last_visit, child);
         assert_eq!(state.last_event_at, Some(100));
+    }
+
+    #[test]
+    fn the_same_address_over_an_error_page_reloads_it_instead_of_branching() {
+        let mut b = memory();
+        let pull = follow(&mut b, "pull/32", NavigationTarget::Root);
+        b.title_changed(&url("pull/32"), "Page not found · GitHub")
+            .unwrap();
+        // Signed in, the page loads again at the same address: the root works now.
+        let again = follow_child(&mut b, "pull/32");
+        assert_eq!(again, pull);
+        assert_eq!(b.snapshot().unwrap().visits.len(), 1);
+        assert_eq!(events(&b.browser).last().unwrap().2, "reload");
+        b.title_changed(&url("pull/32"), "Keep logins · Pull Request #32")
+            .unwrap();
+        assert_eq!(
+            b.visit(pull).unwrap().title,
+            "Keep logins · Pull Request #32"
+        );
+
+        // A real page loaded again at its own address still makes the child it always did.
+        let child = follow_child(&mut b, "pull/32");
+        assert_ne!(child, pull);
+        assert_eq!(b.visit(child).unwrap().parent, Some(pull));
+        // So does another address under an error page.
+        b.title_changed(&url("pull/32"), "404 Not Found").unwrap();
+        let other = follow_child(&mut b, "pulls");
+        assert_eq!(b.visit(other).unwrap().parent, Some(child));
     }
 
     #[test]
@@ -2539,7 +2600,8 @@ mod tests {
     fn queueing_a_link_in_a_settled_tree_does_not_reopen_it() {
         let mut b = memory();
         let a = follow(&mut b, "a", NavigationTarget::Root);
-        b.settle_tree(TreeId(a)).unwrap();
+        b.place_tree(TreeId(a), crate::browser::Move::History)
+            .unwrap();
         let states = b.tree_states().unwrap();
         b.queue_link(a, url("queued"), source("context")).unwrap();
         assert_eq!(b.tree_states().unwrap(), states);
@@ -2552,11 +2614,12 @@ mod tests {
         let a = {
             let mut b = TestBrowser::open(&path).unwrap();
             let a = follow(&mut b, "a", NavigationTarget::Root);
-            b.settle_tree(TreeId(a)).unwrap();
+            b.place_tree(TreeId(a), crate::browser::Move::History)
+                .unwrap();
             a
         };
         let b = Browser::open(&path).unwrap();
-        assert!(!b.tree_states().unwrap()[0].lifecycle.is_open());
+        assert!(!b.tree_states().unwrap()[0].spot.place().is_tab());
         assert_eq!(b.visit(a).unwrap().url, url("a"));
         drop(b);
         let legacy = dir.path().join("legacy.db");
@@ -2577,15 +2640,17 @@ mod tests {
             .unwrap();
         drop(connection);
         assert!(Browser::open(&legacy).unwrap().tree_states().unwrap()[0]
-            .lifecycle
-            .is_open());
+            .spot
+            .place()
+            .is_tab());
     }
 
     #[test]
     fn a_failed_reopen_commit_rolls_back_with_the_cursor() {
         let mut b = memory();
         let a = follow(&mut b, "a", NavigationTarget::Root);
-        b.settle_tree(TreeId(a)).unwrap();
+        b.place_tree(TreeId(a), crate::browser::Move::History)
+            .unwrap();
         let before = b.snapshot().unwrap();
         let states = b.tree_states().unwrap();
         b.connection.execute_batch("CREATE TRIGGER reject_target BEFORE UPDATE ON tree_state BEGIN SELECT RAISE(ABORT, 'test failure'); END;").unwrap();
@@ -2601,11 +2666,12 @@ mod tests {
         let mut b = memory();
         let a = follow(&mut b, "a", NavigationTarget::Root);
         let c = follow(&mut b, "c", NavigationTarget::Root);
-        b.settle_tree(TreeId(c)).unwrap();
+        b.place_tree(TreeId(c), crate::browser::Move::History)
+            .unwrap();
         let request = b.restore(a).unwrap();
         b.started(request.clone()).unwrap();
         assert_eq!(b.snapshot().unwrap().current, Some(c));
-        assert!(!b.tree_states().unwrap()[1].lifecycle.is_open());
+        assert!(!b.tree_states().unwrap()[1].spot.place().is_tab());
         b.committed(request).unwrap();
         assert_eq!(b.snapshot().unwrap().current, Some(a));
     }
@@ -2614,10 +2680,21 @@ mod tests {
         let mut b = memory();
         let a = follow(&mut b, "a", NavigationTarget::Root);
         let c = follow(&mut b, "c", NavigationTarget::Root);
-        assert_eq!(b.settle_tree(TreeId(a)).unwrap(), Landing::Unchanged);
+        assert_eq!(
+            b.place_tree(TreeId(a), crate::browser::Move::History)
+                .unwrap(),
+            Landing::Unchanged
+        );
         assert_eq!(b.snapshot().unwrap().visits.len(), 2);
         assert_eq!(b.snapshot().unwrap().current, Some(c));
-        assert!(!b.tree_states().unwrap()[0].lifecycle.is_open());
+        assert!(!b
+            .tree_states()
+            .unwrap()
+            .iter()
+            .find(|s| s.root == TreeId(a))
+            .unwrap()
+            .place()
+            .is_tab());
     }
 
     #[test]
@@ -2629,7 +2706,11 @@ mod tests {
         b.started(request.clone()).unwrap();
         b.committed(request).unwrap();
         let c = follow(&mut b, "c", NavigationTarget::Root);
-        assert_eq!(b.settle_tree(TreeId(c)).unwrap(), Landing::Restore(a));
+        assert_eq!(
+            b.place_tree(TreeId(c), crate::browser::Move::History)
+                .unwrap(),
+            Landing::Restore(a)
+        );
         assert_eq!(b.snapshot().unwrap().current, Some(c));
     }
 
@@ -2638,13 +2719,21 @@ mod tests {
         let mut b = memory();
         let a = follow(&mut b, "a", NavigationTarget::Root);
         let c = follow(&mut b, "c", NavigationTarget::Root);
-        assert_eq!(b.settle_tree(TreeId(c)).unwrap(), Landing::Restore(a));
+        assert_eq!(
+            b.place_tree(TreeId(c), crate::browser::Move::History)
+                .unwrap(),
+            Landing::Restore(a)
+        );
         let states = b.tree_states().unwrap();
         let request = b.restore(a).unwrap();
         b.started(request.clone()).unwrap();
         b.failed(&request, false);
         assert_eq!(b.snapshot().unwrap().current, Some(c));
-        assert_eq!(b.settle_tree(TreeId(c)).unwrap(), Landing::Restore(a));
+        assert_eq!(
+            b.place_tree(TreeId(c), crate::browser::Move::History)
+                .unwrap(),
+            Landing::Restore(a)
+        );
         assert_eq!(b.tree_states().unwrap(), states);
     }
 
@@ -2656,7 +2745,11 @@ mod tests {
             .navigate(url("child"), NavigationTarget::ChildOf(a))
             .unwrap();
         b.started(request.clone()).unwrap();
-        assert_eq!(b.settle_tree(TreeId(a)).unwrap(), Landing::Start);
+        assert_eq!(
+            b.place_tree(TreeId(a), crate::browser::Move::History)
+                .unwrap(),
+            Landing::Start
+        );
         assert!(!b.committed(request).unwrap());
         assert_eq!(b.snapshot().unwrap().current, None);
         assert_eq!(b.snapshot().unwrap().visits.len(), 1);
@@ -2667,8 +2760,16 @@ mod tests {
         let mut b = memory();
         let a = follow(&mut b, "a", NavigationTarget::Root);
         let c = follow(&mut b, "c", NavigationTarget::Root);
-        assert_eq!(b.settle_tree(TreeId(c)).unwrap(), Landing::Restore(a));
-        assert_eq!(b.settle_tree(TreeId(a)).unwrap(), Landing::Start);
+        assert_eq!(
+            b.place_tree(TreeId(c), crate::browser::Move::History)
+                .unwrap(),
+            Landing::Restore(a)
+        );
+        assert_eq!(
+            b.place_tree(TreeId(a), crate::browser::Move::History)
+                .unwrap(),
+            Landing::Start
+        );
         assert_eq!(b.snapshot().unwrap().current, None);
         assert_eq!(b.snapshot().unwrap().visits.len(), 2);
     }
@@ -2683,10 +2784,14 @@ mod tests {
             .navigate(url("child"), NavigationTarget::ChildOf(c))
             .unwrap();
         b.started(request.clone()).unwrap();
-        assert_eq!(b.settle_tree(TreeId(c)).unwrap(), Landing::Restore(a));
+        assert_eq!(
+            b.place_tree(TreeId(c), crate::browser::Move::History)
+                .unwrap(),
+            Landing::Restore(a)
+        );
         b.restore(a).unwrap();
         assert!(!b.committed(request).unwrap());
-        assert!(!b.tree_states().unwrap()[1].lifecycle.is_open());
+        assert!(!b.tree_states().unwrap()[1].spot.place().is_tab());
     }
 
     #[test]
@@ -2696,9 +2801,13 @@ mod tests {
         follow(&mut b, "c", NavigationTarget::Root);
         let request = b.restore(a).unwrap();
         b.started(request.clone()).unwrap();
-        assert_eq!(b.settle_tree(TreeId(a)).unwrap(), Landing::Unchanged);
+        assert_eq!(
+            b.place_tree(TreeId(a), crate::browser::Move::History)
+                .unwrap(),
+            Landing::Unchanged
+        );
         assert!(b.committed(request).unwrap());
-        assert!(b.tree_states().unwrap()[0].lifecycle.is_open());
+        assert!(b.tree_states().unwrap()[0].spot.place().is_tab());
     }
 
     #[test]
@@ -2707,12 +2816,14 @@ mod tests {
             let mut b = memory();
             let a = follow(&mut b, "a", NavigationTarget::Root);
             follow(&mut b, "c", NavigationTarget::Root);
-            b.settle_tree(TreeId(a)).unwrap();
+            b.place_tree(TreeId(a), crate::browser::Move::History)
+                .unwrap();
             let request = b.restore(a).unwrap();
             b.started(request.clone()).unwrap();
             if action != 0 {
                 b.committed(request.clone()).unwrap();
-                b.settle_tree(TreeId(a)).unwrap();
+                b.place_tree(TreeId(a), crate::browser::Move::History)
+                    .unwrap();
             }
             let request = match action {
                 1 => b.reload().unwrap().unwrap(),
@@ -2725,7 +2836,7 @@ mod tests {
                 b.started(request.clone()).unwrap();
             }
             assert!(b.committed(request).unwrap());
-            assert!(b.tree_states().unwrap()[0].lifecycle.is_open());
+            assert!(b.tree_states().unwrap()[0].spot.place().is_tab());
         }
     }
 
@@ -2735,7 +2846,11 @@ mod tests {
         let a = follow(&mut b, "a", NavigationTarget::Root);
         b.add_roots(&[url("planted")]).unwrap();
         let c = follow(&mut b, "c", NavigationTarget::Root);
-        assert_eq!(b.settle_tree(TreeId(c)).unwrap(), Landing::Restore(a));
+        assert_eq!(
+            b.place_tree(TreeId(c), crate::browser::Move::History)
+                .unwrap(),
+            Landing::Restore(a)
+        );
     }
 
     #[test]
@@ -2743,7 +2858,9 @@ mod tests {
         let mut b = memory();
         follow(&mut b, "a", NavigationTarget::Root);
         let child = follow_child(&mut b, "child");
-        assert!(b.settle_tree(TreeId(child)).is_err());
+        assert!(b
+            .place_tree(TreeId(child), crate::browser::Move::History)
+            .is_err());
     }
 
     #[test]
@@ -3864,13 +3981,15 @@ mod tests {
                 .unwrap();
             b.rename_tree(TreeId(root), "Seeded tree").unwrap();
             let snapshot = b.snapshot().unwrap();
+            let states = b.tree_states().unwrap();
+            places::legacy_14(&b.connection);
             b.connection
                 .execute_batch(
                     "ALTER TABLE visits DROP COLUMN dismissed_at;
                 ALTER TABLE visits DROP COLUMN branch_settled_at; DROP TABLE site_page_scale; ALTER TABLE session DROP COLUMN trees_help; PRAGMA user_version=11;",
                 )
                 .unwrap();
-            (snapshot, b.tree_states().unwrap(), events(&b))
+            (snapshot, states, events(&b))
         };
         std::fs::copy(&original, &copy).unwrap();
         let first = TestBrowser::open(&copy).unwrap();
@@ -3899,7 +4018,11 @@ mod tests {
         let head = b
             .queue_link(root, url("waiting"), source("queued"))
             .unwrap();
-        assert!(b.move_to_tree(head).is_err());
+        assert_eq!(
+            b.move_branch(head, MoveTo::OwnTree(TabPlacement::End))
+                .unwrap(),
+            MoveOutcome::Unchanged
+        );
         b.restore(head).unwrap();
         let u = b.visit(head).unwrap().url;
         b.started(u.clone()).unwrap();
@@ -3909,7 +4032,8 @@ mod tests {
         let u = b.visit(root).unwrap().url;
         b.started(u.clone()).unwrap();
         b.committed(u).unwrap();
-        b.move_to_tree(head).unwrap();
+        b.move_branch(head, MoveTo::OwnTree(TabPlacement::End))
+            .unwrap();
         assert_eq!(b.visit(head).unwrap().parent, None);
         assert_eq!(b.visit(leaf).unwrap().parent, Some(head));
         assert_eq!(b.tree_target(TreeId(root)).unwrap(), root);
@@ -3953,7 +4077,8 @@ mod tests {
             .unwrap();
         let leaf = VisitId(Ulid::new());
         b.connection.execute("INSERT INTO visits(id,parent_id,url,title,created_at,opened_at) VALUES(?1,?2,?3,'Seen child',1,1)",params![leaf.to_string(),head.to_string(),url("leaf").as_str()]).unwrap();
-        b.move_to_tree(head).unwrap();
+        b.move_branch(head, MoveTo::OwnTree(TabPlacement::End))
+            .unwrap();
         assert_eq!(b.visit(head).unwrap().opened_at, None);
         assert_eq!(b.tree_target(TreeId(head)).unwrap(), leaf);
         assert_eq!(b.tree_target(TreeId(root)).unwrap(), root);
@@ -3979,5 +4104,379 @@ mod tests {
         assert_eq!(b.snapshot().unwrap().current, Some(head));
         assert!(b.visit(head).unwrap().branch_settled_at.is_none());
         assert_eq!(b.visit(waiting).unwrap().state, VisitState::Queued);
+    }
+    #[test]
+    fn move_branch_reparents_preserves_current_and_repairs_targets() {
+        let mut b = memory();
+        let a = follow(&mut b, "a", NavigationTarget::Root);
+        let head = follow_child(&mut b, "head");
+        let leaf = follow_child(&mut b, "leaf");
+        let waiting = b
+            .queue_link(head, url("waiting"), source("waiting"))
+            .unwrap();
+        let sibling = follow(&mut b, "sibling", NavigationTarget::ChildOf(a));
+        assert_eq!(
+            b.move_branch(head, MoveTo::Page(sibling)).unwrap(),
+            MoveOutcome::BranchMoved { tree: TreeId(a) }
+        );
+        assert_eq!(b.visit(leaf).unwrap().parent, Some(head));
+        assert_eq!(b.visit(waiting).unwrap().opened_at, None);
+        assert_eq!(b.tree_target(TreeId(a)).unwrap(), sibling);
+        let t = follow(&mut b, "t", NavigationTarget::Root);
+        let request = b.restore(leaf).unwrap();
+        b.started(request.clone()).unwrap();
+        b.committed(request).unwrap();
+        let events = b
+            .connection
+            .query_row("SELECT COUNT(*) FROM visit_events", [], |r| {
+                r.get::<_, usize>(0)
+            })
+            .unwrap();
+        assert_eq!(
+            b.move_branch(head, MoveTo::Tree(TreeId(t))).unwrap(),
+            MoveOutcome::BranchMoved { tree: TreeId(t) }
+        );
+        assert_eq!(b.current_id().unwrap(), Some(leaf));
+        assert_eq!(b.tree_target(TreeId(t)).unwrap(), leaf);
+        assert_eq!(b.tree_target(TreeId(a)).unwrap(), sibling);
+        assert_eq!(
+            b.connection
+                .query_row("SELECT COUNT(*) FROM visit_events", [], |r| r
+                    .get::<_, usize>(0))
+                .unwrap(),
+            events
+        );
+        assert_eq!(
+            forest_on(&b.connection).unwrap().tree_of(waiting),
+            Some(TreeId(t))
+        );
+        let snapshot = b.snapshot().unwrap();
+        let states = b.tree_states().unwrap();
+        assert_eq!(
+            b.move_branch(head, MoveTo::Tree(TreeId(t))).unwrap(),
+            MoveOutcome::Unchanged
+        );
+        assert_eq!(b.snapshot().unwrap(), snapshot);
+        assert_eq!(b.tree_states().unwrap(), states);
+    }
+
+    #[test]
+    fn move_branch_appends_a_tab_and_drops_source_state_when_merged() {
+        let mut b = memory();
+        let a = follow(&mut b, "a", NavigationTarget::Root);
+        let head = follow_child(&mut b, "head");
+        let t = TreeId(follow(&mut b, "t", NavigationTarget::Root));
+        b.rename_tree(TreeId(a), "Source name").unwrap();
+        b.place_tree(TreeId(a), Move::Pin(true)).unwrap();
+        assert_eq!(
+            b.move_branch(head, MoveTo::OwnTree(TabPlacement::End))
+                .unwrap(),
+            MoveOutcome::BranchMoved { tree: TreeId(head) }
+        );
+        assert_eq!(tab_roots(&b), [TreeId(a), t, TreeId(head)]);
+        assert_eq!(
+            b.move_branch(head, MoveTo::OwnTree(TabPlacement::Before(t)))
+                .unwrap(),
+            MoveOutcome::TabReordered
+        );
+        assert_eq!(tab_roots(&b), [TreeId(a), TreeId(head), t]);
+        b.rename_tree(TreeId(head), "Discard me").unwrap();
+        b.place_tree(TreeId(head), Move::Pin(true)).unwrap();
+        b.connection
+            .execute(
+                "INSERT INTO declined_suggestions VALUES(?1)",
+                [format!("tree {head}")],
+            )
+            .unwrap();
+        b.connection
+            .execute("INSERT INTO declined_suggestions VALUES('other key')", [])
+            .unwrap();
+        assert_eq!(
+            b.move_branch(head, MoveTo::Tree(t)).unwrap(),
+            MoveOutcome::BranchMoved { tree: t }
+        );
+        assert!(b
+            .tree_states()
+            .unwrap()
+            .iter()
+            .all(|s| s.root != TreeId(head) && s.name.as_deref() != Some("Discard me")));
+        assert_eq!(tab_roots(&b), [TreeId(a), t]);
+        assert_eq!(
+            b.connection
+                .query_row("SELECT COUNT(*) FROM declined_suggestions", [], |r| r
+                    .get::<_, usize>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            b.move_branch(head, MoveTo::Tree(t)).unwrap(),
+            MoveOutcome::Unchanged
+        );
+        b.move_branch(head, MoveTo::OwnTree(TabPlacement::End))
+            .unwrap();
+        let state = b
+            .tree_states()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.root == TreeId(head))
+            .unwrap();
+        assert_eq!(state.name, None);
+        assert_eq!(state.place(), Place::Tab { pinned: false });
+        let states = b.tree_states().unwrap();
+        assert_eq!(
+            b.move_branch(head, MoveTo::OwnTree(TabPlacement::End))
+                .unwrap(),
+            MoveOutcome::Unchanged
+        );
+        assert_eq!(b.tree_states().unwrap(), states);
+    }
+
+    #[test]
+    fn move_branch_refusals_and_choices_use_the_same_forest() {
+        let mut b = memory();
+        let a = follow(&mut b, "a", NavigationTarget::Root);
+        let head = follow_child(&mut b, "head");
+        let leaf = follow_child(&mut b, "leaf");
+        let waiting = b.queue_link(a, url("waiting"), source("waiting")).unwrap();
+        let t = follow(&mut b, "t", NavigationTarget::Root);
+        let settled = follow_child(&mut b, "settled");
+        b.settle_branch(settled).unwrap();
+        let put_away = follow(&mut b, "put-away", NavigationTarget::Root);
+        b.place_tree(TreeId(put_away), Move::History).unwrap();
+        let shelf = follow(&mut b, "shelf", NavigationTarget::Root);
+        b.place_tree(TreeId(shelf), Move::Shelf(Slot::End)).unwrap();
+        let gone = VisitId(Ulid::new());
+        for (h, to) in [
+            (gone, MoveTo::Page(t)),
+            (head, MoveTo::Page(gone)),
+            (head, MoveTo::Tree(TreeId(gone))),
+            (head, MoveTo::Page(head)),
+            (head, MoveTo::Page(leaf)),
+            (head, MoveTo::Page(a)),
+            (head, MoveTo::Page(waiting)),
+            (head, MoveTo::Page(settled)),
+            (head, MoveTo::Tree(TreeId(put_away))),
+            (head, MoveTo::Tree(TreeId(shelf))),
+            (waiting, MoveTo::OwnTree(TabPlacement::End)),
+            (head, MoveTo::OwnTree(TabPlacement::Before(TreeId(gone)))),
+            (t, MoveTo::OwnTree(TabPlacement::Before(TreeId(t)))),
+        ] {
+            let before = b.snapshot().unwrap();
+            let states = b.tree_states().unwrap();
+            assert_eq!(
+                b.move_branch(h, to).unwrap(),
+                MoveOutcome::Unchanged,
+                "{h} {to:?}"
+            );
+            assert_eq!(b.snapshot().unwrap(), before);
+            assert_eq!(b.tree_states().unwrap(), states);
+        }
+        let choices = forest_on(&b.connection).unwrap().branch_move_choices(head);
+        assert_eq!(
+            choices.trees.iter().map(|t| t.tree).collect::<Vec<_>>(),
+            [TreeId(t)]
+        );
+        b.move_branch(t, MoveTo::Page(a)).unwrap();
+        let before = b.snapshot().unwrap();
+        assert_eq!(
+            b.move_branch(head, MoveTo::Tree(TreeId(t))).unwrap(),
+            MoveOutcome::Unchanged
+        );
+        assert_eq!(b.snapshot().unwrap(), before);
+        assert!(matches!(
+            b.move_branch(head, MoveTo::Page(t)).unwrap(),
+            MoveOutcome::BranchMoved { .. }
+        ));
+    }
+
+    #[test]
+    fn move_branch_waiting_root_requires_an_opened_survivor() {
+        let mut b = memory();
+        let a = follow(&mut b, "a", NavigationTarget::Root);
+        let waiting = b.queue_link(a, url("waiting"), source("waiting")).unwrap();
+        let leaf = VisitId(Ulid::new());
+        b.connection.execute("INSERT INTO visits(id,parent_id,url,title,created_at,opened_at) VALUES(?1,?2,?3,'Seen',1,1)", params![leaf.to_string(),waiting.to_string(),url("leaf").as_str()]).unwrap();
+        b.move_branch(waiting, MoveTo::OwnTree(TabPlacement::End))
+            .unwrap();
+        for to in [MoveTo::Page(a), MoveTo::OwnTree(TabPlacement::End)] {
+            assert_eq!(b.move_branch(leaf, to).unwrap(), MoveOutcome::Unchanged);
+        }
+        assert!(!forest_on(&b.connection).unwrap().can_detach_branch(leaf));
+        assert_eq!(b.tree_target(TreeId(waiting)).unwrap(), leaf);
+        assert!(matches!(
+            b.move_branch(waiting, MoveTo::Tree(TreeId(a))).unwrap(),
+            MoveOutcome::BranchMoved { .. }
+        ));
+    }
+
+    #[test]
+    fn move_branch_rolls_back_and_survives_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("forest.db");
+        let mut b = TestBrowser::open(&path).unwrap();
+        let a = follow(&mut b, "a", NavigationTarget::Root);
+        let head = follow_child(&mut b, "head");
+        let t = follow(&mut b, "t", NavigationTarget::Root);
+        let before = b.snapshot().unwrap();
+        let states = b.tree_states().unwrap();
+        b.connection.execute_batch("CREATE TRIGGER reject_move BEFORE UPDATE ON tree_state BEGIN SELECT RAISE(ABORT, 'forced'); END;").unwrap();
+        assert!(b.move_branch(head, MoveTo::Page(t)).is_err());
+        assert_eq!(b.snapshot().unwrap(), before);
+        assert_eq!(b.tree_states().unwrap(), states);
+        b.connection
+            .execute_batch("DROP TRIGGER reject_move")
+            .unwrap();
+        b.move_branch(head, MoveTo::Page(t)).unwrap();
+        b.move_branch(a, MoveTo::Page(head)).unwrap();
+        let snapshot = b.snapshot().unwrap();
+        let states = b.tree_states().unwrap();
+        drop(b);
+        let b = Browser::open(&path).unwrap();
+        assert_eq!(b.snapshot().unwrap(), snapshot);
+        assert_eq!(b.tree_states().unwrap(), states);
+        forest_on(&b.connection).unwrap();
+    }
+
+    #[test]
+    fn seeded_move_sequences_keep_every_tree_state_valid() {
+        let mut b = memory();
+        let mut ids = Vec::new();
+        for n in 0..5 {
+            let root = follow(&mut b, &format!("root-{n}"), NavigationTarget::Root);
+            ids.push(root);
+            for i in 0..3 {
+                ids.push(follow(
+                    &mut b,
+                    &format!("child-{n}-{i}"),
+                    NavigationTarget::ChildOf(root),
+                ));
+            }
+        }
+        let waiting = b
+            .queue_link(ids[0], url("waiting"), source("waiting"))
+            .unwrap();
+        let leaf = VisitId(Ulid::new());
+        b.connection.execute("INSERT INTO visits(id,parent_id,url,title,created_at,opened_at) VALUES(?1,?2,?3,'Seen',1,1)", params![leaf.to_string(),waiting.to_string(),url("leaf").as_str()]).unwrap();
+        b.move_branch(waiting, MoveTo::OwnTree(TabPlacement::End))
+            .unwrap();
+        ids.extend([waiting, leaf]);
+        b.place_tree(TreeId(ids[0]), Move::Pin(true)).unwrap();
+        b.place_tree(TreeId(ids[16]), Move::Shelf(Slot::End))
+            .unwrap();
+        b.place_tree(TreeId(waiting), Move::History).unwrap();
+        b.connection
+            .execute(
+                "UPDATE tree_state SET position=position+1 WHERE place='tab'",
+                [],
+            )
+            .unwrap();
+        assert!(matches!(
+            b.move_branch(ids[1], MoveTo::Tree(TreeId(ids[4]))).unwrap(),
+            MoveOutcome::BranchMoved { .. }
+        ));
+        let mut seed = 0x726f6f74_u64;
+        for _ in 0..400 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let head = ids[seed as usize % ids.len()];
+            let target = ids[(seed >> 24) as usize % ids.len()];
+            let to = match seed % 4 {
+                0 => MoveTo::Page(target),
+                1 => MoveTo::Tree(TreeId(target)),
+                2 => MoveTo::OwnTree(TabPlacement::End),
+                _ => MoveTo::OwnTree(TabPlacement::Before(TreeId(target))),
+            };
+            b.move_branch(head, to).unwrap();
+            forest_on(&b.connection).unwrap();
+            for (index, state) in b
+                .tree_states()
+                .unwrap()
+                .into_iter()
+                .filter(|state| state.place().is_tab())
+                .enumerate()
+            {
+                assert!(
+                    matches!(state.spot, Spot::Tab { position, .. } if position as usize == index)
+                );
+            }
+            b.connection
+                .execute("UPDATE tree_state SET last_visit_id=last_visit_id", [])
+                .unwrap();
+        }
+    }
+    #[test]
+    fn moving_a_cited_branch_hides_stale_source_actions() {
+        let mut b = memory();
+        let a = follow(&mut b, "a", NavigationTarget::Root);
+        let mut origin = source("citation");
+        origin.page_url = b.visit(a).unwrap().url;
+        origin.citation_url = Some(url("comment"));
+        let request = b.follow_link(a, url("child"), origin.clone()).unwrap();
+        b.started(request.clone()).unwrap();
+        b.committed(request).unwrap();
+        let child = b.current_id().unwrap().unwrap();
+        assert!(forest_on(&b.connection)
+            .unwrap()
+            .citation_parent_matches(child));
+        let t = follow(&mut b, "t", NavigationTarget::Root);
+        b.move_branch(child, MoveTo::Page(t)).unwrap();
+        assert!(!forest_on(&b.connection)
+            .unwrap()
+            .source_parent_matches(child));
+        assert_eq!(b.open_citation(child).unwrap(), None);
+        assert_eq!(b.visit(child).unwrap().source, Some(origin));
+    }
+    #[test]
+    fn moving_pending_visits_keeps_committed_selection_until_commit() {
+        for restore in [false, true] {
+            let mut b = memory();
+            let a = follow(&mut b, "a", NavigationTarget::Root);
+            let head = follow_child(&mut b, "head");
+            let t = follow(&mut b, "t", NavigationTarget::Root);
+            let request = if restore {
+                b.restore(head).unwrap()
+            } else {
+                b.navigate(url("pending-child"), NavigationTarget::ChildOf(head))
+                    .unwrap()
+            };
+            let ticket = b.navigation.pending_ticket();
+            b.move_branch(head, MoveTo::Tree(TreeId(t))).unwrap();
+            assert_eq!(b.current_id().unwrap(), Some(t));
+            assert_eq!(b.tree_target(TreeId(t)).unwrap(), t);
+            assert_eq!(b.tree_target(TreeId(a)).unwrap(), a);
+            assert_eq!(b.navigation.pending_ticket(), ticket);
+            b.started(request.clone()).unwrap();
+            b.committed(request).unwrap();
+            let committed = b.current_id().unwrap().unwrap();
+            assert_eq!(
+                forest_on(&b.connection).unwrap().tree_of(committed),
+                Some(TreeId(t))
+            );
+            assert_eq!(b.tree_target(TreeId(t)).unwrap(), committed);
+            if restore {
+                assert_eq!(committed, head);
+            } else {
+                assert_eq!(b.visit(committed).unwrap().parent, Some(head));
+            }
+        }
+    }
+
+    #[test]
+    fn move_branch_validates_untouched_tree_rows_before_commit() {
+        let mut b = memory();
+        let a = follow(&mut b, "a", NavigationTarget::Root);
+        let head = follow_child(&mut b, "head");
+        let t = follow(&mut b, "t", NavigationTarget::Root);
+        let unrelated = follow(&mut b, "unrelated", NavigationTarget::Root);
+        b.connection.execute_batch(&format!("CREATE TRIGGER invalidate_unrelated AFTER UPDATE OF parent_id ON visits BEGIN DELETE FROM tree_state WHERE root_id='{unrelated}'; END;")).unwrap();
+        let snapshot = b.snapshot().unwrap();
+        let states = b.tree_states().unwrap();
+        assert!(b
+            .move_branch(head, MoveTo::Tree(TreeId(t)))
+            .unwrap_err()
+            .to_string()
+            .contains("Missing tree state"));
+        assert_eq!(b.snapshot().unwrap(), snapshot);
+        assert_eq!(b.tree_states().unwrap(), states);
+        assert_eq!(b.visit(head).unwrap().parent, Some(a));
     }
 }

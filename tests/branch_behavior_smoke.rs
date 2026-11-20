@@ -519,7 +519,7 @@ fn painted(f: &Fixture) -> Result<()> {
 fn open_trees(f: &Fixture) -> Vec<TreeId> {
     f.pages
         .read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))
-        .map(|forest| forest.open().iter().map(|t| t.id).collect())
+        .map(|forest| forest.tabs().iter().map(|t| t.id).collect())
         .unwrap_or_default()
 }
 

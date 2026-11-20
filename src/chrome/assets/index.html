@@ -4,10 +4,14 @@
 <meta charset="utf-8">
 <title>Canopy chrome</title>
 <link rel="stylesheet" href="chrome.css">
+<link rel="stylesheet" href="forest.css">
+<link rel="stylesheet" href="forest-canopy.css">
+<link rel="stylesheet" href="forest-history.css">
+
 </head>
 <body>
 <header id="tabs">
-  <button id="forest-button" class="label-button" title="Forest · Ctrl+E" aria-pressed="false"></button>
+  <button id="forest-button" class="label-button" title="Canopy · Ctrl+E" aria-pressed="false"></button>
   <div class="tabs-divider"></div>
   <div id="tab-row" role="tablist" aria-label="Open trees"></div>
   <button id="tab-overflow" aria-haspopup="menu" aria-expanded="false" class="icon-button" title="More trees" aria-label="More trees" hidden></button>
@@ -56,7 +60,7 @@
     <div id="tree-list" role="tree" aria-label="Pages" class="sheet-body" hidden></div>
   </div>
 </div>
-<div id="pins"><button id="waiting-pin" aria-haspopup="menu" aria-expanded="false" class="pin" data-pin="waiting" aria-label="Next waiting page" hidden></button><button id="mail-pin" class="pin" data-pin="mail" aria-haspopup="dialog" aria-expanded="false" aria-label="Unread mail" hidden></button><button id="zoom-pin" class="pin icon-pin" data-pin="zoom" aria-pressed="false" title="Zoom into this tree · Ctrl+Shift+E" aria-label="Zoom into this tree" hidden></button></div>
+<div id="pins"><button id="playing-pin" class="pin" data-pin="playing" aria-label="Nothing playing" hidden></button><button id="waiting-pin" aria-haspopup="menu" aria-expanded="false" class="pin" data-pin="waiting" aria-label="Next waiting page" hidden></button><button id="mail-pin" class="pin" data-pin="mail" aria-haspopup="dialog" aria-expanded="false" aria-label="Unread mail" hidden></button><button id="zoom-pin" class="pin icon-pin" data-pin="zoom" aria-pressed="false" title="Zoom into this tree · Ctrl+Shift+E" aria-label="Zoom into this tree" hidden></button></div>
 
 <div id="start" class="surface dapple" hidden>
   <div id="start-column">
@@ -66,25 +70,30 @@
   </div>
 </div>
 
-<div id="forest" class="overlay" role="dialog" aria-modal="true" aria-label="Forest" hidden>
+<div id="forest" class="overlay" role="dialog" aria-modal="true" aria-label="Canopy" hidden>
   <div class="scrim"></div>
   <div class="forest-pop">
     <div class="forest-toolbar">
-      <strong>Forest</strong>
+      <div id="forest-views" role="group" aria-label="Canopy views"><button data-view="canopy">Canopy</button><button data-view="history">History</button></div>
+      <div id="canopy-layout" role="group" aria-label="Layout"></div>
+      <div id="canopy-zoom" role="group" aria-label="Zoom"></div>
       <span class="menu-detail" id="forest-count"></span>
       <div class="spacer"></div>
-      <button class="action" id="forest-titles">Titles</button>
-      <button class="action" id="forest-fit">Fit</button>
-      <button class="action" id="forest-close" aria-label="Close the forest view">×</button>
+      <button id="canopy-back" hidden></button>
+      <input id="forest-find" placeholder="Find a tree" aria-label="Find a tree" spellcheck="false" autocomplete="off">
+      <button class="action" id="forest-close" aria-label="Close Canopy">×</button>
     </div>
-    <div id="forest-canvas" class="dapple">
-      <div id="forest-layer"><svg id="forest-edges" width="1" height="1"></svg><div id="forest-nodes"></div></div>
-    </div>
+    <div id="forest-canopy" class="forest-body" hidden><div class="canopy-world"><svg class="canopy-edges"><g></g></svg><div class="canopy-items" role="group" aria-label="Open trees"></div></div><div id="canopy-tip" role="tooltip" hidden></div></div><div id="canopy-legend" hidden></div>
+    <div id="forest-history" class="forest-body forest-split" hidden><div id="forest-list" role="listbox" aria-label="History"></div><div id="forest-preview"></div></div>
+    <div id="forest-undo" role="status" hidden></div>
+      <div id="forest-empty" class="hint-line" hidden></div>
   </div>
 </div>
 
+<div id="page-drag-warning" role="status" hidden></div>
 <div id="strip-list" hidden></div>
 <div id="popover" tabindex="-1" role="dialog" aria-label="Actions" hidden></div>
+<div id="switcher" role="listbox" aria-label="Pages in this tree" hidden></div>
 
 <div id="palette" role="dialog" aria-modal="true" aria-label="Search" hidden>
   <div class="scrim"></div>
@@ -113,5 +122,9 @@
 <div id="toast-status" class="live-region" role="status" aria-atomic="true"></div>
 
 <script src="chrome.js"></script>
+<script src="forest.js"></script>
+<script src="forest-canopy.js"></script>
+<script src="forest-history.js"></script>
+
 </body>
 </html>

@@ -27,13 +27,13 @@ fn main() -> Result<()> {
         &ui,
         r#"(() => {
       globalThis.timings=[];
-      for (const name of (profiling ? ['renderStart','renderForest','patchChildren','fitForest'] : [])) {
+      for (const name of (profiling ? ['renderStart','renderForest','patchChildren'] : [])) {
         const f=window[name]; window[name]=(...a)=>{const t=performance.now();const r=f(...a);timings.push([name,performance.now()-t]);return r;};
       }
       globalThis.measure=kind=>{
         globalThis.started=performance.now();globalThis.painted=null;
         const observer=new MutationObserver(()=>{
-          const el=document.querySelector(kind==='start'?'#start-content':'#forest-nodes');
+          const el=document.querySelector(kind==='start'?'#start-content':'#forest-trees');
           if (!el.children.length || document.querySelector(kind==='start'?'#start':'#forest').hidden) return;
           observer.disconnect();requestAnimationFrame(()=>requestAnimationFrame(()=>{painted=performance.now()-started;}));
         });

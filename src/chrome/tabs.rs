@@ -85,34 +85,96 @@ fn fit(count: usize, active: Option<usize>, natural: f64, room: f64) -> (Vec<(Mo
     (result, overflow)
 }
 
+/// Pinned trees lead the row. They keep their names while every tab has room for a full
+/// one and fold to their icons first when room runs short; the tree being read keeps its
+/// name either way.
+fn fit_pinned(
+    count: usize,
+    pins: usize,
+    active: Option<usize>,
+    natural: f64,
+    room: f64,
+) -> (Vec<(Mode, f64)>, bool) {
+    if pins == 0 {
+        return fit(count, active, natural, room);
+    }
+    let named = fit(count, active, natural, room);
+    if !named.1
+        && named
+            .0
+            .iter()
+            .all(|&(mode, width)| matches!(mode, Mode::Title) && width >= 160.)
+    {
+        return named;
+    }
+    let icons = (0..pins).filter(|&i| Some(i) != active).count();
+    let reserve = icons as f64 * 36.;
+    let rest: Vec<usize> = (0..count)
+        .filter(|&i| i >= pins || Some(i) == active)
+        .collect();
+    let need_current = if active.is_some() { 34. } else { 0. };
+    // The overflow button needs room only when unpinned trees may not all fit.
+    let need_overflow = if rest.len() > usize::from(active.is_some()) {
+        32.
+    } else {
+        -2.
+    };
+    if room >= reserve + need_current + need_overflow {
+        let (fitted, overflow) = fit(
+            rest.len(),
+            active.and_then(|a| rest.iter().position(|&i| i == a)),
+            natural,
+            (room - reserve).max(0.),
+        );
+        let mut items = vec![(Mode::Icon, 34.); count];
+        for (&i, item) in rest.iter().zip(fitted) {
+            items[i] = item;
+        }
+        return (items, overflow);
+    }
+    let mut items = vec![(Mode::Hidden, 0.); count];
+    let capacity = (((room - 32.).max(0.) + 2.) / 36.).floor() as usize;
+    let mut selected = active.into_iter().chain(0..count).collect::<Vec<_>>();
+    selected.dedup();
+    let mut shown = 0;
+    for i in selected {
+        if !matches!(items[i].0, Mode::Hidden) {
+            continue;
+        }
+        if shown >= capacity.max(usize::from(active.is_some())) {
+            break;
+        }
+        items[i] = (Mode::Icon, 34.);
+        shown += 1;
+    }
+    (items, true)
+}
+
 pub(super) fn layout(forest: &ForestProjection, room: f64, start: bool) -> Value {
     let current = forest
         .current()
         .filter(|_| !start)
         .and_then(|id| forest.tree_of(id));
-    let active = forest.open().iter().position(|t| Some(t.id) == current);
-    let (items, overflow) = fit(
-        forest.open().len(),
+    let active = forest.tabs().iter().position(|t| Some(t.id) == current);
+    let (items, overflow) = fit_pinned(
+        forest.tabs().len(),
+        forest.tabs().partition_point(|t| t.place.pinned()),
         active,
         active
             .map(|i| {
-                let tree = &forest.open()[i];
+                let tree = &forest.tabs()[i];
                 let sub =
                     subtitle(forest, tree).map_or(0., |s| super::view::text_width(&s, 11., 0.53));
                 let title = super::view::text_width(&tree.title, 12.5, 0.56).max(sub) + 64.;
-                title
-                    + if tree.pin.is_some() && title >= 160. {
-                        17.
-                    } else {
-                        0.
-                    }
+                // The pin mark after a pinned tree's name.
+                title + if tree.place.pinned() { 17. } else { 0. }
             })
             .unwrap_or(110.),
         room,
     );
     json!({
         "overflow": overflow,
-        "items": forest.open().iter().zip(items).map(|(tree, (mode, width))| {
+        "items": forest.tabs().iter().zip(items).map(|(tree, (mode, width))| {
             json!({"id": tree.id.root().to_string(), "mode": match mode { Mode::Title => "title", Mode::Icon => "icon", Mode::Hidden => "hidden" }, "width": width, "short": width < 160.})
         }).collect::<Vec<_>>()
     })
@@ -122,6 +184,49 @@ pub(super) fn layout(forest: &ForestProjection, room: f64, start: bool) -> Value
 mod tests {
     use super::*;
 
+    #[test]
+    fn pinned_icons_stay_first_and_current_survives_pin_overflow() {
+        for room in [1000., 600., 300., 150., 60.] {
+            let (tabs, overflow) = fit_pinned(20, 4, Some(10), 200., room);
+            assert!(!matches!(tabs[10].0, Mode::Hidden));
+            if room >= 4. * 36. + 34. + 32. {
+                for t in &tabs[..4] {
+                    assert!(matches!(t.0, Mode::Icon));
+                    assert_eq!(t.1, 34.);
+                }
+            }
+            if room < 20. * 36. {
+                assert!(overflow);
+            }
+        }
+        // The pinned tree being read keeps its name while the other pins fold.
+        let (tabs, _) = fit_pinned(8, 4, Some(2), 200., 800.);
+        assert!(matches!(tabs[2].0, Mode::Title));
+        for i in [0, 1, 3] {
+            assert!(matches!(tabs[i].0, Mode::Icon));
+        }
+    }
+
+    #[test]
+    fn pins_keep_their_names_while_there_is_room() {
+        // Two trees, one pinned, in a wide window: both named.
+        let (tabs, overflow) = fit_pinned(2, 1, Some(1), 240., 1200.);
+        assert!(!overflow);
+        assert!(tabs
+            .iter()
+            .all(|t| matches!(t.0, Mode::Title) && t.1 >= 160.));
+        // Short of room, the pin folds to its icon before any other tree loses its name.
+        let (tabs, _) = fit_pinned(6, 1, Some(5), 240., 900.);
+        assert!(matches!(tabs[0].0, Mode::Icon));
+        assert!(tabs[1..].iter().all(|t| matches!(t.0, Mode::Title)));
+        // Only pins, no room for names: icons.
+        let (tabs, overflow) = fit_pinned(3, 3, None, 200., 300.);
+        assert!(!overflow);
+        assert!(tabs.iter().all(|t| matches!(t.0, Mode::Icon)));
+        let (tabs, overflow) = fit_pinned(3, 3, None, 200., 106.);
+        assert!(!overflow);
+        assert!(tabs.iter().all(|t| matches!(t.0, Mode::Icon)));
+    }
     #[test]
     fn active_title_gets_room_before_other_trees() {
         for room in [900., 600., 300., 240., 120., 40.] {

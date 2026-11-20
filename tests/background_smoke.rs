@@ -478,6 +478,41 @@ fn switching_elsewhere_keeps_an_adopted_background_load() -> Result<()> {
     assert_eq!(f.hits("/slow-switch"), 1);
     Ok(())
 }
+fn leaving_an_opening_page_keeps_it_muted_in_a_slot_and_timed() -> Result<()> {
+    let f = Fixture::new()?;
+    f.ui.pages
+        .set_background_timeout(std::time::Duration::from_secs(3));
+    let source = f.root("/source")?;
+    let q = f.queue("/hang-left")?;
+    common::wait("background request started", || f.hits("/hang-left") == 1)?;
+    f.ui.pages.go(Go::Visit(q))?;
+    common::pump(300);
+    for path in ["/hang-l1", "/hang-l2", "/hang-l3"] {
+        f.queue(path)?;
+    }
+    common::pump(500);
+    assert_eq!(
+        (f.hits("/hang-l1"), f.hits("/hang-l2"), f.hits("/hang-l3")),
+        (1, 1, 0),
+        "the page being opened keeps its load slot"
+    );
+    f.ui.pages.go(Go::Visit(source))?;
+    common::pump(300);
+    let view =
+        f.ui.pages
+            .background_view(q)
+            .expect("left page goes back to the background");
+    assert!(view.is_muted(), "a page left before it appeared is muted");
+    assert_eq!(f.hits("/hang-l3"), 0, "the left page still holds its slot");
+    common::wait("left page expires", || {
+        f.ui.pages.background_view(q).is_none()
+    })?;
+    assert!(!f.ui.pages.loaded_visits().contains(&q));
+    assert_eq!(f.hits("/hang-left"), 1);
+    f.ui.pages
+        .set_background_timeout(std::time::Duration::from_secs(20));
+    Ok(())
+}
 fn three_loads_run_and_newest_pending_starts_first() -> Result<()> {
     let f = Fixture::new()?;
     f.root("/source")?;
@@ -553,7 +588,8 @@ fn settling_destroys_never_seen_and_pending_loads() -> Result<()> {
         .read(|b| canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?
         .tree_of(source)
         .unwrap();
-    f.ui.pages.settle_tree(tree)?;
+    f.ui.pages
+        .place_tree(tree, canopy::browser::Move::History)?;
     common::pump(3000);
     assert!(f.ui.pages.loaded_visits().is_empty());
     assert!(f.ui.pages.background_view(q).is_none());
@@ -687,6 +723,10 @@ fn main() -> Result<()> {
         (
             "switching_elsewhere_keeps_an_adopted_background_load",
             switching_elsewhere_keeps_an_adopted_background_load,
+        ),
+        (
+            "leaving_an_opening_page_keeps_it_muted_in_a_slot_and_timed",
+            leaving_an_opening_page_keeps_it_muted_in_a_slot_and_timed,
         ),
         (
             "middle_click_loads_silently_and_opening_reuses_the_muted_page",

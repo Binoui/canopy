@@ -173,6 +173,8 @@ impl Fixture {
 fn main() -> Result<()> {
     let directory = tempfile::tempdir()?;
     common::start(directory.path())?;
+    page_move_drag()?;
+    page_move_picker()?;
     let f = Fixture::new()?;
     let a = f.root("/garden")?;
     let b = f.child(a, "/orchard")?;
@@ -183,7 +185,10 @@ fn main() -> Result<()> {
     f.select(peach)?;
     assert!(f.ui.pages.live_visits().contains(&c));
     let moved_view = f.ui.pages.selected_page().native.clone();
-    f.ui.pages.move_to_tree(b)?;
+    f.ui.pages.move_branch(
+        b,
+        canopy::browser::MoveTo::OwnTree(canopy::browser::TabPlacement::End),
+    )?;
     common::wait("moved tree tab selected", || {
         common::chrome(
             &f.ui,
@@ -286,7 +291,23 @@ fn main() -> Result<()> {
             0
         );
         f.shot("strip-row-menu", theme)?;
+        common::click_chrome(&f.ui, "[data-node-action='choose-move-tree']")?;
+        common::wait("attached-row tree choices", || {
+            common::chrome(
+                &f.ui,
+                "S.popover?.kind === 'move-tree' && !!S.popover.data.choices",
+            )
+            .is_ok_and(|v| v == true)
+        })?;
+        common::pump(300);
         common::key("Escape")?;
+        common::wait("picker restores attached-row focus", || {
+            common::chrome(
+                &f.ui,
+                &format!("document.activeElement?.dataset.id === '{waiting}'"),
+            )
+            .is_ok_and(|v| v == true)
+        })?;
         common::open_list(&f.ui)?;
         f.menu("#strip-list .bl-head")?;
         common::key("Escape")?;
@@ -408,13 +429,14 @@ fn main() -> Result<()> {
         || f.ui.snapshot().is_ok_and(|s| s.current == Some(waiting)),
     )?;
     println!("PASS waiting-row node menu, Dismiss drops its background view and queue entry, reopening clears the mark, Ctrl+Tab reads remaining waiting.");
-    f.ui.pages.settle_tree(
+    f.ui.pages.place_tree(
         f.ui.pages
             .read(|b| {
                 canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)
             })?
             .tree_of(a)
             .unwrap(),
+        canopy::browser::Move::History,
     )?;
     common::wait("tree settle undo", || {
         common::visible(&f.ui, "#toast button")
@@ -570,7 +592,10 @@ fn main() -> Result<()> {
         || f.ui.snapshot().is_ok_and(|s| s.current == Some(older)),
     )?;
     f.select(nav_root)?;
-    f.ui.pages.move_to_tree(settled)?;
+    f.ui.pages.move_branch(
+        settled,
+        canopy::browser::MoveTo::OwnTree(canopy::browser::TabPlacement::End),
+    )?;
     common::wait("moved settled branch is an open tree", || {
         common::chrome(
             &f.ui,
@@ -630,5 +655,349 @@ fn main() -> Result<()> {
         .is_some());
     resumed.window.close();
     println!("PASS restart during a branch landing keeps the branch put away.");
+    Ok(())
+}
+
+fn page_move_picker() -> Result<()> {
+    let f = Fixture::new()?;
+    let source = f.root("/move-source")?;
+    let head = f.child(source, "/move-head")?;
+    let leaf = f.child(head, "/move-leaf")?;
+    let target = f.root("/move-target")?;
+    f.select(leaf)?;
+    let view = f.ui.pages.selected_page().native.clone();
+    let hits = f.hits("/move-leaf");
+    f.ui.chrome.native().grab_focus();
+    common::chrome(&f.ui, &format!("(() => {{ document.querySelector(\"#strip-nodes [data-page='{head}']\").focus(); return true; }})()"))?;
+    common::key("shift+F10")?;
+    common::wait("keyboard page menu", || {
+        common::visible(&f.ui, "[data-node-action='choose-move-tree']")
+    })?;
+    // Delete is the last row; Move to tree… sits just above it.
+    common::key("End")?;
+    common::key("Up")?;
+    common::key("Return")?;
+    common::wait("tree picker destination", || {
+        common::visible(&f.ui, &format!("[data-move-tree='{target}']"))
+    })?;
+    common::key("Home")?;
+    common::key("Return")?;
+    common::wait("picker moves branch", || {
+        f.ui.snapshot().is_ok_and(|s| {
+            s.visits
+                .iter()
+                .any(|v| v.id == head && v.parent == Some(target))
+        })
+    })?;
+    assert_eq!(f.ui.snapshot()?.current, Some(leaf));
+    assert_eq!(f.ui.pages.selected_page().native, view);
+    assert_eq!(f.hits("/move-leaf"), hits);
+    let db = rusqlite::Connection::open(f._directory.path().join("forest.sqlite3"))?;
+    let parent: String = db.query_row(
+        "SELECT parent_id FROM visits WHERE id=?1",
+        [head.to_string()],
+        |r| r.get(0),
+    )?;
+    assert_eq!(parent, target.to_string());
+    let last: String = db.query_row(
+        "SELECT last_visit_id FROM tree_state WHERE root_id=?1",
+        [target.to_string()],
+        |r| r.get(0),
+    )?;
+    assert_eq!(last, leaf.to_string());
+    f.select(source)?;
+    f.menu("#strip-nodes .pill")?;
+    assert_eq!(
+        common::text(&f.ui, "[data-node-action='choose-move-tree']"),
+        "Merge into tree…"
+    );
+    common::click_chrome(&f.ui, "[data-node-action='choose-move-tree']")?;
+    common::wait("Rust merge warning", || {
+        common::text(&f.ui, "#popover").contains("drops its name and tab")
+    })?;
+    common::key("Home")?;
+    common::key("Return")?;
+    common::wait("picker merges root", || {
+        f.ui.snapshot().is_ok_and(|s| {
+            s.visits
+                .iter()
+                .any(|v| v.id == source && v.parent == Some(target))
+        })
+    })?;
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM tree_state WHERE root_id=?1",
+            [source.to_string()],
+            |r| r.get::<_, usize>(0)
+        )?,
+        0
+    );
+    f.ui.window.close();
+    common::pump(200);
+    let restarted = canopy::ui::Ui::new(f._directory.path())?;
+    restarted.window.show_all();
+    common::ready(&restarted)?;
+    restarted.resume(&[])?;
+    common::wait("moved tree survives restart", || {
+        restarted
+            .snapshot()
+            .is_ok_and(|s| s.current == Some(source))
+    })?;
+    let snapshot = restarted.snapshot()?;
+    assert_eq!(
+        snapshot
+            .visits
+            .iter()
+            .find(|v| v.id == source)
+            .unwrap()
+            .parent,
+        Some(target)
+    );
+    assert_eq!(
+        snapshot
+            .visits
+            .iter()
+            .find(|v| v.id == head)
+            .unwrap()
+            .parent,
+        Some(target)
+    );
+    assert_eq!(
+        snapshot
+            .visits
+            .iter()
+            .find(|v| v.id == leaf)
+            .unwrap()
+            .parent,
+        Some(head)
+    );
+    restarted.pages.read(|b| {
+        canopy::forest::ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?)
+    })?;
+    restarted.window.close();
+    common::pump(100);
+    println!("PASS keyboard tree picker moves a live branch, merges a root, persists parent edges and tree state across restart.");
+    Ok(())
+}
+
+fn drag_branch(f: &Fixture, source: &str, end: (i32, i32), cue: &str, escape: bool) -> Result<()> {
+    let start = common::chrome_point(&f.ui, source)?;
+    common::move_to(start.0, start.1)?;
+    common::pump(80);
+    common::xdo(&["mousedown", "1"])?;
+    common::wait("page choices prepared before native drag", || {
+        common::chrome(&f.ui, "!!pagePress?.choices").is_ok_and(|v| v == true)
+    })?;
+    common::pump(180);
+    for step in 1..=25 {
+        common::move_to(
+            start.0 + (end.0 - start.0) * step / 25,
+            start.1 + (end.1 - start.1) * step / 25,
+        )?;
+        common::pump(50);
+    }
+    common::pump(150);
+    assert_eq!(common::chrome(&f.ui, "nativeDrag?.kind")?, "page");
+    assert_eq!(common::chrome(&f.ui, cue)?, true);
+    assert_eq!(
+        common::chrome(
+            &f.ui,
+            "Number(getComputedStyle(document.querySelector('.dragging')).opacity) < 1"
+        )?,
+        true
+    );
+    // Neither blur nor a zero-button event can release the native drag latch.
+    assert_eq!(common::chrome(&f.ui, "(window.dispatchEvent(new Event('blur')), window.dispatchEvent(new MouseEvent('mousemove', {buttons:0})), true)")?, true);
+    common::pump(80);
+    assert_eq!(
+        common::chrome(
+            &f.ui,
+            "!!nativeDrag && !!document.querySelector('.dragging')"
+        )?,
+        true
+    );
+    if escape {
+        common::xdo(&["key", "Escape"])?;
+    }
+    common::xdo(&["mouseup", "1"])?;
+    common::wait("native page drag cleaned up", || {
+        common::chrome(&f.ui, "!nativeDrag && !document.querySelector('.dragging, .page-drop-allowed, .page-drop-refused') && !document.getElementById('tab-row').classList.contains('drop-target')")
+            .is_ok_and(|value| value == true)
+    })?;
+    common::pump(250);
+    Ok(())
+}
+
+fn drag_store(f: &Fixture) -> Result<serde_json::Value> {
+    let db = rusqlite::Connection::open_with_flags(
+        f._directory.path().join("forest.sqlite3"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let visits = db
+        .prepare("SELECT id, parent_id FROM visits ORDER BY id")?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let trees = db
+        .prepare(
+            "SELECT root_id, last_visit_id, name, place, position, pinned, placed_at
+             FROM tree_state
+             ORDER BY CASE place WHEN 'tab' THEN 0 WHEN 'shelf' THEN 1 ELSE 2 END,
+                 pinned DESC, position, placed_at DESC, root_id",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, bool>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(serde_json::json!({"visits":visits, "trees":trees}))
+}
+
+fn stored_parent(f: &Fixture, id: canopy::browser::VisitId) -> Result<Option<String>> {
+    let db = rusqlite::Connection::open_with_flags(
+        f._directory.path().join("forest.sqlite3"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    Ok(db.query_row(
+        "SELECT parent_id FROM visits WHERE id = ?1",
+        [id.to_string()],
+        |row| row.get(0),
+    )?)
+}
+
+fn page_move_drag() -> Result<()> {
+    let f = Fixture::new()?;
+    let a = f.root("/drag-root")?;
+    let b = f.child(a, "/drag-branch")?;
+    let c = f.child(b, "/drag-child")?;
+    let d = f.root("/drag-target")?;
+    f.select(c)?;
+    let node = |id| format!("#strip-nodes .node[data-page='{id}']");
+    let tab = |id| format!("#tab-row .tab[data-id='{id}']");
+    let target = common::chrome_point(&f.ui, &tab(d))?;
+    drag_branch(
+        &f,
+        &node(b),
+        target,
+        "!!document.querySelector('.tab.page-drop-allowed')",
+        false,
+    )?;
+    assert_eq!(stored_parent(&f, b)?, Some(d.to_string()));
+    assert_eq!(stored_parent(&f, c)?, Some(b.to_string()));
+    assert_eq!(f.ui.snapshot()?.current, Some(c));
+    println!("PASS page drag onto a tab moves the branch and preserves the selected page.");
+
+    let target = common::chrome_point(&f.ui, &node(d))?;
+    drag_branch(
+        &f,
+        &node(c),
+        target,
+        "!!document.querySelector('.node.page-drop-allowed')",
+        false,
+    )?;
+    assert_eq!(stored_parent(&f, c)?, Some(d.to_string()));
+    println!("PASS page drag onto a node reparents the branch.");
+
+    let blank = common::screen_point(&f.ui, &f.ui.chrome.native(), 850, 68)?;
+    drag_branch(
+        &f,
+        &node(c),
+        blank,
+        "document.getElementById('tab-row').classList.contains('drop-target')",
+        false,
+    )?;
+    assert_eq!(stored_parent(&f, c)?, None);
+    assert_eq!(
+        drag_store(&f)?["trees"].as_array().unwrap().last().unwrap()[0],
+        c.to_string()
+    );
+    println!("PASS empty strip creates a tree at the end of the stored tab order.");
+
+    let target = common::chrome_point(&f.ui, &tab(d))?;
+    drag_branch(&f, &node(c), target, "!!document.querySelector('.tab.page-drop-allowed') && !document.getElementById('page-drag-warning').hidden && document.getElementById('page-drag-warning').textContent.includes('drops its name and tab')", false)?;
+    assert_eq!(stored_parent(&f, c)?, Some(d.to_string()));
+    assert!(!drag_store(&f)?["trees"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row[0] == c.to_string()));
+    println!("PASS root drag merges its tree and shows the Rust merge warning.");
+
+    let before = drag_store(&f)?;
+    let target = common::chrome_point(&f.ui, &node(c))?;
+    drag_branch(
+        &f,
+        &node(d),
+        target,
+        "!!document.querySelector('.node.page-drop-refused')",
+        false,
+    )?;
+    assert_eq!(drag_store(&f)?, before);
+    println!("PASS dropping a root onto its child is refused without stored changes.");
+
+    let outside = common::page_point(&f.ui, 600, 400)?;
+    drag_branch(&f, &node(c), outside, "!document.querySelector('.page-drop-allowed') && !document.getElementById('tab-row').classList.contains('drop-target')", false)?;
+    assert_eq!(drag_store(&f)?, before);
+    println!("PASS release over the page view does not move a branch.");
+
+    let target = common::chrome_point(&f.ui, &tab(a))?;
+    drag_branch(
+        &f,
+        &node(c),
+        target,
+        "!!document.querySelector('.tab.page-drop-allowed')",
+        true,
+    )?;
+    assert_eq!(drag_store(&f)?, before);
+    println!("PASS Escape cancels a page drag without stored changes.");
+
+    common::hover_chrome(&f.ui, &node(d))?;
+    let row = format!("#strip-list .menu-row[data-id='{b}']");
+    common::wait("attached-list branch is draggable", || {
+        common::visible(&f.ui, &row)
+    })?;
+    let target = common::chrome_point(&f.ui, &tab(a))?;
+    drag_branch(
+        &f,
+        &row,
+        target,
+        "!!document.querySelector('.tab.page-drop-allowed')",
+        false,
+    )?;
+    assert_eq!(stored_parent(&f, b)?, Some(a.to_string()));
+    println!("PASS attached-list rows can start a branch drag and survive native blur.");
+
+    let (x, _, _, _) = common::rect(&f.ui, &tab(a))?;
+    let gap = common::screen_point(&f.ui, &f.ui.chrome.native(), x as i32 + 2, 5)?;
+    drag_branch(
+        &f,
+        &node(d),
+        gap,
+        "document.getElementById('tab-row').classList.contains('drop-target')",
+        false,
+    )?;
+    assert_eq!(drag_store(&f)?["trees"][0][0], d.to_string());
+    assert_eq!(stored_parent(&f, d)?, None);
+    println!("PASS root on a tab-row gap reorders its tab without merging.");
+    let before = drag_store(&f)?;
+
+    f.ui.window.close();
+    common::pump(150);
+    let restarted = canopy::ui::Ui::new(f._directory.path())?;
+    restarted.window.show_all();
+    common::ready(&restarted)?;
+    assert_eq!(drag_store(&f)?, before);
+    assert_eq!(restarted.snapshot()?.current, Some(c));
+    restarted.window.close();
+    common::pump(100);
+    println!("PASS moved branch parents, tree state and selection survive restart.");
     Ok(())
 }

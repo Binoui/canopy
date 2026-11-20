@@ -88,7 +88,7 @@ fn main() -> Result<()> {
         }
         let current = ids[depth - 1];
         db.execute(
-            "INSERT INTO tree_state(root_id,last_visit_id) VALUES(?1,?2)",
+            "INSERT INTO tree_state(root_id,last_visit_id,place,position,pinned,placed_at) VALUES(?1,?2,'tab',(SELECT COALESCE(MAX(position),-1)+1 FROM tree_state WHERE place='tab'),0,(SELECT created_at FROM visits WHERE id=?1))",
             rusqlite::params![ids[0].to_string(), current.to_string()],
         )?;
         trees.push((shape, ids, current));

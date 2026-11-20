@@ -386,7 +386,7 @@ pub(crate) fn edge_curve(edge: &Edge, a: Rect, b: Rect) -> [(f64, f64); 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browser::{Lifecycle, Snapshot, TreeId, TreeState, Visit, VisitState};
+    use crate::browser::{Snapshot, TreeId, TreeState, Visit, VisitState};
 
     fn fixture(
         parents: &[Option<usize>],
@@ -428,10 +428,13 @@ mod tests {
             vec![TreeState {
                 root: TreeId(ids[0]),
                 last_visit: ids[current],
-                pin: None,
+
                 name: None,
                 last_event_at: None,
-                lifecycle: Lifecycle::Open,
+                spot: crate::browser::Spot::Tab {
+                    pinned: false,
+                    position: 0,
+                },
             }],
         )
         .unwrap();

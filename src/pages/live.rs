@@ -221,6 +221,12 @@ impl LivePage {
         self.state.adopted.set(true);
         self.native.set_is_muted(false);
     }
+    /// Undoes [`Self::adopt`] when the page goes back to the background list unseen: muted again,
+    /// counted in a load slot and subject to the background time limit.
+    pub(super) fn unadopt(&self) {
+        self.state.adopted.set(false);
+        self.native.set_is_muted(true);
+    }
     pub(super) fn background(&self, visit: VisitId) -> Result<()> {
         self.state.never_seen.set(Some(visit));
         self.native.set_is_muted(true);
@@ -243,6 +249,12 @@ impl LivePage {
     }
     pub(super) fn owns(&self, ticket: LoadTicket) -> bool {
         ticket.belongs_to(&self.state.navigation.borrow())
+    }
+    pub(super) fn discard_deleted(&self) {
+        self.native.set_is_muted(true);
+        self.native.set_sensitive(false);
+        self.cancel();
+        self.detach();
     }
     pub(super) fn current_visit(&self) -> Option<VisitId> {
         self.state
@@ -618,7 +630,27 @@ impl LivePage {
             let weak = state.pages.clone();
             signals.push((
                 native.clone().upcast(),
-                native.connect_enter_fullscreen(move |view| !is_selected(&weak, view)),
+                native.connect_enter_fullscreen(move |view| {
+                    if !is_selected(&weak, view) {
+                        return true;
+                    }
+                    // WebKit only fullscreens the window; the page must also leave the chrome's
+                    // band and the chrome must step aside, or the video stays under the strip.
+                    if let Some(pages) = weak.upgrade() {
+                        pages.fullscreen_entered(view);
+                    }
+                    false
+                }),
+            ));
+            let weak = state.pages.clone();
+            signals.push((
+                native.clone().upcast(),
+                native.connect_leave_fullscreen(move |view| {
+                    if let Some(pages) = weak.upgrade() {
+                        pages.fullscreen_left(view);
+                    }
+                    false
+                }),
             ));
             let weak = state.pages.clone();
             signals.push((
@@ -952,6 +984,20 @@ impl LivePage {
                 }),
             ));
         }
+        {
+            // The chrome marks pages that play sound, so a start or stop redraws it.
+            let weak = Rc::downgrade(&state);
+            signals.push((
+                native.clone().upcast(),
+                native.connect_is_playing_audio_notify(move |native| {
+                    if let Some(state) = Pages::enter_native(&weak) {
+                        if !native.is_muted() {
+                            state.emit(PageEvent::Changed);
+                        }
+                    }
+                }),
+            ));
+        }
         if let Some(list) = native.back_forward_list() {
             let weak = Rc::downgrade(&state);
             signals.push((
@@ -1139,7 +1185,6 @@ impl LivePage {
         self.state.revival_refusals.get()
     }
 
-    #[cfg(feature = "gui-smoke")]
     pub(super) fn history_visits(&self) -> Vec<VisitId> {
         self.state
             .history
@@ -1245,7 +1290,12 @@ impl LivePage {
                     (state.upgrade(), owner.upgrade(), ticket, value)
                 {
                     if let Ok(value) = serde_json::from_str::<Value>(&value.to_str()) {
-                        if checkpoint_document_matches(&value, &ticket) {
+                        if state.lifecycle.get() != Lifecycle::Released
+                            && owner
+                                .read(|b| b.contains_visit(ticket.visit))
+                                .unwrap_or(false)
+                            && checkpoint_document_matches(&value, &ticket)
+                        {
                             if let Some(y) = value["y"].as_f64().filter(|y| y.is_finite()) {
                                 if y != 0.
                                     || owner
@@ -2356,7 +2406,7 @@ impl NativeState {
         else {
             return false;
         };
-        forest.tree_of(visit) == Some(tree) && forest.open().iter().any(|open| open.id == tree)
+        forest.tree_of(visit) == Some(tree) && forest.tabs().iter().any(|open| open.id == tree)
     }
 
     fn current_entry_visit(&self) -> Option<VisitId> {

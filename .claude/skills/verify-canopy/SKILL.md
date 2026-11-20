@@ -25,7 +25,8 @@ $V launch --bin ~/.local/bin/canopy   # the installed build instead of the check
 
 `launch` creates a run folder `~/.cache/canopy-test-rt/v-<id>/` with a private `XDG_RUNTIME_DIR` (`rt/`) and data folder (`data/`), picks a free X display from `:200` up, starts the fixture site on a free port, and starts Canopy. With `--seed stress` (the default) it starts Canopy once to create the database, quits it with Ctrl+Q, runs `fixtures/seed.py`, and starts it again. Ready means the Canopy window is visible on the run's display, 2 s after it first appears. The run is recorded in `.cache/verify/current`, so later commands find it without arguments. Set `CANOPY_RUN=<run folder>` to address a different run.
 
-The stress seed is 129 pages in 16 open trees and 3 settled ones. Ctrl+1 is "Tokio tutorial" (one site, a straight path with one side branch), Ctrl+2 is "best 75% mechanical keyboard" (a fan-out with 9 waiting pages), Ctrl+3 is "Bonsai" (a 46-page trail), Ctrl+4 is "Ask HN" (pinned, 14 waiting pages under the root). The other tabs are filler so the tab row overflows. Canopy starts on the Tokio tree.
+The stress seed is 129 pages in 16 Tabs and 3 History trees. The pinned Ask HN and Canopy pull-request tabs come first. Ctrl+3 is Tokio tutorial, Ctrl+4 is the keyboard research tree with 9 waiting pages, and Ctrl+5 is Bonsai with a 46-page trail. Ask HN has 14 waiting pages under its root. Other tabs fill the row so it overflows. Canopy starts on Tokio.
+
 
 ## Doctor
 
@@ -42,6 +43,8 @@ Prefer keyboard shortcuts. They are stable handles, and pointer positions move w
 ```sh
 $V key ctrl+k                     # xdotool key names: ctrl+shift+e, alt+Left, Return, Escape, F6
 $V type "http://wiki.localhost:PORT/p/Repotting"
+$V drag 150 26 350 26            # stepped native tab drag
+$V wheel 500 350 up 5            # native wheel notches in the map
 $V click 390 328 [left|middle|right]
 $V hover 70 68 [seconds]          # rests the pointer, 1.2 s by default
 $V url Repotting                  # fixture address for a page title; CANOPY_HOST=wiki picks the host
@@ -66,13 +69,14 @@ Pointer positions in the default 1240x800 window, measured on `78dbbd1`. Check a
 ## Evidence
 
 ```sh
+$V resize 1920 1000                       # resize the private window
 $V shot 03-after-fork                       # PNG of the whole display
 $V db "SELECT title FROM visits ORDER BY created_at DESC LIMIT 3" 04-rows   # read-only query, saved as text
 ```
 
 Both write into `.cache/verify/<run id>/`, which git ignores and cleanup keeps. A proof captures the user action and the state after it, and confirms the stored side effect with a `db` read, not only the screen. Number the files in the order you took them. Drive the real path (shortcut, click, `open`). Never write to the database to set up a journey beyond what `seed.py` does.
 
-Tables you will read most: `visits(id, parent_id, url, title, created_at, opened_at)` with `opened_at` NULL for a waiting page, `tree_state(root_id, last_visit_id, name, settled_at, pin_order)`, `session(current_id)`.
+The forest schema is version 16. Older installed builds refuse it. Tables you will read most: `visits(id, parent_id, url, title, created_at, opened_at)` with `opened_at` NULL for a waiting page, `tree_state(root_id, last_visit_id, name, place, position, pinned, placed_at)`, `session(current_id)`.
 
 ## Cleanup
 

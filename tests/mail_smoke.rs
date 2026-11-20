@@ -2,6 +2,7 @@ mod common;
 
 use std::{
     cell::RefCell,
+    collections::HashSet,
     io::{BufRead, BufReader, Write},
     net::TcpListener,
     rc::Rc,
@@ -27,10 +28,23 @@ enum Mode {
     Drop,
     Garbage,
     Three,
+    Four,
+    Long,
     Gap,
     Trim,
     Empty,
     Slow,
+}
+
+#[derive(Clone, Copy, Default)]
+enum Conversation {
+    #[default]
+    Inert,
+    Marks,
+    Never,
+    Restarts,
+    Strays,
+    Stalls,
 }
 
 #[derive(Default)]
@@ -38,6 +52,11 @@ struct Seen {
     mode: Mode,
     slow: bool,
     requests: Vec<(String, String, String)>,
+    stray: String,
+    conversation: Conversation,
+    read: HashSet<(usize, String)>,
+    marked: Vec<String>,
+    allow_mark: bool,
 }
 
 struct Fixture {
@@ -105,7 +124,11 @@ impl Fixture {
                             if mode == Mode::Garbage {
                                 ("200 OK", "", "not an Atom feed".to_owned())
                             } else {
-                                ("200 OK", "", atom(&origin, n, account, mode))
+                                (
+                                    "200 OK",
+                                    "",
+                                    atom(&origin, n, account, mode, &seen.lock().unwrap().read),
+                                )
                             }
                         } else if signed_in {
                             (
@@ -116,6 +139,39 @@ impl Fixture {
                         } else {
                             ("401 Unauthorized", "", String::new())
                         }
+                    } else if let Some(mark) = path.strip_prefix("/mark/") {
+                        seen.lock().unwrap().marked.push(path.clone());
+                        for _ in 0..500 {
+                            if seen.lock().unwrap().allow_mark {
+                                break;
+                            }
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        let (n, id) = mark.split_once('/').unwrap();
+                        let id = id.split('?').next().unwrap();
+                        seen.lock()
+                            .unwrap()
+                            .read
+                            .insert((n.parse().unwrap(), id.to_owned()));
+                        ("200 OK", "", String::new())
+                    } else if path == "/errand" {
+                        ("200 OK", "Cache-Control: no-store\r\n", "<title>Hidden errand</title><script>alert('hidden'); window.open('/popup'); fetch('/errand-ran?v=' + document.visibilityState);</script>".to_owned())
+                    } else if path == "/stray" {
+                        (
+                            "302 Found",
+                            &*format!(
+                                "Location: {}/stray-document\r\n",
+                                seen.lock().unwrap().stray
+                            )
+                            .leak(),
+                            String::new(),
+                        )
+                    } else if path == "/stray-document" {
+                        (
+                            "200 OK",
+                            "",
+                            "<script>fetch('/signin-ran')</script>".to_owned(),
+                        )
                     } else if path == "/redirect" {
                         ("302 Found", "Location: /target\r\n", String::new())
                     } else if path == "/signin" {
@@ -143,11 +199,49 @@ impl Fixture {
                             String::new(),
                         )
                     } else if path.starts_with("/mail/u/") {
-                        (
-                            "200 OK",
-                            "",
-                            "<title>Conversation fixture</title>".to_owned(),
-                        )
+                        let conversation = seen.lock().unwrap().conversation;
+                        let url = Url::parse(&format!("{origin}{path}")).unwrap();
+                        let id = url
+                            .query_pairs()
+                            .find(|(k, _)| k == "message_id")
+                            .map(|(_, v)| v.into_owned());
+                        let n = url.path().split('/').nth(3).unwrap_or("0");
+                        match (conversation, id) {
+                            (Conversation::Stalls, Some(_)) => {
+                                thread::sleep(Duration::from_secs(5));
+                                return;
+                            }
+                            (Conversation::Strays, Some(_)) => (
+                                "302 Found",
+                                &*format!(
+                                    "Location: {}/stray-document\r\n",
+                                    seen.lock().unwrap().stray
+                                )
+                                .leak(),
+                                String::new(),
+                            ),
+                            (Conversation::Restarts, Some(_))
+                                if !url.query_pairs().any(|(k, _)| k == "again") =>
+                            {
+                                ("200 OK", "Cache-Control: no-store\r\n", "<title>Restarting</title><img src=\"/stall\"><script>location.replace(location.href + '&again=1')</script>".to_owned())
+                            }
+                            (
+                                Conversation::Marks | Conversation::Never | Conversation::Restarts,
+                                Some(id),
+                            ) => {
+                                let script = if !matches!(conversation, Conversation::Never) {
+                                    format!("setTimeout(() => fetch('/mark/{n}/{id}?v=' + document.visibilityState), 700);")
+                                } else {
+                                    String::new()
+                                };
+                                ("200 OK", "Cache-Control: no-store\r\n", format!("<title>Hidden conversation</title>{CONVERSATION_TEXT}<script>alert('hidden'); window.open('/popup'); {script}</script>"))
+                            }
+                            _ => (
+                                "200 OK",
+                                "",
+                                "<title>Conversation fixture</title>".to_owned(),
+                            ),
+                        }
                     } else {
                         if path == "/slow" {
                             thread::sleep(Duration::from_millis(1500));
@@ -274,6 +368,8 @@ fn main() -> Result<()> {
         [true],
         "cancellation answers exactly once"
     );
+    errands(&ui, &fixture, directory.path())?;
+    mark_scenario(&ui, &fixture, directory.path())?;
     scenario(&ui, &fixture, directory.path())?;
     fixture.set(Mode::Garbage);
     let fresh = tempfile::tempdir()?;
@@ -292,16 +388,449 @@ fn main() -> Result<()> {
         !visible(&fresh_ui, "#mail-pin"),
         "first-check failure stays hidden"
     );
+    fixture.set(Mode::Normal);
+    fresh_ui.mail.set_gap(Duration::ZERO);
+    fixture.seen.lock().unwrap().conversation = Conversation::Stalls;
+    recheck(&fresh_ui)?;
+    click_chrome(&fresh_ui, "#mail-pin")?;
+    click_chrome(&fresh_ui, &mark_button("111"))?;
+    wait("shutdown mark starts", || {
+        fresh_ui.pages.errand_pages() == 1
+    })?;
+    let events = visit_events(fresh.path())?;
     fresh_ui.window.close();
+    wait("shutdown cancels hidden mark", || {
+        fresh_ui.pages.errand_pages() == 0
+    })?;
+    pump(1300);
+    assert_eq!(visit_events(fresh.path())?, events);
+    println!("PASS mail mark stop: window close cancels its hidden page without a visit.");
     println!("PASS mail first failure: a profile with no successfully read account keeps the button hidden.");
     println!("PASS mail fetch: HttpOnly cookies and page User-Agent match, redirects remain unfollowed, cancellation answers once.");
     Ok(())
 }
 
+fn mark_button(id: &str) -> String {
+    format!(".mail-mark[data-id=\"{id}\"]")
+}
+
+fn reset_marks(ui: &Ui, fixture: &Fixture, behavior: Conversation) -> Result<()> {
+    {
+        let mut seen = fixture.seen.lock().unwrap();
+        seen.mode = Mode::Normal;
+        seen.conversation = behavior;
+        seen.read.clear();
+        seen.marked.clear();
+        seen.allow_mark = true;
+    }
+    recheck(ui)?;
+    if chrome(ui, "canopy.state().popover")?.is_null() {
+        click_chrome(ui, "#mail-pin")?;
+    }
+    wait("two unread rows restored", || {
+        visible(ui, ".mail-row[data-id=\"111\"]") && visible(ui, ".mail-row[data-id=\"222\"]")
+    })?;
+    Ok(())
+}
+
+fn mark_shot(name: &str) -> Result<()> {
+    if let Some(directory) = std::env::var_os("CANOPY_MAIL_MARK_SHOTS") {
+        pump(200);
+        let directory = std::path::PathBuf::from(directory);
+        std::fs::create_dir_all(&directory)?;
+        anyhow::ensure!(
+            std::process::Command::new("import")
+                .args(["-window", "root"])
+                .arg(directory.join(format!("{name}.png")))
+                .status()?
+                .success(),
+            "mark screenshot"
+        );
+    }
+    Ok(())
+}
+
+fn mark_scenario(ui: &Ui, fixture: &Fixture, data: &std::path::Path) -> Result<()> {
+    ui.mail.set_mark_pace(
+        Duration::from_millis(1100),
+        Duration::from_millis(800),
+        Duration::from_millis(100),
+        Duration::from_millis(1500),
+    );
+    ui.pages.set_errand_load_limit(Duration::from_millis(1200));
+    ui.open(&[fixture.url("/kept")])?;
+    wait("second user page loaded", || {
+        ui.snapshot()
+            .is_ok_and(|s| s.visits.iter().any(|v| v.title == "Fetch fixture /kept"))
+    })?;
+    reset_marks(ui, fixture, Conversation::Marks)?;
+    chrome(
+        ui,
+        "intent('theme', {mode:'dark'}), document.querySelector('#popover').focus(), true",
+    )?;
+    move_to(700, 700)?;
+    mark_shot("rest-dark")?;
+    let (x, y) = chrome_point(ui, ".mail-row")?;
+    move_to(x, y)?;
+    mark_shot("hover-dark")?;
+    move_to(700, 700)?;
+    chrome(ui, "document.querySelector('.mail-row').focus(), true")?;
+    key("Tab")?;
+    assert_eq!(
+        chrome(ui, "document.activeElement.classList.contains('mail-mark')")?,
+        true
+    );
+    mark_shot("focus-dark")?;
+    chrome(ui, "intent('theme', {mode:'light'}), true")?;
+    mark_shot("focus-light")?;
+    chrome(ui, "intent('theme', {mode:'dark'}), true")?;
+
+    let before = ui.snapshot()?;
+    let events = visit_events(data)?;
+    let live = ui.pages.live_visits();
+    click_chrome(ui, ".mail-tab[data-key=\"ana@example.test\"]")?;
+    chrome(ui, "document.querySelector('.mail-mark').focus(), true")?;
+    fixture.seen.lock().unwrap().allow_mark = false;
+    key("Return")?;
+    wait("mark hides row and every count together", || {
+        !visible(ui, ".mail-row[data-id=\"111\"]")
+            && text(ui, "#mail-pin .count") == "2"
+            && text(ui, ".mail-inbox .menu-detail") == "2 unread"
+            && text(ui, ".mail-tab[data-key=all] .count") == "2"
+            && text(ui, ".mail-tab[data-key=\"ana@example.test\"] .count") == "2"
+    })?;
+    assert!(
+        fixture.seen.lock().unwrap().marked.is_empty(),
+        "counts move before the remote write"
+    );
+    assert_eq!(chrome(ui, "document.activeElement.dataset.id")?, "222");
+    chrome(ui, "document.querySelector('.mail-mark[data-id=\"222\"]').dispatchEvent(new MouseEvent('click', {bubbles:true, detail:2})), window.ipc.postMessage(JSON.stringify({t:'intent',kind:'mark-mail-read',account:'ana@example.test',id:'111'})), true")?;
+    pump(80);
+    assert!(
+        visible(ui, ".mail-row[data-id=\"222\"]"),
+        "a double click never marks the row that slid under it"
+    );
+    assert_eq!(
+        chrome(ui, "document.activeElement.classList.contains('mail-mark')")?,
+        true
+    );
+    assert!(!chrome(ui, "canopy.state().popover")?.is_null());
+    assert_eq!(
+        text(ui, ".mail-tab[aria-selected=true] .mail-tab-label"),
+        "ana"
+    );
+    wait("hidden page requests mark after its delay", || {
+        !fixture.seen.lock().unwrap().marked.is_empty()
+    })?;
+    assert_eq!(
+        fixture.seen.lock().unwrap().marked,
+        ["/mark/0/111?v=hidden"]
+    );
+    assert!(live.len() >= 2);
+    ui.pages.inject_memory_sample(Some(u64::MAX));
+    assert_eq!(
+        ui.pages.live_visits(),
+        live,
+        "budget pressure during a mark keeps user pages"
+    );
+    ui.pages.inject_memory_sample(Some(0));
+    fixture.seen.lock().unwrap().allow_mark = true;
+    wait("fixture acknowledges mark", || {
+        fixture
+            .seen
+            .lock()
+            .unwrap()
+            .read
+            .contains(&(0, "111".into()))
+    })?;
+    pump(600);
+    recheck(ui)?;
+    assert!(!visible(ui, ".mail-row[data-id=\"111\"]"));
+    assert!(!visible(ui, ".mail-unmarked"));
+    assert!(!visible(ui, "#error-toast"));
+    assert_eq!(ui.snapshot()?.visits.len(), before.visits.len());
+    assert_eq!(
+        ui.snapshot()?
+            .visits
+            .iter()
+            .filter(|v| v.parent.is_none())
+            .count(),
+        before.visits.iter().filter(|v| v.parent.is_none()).count()
+    );
+    assert_eq!(ui.snapshot()?.current, before.current);
+    assert_eq!(visit_events(data)?, events);
+    assert_eq!(ui.pages.live_visits(), live);
+    assert!(!mentions(data, &[CONVERSATION_TEXT, SENDER, SNIPPET])?);
+
+    key("Return")?;
+    wait("Enter on the next mark triages the next row", || {
+        !visible(ui, ".mail-row")
+    })?;
+    wait("second mark reaches fixture", || {
+        fixture
+            .seen
+            .lock()
+            .unwrap()
+            .read
+            .contains(&(0, "222".into()))
+    })?;
+    pump(600);
+    recheck(ui)?;
+    assert_eq!(chrome(ui, "document.activeElement.id")?, "popover");
+    assert_eq!(text(ui, "#mail-pin .count"), "1");
+
+    reset_marks(ui, fixture, Conversation::Marks)?;
+    chrome(ui, "document.querySelector('.mail-mark').click(), document.querySelectorAll('.mail-mark')[1].click(), true")?;
+    wait("burst hides both rows", || !visible(ui, ".mail-row"))?;
+    assert_eq!(text(ui, "#mail-pin .count"), "1");
+    wait("serial burst marks both messages", || {
+        assert!(ui.pages.errand_pages() <= 1);
+        fixture.seen.lock().unwrap().read.len() == 2
+    })?;
+    assert_eq!(
+        fixture.seen.lock().unwrap().marked,
+        ["/mark/0/111?v=hidden", "/mark/0/222?v=hidden"]
+    );
+    pump(600);
+    recheck(ui)?;
+
+    reset_marks(ui, fixture, Conversation::Restarts)?;
+    click_chrome(ui, &mark_button("111"))?;
+    wait(
+        "a page that restarts its own load still marks the mail",
+        || {
+            fixture
+                .seen
+                .lock()
+                .unwrap()
+                .read
+                .contains(&(0, "111".into()))
+        },
+    )?;
+    pump(600);
+    recheck(ui)?;
+    assert!(!visible(ui, ".mail-unmarked"));
+    assert!(!visible(ui, ".mail-row[data-id=\"111\"]"));
+
+    reset_marks(ui, fixture, Conversation::Never)?;
+    click_chrome(ui, &mark_button("111"))?;
+    wait("unconfirmed unread mail returns with failure words", || {
+        text(ui, ".mail-unmarked") == "Not marked read: Gmail still shows it as unread."
+    })?;
+    assert_eq!(text(ui, "#mail-pin .count"), "3");
+    assert!(visible(ui, &mark_button("111")));
+    assert!(chrome(ui, "document.querySelector('.mail-row').getAttribute('aria-label').includes('Gmail still shows it as unread')")? == true);
+    mark_shot("failure-dark")?;
+
+    fixture.seen.lock().unwrap().conversation = Conversation::Strays;
+    let hits = fixture.feed_hits();
+    click_chrome(ui, &mark_button("111"))?;
+    wait("strayed mail returns with sign-in words", || {
+        text(ui, ".mail-unmarked") == "Not marked read: Gmail asked to sign in again."
+    })?;
+    wait("straying pulls a check forward", || {
+        fixture.feed_hits() > hits
+    })?;
+    fixture.seen.lock().unwrap().conversation = Conversation::Stalls;
+    chrome(
+        ui,
+        "document.querySelector('.mail-mark[data-id=\"111\"]').focus(), true",
+    )?;
+    key("Return")?;
+    wait("stalled mail returns with no-answer words", || {
+        text(ui, ".mail-unmarked") == "Not marked read: Gmail did not answer."
+    })?;
+
+    reset_marks(ui, fixture, Conversation::Marks)?;
+    click_chrome(ui, &mark_button("111"))?;
+    wait("write lands before feed failure", || {
+        fixture
+            .seen
+            .lock()
+            .unwrap()
+            .read
+            .contains(&(0, "111".into()))
+    })?;
+    fixture.set(Mode::Drop);
+    pump(600);
+    ui.mail.check_soon();
+    wait("feed failure reports stale data", || {
+        text(ui, ".mail-notice").starts_with("Could not reach Gmail")
+    })?;
+    assert!(!visible(ui, ".mail-row[data-id=\"111\"]"));
+    pump(1700);
+    ui.mail.check_soon();
+    wait("failed checks eventually restore unconfirmed mail", || {
+        text(ui, ".mail-unmarked") == "Not marked read: Canopy could not check with Gmail."
+    })?;
+    fixture.set(Mode::Normal);
+    recheck(ui)?;
+    assert!(!visible(ui, ".mail-row[data-id=\"111\"]"));
+
+    reset_marks(ui, fixture, Conversation::Marks)?;
+    click_chrome(ui, &mark_button("111"))?;
+    wait("mark executes before transient failure", || {
+        fixture
+            .seen
+            .lock()
+            .unwrap()
+            .read
+            .contains(&(0, "111".into()))
+    })?;
+    fixture.set(Mode::Drop);
+    pump(600);
+    ui.mail.check_soon();
+    wait("transient feed failure", || {
+        text(ui, ".mail-notice").starts_with("Could not reach Gmail")
+    })?;
+    assert!(!visible(ui, ".mail-row[data-id=\"111\"]"));
+    fixture.set(Mode::Normal);
+    recheck(ui)?;
+    assert!(!visible(ui, ".mail-row[data-id=\"111\"]"));
+    assert!(!visible(ui, ".mail-unmarked"));
+
+    reset_marks(ui, fixture, Conversation::Never)?;
+    fixture.seen.lock().unwrap().read.insert((0, "222".into()));
+    click_chrome(ui, &mark_button("222"))?;
+    recheck(ui)?;
+    assert!(!visible(ui, ".mail-row[data-id=\"222\"]"));
+    assert!(!visible(ui, ".mail-unmarked"));
+
+    fixture.set(Mode::Four);
+    fixture.seen.lock().unwrap().read.clear();
+    recheck(ui)?;
+    chrome(
+        ui,
+        "document.querySelector('.mail-mark[data-id=\"111\"]').focus(), true",
+    )?;
+    fixture
+        .seen
+        .lock()
+        .unwrap()
+        .read
+        .extend(["111", "222", "333"].map(|id| (0, id.to_owned())));
+    recheck(ui)?;
+    assert_eq!(
+        chrome(ui, "document.activeElement.dataset.id")?,
+        "444",
+        "focus skips every removed later neighbour"
+    );
+    fixture.seen.lock().unwrap().read.clear();
+    recheck(ui)?;
+    fixture
+        .seen
+        .lock()
+        .unwrap()
+        .read
+        .extend(["333", "444"].map(|id| (0, id.to_owned())));
+    recheck(ui)?;
+    assert_eq!(
+        chrome(ui, "document.activeElement.dataset.id")?,
+        "222",
+        "focus searches all earlier survivors"
+    );
+
+    reset_marks(ui, fixture, Conversation::Stalls)?;
+    click_chrome(ui, &mark_button("111"))?;
+    ui.open(&[fixture.url("/signout")])?;
+    wait("real sign-out removes account during mark", || {
+        ui.mail.mail().accounts.is_empty()
+    })?;
+    assert!(!visible(ui, "#mail-pin"));
+    wait("sign-out cancels hidden page", || {
+        ui.pages.errand_pages() == 0
+    })?;
+    ui.open(&[fixture.url("/signin")])?;
+    fixture.seen.lock().unwrap().conversation = Conversation::Inert;
+    fixture.seen.lock().unwrap().read.clear();
+    recheck(ui)?;
+    if chrome(ui, "canopy.state().popover")?.is_null() {
+        click_chrome(ui, "#mail-pin")?;
+    }
+    click_chrome(ui, ".mail-tab[data-key=all]")?;
+    click_chrome(ui, "#mail-pin")?;
+    println!("PASS mail marks: immediate rows and counts, keyboard triage, serial hidden writes, visible failures, bounded failed-feed rollback, confirmation, external reads and actual sign-out.");
+    Ok(())
+}
+
+fn visit_events(data: &std::path::Path) -> Result<i64> {
+    let db = rusqlite::Connection::open_with_flags(
+        data.join("forest.sqlite3"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    Ok(db.query_row("SELECT count(*) FROM visit_events", [], |r| r.get(0))?)
+}
+
+fn errands(ui: &Ui, fixture: &Fixture, data: &std::path::Path) -> Result<()> {
+    use canopy::pages::ErrandEnd;
+    let other = Fixture::serve()?;
+    fixture.seen.lock().unwrap().stray = other.origin.clone();
+    let before = ui.snapshot()?;
+    let events = visit_events(data)?;
+    let live = ui.pages.live_visits();
+    let results = Rc::new(RefCell::new(vec![]));
+    let output = results.clone();
+    let first = ui.pages.run_errand(
+        &fixture.url("/errand"),
+        Duration::from_millis(300),
+        move |end| output.borrow_mut().push(end),
+    );
+    let output = results.clone();
+    let second = ui.pages.run_errand(
+        &fixture.url("/stray"),
+        Duration::from_millis(300),
+        move |end| output.borrow_mut().push(end),
+    );
+    wait("errands complete serially", || {
+        assert!(ui.pages.errand_pages() <= 1);
+        results.borrow().len() == 2
+    })?;
+    assert_eq!(*results.borrow(), [ErrandEnd::Done, ErrandEnd::Strayed]);
+    assert!(fixture
+        .seen
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .any(|r| r.0 == "/errand-ran?v=hidden"));
+    assert!(!fixture
+        .seen
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .any(|r| r.0 == "/popup"));
+    assert!(!other
+        .seen
+        .lock()
+        .unwrap()
+        .requests
+        .iter()
+        .any(|r| r.0 == "/signin-ran"));
+    assert_eq!(ui.snapshot()?.visits.len(), before.visits.len());
+    assert_eq!(ui.snapshot()?.current, before.current);
+    assert_eq!(visit_events(data)?, events);
+    assert_eq!(ui.pages.live_visits(), live);
+    drop((first, second));
+    println!("PASS errands: hidden scripts run, dialogs and popups stay contained, foreign main documents never run, visits and events stay unchanged.");
+    Ok(())
+}
+
+const CONVERSATION_TEXT: &str = "Unique hidden conversation body 742919";
+
 const SENDER: &str = "Unique mail sender 928374";
 const SNIPPET: &str = "Unique mail snippet 837461";
 
 fn account_at(mode: Mode, n: usize) -> Option<&'static str> {
+    if mode == Mode::Long {
+        return [
+            "a.very.long.account.label@personal.example.test",
+            "a.very.long.account.label@work.example.test",
+            "another.very.long.account.label@example.test",
+        ]
+        .get(n)
+        .copied();
+    }
     match n {
         0 => Some("ana@example.test"),
         1 if mode != Mode::Gap => Some("bo@example.test"),
@@ -310,16 +839,29 @@ fn account_at(mode: Mode, n: usize) -> Option<&'static str> {
     }
 }
 
-fn atom(origin: &str, n: usize, address: &str, mode: Mode) -> String {
+fn atom(
+    origin: &str,
+    n: usize,
+    address: &str,
+    mode: Mode,
+    read: &HashSet<(usize, String)>,
+) -> String {
     let ids: &[&str] = if n != 0 || mode == Mode::Empty {
         &[]
+    } else if mode == Mode::Four {
+        &["111", "222", "333", "444"]
     } else if mode == Mode::Trim {
         &["222"]
     } else {
         &["111", "222"]
     };
-    let count = if n == 0 { 3 } else { 0 };
-    let rows = ids.iter().map(|id| format!("<entry><id>tag:gmail.google.com,2004:{id}</id><title>Tom &amp; Jerry&#39;s lunch</title><summary>{SNIPPET}</summary><author><name>{SENDER}</name></author><issued>2026-11-17T09:12:33Z</issued><link href=\"{origin}/mail/u/{n}?message_id={id}\"/></entry>")).collect::<String>();
+    let count = if n == 0 {
+        (if mode == Mode::Four { 5usize } else { 3usize })
+            .saturating_sub(read.iter().filter(|(account, _)| *account == n).count())
+    } else {
+        0
+    };
+    let rows = ids.iter().filter(|id| !read.contains(&(n, id.to_string()))).map(|id| format!("<entry><id>tag:gmail.google.com,2004:{id}</id><title>Tom &amp; Jerry&#39;s lunch</title><summary>{SNIPPET}</summary><author><name>{SENDER}</name></author><issued>2026-11-17T09:12:33Z</issued><link href=\"{origin}/mail/u/{n}?message_id={id}\"/></entry>")).collect::<String>();
     format!("<feed xmlns=\"http://purl.org/atom/ns#\"><title>Inbox for {address}</title><fullcount>{count}</fullcount>{rows}</feed>")
 }
 
@@ -374,6 +916,72 @@ fn scenario(ui: &Ui, fixture: &Fixture, data: &std::path::Path) -> Result<()> {
         "ana@example.test",
         "actions carry an address"
     );
+    assert!(visible(ui, ".mail-tabs[role=tablist]"));
+    assert_eq!(
+        text(ui, ".mail-tab[aria-selected=true] .mail-tab-label"),
+        "All"
+    );
+    click_chrome(ui, ".mail-tab[data-key=\"bo@example.test\"]")?;
+    assert_eq!(text(ui, ".mail-inbox .grow"), "bo@example.test");
+    assert!(
+        !visible(ui, ".mail-row"),
+        "the empty account hides other accounts' messages"
+    );
+    assert!(!visible(ui, ".mail-more"));
+    assert_eq!(text(ui, "#mail-pin .count"), "3");
+    click_chrome(ui, "#mail-pin")?;
+    click_chrome(ui, "#mail-pin")?;
+    recheck(ui)?;
+    assert_eq!(text(ui, ".mail-inbox .grow"), "bo@example.test");
+    assert_eq!(
+        text(ui, ".mail-tab[aria-selected=true] .mail-tab-label"),
+        "bo"
+    );
+    click_chrome(ui, ".mail-tab[data-key=\"ana@example.test\"]")?;
+    recheck(ui)?;
+    assert_eq!(
+        chrome(ui, "document.activeElement.getAttribute('aria-selected')")?,
+        "true"
+    );
+    assert_eq!(
+        chrome(ui, "document.activeElement.dataset.key")?,
+        "ana@example.test"
+    );
+    mail_tabs_shot(ui, "account")?;
+    key("Home")?;
+    assert_eq!(
+        text(ui, ".mail-tab[aria-selected=true] .mail-tab-label"),
+        "All"
+    );
+    assert!(visible(ui, ".mail-row"));
+    mail_tabs_shot(ui, "all")?;
+    key("End")?;
+    assert_eq!(
+        text(ui, ".mail-tab[aria-selected=true] .mail-tab-label"),
+        "bo"
+    );
+    key("Right")?;
+    assert_eq!(
+        text(ui, ".mail-tab[aria-selected=true] .mail-tab-label"),
+        "All"
+    );
+    key("Left")?;
+    assert_eq!(
+        text(ui, ".mail-tab[aria-selected=true] .mail-tab-label"),
+        "bo"
+    );
+    key("Home")?;
+    fixture.set(Mode::Long);
+    recheck(ui)?;
+    for theme in ["light", "dark"] {
+        chrome(ui, &format!("intent('theme', {{mode:'{theme}'}}), true"))?;
+        pump(100);
+        assert_eq!(chrome(ui, "(() => { const p = document.querySelector('#popover'); const tabs = [...p.querySelectorAll('.mail-tab')]; return tabs.length === 4 && p.offsetWidth >= 360 && p.offsetWidth <= 440 && p.scrollWidth <= p.clientWidth && tabs.every(t => t.getBoundingClientRect().top === tabs[0].getBoundingClientRect().top && t.scrollWidth <= t.clientWidth); })()")?, true, "three long account tabs fit on one line without scrolling");
+    }
+    mail_tabs_shot(ui, "long-accounts")?;
+    fixture.set(Mode::Normal);
+    recheck(ui)?;
+    println!("PASS mail tabs: account filtering, total badge, session selection, refresh focus and keyboard navigation.");
     let trees = ui
         .snapshot()?
         .visits
@@ -467,6 +1075,8 @@ fn scenario(ui: &Ui, fixture: &Fixture, data: &std::path::Path) -> Result<()> {
         "bo@example.test",
         "account-header focus follows the address"
     );
+    click_chrome(ui, ".mail-tab[data-key=\"bo@example.test\"]")?;
+    chrome(ui, "document.querySelector('.mail-inbox').focus(), true")?;
     fixture.set(Mode::Gap);
     recheck(ui)?;
     wait("gap walk keeps the account above the hole", || {
@@ -483,6 +1093,15 @@ fn scenario(ui: &Ui, fixture: &Fixture, data: &std::path::Path) -> Result<()> {
         "popover",
         "removed header falls back to popover"
     );
+    assert_eq!(
+        text(ui, ".mail-tab[aria-selected=true] .mail-tab-label"),
+        "All"
+    );
+    assert!(visible(
+        ui,
+        ".mail-inbox[data-account=\"ana@example.test\"]"
+    ));
+    assert!(visible(ui, ".mail-inbox[data-account=\"cy@example.test\"]"));
     let before = ui.snapshot()?.visits.len();
     chrome(ui, "window.ipc.postMessage(JSON.stringify({t:'intent',kind:'open-inbox',account:'bo@example.test'})), true")?;
     pump(200);
@@ -575,4 +1194,22 @@ fn mentions(path: &std::path::Path, needles: &[&str]) -> Result<bool> {
         }
     }
     Ok(false)
+}
+
+fn mail_tabs_shot(ui: &Ui, name: &str) -> Result<()> {
+    if let Some(directory) = std::env::var_os("CANOPY_MAIL_TABS_SHOTS") {
+        chrome(ui, "intent('theme', {mode:'dark'}), true")?;
+        pump(450);
+        let directory = std::path::PathBuf::from(directory);
+        std::fs::create_dir_all(&directory)?;
+        anyhow::ensure!(
+            std::process::Command::new("import")
+                .args(["-window", "root"])
+                .arg(directory.join(format!("{name}-dark.png")))
+                .status()?
+                .success(),
+            "mail tabs screenshot"
+        );
+    }
+    Ok(())
 }

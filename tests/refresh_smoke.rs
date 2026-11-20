@@ -140,23 +140,21 @@ fn main() -> Result<()> {
     hover_chrome(&ui, &format!(".tab[data-id='{beta}']"))?;
     xdo(&["click", "3"])?;
     wait("tab menu", || {
-        visible(&ui, "#popover [data-tab-action='pin']")
+        visible(&ui, "#popover [data-tab-action='save']")
     })?;
-    press(&ui, "#popover [data-tab-action='pin']")?;
+    press(&ui, "#popover [data-tab-action='save']")?;
     rename(&ui, gamma, "Menu refresh");
     held_back(&ui)?;
     release()?;
-    let menu = ui
-        .pages
-        .read(|b| b.tree_states())?
-        .iter()
-        .any(|t| t.root.root() == beta && t.pin.is_some());
+    let menu = ui.pages.read(|b| b.tree_states())?.iter().any(|t| {
+        t.root.root() == beta && matches!(t.place(), canopy::browser::Place::Shelf { .. })
+    });
     println!("menu row click across refresh: {menu}");
     key("Escape")?;
     if !menu {
-        ui.dispatch(ChromeIntent::PinTree {
+        ui.dispatch(ChromeIntent::PlaceTree {
             tree: tree(&ui, beta),
-            pinned: true,
+            to: canopy::browser::Move::Shelf(canopy::browser::Slot::First),
         });
         pump(300);
     }
@@ -165,7 +163,7 @@ fn main() -> Result<()> {
     wait("pinned card", || {
         visible(&ui, &format!("[data-start=tree][data-id='{beta}']"))
     })?;
-    assert_eq!(chrome(&ui, "(() => { const saved=S.frame.start; const visits=S.frame.visits; S.frame.visits={}; const cards=BANDS.map(b=>b(saved)).join(''); S.frame.visits=visits; uncover(); canopy.start({start:saved}); canopy.newTree(); return cards.includes('pinned-card') && !document.querySelector('#start-content').children.length && S.frame.start===null; })()")?, true);
+    assert_eq!(chrome(&ui, "(() => { const saved=S.frame.start; const visits=S.frame.visits; S.frame.visits={}; const cards=BANDS.map(b=>b(saved)).join(''); S.frame.visits=visits; uncover(); canopy.start({start:saved}); canopy.newTree(); return cards.includes('tree-card') && !document.querySelector('#start-content').children.length && S.frame.start===null; })()")?, true);
     wait("fresh pinned card after reopen", || {
         visible(&ui, &format!("[data-start=tree][data-id='{beta}']"))
     })?;
@@ -203,20 +201,34 @@ fn main() -> Result<()> {
 
     press(&ui, &format!(".tab[data-id='{alpha}']"))?;
     rename(&ui, gamma, "Missed release recovery");
-    let (x, y) = page_point(&ui, 500, 500)?;
-    move_to(x, y)?;
+    let start = chrome_point(&ui, &format!(".tab[data-id='{alpha}']"))?;
+    let end = page_point(&ui, 500, 500)?;
+    for step in 1..=25 {
+        move_to(
+            start.0 + (end.0 - start.0) * step / 25,
+            start.1 + (end.1 - start.1) * step / 25,
+        )?;
+        pump(60);
+    }
+    wait("native tab drag before outside release", || {
+        chrome(&ui, "!!document.querySelector('.tab.dragging')")
+            .is_ok_and(|dragging| dragging == true)
+    })?;
     release()?;
-    hover_chrome(&ui, "#settings-button")?;
-    wait("return after outside release", || {
+    wait("native drag end releases deferred frame", || {
         text(&ui, "#tab-row").contains("Missed release recovery")
     })?;
+    hover_chrome(&ui, "#settings-button")?;
     println!("outside release does not freeze chrome: true");
     assert!(
         tab && menu && card && held,
         "refresh must preserve every held click and defer painting"
     );
     pump(400);
-    assert_eq!(chrome(&ui, "S.frame.forest === null")?, true);
+    assert_eq!(
+        chrome(&ui, "!('forest' in S.frame) && S.forest === null")?,
+        true
+    );
     chrome(&ui, "(() => { globalThis.__node=document.querySelector('#strip-nodes .node'); globalThis.__edge=document.querySelector('#strip-edges path'); canopy.present(S.frame); return true; })()")?;
     assert_eq!(chrome(&ui, "!strip.anim && __node === document.querySelector('#strip-nodes .node') && __edge === document.querySelector('#strip-edges path')")?, true);
     println!("PASS unchanged frame preserves strip nodes and edges without animation.");
@@ -244,31 +256,33 @@ fn main() -> Result<()> {
     println!("PASS open zoomed-tree icon updates immediately.");
     chrome(&ui, "(() => { canopy.toggleForest(); return true; })()")?;
     wait("on-demand forest", || {
-        chrome(&ui, "S.frame.forest?.labels.nodes.length > 0").is_ok_and(|v| v == true)
+        chrome(&ui, "S.forest?.view === 'canopy'").is_ok_and(|v| v == true)
     })?;
     assert_eq!(chrome(&ui, "window.innerHeight === S.windowHeight && document.querySelector('#forest').getBoundingClientRect().height > 94")?, true);
-    chrome(&ui, "(() => { globalThis.__forestNode=document.querySelector('#forest-nodes [data-id]'); canopy.toggleForest(); return true; })()")?;
+    chrome(&ui, "(() => { globalThis.__forestNode=document.querySelector('#forest-canopy [data-id]'); canopy.toggleForest(); return true; })()")?;
     pump(100);
     chrome(&ui, "(() => { canopy.toggleForest(); return true; })()")?;
     wait("unchanged forest reopened", || {
-        visible(&ui, "#forest-nodes [data-id]")
+        visible(&ui, "#forest-canopy [data-id]")
     })?;
     assert_eq!(
         chrome(
             &ui,
-            "__forestNode === document.querySelector('#forest-nodes [data-id]')"
+            "__forestNode === document.querySelector('#forest-canopy [data-id]')"
         )?,
         true
     );
     println!("PASS forest first appears at window height and unchanged reopen keeps its nodes.");
     rename(&ui, gamma, "Forest changed while open");
     wait("forest change", || {
-        text(&ui, "#forest-nodes").contains("Forest changed while open")
+        text(&ui, "#forest-canopy")
+            .to_lowercase()
+            .contains("forest changed while open")
     })?;
     chrome(&ui, "(() => { canopy.toggleForest(); return true; })()")?;
     rename(&ui, gamma, "Forest closed again");
     wait("closed forest frame", || {
-        chrome(&ui, "S.frame.forest === null").is_ok_and(|v| v == true)
+        chrome(&ui, "!('forest' in S.frame) && S.forest === null").is_ok_and(|v| v == true)
     })?;
     println!("PASS forest is requested on open, follows changes, and leaves closed frames.");
 
@@ -328,7 +342,7 @@ fn main() -> Result<()> {
             "strip" => "#strip-nodes",
             "list" => "#strip-list",
             "tree" => "#tree-sheet",
-            _ => "#forest-nodes",
+            _ => "#forest-canopy",
         };
         let check = format!("(() => {{ const shown=[...document.querySelectorAll('{selector} .fav img')]; const images=[...document.querySelectorAll('.fav img')].filter(i=>new URL(i.src).searchParams.get('u').startsWith('{origin}/')); return shown.length >= 3 && images.length >= 3 && images.every(i=>i.complete && i.naturalWidth>0 && i.style.visibility!=='hidden'); }})()");
         wait("all site fallback images loaded", || {

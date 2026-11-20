@@ -155,7 +155,10 @@ fn main() -> Result<()> {
         }
 
         if case.starts_with("settle_pending") {
-            ui.dispatch(ChromeIntent::SettleTree(tree));
+            ui.dispatch(ChromeIntent::PlaceTree {
+                tree,
+                to: canopy::browser::Move::History,
+            });
         }
         if case.starts_with("branch") && !case.ends_with("replaced") {
             wait("own attempt opens branch palette", || {

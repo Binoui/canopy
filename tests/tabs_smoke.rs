@@ -11,6 +11,7 @@ mod http;
 use common::*;
 
 fn main() -> Result<()> {
+    let _runtime = private_runtime()?;
     let directory = tempfile::tempdir()?;
     start(directory.path())?;
     let data = std::env::var_os("CANOPY_TAB_FIXTURE")
@@ -56,7 +57,6 @@ fn main() -> Result<()> {
         let mut b = Browser::open(&data.join("forest.sqlite3"))?;
         for tree in b.tree_states()? {
             b.rename_tree(tree.root, "A tree title long enough to shrink")?;
-            b.set_pinned(tree.root, true)?;
             let page = b
                 .snapshot()?
                 .visits
@@ -81,6 +81,7 @@ fn main() -> Result<()> {
     wait("sixteen tabs", || {
         chrome(&ui, "document.querySelectorAll('#tab-row .tab').length").is_ok_and(|v| v == 16)
     })?;
+    let ui = tab_reorder(ui, &data)?;
     settle(&ui)?;
     assert_eq!(chrome(&ui, "(() => { const el = document.getElementById('memory-dot'); const r = el.getBoundingClientRect(); return [-11, 11].every(dx => [-11, 11].every(dy => el.contains(document.elementFromPoint(r.x+r.width/2+dx, r.y+r.height/2+dy)))) })()")?, true);
     assert_eq!(chrome(&ui, "[...document.querySelectorAll('.tab:not([hidden]):not(.icon-only) .tab-settle')].every(el => el.offsetWidth >= 24 && el.offsetHeight >= 24)")?, true);
@@ -120,7 +121,7 @@ fn main() -> Result<()> {
     println!("PASS Ctrl+Shift+Tab alternates between previously shown trees.");
     chrome(
         &ui,
-        "(intent('select-tree', {id: S.frame.tabs[S.frame.tabs.length-1].id}), true)",
+        "(treeAct(S.frame.tabs[S.frame.tabs.length-1].id,'open'), true)",
     )?;
     wait("last tree active", || {
         chrome(&ui, "S.frame.tabs[S.frame.tabs.length-1].active").is_ok_and(|v| v == true)
@@ -197,7 +198,7 @@ fn main() -> Result<()> {
     })?;
     println!("PASS settle in the overflow removes its tree.");
     ui.window.resize(820, 800);
-    chrome(&ui, "(() => { const keep = S.frame.tabs.slice(0,4).map(t => t.id); for (const t of S.frame.tabs.slice(4)) intent('settle-tree', {id:t.id}); intent('rename-tree', {id:keep[0], name:'GTK documentation and application development'}); intent('select-tree', {id:keep[0]}); return true; })()")?;
+    chrome(&ui, "(() => { const keep = S.frame.tabs.slice(0,4).map(t => t.id); for (const t of S.frame.tabs.slice(4)) treeAct(t.id,'settle'); intent('rename-tree', {id:keep[0], name:'GTK documentation and application development'}); treeAct(keep[0],'open'); return true; })()")?;
     wait("four trees", || {
         chrome(&ui, "S.frame.tabs.length").is_ok_and(|v| v == 4)
     })?;
@@ -235,20 +236,11 @@ fn main() -> Result<()> {
 fn review_regressions(ui: &Ui) -> Result<()> {
     ui.window.resize(820, 800);
     pump(400);
-    chrome(
-        ui,
-        "(intent('select-tree', {id: S.frame.tabs[0].id}), true)",
-    )?;
+    chrome(ui, "(treeAct(S.frame.tabs[0].id,'open'), true)")?;
     pump(400);
-    chrome(
-        ui,
-        "(intent('select-tree', {id: S.frame.tabs[1].id}), true)",
-    )?;
+    chrome(ui, "(treeAct(S.frame.tabs[1].id,'open'), true)")?;
     pump(500);
-    chrome(
-        ui,
-        "(intent('select-tree', {id: S.frame.tabs[0].id}), true)",
-    )?;
+    chrome(ui, "(treeAct(S.frame.tabs[0].id,'open'), true)")?;
     pump(500);
     chrome(ui, "(() => { window.reviewFrames = []; const present = canopy.present; canopy.present = (...args) => { present(...args); const on = document.querySelector('.tab[aria-selected=true]'); window.reviewFrames.push(!on.classList.contains('icon-only') && on.offsetWidth >= 110 && [...document.querySelectorAll('.tab:not([aria-selected=true])')].every(t => t.hidden || t.classList.contains('icon-only'))); }; return true; })()")?;
     let target = chrome(
@@ -282,7 +274,7 @@ fn review_regressions(ui: &Ui) -> Result<()> {
         true
     );
     println!("PASS 7 active class and titled fit change in the same presentation call.");
-    assert_eq!(chrome(ui, "(() => { const cross = document.querySelector('.tab[aria-selected=true] .tab-settle'); const original = window.ipc.postMessage; let settled = false; window.ipc.postMessage = (message) => { settled ||= JSON.parse(message).kind === 'settle-tree'; }; const r = cross.getBoundingClientRect(); const event = (type, detail, x = r.x+12) => cross.dispatchEvent(new MouseEvent(type, {bubbles:true, button:0, detail, clientX:x, clientY:r.y+12})); cross.style.opacity = '0'; event('mousedown',1); cross.style.opacity = '1'; event('mouseup',1); event('click',1); event('mousedown',2); event('mouseup',2); event('click',2); event('mousedown',1,r.x-1); event('mouseup',1); event('click',1); window.ipc.postMessage = original; cross.style.opacity = ''; return !settled; })()")?, true);
+    assert_eq!(chrome(ui, "(() => { const cross = document.querySelector('.tab[aria-selected=true] .tab-settle'); const original = window.ipc.postMessage; let settled = false; window.ipc.postMessage = (message) => { settled ||= JSON.parse(message).act === 'settle'; }; const r = cross.getBoundingClientRect(); const event = (type, detail, x = r.x+12) => cross.dispatchEvent(new MouseEvent(type, {bubbles:true, button:0, detail, clientX:x, clientY:r.y+12})); cross.style.opacity = '0'; event('mousedown',1); cross.style.opacity = '1'; event('mouseup',1); event('click',1); event('mousedown',2); event('mouseup',2); event('click',2); event('mousedown',1,r.x-1); event('mouseup',1); event('click',1); window.ipc.postMessage = original; cross.style.opacity = ''; return !settled; })()")?, true);
     println!("PASS 1 invisible-at-press cross and second double-click cannot settle.");
     assert_eq!(
         chrome(
@@ -302,11 +294,11 @@ fn review_regressions(ui: &Ui) -> Result<()> {
         assert_eq!(chrome(ui, "(() => { const tab = document.querySelector('.tab[aria-selected=true]'); return tab.offsetWidth >= 200 && tab.offsetWidth <= 280 && tab.querySelector('.tab-title').clientWidth >= 110; })()")?, true, "active natural title at {width}px");
     }
     println!("PASS 2 active title keeps 200 to 280px at 820, 560 and 480px.");
-    chrome(ui, "(intent('select-tree', {id:S.frame.tabs[0].id}), true)")?;
+    chrome(ui, "(treeAct(S.frame.tabs[0].id,'open'), true)")?;
     pump(300);
     ui.window.resize(1240, 800);
     pump(400);
-    assert_eq!(chrome(ui, "[...document.querySelectorAll('.tab.icon-only')].some(t => { const tree = S.frame.tabs.find(tree => tree.id === t.dataset.id); const count = t.querySelector('.count'); return tree.pending > 0 && count && count.offsetWidth > 0 && count.textContent === String(tree.pending) && getComputedStyle(count).position === 'absolute' && !t.querySelector('.tab-pinned-mark')?.offsetWidth; })")?, true);
+    assert_eq!(chrome(ui, "[...document.querySelectorAll('.tab.icon-only')].some(t => { const tree = S.frame.tabs.find(tree => tree.id === t.dataset.id); const dot = t.querySelector('.unread-dot'); return tree.pending > 0 && dot && dot.offsetWidth > 0 && getComputedStyle(dot).position === 'absolute' && !t.querySelector('.tab-pinned-mark')?.offsetWidth; })")?, true);
     println!("PASS 5 icon corner shows its waiting count and hides the pin.");
     if let Ok(folder) = std::env::var("CANOPY_TAB_SHOTS") {
         std::fs::create_dir_all(&folder)?;
@@ -325,4 +317,236 @@ fn review_regressions(ui: &Ui) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn stored_tabs(data: &std::path::Path) -> Result<Vec<String>> {
+    let db = rusqlite::Connection::open_with_flags(
+        data.join("forest.sqlite3"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let tabs = db
+        .prepare("SELECT root_id FROM tree_state WHERE place='tab' ORDER BY pinned DESC,position,root_id")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(tabs)
+}
+
+fn tab_ids(ui: &Ui) -> Result<Vec<String>> {
+    Ok(serde_json::from_value(chrome(
+        ui,
+        "S.frame.tabs.map(t => t.id)",
+    )?)?)
+}
+
+fn native_drag(ui: &Ui, source: &str, end: (i32, i32), on_row: bool) -> Result<()> {
+    let start = chrome_point(ui, &format!(".tab[data-id='{source}'] .mk"))?;
+    move_to(start.0, start.1)?;
+    pump(150);
+    xdo(&["mousedown", "1"])?;
+    pump(200);
+    for step in 1..=25 {
+        move_to(
+            start.0 + (end.0 - start.0) * step / 25,
+            start.1 + (end.1 - start.1) * step / 25,
+        )?;
+        pump(60);
+    }
+    pump(200);
+    let indicator = chrome(
+        ui,
+        "document.getElementById('tab-row').classList.contains('drop-target')",
+    )?;
+    let dimmed = chrome(ui, "!!document.querySelector('.tab.dragging')")?;
+    xdo(&["mouseup", "1"])?;
+    assert_eq!(indicator, on_row, "drop indicator follows the native drag");
+    assert_eq!(dimmed, true, "source stays dimmed during the native drag");
+    pump(400);
+    assert_eq!(chrome(ui, "!!document.querySelector('.tab.dragging') || document.getElementById('tab-row').classList.contains('drop-target')")?, false);
+    Ok(())
+}
+
+fn tab_reorder(ui: std::rc::Rc<Ui>, data: &std::path::Path) -> Result<std::rc::Rc<Ui>> {
+    ui.window.resize(1240, 800);
+    key("ctrl+1")?;
+    pump(400);
+    let original = tab_ids(&ui)?;
+    key("ctrl+shift+Page_Up")?;
+    assert_eq!(stored_tabs(data)?, original);
+    let outside = page_point(&ui, 400, 400)?;
+    native_drag(&ui, &original[0], outside, false)?;
+    assert_eq!(
+        stored_tabs(data)?,
+        original,
+        "a drop on the page cannot reorder"
+    );
+    let (x, y, _, h) = rect(&ui, &format!(".tab[data-id='{}']", original[3]))?;
+    let gap = screen_point(
+        &ui,
+        &ui.chrome.native(),
+        (x - 1.) as i32,
+        (y + h / 2.) as i32,
+    )?;
+    native_drag(&ui, &original[0], gap, true)?;
+    let mut expected = original.clone();
+    let moved = expected.remove(0);
+    expected.insert(2, moved);
+    wait("native drop reordered the strip", || {
+        tab_ids(&ui).is_ok_and(|tabs| tabs == expected)
+    })?;
+    assert_eq!(stored_tabs(data)?, expected);
+    assert_eq!(
+        chrome(
+            &ui,
+            "document.querySelector('.tab[aria-selected=true]').dataset.id"
+        )?,
+        original[0]
+    );
+    key("ctrl+shift+Page_Up")?;
+    expected.swap(1, 2);
+    wait("keyboard move left", || {
+        stored_tabs(data).is_ok_and(|tabs| tabs == expected)
+    })?;
+    key("ctrl+shift+Page_Down")?;
+    expected.swap(1, 2);
+    wait("keyboard move right", || {
+        stored_tabs(data).is_ok_and(|tabs| tabs == expected)
+    })?;
+    println!("PASS native drag reorders, preserves selection and shows an indicator; page drops do nothing; keyboard moves use the stored order.");
+
+    for id in &expected[..2] {
+        hover_chrome(&ui, &format!(".tab[data-id='{id}']"))?;
+        xdo(&["click", "3"])?;
+        click_chrome(&ui, "#popover [data-tab-action=pin]")?;
+        pump(200);
+    }
+    key("ctrl+2")?;
+    wait("second pinned tab committed", || {
+        ui.snapshot().is_ok_and(|snapshot| {
+            snapshot
+                .current
+                .is_some_and(|id| id.to_string() == expected[1])
+        })
+    })?;
+    key("ctrl+shift+Page_Down")?;
+    assert_eq!(
+        stored_tabs(data)?,
+        expected,
+        "last pinned tab stops at the border"
+    );
+    key("ctrl+shift+Page_Up")?;
+    expected.swap(0, 1);
+    wait("keyboard moves within pinned tabs", || {
+        stored_tabs(data).is_ok_and(|tabs| tabs == expected)
+    })?;
+    key("ctrl+shift+Page_Down")?;
+    expected.swap(0, 1);
+    wait("keyboard returns within pinned tabs", || {
+        stored_tabs(data).is_ok_and(|tabs| tabs == expected)
+    })?;
+    let source = expected[3].clone();
+    let (x, y, _, h) = rect(&ui, &format!(".tab[data-id='{}']", expected[1]))?;
+    let gap = screen_point(
+        &ui,
+        &ui.chrome.native(),
+        (x + 2.) as i32,
+        (y + h / 2.) as i32,
+    )?;
+    native_drag(&ui, &source, gap, true)?;
+    let moved = expected.remove(3);
+    expected.insert(1, moved);
+    wait("drop among pinned tabs pins the source", || {
+        tab_ids(&ui).is_ok_and(|tabs| tabs == expected)
+    })?;
+    assert_eq!(
+        chrome(
+            &ui,
+            &format!("S.frame.tabs.find(t=>t.id==='{source}').pinned")
+        )?,
+        true
+    );
+    let (x, y, _, h) = rect(&ui, &format!(".tab[data-id='{}']", expected[5]))?;
+    let gap = screen_point(
+        &ui,
+        &ui.chrome.native(),
+        (x + 2.) as i32,
+        (y + h / 2.) as i32,
+    )?;
+    native_drag(&ui, &source, gap, true)?;
+    let moved = expected.remove(1);
+    expected.insert(4, moved);
+    wait("pinned tab dragged out becomes unpinned", || {
+        tab_ids(&ui).is_ok_and(|tabs| tabs == expected)
+    })?;
+    assert_eq!(
+        chrome(
+            &ui,
+            &format!("S.frame.tabs.find(t=>t.id==='{source}').pinned")
+        )?,
+        false
+    );
+    assert_eq!(stored_tabs(data)?, expected);
+    println!("PASS real drags pin among pinned tabs and unpin outside; keyboard moves stay inside the pinned group.");
+    for id in &expected[..2] {
+        hover_chrome(&ui, &format!(".tab[data-id='{id}']"))?;
+        xdo(&["click", "3"])?;
+        click_chrome(&ui, "#popover [data-tab-action=unpin]")?;
+        pump(200);
+    }
+    expected = stored_tabs(data)?;
+    ui.window.resize(520, 800);
+    key("ctrl+8")?;
+    pump(400);
+    let visible: Vec<String> = serde_json::from_value(chrome(
+        &ui,
+        "[...document.querySelectorAll('#tab-row .tab:not([hidden])')].map(t => t.dataset.id)",
+    )?)?;
+    assert!(
+        visible.len() >= 2 && visible.len() < expected.len(),
+        "overflow drag at {}px has {} visible tabs out of {}",
+        ui.window.allocation().width(),
+        visible.len(),
+        expected.len()
+    );
+    let source = visible.last().unwrap();
+    let target = &visible[0];
+    let from = expected.iter().position(|id| id == source).unwrap();
+    let to = expected.iter().position(|id| id == target).unwrap();
+    let active = chrome(
+        &ui,
+        "document.querySelector('.tab[aria-selected=true]').dataset.id",
+    )?;
+    let (x, y, _, h) = rect(&ui, &format!(".tab[data-id='{target}']"))?;
+    let gap = screen_point(
+        &ui,
+        &ui.chrome.native(),
+        (x + 2.) as i32,
+        (y + h / 2.) as i32,
+    )?;
+    native_drag(&ui, source, gap, true)?;
+    let moved = expected.remove(from);
+    expected.insert(to, moved);
+    wait("overflow drag uses full indexes", || {
+        tab_ids(&ui).is_ok_and(|tabs| tabs == expected)
+    })?;
+    assert_eq!(stored_tabs(data)?, expected);
+    assert_eq!(
+        chrome(
+            &ui,
+            "document.querySelector('.tab[aria-selected=true]').dataset.id"
+        )?,
+        active
+    );
+    println!("PASS dragging visible tabs with overflow preserves the hidden tabs' order and the active tree.");
+    ui.window.close();
+    drop(ui);
+    pump(200);
+    let ui = Ui::new(data)?;
+    ui.window.show_all();
+    ready(&ui)?;
+    wait("restarted strip keeps tab order", || {
+        tab_ids(&ui).is_ok_and(|tabs| tabs == expected)
+    })?;
+    assert_eq!(stored_tabs(data)?, expected);
+    println!("PASS stored tab order survives closing and reopening the UI.");
+    Ok(ui)
 }

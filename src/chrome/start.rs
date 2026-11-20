@@ -2,29 +2,17 @@ use serde_json::{json, Value};
 
 use super::{
     tree_view::{self, Fit},
-    view::{ago, plural},
     ChromeFrame,
 };
 
 pub(super) fn value(frame: &ChromeFrame, frozen: &[crate::suggest::Suggestion]) -> Value {
-    let pinned: Vec<_> = frame
+    let shelf: Vec<_> = frame
         .forest
-        .pinned()
+        .shelf()
         .into_iter()
-        .map(|tree| {
-            let pages = plural(tree.page_count, "page");
-            let meta = tree
-                .last_event_at
-                .map_or_else(|| pages.clone(), |at| format!("{pages} · {}", ago(at)));
-            json!({
-                "id": tree.id.root().to_string(), "title": tree.title,
-                "tip": format!("{}\n{}", tree.title, frame.forest.visit(tree.id.root()).unwrap().url),
-                "waiting": tree.pending_count, "meta": meta,
-                "mini": mini_value(&frame.forest, &tree_view::miniature(&frame.forest, tree, Fit::CARD)),
-            })
-        })
+        .map(|tree| super::tree_card::shelf_card(&frame.forest, tree))
         .collect();
-    json!({"pinned": pinned, "bookmarks": bookmarks(&frame.bookmarks), "suggested": suggested(frame, frozen)})
+    json!({"shelfTitle":"Saved for later","shelfHint":"Save for later in a tab’s menu takes a tree off the bar and keeps it here.","shelf": shelf, "bookmarks": bookmarks(&frame.bookmarks), "suggested": suggested(frame, frozen)})
 }
 
 /// The chips still on offer, each in the place it had when the band was ranked, so the
@@ -42,12 +30,6 @@ fn suggested(frame: &ChromeFrame, frozen: &[crate::suggest::Suggestion]) -> Vec<
             chip
         })
         .collect()
-}
-
-fn mini_value(forest: &crate::forest::ForestProjection, mini: &tree_view::Miniature) -> Value {
-    json!({ "w": mini.width, "h": mini.height, "s": mini.icon, "cut": mini.cut,
-        "nodes": mini.nodes.iter().map(|n| json!({"id": n.id.to_string(), "url": forest.visit(n.id).map(|v| v.url.as_str()), "x": n.x, "y": n.y, "last": n.last, "waiting": n.waiting})).collect::<Vec<_>>(),
-        "edges": mini.edges.iter().map(|e| json!({"c": e.curve, "wait": e.kind == super::graph::EdgeKind::Pending})).collect::<Vec<_>>() })
 }
 
 #[cfg(test)]
@@ -69,6 +51,8 @@ mod tests {
         };
         let frozen = [page("a"), page("b"), page("c")];
         let frame = ChromeFrame {
+            canopy_layout: Default::default(),
+            shown: Default::default(),
             mail: crate::mail::Mail::default(),
             forest: ForestProjection::from_snapshot(
                 browser.snapshot().unwrap(),
@@ -77,6 +61,7 @@ mod tests {
             .unwrap(),
             loaded: Default::default(),
             live: Default::default(),
+            playing: Default::default(),
             capture_enabled: true,
             trees_help: true,
             theme: ThemeMode::Dark,
@@ -95,7 +80,7 @@ mod tests {
     }
 
     #[test]
-    fn cards_follow_pin_order_and_roots_without_events_show_only_the_page_count() {
+    fn cards_follow_shelf_order_and_roots_without_events_show_only_the_page_count() {
         let dir = tempfile::tempdir().unwrap();
         let mut browser = Browser::open(&dir.path().join("forest.sqlite3")).unwrap();
         let ids = browser
@@ -105,9 +90,21 @@ mod tests {
             ])
             .unwrap();
         let states = browser.tree_states().unwrap();
-        browser.set_pinned(states[1].root, true).unwrap();
-        browser.set_pinned(states[0].root, true).unwrap();
+        browser
+            .place_tree(
+                states[1].root,
+                crate::browser::Move::Shelf(crate::browser::Slot::End),
+            )
+            .unwrap();
+        browser
+            .place_tree(
+                states[0].root,
+                crate::browser::Move::Shelf(crate::browser::Slot::End),
+            )
+            .unwrap();
         let frame = ChromeFrame {
+            canopy_layout: Default::default(),
+            shown: Default::default(),
             mail: crate::mail::Mail::default(),
             forest: ForestProjection::from_snapshot(
                 browser.snapshot().unwrap(),
@@ -116,6 +113,7 @@ mod tests {
             .unwrap(),
             loaded: Default::default(),
             live: Default::default(),
+            playing: Default::default(),
             capture_enabled: true,
             trees_help: true,
             theme: ThemeMode::Dark,
@@ -127,17 +125,17 @@ mod tests {
             files: vec![],
         };
         let start = value(&frame, &[]);
-        assert_eq!(start["pinned"][0]["id"], ids[1].to_string());
-        assert_eq!(start["pinned"][1]["id"], ids[0].to_string());
-        assert_eq!(start["pinned"][0]["meta"], "1 page");
-        assert_eq!(start["pinned"][0]["waiting"], 0);
+        assert_eq!(start["shelf"][0]["id"], ids[1].to_string());
+        assert_eq!(start["shelf"][1]["id"], ids[0].to_string());
+        assert_eq!(start["shelf"][0]["meta"], "1 page");
+        assert_eq!(start["shelf"][0]["waiting"], 0);
         drop(browser);
         let reopened = Browser::open(&dir.path().join("forest.sqlite3")).unwrap();
         assert!(reopened
             .tree_states()
             .unwrap()
             .iter()
-            .all(|t| t.pin.is_some()));
+            .all(|t| matches!(t.spot.place(), crate::browser::Place::Shelf { .. })));
     }
 }
 
@@ -261,7 +259,7 @@ pub(super) fn chip(
                 "tree",
                 t.title.clone(),
                 format!("{}\n{}", t.title, forest.visit(tree.root()).unwrap().url),
-                json!({"mini":mini_value(forest, &tree_view::miniature(forest,t,Fit::CHIP))}),
+                json!({"mini":super::tree_card::mini_value(forest, &tree_view::miniature(forest,t,Fit::CHIP))}),
             )
         }
         Suggestion::Path { first, second, .. } => (
@@ -295,9 +293,9 @@ pub(super) fn keep(s: &crate::suggest::Suggestion) -> super::ChromeIntent {
             url: url.clone(),
             title: title.clone(),
         },
-        Suggestion::Tree { tree, .. } => super::ChromeIntent::PinTree {
+        Suggestion::Tree { tree, .. } => super::ChromeIntent::PlaceTree {
             tree: *tree,
-            pinned: true,
+            to: crate::browser::Move::Shelf(crate::browser::Slot::First),
         },
         Suggestion::Path { first, .. } => super::ChromeIntent::Bookmark {
             url: first.clone(),
@@ -311,7 +309,7 @@ pub(super) fn help() -> Value {
         "title": "How trees work",
         "lines": [
             {"mark": "tree", "text": "Every link you follow grows the tree in the strip above. Back goes to the parent page."},
-            {"mark": "waiting", "text": "Middle-click a link to keep it waiting (green ring). Ctrl+Tab opens the next waiting page."},
+            {"mark": "waiting", "text": "Middle-click a link to keep it waiting (green ring). Ctrl+Tab opens the next waiting page; hold Ctrl to pick a read one."},
             {"mark": "branches", "text": "Rest on a strip page to see its branches. Right-click a page for more: settle a branch, move it to its own tree, dismiss a waiting page."},
             {"mark": "settle", "text": "Done with a tree? Settle it with the cross on its tab. Nothing is deleted; Ctrl+Shift+T brings it back."}
         ],

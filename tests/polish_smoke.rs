@@ -112,9 +112,9 @@ fn main() -> Result<()> {
         })?;
         key("ctrl+e")?;
         wait("forest current page", || {
-            visible(&ui, ".forest-node[aria-current=page]")
+            visible(&ui, ".canopy-item[data-current=true]:not([data-kind=tree])")
         })?;
-        let animation = chrome(&ui, "getComputedStyle(document.querySelector('.forest-node[aria-current=page]')).animationName")?;
+        let animation = chrome(&ui, "getComputedStyle(document.querySelector('.canopy-item[data-current=true]:not([data-kind=tree])')).animationName")?;
         assert_eq!(animation, if enabled { "forest-locate" } else { "none" });
         key("Escape")?;
         wait("forest closed", || !visible(&ui, "#forest"))?;
@@ -276,18 +276,11 @@ fn main() -> Result<()> {
         chrome(&ui, "document.querySelectorAll('.waiting-pulse').length")?,
         0
     );
-    chrome(
-        &ui,
-        "(canopy.toggleForest(), S.camera.zoom=.5, fitForest(true), true)",
-    )?;
-    let camera = chrome(&ui, "({...S.camera})")?;
-    pump(80);
-    assert_eq!(chrome(&ui, "({...S.camera})")?, camera);
     chrome(&ui, "(canopy.toast('info', 'Reduced motion'), true)")?;
     wait("reduced-motion CSS", || {
         chrome(&ui, "getComputedStyle($('toast')).transitionDuration").is_ok_and(|v| v == "0s")
     })?;
-    println!("PASS desktop reduced motion completes strip moves, forest camera and CSS transitions immediately.");
+    println!("PASS desktop reduced motion completes strip moves and CSS transitions immediately.");
     ui.window.close();
     Ok(())
 }

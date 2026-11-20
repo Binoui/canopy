@@ -80,7 +80,7 @@ fn pages_in(forest: &ForestProjection, order: WaitingOrder) -> Vec<&Visit> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browser::{Lifecycle, Snapshot, TreeId, TreeState};
+    use crate::browser::{Snapshot, TreeId, TreeState};
 
     fn fixture(
         times: &[i64],
@@ -121,15 +121,17 @@ mod tests {
             .enumerate()
             .filter(|(_, p)| p.is_none())
             .map(|(i, _)| TreeState {
-                pin: None,
                 last_event_at: None,
                 root: TreeId(ids[i]),
                 last_visit: ids[i],
                 name: None,
-                lifecycle: if settled {
-                    Lifecycle::Settled { since: 100 }
+                spot: if settled {
+                    crate::browser::Spot::History { settled_at: 100 }
                 } else {
-                    Lifecycle::Open
+                    crate::browser::Spot::Tab {
+                        pinned: false,
+                        position: 0,
+                    }
                 },
             })
             .collect();

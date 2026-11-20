@@ -3,7 +3,7 @@ use std::{ffi::OsString, os::fd::AsRawFd, path::PathBuf};
 use anyhow::{bail, Context, Result};
 use canopy::{
     address::Destination,
-    instance::{self, Launch, Request},
+    instance::{self, Launch, Question, Request},
 };
 use gtk::prelude::*;
 use url::Url;
@@ -13,6 +13,7 @@ const HELP: &str = "Canopy
 Usage: canopy [--data-dir PATH] [ADDRESS...]
        canopy [--data-dir PATH] --import-chrome [PROFILE]
        canopy [--data-dir PATH] --login-helper NAME
+       canopy [--data-dir PATH] session [--json] [--text]
 
 Each ADDRESS opens as a new tree, and the last one is shown. When Canopy is already
 open on the same data directory, the addresses open in that window instead.
@@ -21,6 +22,10 @@ open on the same data directory, the addresses open in that window instead.
 then exits. PROFILE defaults to ~/.config/google-chrome/Default. Running it again
 refreshes pages and adds cookies and encrypted passwords. Pages are not loaded.
 The system keyring protects the password vault.
+
+session prints what the running Canopy shows: the shown page, each open tree with its
+pages, and the trees saved for later. --json prints it as JSON. --text adds the shown
+page's visible text. It never starts Canopy.
 
 --login-helper chooses where saved logins are kept, from the next start of Canopy.
 NAME is a password manager's helper, a program called canopy-login-NAME next to
@@ -36,7 +41,7 @@ Ctrl+W          Settle the tree, or close the open overlay
 Ctrl+Shift+T    Reopen the most recently settled tree or branch
 Ctrl+1…9        Switch to a tree
 Ctrl+Shift+Tab  Switch to the previously shown open tree
-Ctrl+Tab        Open the next waiting page
+Ctrl+Tab        Next waiting page, else the last read one; hold Ctrl to pick
 F1              How trees work
 F6              Move between the page and the tree strip
 Alt+←           Back to the parent page
@@ -70,6 +75,10 @@ enum Command {
     ImportChrome(Option<PathBuf>),
     /// `None` means the vault on this computer.
     LoginHelper(Option<String>),
+    Session {
+        json: bool,
+        text: bool,
+    },
     Browse(Vec<Url>),
 }
 
@@ -78,9 +87,15 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Invocation> {
     let mut import = None;
     let mut helper = None;
     let mut urls = Vec::new();
+    let mut session: Option<(bool, bool)> = None;
     let mut args = args.into_iter().peekable();
     while let Some(arg) = args.next() {
         match arg.to_str() {
+            Some("session") if session.is_none() && urls.is_empty() => {
+                session = Some((false, false))
+            }
+            Some("--json") if session.is_some() => session.as_mut().unwrap().0 = true,
+            Some("--text") if session.is_some() => session.as_mut().unwrap().1 = true,
             Some("--import-chrome") => {
                 import = Some(match args.peek().and_then(|next| next.to_str()) {
                     Some(next) if !next.starts_with("--") => args.next().map(PathBuf::from),
@@ -122,6 +137,15 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Invocation> {
             ),
         }
     }
+    if let Some((json, text)) = session {
+        if import.is_some() || helper.is_some() || !urls.is_empty() {
+            bail!("session takes only --json, --text and --data-dir.");
+        }
+        return Ok(Invocation {
+            data_dir,
+            command: Command::Session { json, text },
+        });
+    }
     let command = match (import, helper) {
         (Some(_), Some(_)) => bail!("Use --import-chrome and --login-helper one at a time."),
         (Some(_), _) if !urls.is_empty() => bail!("--import-chrome does not open addresses."),
@@ -153,6 +177,20 @@ fn run() -> Result<()> {
         Command::LoginHelper(name) => {
             return choose_login_helper(&prepare_data_dir(data_dir)?, name.as_deref())
         }
+        Command::Session { json, text } => {
+            let session = instance::ask(&data_dir_path(data_dir)?, Question::Session { text })?;
+            let out = if json {
+                format!("{session:#}\n")
+            } else {
+                canopy::session::render(&session)
+            };
+            // A reader that stops early, such as `head`, is not an error.
+            use std::io::Write;
+            return match std::io::stdout().lock().write_all(out.as_bytes()) {
+                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+                written => Ok(written?),
+            };
+        }
         Command::Browse(urls) => urls,
     };
     let data_dir = prepare_data_dir(data_dir)?;
@@ -175,11 +213,16 @@ fn run() -> Result<()> {
     ui.window.show_all();
     ui.resume(&request.urls)?;
     glib::unix_fd_add_local(instance.as_raw_fd(), glib::IOCondition::IN, move |_, _| {
-        let answered = instance.answer(|request| {
-            let opened = ui.open(&request.urls);
-            ui.bring_forward(request.activation.as_deref());
-            opened
-        });
+        let answered = instance.answer(
+            |request| {
+                let opened = ui.open(&request.urls);
+                ui.bring_forward(request.activation.as_deref());
+                opened
+            },
+            |question, reply| match question {
+                Question::Session { text } => ui.answer_session(text, reply),
+            },
+        );
         if let Err(error) = answered {
             eprintln!("Canopy: {error:#}");
         }
@@ -202,8 +245,8 @@ fn choose_login_helper(data_dir: &std::path::Path, name: Option<&str>) -> Result
     Ok(())
 }
 
-fn prepare_data_dir(chosen: Option<PathBuf>) -> Result<PathBuf> {
-    let data_dir = match chosen {
+fn data_dir_path(chosen: Option<PathBuf>) -> Result<PathBuf> {
+    Ok(match chosen {
         Some(path) => path,
         None => std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
@@ -212,7 +255,11 @@ fn prepare_data_dir(chosen: Option<PathBuf>) -> Result<PathBuf> {
             })
             .context("Set XDG_DATA_HOME or use --data-dir.")?
             .join("canopy"),
-    };
+    })
+}
+
+fn prepare_data_dir(chosen: Option<PathBuf>) -> Result<PathBuf> {
+    let data_dir = data_dir_path(chosen)?;
     let new_directory = !data_dir.exists();
     std::fs::create_dir_all(&data_dir)?;
     if new_directory {
@@ -293,6 +340,24 @@ mod tests {
 
     fn urls(addresses: &[&str]) -> Command {
         Command::Browse(addresses.iter().map(|a| Url::parse(a).unwrap()).collect())
+    }
+
+    #[test]
+    fn session_takes_its_two_flags_and_a_data_dir() {
+        let session = |json, text| Command::Session { json, text };
+        let command = |args: &[&str]| parse(args).map(|invocation| invocation.command);
+        assert_eq!(command(&["session"]).unwrap(), session(false, false));
+        assert_eq!(
+            command(&["session", "--text", "--json"]).unwrap(),
+            session(true, true)
+        );
+        let invocation = parse(&["--data-dir", "/d", "session", "--json"]).unwrap();
+        assert_eq!(invocation.data_dir, Some(PathBuf::from("/d")));
+        assert_eq!(invocation.command, session(true, false));
+        assert!(command(&["--json"]).is_err(), "--json belongs to session");
+        assert!(command(&["session", "example.org"]).is_err());
+        assert!(command(&["example.org", "session"]).is_err());
+        assert!(command(&["session", "--import-chrome"]).is_err());
     }
 
     #[test]
