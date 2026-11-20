@@ -292,7 +292,7 @@ fn main() -> Result<()> {
         menu(&ui, &tab)?;
         assert_eq!(
             text(&ui, "#popover"),
-            "Pin tab\nSave for later\nRename\nSettle tree"
+            "Pin tab\nSave for later\nRename\nSettle tree\nDelete tree"
         );
         key("Escape")?;
     }
@@ -319,7 +319,10 @@ fn main() -> Result<()> {
     assert!(text(&ui, "#start-content").contains("Saved for later"));
     let card = format!(".tree-card[data-id='{}']", roots[0]);
     menu(&ui, &card)?;
-    assert_eq!(text(&ui, "#popover"), "Open\nRename\nSettle tree");
+    assert_eq!(
+        text(&ui, "#popover"),
+        "Open\nRename\nSettle tree\nDelete tree"
+    );
     key("Escape")?;
     click_chrome(&ui, &card)?;
     settle(&ui)?;

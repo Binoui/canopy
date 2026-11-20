@@ -244,7 +244,7 @@ function patchInto(container, fresh) {
 function treeAct(tree, act) {
   if (S.overlay === 'forest') { post({t:'forest',do:'act',tree,act}); return; }
   const navigates = act === 'open';
-  const lands = ['save','settle'].includes(act) && S.overlay !== 'forest' && S.surface !== 'start';
+  const lands = ['save','settle','delete'].includes(act) && S.overlay !== 'forest' && S.surface !== 'start';
   if (navigates) uncover();
   post({t:'tree', tree, act});
   if (navigates || lands) post({t:'focus', target:'page'});
@@ -2160,17 +2160,20 @@ window.canopy = {
       el.onanimationend = () => el.classList.remove('waiting-pulse');
     }
   },
-  toast(kind, text) {
+  toast(kind, text, deleteId) {
     const toast = $('toast');
-    $('toast-status').textContent = text + (kind === 'settled' ? ' · Undo (Ctrl+Shift+T)' : '');
+    $('toast-status').textContent = text + (kind === 'settled' ? ' · Undo (Ctrl+Shift+T)' : kind === 'deleted' ? ' · Undo' : '');
     toast.textContent = text;
-    if (kind === 'settled') {
+    if (kind === 'settled' || kind === 'deleted') {
       const button = document.createElement('button');
       button.textContent = 'Undo';
       toast.appendChild(document.createTextNode(' · '));
-      button.onclick = () => { toast.hidden = true; syncLayer(); intent('undo-settle'); };
+      button.onclick = () => {
+        toast.hidden = true; syncLayer();
+        if (kind === 'settled') intent('undo-settle'); else intent('undo-delete', { id: deleteId });
+      };
       toast.appendChild(button);
-      toast.appendChild(document.createTextNode(' (Ctrl+Shift+T)'));
+      if (kind === 'settled') toast.appendChild(document.createTextNode(' (Ctrl+Shift+T)'));
     }
     toast.className = kind;
     toast.hidden = false;
@@ -2179,7 +2182,7 @@ window.canopy = {
     timers.toast = setTimeout(() => {
       toast.classList.add('leaving');
       timers.toast = setTimeout(() => { toast.hidden = true; syncLayer(); }, 200);
-    }, kind === 'settled' ? 6000 : 2600);
+    }, kind === 'settled' || kind === 'deleted' ? 6000 : 2600);
   },
   toggleFocus() {
     inputOrigin = 'keyboard';

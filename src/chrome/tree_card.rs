@@ -55,15 +55,20 @@ impl Act {
             (Self::Settle, _) => "Settle tree",
             (Self::Open, Place::History { .. }) => "Reopen",
             (Self::Open, _) => "Open",
-            (Self::Delete, _) => "Delete",
+            (Self::Delete, Place::History { .. }) => "Delete",
+            (Self::Delete, _) => "Delete tree",
         }
     }
 }
 pub(super) fn acts(place: Place) -> &'static [Act] {
     match place {
-        Place::Tab { pinned: false } => &[Act::Pin, Act::Save, Act::Rename, Act::Settle],
-        Place::Tab { pinned: true } => &[Act::Unpin, Act::Save, Act::Rename, Act::Settle],
-        Place::Shelf { .. } => &[Act::Open, Act::Rename, Act::Settle],
+        Place::Tab { pinned: false } => {
+            &[Act::Pin, Act::Save, Act::Rename, Act::Settle, Act::Delete]
+        }
+        Place::Tab { pinned: true } => {
+            &[Act::Unpin, Act::Save, Act::Rename, Act::Settle, Act::Delete]
+        }
+        Place::Shelf { .. } => &[Act::Open, Act::Rename, Act::Settle, Act::Delete],
         Place::History { .. } => &[Act::Open, Act::Save, Act::Rename, Act::Delete],
     }
 }
@@ -95,7 +100,10 @@ pub(super) fn intent(tree: &TreeSummary, act: Act) -> Option<ChromeIntent> {
             to: Move::History,
         },
         Act::Open => ChromeIntent::SelectTree(tree.id),
-        Act::Delete => ChromeIntent::DeleteTrees(vec![tree.id]),
+        Act::Delete if matches!(tree.place, Place::History { .. }) => {
+            ChromeIntent::DeleteTrees(vec![tree.id])
+        }
+        Act::Delete => ChromeIntent::DeleteBranch(tree.id.root()),
         Act::Rename => return None,
     })
 }
@@ -171,15 +179,27 @@ mod tests {
         for (place, expected) in [
             (
                 Place::Tab { pinned: false },
-                vec!["Pin tab", "Save for later", "Rename", "Settle tree"],
+                vec![
+                    "Pin tab",
+                    "Save for later",
+                    "Rename",
+                    "Settle tree",
+                    "Delete tree",
+                ],
             ),
             (
                 Place::Tab { pinned: true },
-                vec!["Unpin tab", "Save for later", "Rename", "Settle tree"],
+                vec![
+                    "Unpin tab",
+                    "Save for later",
+                    "Rename",
+                    "Settle tree",
+                    "Delete tree",
+                ],
             ),
             (
                 Place::Shelf { saved_at: 1 },
-                vec!["Open", "Rename", "Settle tree"],
+                vec!["Open", "Rename", "Settle tree", "Delete tree"],
             ),
             (
                 Place::History { settled_at: 1 },
@@ -208,8 +228,12 @@ mod tests {
                 Some(ChromeIntent::SelectTree(_))
             ));
             assert_eq!(
-                intent(&tree, Act::Delete).is_some(),
-                matches!(place, Place::History { .. })
+                intent(&tree, Act::Delete),
+                Some(if matches!(place, Place::History { .. }) {
+                    ChromeIntent::DeleteTrees(vec![tree.id])
+                } else {
+                    ChromeIntent::DeleteBranch(tree.id.root())
+                })
             );
         }
     }

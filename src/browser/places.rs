@@ -357,11 +357,16 @@ impl std::str::FromStr for DeleteId {
 
 pub struct Deleted {
     id: DeleteId,
+    /// Trees deleted whole.
     trees: Vec<TreeId>,
+    /// Each deleted page with no deleted parent, and the parent it hung from.
+    heads: Vec<(VisitId, Option<VisitId>)>,
     visits: std::collections::HashSet<VisitId>,
     tables: Vec<Rows>,
     nulled: Vec<(i64, String)>,
     declined: Vec<String>,
+    /// Trees whose last page was deleted: (that page, the page they resume at now).
+    retargeted: Vec<(VisitId, VisitId)>,
 }
 impl Deleted {
     pub fn id(&self) -> DeleteId {
@@ -369,6 +374,9 @@ impl Deleted {
     }
     pub fn trees(&self) -> &[TreeId] {
         &self.trees
+    }
+    pub fn pages(&self) -> usize {
+        self.visits.len()
     }
     pub fn holds(&self, id: VisitId) -> bool {
         self.visits.contains(&id)
@@ -450,9 +458,62 @@ fn visit_references(tx: &Transaction) -> Result<Vec<(String, String, String)>> {
     Ok(rows)
 }
 impl Browser {
+    /// Deletes settled trees. Trees no longer in History are left alone.
     pub fn delete_trees(
         &mut self,
         trees: &[TreeId],
+    ) -> Result<Option<(DeleteId, Deleted, Landing)>> {
+        let mut roots = vec![];
+        for tree in trees {
+            if !roots.contains(&tree.root())
+                && self.connection.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM tree_state WHERE root_id=?1 AND place='history')",
+                    [tree.root().to_string()],
+                    |r| r.get::<_, bool>(0),
+                )?
+            {
+                roots.push(tree.root());
+            }
+        }
+        self.delete_heads(&roots, None)
+    }
+    /// Deletes `head` and every page opened from it, in any place. A root deletes its whole
+    /// tree. When the current page is inside an open tree's branch, the window lands on the
+    /// nearest ancestor left.
+    pub fn delete_branch(&mut self, head: VisitId) -> Result<Option<(DeleteId, Deleted, Landing)>> {
+        let forest =
+            crate::forest::ForestProjection::from_snapshot(self.snapshot()?, self.tree_states()?)?;
+        let Some(visit) = forest.visit(head) else {
+            return Ok(None);
+        };
+        let open = forest
+            .tree_of(head)
+            .and_then(|t| forest.tree(t))
+            .is_some_and(|t| t.place.is_tab());
+        let landing = match visit.parent {
+            Some(parent)
+                if open
+                    && forest
+                        .current()
+                        .is_some_and(|id| forest.path(id).contains(&head)) =>
+            {
+                Some(Landing::Restore(
+                    forest
+                        .path(parent)
+                        .into_iter()
+                        .rev()
+                        .find(|id| !forest.is_settled(*id))
+                        .context("No unsettled ancestor.")?,
+                ))
+            }
+            _ => None,
+        };
+        self.delete_heads(&[head], landing)
+    }
+    fn delete_heads(
+        &mut self,
+        heads: &[VisitId],
+        landing: Option<Landing>,
     ) -> Result<Option<(DeleteId, Deleted, Landing)>> {
         let tx = self
             .connection
@@ -460,22 +521,24 @@ impl Browser {
         tx.execute_batch(
             "CREATE TEMP TABLE IF NOT EXISTS deleting(id TEXT PRIMARY KEY); DELETE FROM deleting;",
         )?;
-        let mut roots = vec![];
-        for tree in trees {
-            if !roots.contains(tree)
-                && tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM tree_state WHERE root_id=?1 AND place='history')",
-                    [tree.root().to_string()],
-                    |r| r.get::<_, bool>(0),
-                )?
-            {
-                roots.push(*tree);
-                tx.execute("WITH RECURSIVE branch(id) AS (SELECT ?1 UNION ALL SELECT v.id FROM visits v JOIN branch b ON v.parent_id=b.id) INSERT OR IGNORE INTO deleting SELECT id FROM branch",[tree.root().to_string()])?;
-            }
+        let mut kept = vec![];
+        for head in heads {
+            let parent: Option<Option<String>> = tx
+                .query_row(
+                    "SELECT parent_id FROM visits WHERE id=?1",
+                    [head.to_string()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(parent) = parent else { continue };
+            let parent: Option<VisitId> = parent.map(|p| p.parse()).transpose()?;
+            kept.push((*head, parent));
+            tx.execute("WITH RECURSIVE branch(id) AS (SELECT ?1 UNION ALL SELECT v.id FROM visits v JOIN branch b ON v.parent_id=b.id) INSERT OR IGNORE INTO deleting SELECT id FROM branch",[head.to_string()])?;
         }
-        if roots.is_empty() {
+        if kept.is_empty() {
             return Ok(None);
         }
+        let heads = kept;
         let visits = tx
             .prepare("SELECT id FROM deleting")?
             .query_map([], |r| r.get::<_, String>(0))?
@@ -503,6 +566,11 @@ impl Browser {
         }
         tables.push(Rows::read(&tx, "tree_state", "root_id IN deleting")?);
         let nulled=tx.prepare("SELECT id,from_visit_id FROM visit_events WHERE from_visit_id IN deleting AND visit_id NOT IN deleting")?.query_map([],|r|Ok((r.get(0)?,r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+        let roots: Vec<TreeId> = heads
+            .iter()
+            .filter(|(_, parent)| parent.is_none())
+            .map(|(head, _)| TreeId(*head))
+            .collect();
         let declined = roots
             .iter()
             .map(|t| format!("tree {}", t.root()))
@@ -515,7 +583,29 @@ impl Browser {
                 .unwrap_or(false)
             })
             .collect::<Vec<_>>();
-        let landing = land(&tx)?;
+        // A tree that keeps its root but loses its last page resumes at the nearest page
+        // opened above the branch.
+        let mut retargeted = vec![];
+        for (head, parent) in &heads {
+            let Some(parent) = parent else { continue };
+            let last: Option<String> = tx.query_row("SELECT t.last_visit_id FROM tree_state t WHERE t.last_visit_id IN deleting AND t.root_id NOT IN deleting AND t.last_visit_id IN (WITH RECURSIVE branch(id) AS (SELECT ?1 UNION ALL SELECT v.id FROM visits v JOIN branch b ON v.parent_id=b.id) SELECT id FROM branch)",[head.to_string()],|r|r.get(0)).optional()?;
+            let Some(last) = last else { continue };
+            let keep: String = tx.query_row("WITH RECURSIVE up(id,parent_id,opened_at,depth) AS (SELECT id,parent_id,opened_at,0 FROM visits WHERE id=?1 UNION ALL SELECT v.id,v.parent_id,v.opened_at,u.depth+1 FROM visits v JOIN up u ON v.id=u.parent_id) SELECT id FROM up WHERE opened_at IS NOT NULL ORDER BY depth LIMIT 1",[parent.to_string()],|r|r.get(0)).optional()?.context("No opened page is left above this branch.")?;
+            tx.execute(
+                "UPDATE tree_state SET last_visit_id=?2 WHERE last_visit_id=?1",
+                params![last, keep],
+            )?;
+            retargeted.push((last.parse()?, keep.parse()?));
+        }
+        // An open tree deleted whole leaves Tabs first, so the landing treats it as settled.
+        tx.execute(
+            "UPDATE tree_state SET place='history',position=NULL,pinned=0 WHERE root_id IN deleting AND place<>'history'",
+            [],
+        )?;
+        let landing = match landing {
+            Some(landing) => landing,
+            None => land(&tx)?,
+        };
         tx.execute(
             "UPDATE session SET current_id=NULL WHERE current_id IN deleting",
             [],
@@ -532,10 +622,12 @@ impl Browser {
             Deleted {
                 id,
                 trees: roots,
+                heads,
                 visits,
                 tables,
                 nulled,
                 declined,
+                retargeted,
             },
             landing,
         )))
@@ -548,6 +640,14 @@ impl Browser {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute_batch("PRAGMA defer_foreign_keys=ON")?;
+        let exists = |id: VisitId| {
+            tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM visits WHERE id=?1)",
+                [id.to_string()],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap_or(true)
+        };
         if deleted.trees.iter().any(|t| {
             tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM tree_state WHERE root_id=?1)",
@@ -555,7 +655,11 @@ impl Browser {
                 |r| r.get::<_, bool>(0),
             )
             .unwrap_or(false)
-        }) {
+        }) || deleted
+            .heads
+            .iter()
+            .any(|(head, parent)| exists(*head) || parent.is_some_and(|p| !exists(p)))
+        {
             return Ok(());
         }
         for table in &deleted.tables {
@@ -573,11 +677,16 @@ impl Browser {
                 [key],
             )?;
         }
+        for (last, keep) in &deleted.retargeted {
+            tx.execute(
+                "UPDATE tree_state SET last_visit_id=?1 WHERE last_visit_id=?2 AND root_id=(WITH RECURSIVE up(id,parent_id) AS (SELECT id,parent_id FROM visits WHERE id=?1 UNION ALL SELECT v.id,v.parent_id FROM visits v JOIN up u ON v.id=u.parent_id) SELECT id FROM up WHERE parent_id IS NULL)",
+                params![last.to_string(), keep.to_string()],
+            )?;
+        }
         tx.commit()?;
         Ok(())
     }
 }
-
 #[cfg(test)]
 pub(super) fn legacy_14(c: &rusqlite::Connection) {
     c.execute_batch("DROP TRIGGER tree_state_validate_INSERT; DROP TRIGGER tree_state_validate_UPDATE;
@@ -952,6 +1061,129 @@ mod tests {
                 .exists([])
                 .unwrap());
         }
+    }
+    fn page(b: &mut Browser, parent: VisitId) -> VisitId {
+        let id: VisitId = ulid::Ulid::new().to_string().parse().unwrap();
+        b.connection.execute("INSERT INTO visits(id,parent_id,url,title,created_at,opened_at) VALUES(?1,?2,'https://page.test','Page',2,2)",params![id.to_string(),parent.to_string()]).unwrap();
+        id
+    }
+    fn without_session(
+        rows: Vec<(String, Vec<Vec<rusqlite::types::Value>>)>,
+    ) -> Vec<(String, Vec<Vec<rusqlite::types::Value>>)> {
+        rows.into_iter().filter(|(t, _)| t != "session").collect()
+    }
+    #[test]
+    fn deleting_a_branch_keeps_the_tree_and_undo_restores_it() {
+        let mut b = browser();
+        let t = roots(&mut b, 2);
+        let root = t[0].root();
+        let child = page(&mut b, root);
+        let leaf = page(&mut b, child);
+        let sibling = page(&mut b, root);
+        b.connection.execute("INSERT INTO captures(visit_id,document_url,title,body,captured_at,kind) VALUES(?1,'https://page.test','Captured','branchword',1,'page')",[leaf.to_string()]).unwrap();
+        b.connection
+            .execute(
+                "INSERT INTO visit_events(visit_id,from_visit_id,kind,at) VALUES(?1,?2,'return',1)",
+                params![sibling.to_string(), leaf.to_string()],
+            )
+            .unwrap();
+        b.connection
+            .execute(
+                "UPDATE tree_state SET last_visit_id=?2 WHERE root_id=?1",
+                params![root.to_string(), leaf.to_string()],
+            )
+            .unwrap();
+        b.connection
+            .execute("UPDATE session SET current_id=?1", [leaf.to_string()])
+            .unwrap();
+        let before = all_rows(&mut b, false);
+        let (id, deleted, landing) = b.delete_branch(child).unwrap().unwrap();
+        assert_eq!(landing, Landing::Restore(root));
+        assert!(deleted.trees().is_empty());
+        assert_eq!(deleted.pages(), 2);
+        assert!(deleted.holds(leaf) && !deleted.holds(sibling));
+        assert!(b.visit(child).is_err() && b.visit(leaf).is_err());
+        assert!(b.visit(sibling).is_ok());
+        assert!(b.search("branchword").unwrap().is_empty());
+        let state = b
+            .tree_states()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.root.root() == root)
+            .unwrap();
+        assert_eq!(state.last_visit, root);
+        assert!(state.place().is_tab());
+        assert_eq!(b.snapshot().unwrap().current, None);
+        b.undo_delete(id, &deleted).unwrap();
+        assert_eq!(
+            without_session(before),
+            without_session(all_rows(&mut b, false))
+        );
+        assert!(!b
+            .connection
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .exists([])
+            .unwrap());
+    }
+    #[test]
+    fn a_branch_outside_the_current_page_keeps_the_window_where_it_is() {
+        let mut b = browser();
+        let root = roots(&mut b, 1)[0].root();
+        let child = page(&mut b, root);
+        let other = page(&mut b, root);
+        b.connection
+            .execute("UPDATE session SET current_id=?1", [other.to_string()])
+            .unwrap();
+        let (_, _, landing) = b.delete_branch(child).unwrap().unwrap();
+        assert_eq!(landing, Landing::Unchanged);
+        assert_eq!(b.snapshot().unwrap().current, Some(other));
+    }
+    #[test]
+    fn deleting_an_open_root_removes_its_tab_and_undo_returns_it() {
+        let mut b = browser();
+        let t = roots(&mut b, 3);
+        b.place_tree(t[1], Move::Pin(true)).unwrap();
+        page(&mut b, t[1].root());
+        b.connection
+            .execute(
+                "UPDATE session SET current_id=?1",
+                [t[1].root().to_string()],
+            )
+            .unwrap();
+        let before = all_rows(&mut b, false);
+        let (id, deleted, landing) = b.delete_branch(t[1].root()).unwrap().unwrap();
+        assert!(matches!(landing, Landing::Restore(v) if v != t[1].root()));
+        assert_eq!(deleted.trees(), &[t[1]]);
+        assert_eq!(deleted.pages(), 2);
+        assert!(!b.tree_states().unwrap().iter().any(|s| s.root == t[1]));
+        b.undo_delete(id, &deleted).unwrap();
+        assert_eq!(
+            without_session(before),
+            without_session(all_rows(&mut b, false))
+        );
+        let state = b
+            .tree_states()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.root == t[1])
+            .unwrap();
+        assert!(state.place().pinned());
+    }
+    #[test]
+    fn undo_of_a_branch_waits_for_its_parent() {
+        let mut b = browser();
+        let tree = roots(&mut b, 1)[0];
+        let child = page(&mut b, tree.root());
+        let (id, branch, _) = b.delete_branch(child).unwrap().unwrap();
+        let (tree_id, whole, _) = b.delete_branch(tree.root()).unwrap().unwrap();
+        b.undo_delete(id, &branch).unwrap();
+        assert!(b.visit(child).is_err());
+        b.undo_delete(tree_id, &whole).unwrap();
+        b.undo_delete(id, &branch).unwrap();
+        assert!(b.visit(child).is_ok());
+        assert!(b.delete_branch(child).unwrap().is_some());
+        assert!(b.delete_branch(child).unwrap().is_none());
     }
     #[test]
     fn failed_undo_keeps_the_record_and_delete_is_durable() {

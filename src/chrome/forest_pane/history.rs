@@ -23,6 +23,7 @@ pub(in crate::chrome) enum Input {
     Jump(String),
     DeleteDay(String),
     Page(VisitId),
+    DeletePage(VisitId),
 }
 impl Input {
     pub fn parse(m: &Value) -> Result<Option<Self>> {
@@ -35,6 +36,7 @@ impl Input {
             Some("jump") => Self::Jump(text("bucket")?),
             Some("delete-day") => Self::DeleteDay(text("day")?),
             Some("page") => Self::Page(text("id")?.parse()?),
+            Some("delete-page") => Self::DeletePage(text("id")?.parse()?),
             Some("more") => Self::More {
                 edge: TreeId(text("edge")?.parse()?),
                 before: m["before"].as_bool().context("Missing window edge")?,
@@ -215,6 +217,14 @@ impl State {
                     return Reply::Go(super::super::ChromeIntent::Restore(id));
                 }
             }
+            Input::DeletePage(id) => {
+                if self
+                    .unfolded
+                    .is_some_and(|tree| forest.tree_of(id) == Some(tree))
+                {
+                    return Reply::Act(super::super::ChromeIntent::DeleteBranch(id));
+                }
+            }
         }
         Reply::Unchanged
     }
@@ -393,7 +403,8 @@ fn outline(forest: &ForestProjection, tree: &TreeSummary) -> Value {
     while let Some((id, depth)) = stack.pop() {
         let name = super::super::graph::short_name(forest, id);
         rows.push(json!({"id":id.to_string(),"depth":depth,"url":forest.visit(id).unwrap().url.as_str(),"name":name,
-            "last":id==tree.last_visit,"waiting":forest.is_waiting(id),"label":format!("{name}, depth {depth}{}",if id==tree.last_visit{", last page"}else{""})}));
+            "last":id==tree.last_visit,"waiting":forest.is_waiting(id),"label":format!("{name}, depth {depth}{}",if id==tree.last_visit{", last page"}else{""}),
+            "delete":{"label":super::super::view::delete_label(forest,id),"name":format!("{} {name}",super::super::view::delete_label(forest,id))}}));
         if rows.len() == OUTLINE_MAX {
             break;
         }
@@ -620,6 +631,44 @@ mod tests {
         assert!(
             matches!(state.input(Input::Page(page),&index,&f.forest,&LocalCalendar),Reply::Go(super::super::super::ChromeIntent::Restore(id)) if id==page)
         );
+    }
+    #[test]
+    fn page_delete_requires_the_unfolded_tree_and_names_what_goes() {
+        let f = fixture(3, 4);
+        let index = Index::build(&f.forest, &LocalCalendar);
+        let mut state = State::default();
+        let tree = index.history[0].tree;
+        let pages = index.facts[&tree].pages(tree, &f.forest).to_vec();
+        let leaf = *pages
+            .iter()
+            .find(|id| f.forest.children(**id).is_empty())
+            .unwrap();
+        assert!(matches!(
+            state.input(Input::DeletePage(leaf), &index, &f.forest, &LocalCalendar),
+            Reply::Unchanged
+        ));
+        state.input(Input::Fold(true), &index, &f.forest, &LocalCalendar);
+        assert!(
+            matches!(state.input(Input::DeletePage(leaf),&index,&f.forest,&LocalCalendar),Reply::Act(super::super::super::ChromeIntent::DeleteBranch(id)) if id==leaf)
+        );
+        let outline = outline(&f.forest, f.forest.tree(tree).unwrap());
+        let label = |id: VisitId| {
+            outline["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["id"] == id.to_string())
+                .unwrap()["delete"]["label"]
+                .clone()
+        };
+        assert_eq!(label(tree.root()), "Delete tree");
+        assert_eq!(label(leaf), "Delete page");
+        if let Some(branch) = pages[1..]
+            .iter()
+            .find(|id| !f.forest.children(**id).is_empty())
+        {
+            assert_eq!(label(*branch), "Delete branch");
+        }
     }
     #[test]
     fn top_nine_sites_and_their_toggle_use_tree_counts() {

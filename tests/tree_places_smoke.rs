@@ -69,7 +69,7 @@ fn main() -> Result<()> {
     xdo(&["click", "3"])?;
     assert_eq!(
         text(&ui, "#popover"),
-        "Pin tab\nSave for later\nRename\nSettle tree"
+        "Pin tab\nSave for later\nRename\nSettle tree\nDelete tree"
     );
     click_chrome(&ui, "[data-tab-action=pin]")?;
     // Three trees in a wide window: the pin keeps its name and shows the pin mark.

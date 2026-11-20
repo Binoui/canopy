@@ -673,7 +673,9 @@ fn page_move_picker() -> Result<()> {
     common::wait("keyboard page menu", || {
         common::visible(&f.ui, "[data-node-action='choose-move-tree']")
     })?;
+    // Delete is the last row; Move to tree… sits just above it.
     common::key("End")?;
+    common::key("Up")?;
     common::key("Return")?;
     common::wait("tree picker destination", || {
         common::visible(&f.ui, &format!("[data-move-tree='{target}']"))

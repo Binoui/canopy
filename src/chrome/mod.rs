@@ -147,6 +147,8 @@ pub enum ChromeIntent {
         to: crate::browser::Move,
     },
     DeleteTrees(Vec<TreeId>),
+    /// Delete a page and every page opened from it; a root deletes its tree.
+    DeleteBranch(VisitId),
     UndoDelete(crate::browser::DeleteId),
     ForgetDeleted,
     Dismiss(VisitId),
@@ -488,8 +490,16 @@ impl HtmlChrome {
     pub fn forest_open(&self) -> bool {
         self.inner.forest.borrow().is_open()
     }
+    /// The forest shows a delete's Undo while it is open; otherwise a toast does.
     pub fn deleted(&self, id: Option<crate::browser::DeleteId>, text: String) {
-        self.inner.forest.borrow_mut().deleted(id, text);
+        if self.forest_open() {
+            self.inner.forest.borrow_mut().deleted(id, text);
+        } else if let Some(id) = id {
+            self.inner.call(
+                "toast",
+                &[json!("deleted"), json!(text), json!(id.to_string())],
+            );
+        }
     }
     pub fn rerank_suggestions(&self, forest: &crate::forest::ForestProjection) {
         if let Some(host) = self.inner.host() {
@@ -1293,6 +1303,8 @@ impl Inner {
             "stop" => ChromeIntent::Stop,
             "dismiss" => ChromeIntent::Dismiss(id("id")?),
             "settle-branch" => ChromeIntent::SettleBranch(id("id")?),
+            "delete-branch" => ChromeIntent::DeleteBranch(id("id")?),
+            "undo-delete" => ChromeIntent::UndoDelete(message["id"].as_str()?.parse().ok()?),
             "move-to-tree" => ChromeIntent::MoveBranch {
                 head: id("id")?,
                 to: MoveTo::OwnTree(TabPlacement::End),

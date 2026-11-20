@@ -983,6 +983,7 @@ impl ChromeHost for Ui {
                 result
             }
             ChromeIntent::DeleteTrees(trees) => self.pages.delete_trees(&trees),
+            ChromeIntent::DeleteBranch(head) => self.pages.delete_branch(head),
             ChromeIntent::UndoDelete(id) => self.pages.undo_delete(id),
             ChromeIntent::ForgetDeleted => {
                 self.pages.forget_deleted();

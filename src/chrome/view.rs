@@ -586,7 +586,19 @@ fn node_menu(forest: &ForestProjection, visit: &Visit) -> Vec<Value> {
         }
         .into(),
     ));
+    rows.push(row("delete-branch", delete_label(forest, visit.id).into()));
     rows
+}
+
+/// What deleting `id` removes: its tree for a root, its branch when pages hang from it.
+pub(crate) fn delete_label(forest: &ForestProjection, id: VisitId) -> &'static str {
+    if forest.visit(id).is_some_and(|v| v.parent.is_none()) {
+        "Delete tree"
+    } else if forest.children(id).is_empty() {
+        "Delete page"
+    } else {
+        "Delete branch"
+    }
 }
 
 /// The palette's rows, in order. `item` indexes the results Rust keeps for running.
