@@ -208,7 +208,7 @@ fn main() -> Result<()> {
         assert!(text(&ui, ".pop-head").contains("Waiting in this tree · 26"));
         assert!(chrome(&ui, "!$('waiting-pin').hasAttribute('title')")? == true);
         assert!(chrome(&ui, "[...document.querySelectorAll('#popover .menu-detail')].some(e => e.textContent.startsWith('Waiting article'))")? == true);
-        assert!(text(&ui, ".pop-head").contains("newest first"));
+        assert!(text(&ui, ".pop-head").contains("this page first, then newest"));
         assert_eq!(
             chrome(
                 &ui,
@@ -309,14 +309,18 @@ fn main() -> Result<()> {
         );
     }
     queue(&ui, "slow")?;
-    let next = waiting(&ui)?[0].clone();
-    let count = waiting(&ui)?.len();
+    let before = waiting(&ui)?;
+    let opening = &before[0];
     key("ctrl+Tab")?;
-    pump(50);
+    wait("slow page becomes current", || {
+        chrome(&ui, "S.frame.current").is_ok_and(|id| id == opening.as_str())
+    })?;
+    let next = waiting(&ui)?[0].clone();
+    assert_ne!(&next, opening);
     key("ctrl+Tab")?;
     activated(&ui, &next)?;
-    assert_eq!(waiting(&ui)?.len(), count - 1);
-    println!("PASS repeated Ctrl+Tab during a slow load asks for the same page.");
+    assert!(waiting(&ui)?.contains(opening));
+    println!("PASS repeated Ctrl+Tab during a slow load opens the next waiting page.");
     let mut read = Vec::new();
     while let Some(next) = waiting(&ui)?.first().cloned() {
         key("ctrl+Tab")?;

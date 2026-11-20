@@ -1,9 +1,6 @@
 //! Pinned strip controls and the room left for the tree.
 
-use super::{
-    graph::{Rect, TRUNK_Y},
-    waiting,
-};
+use super::graph::{Rect, TRUNK_Y};
 use crate::{forest::ForestProjection, mail::Mail};
 
 const MARGIN: f64 = 8.;
@@ -66,8 +63,13 @@ pub(crate) struct Pins {
     pub placed: Vec<(Pin, Rect)>,
 }
 
-pub(crate) fn pins(forest: &ForestProjection, mail: &Mail, playing: usize, width: f64) -> Pins {
-    let count = waiting::pages(forest).len();
+pub(crate) fn pins(
+    forest: &ForestProjection,
+    mail: &Mail,
+    playing: usize,
+    count: usize,
+    width: f64,
+) -> Pins {
     place(
         (playing > 0)
             .then_some(Pin::Playing { count: playing })

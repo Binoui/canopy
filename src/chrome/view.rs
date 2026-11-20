@@ -12,7 +12,7 @@ use super::{
     graph::{self, EdgeKind, StripItem},
     palette::{Group, PaletteItem},
     pins, tree_view,
-    waiting::{self, WaitState, WaitingOrder},
+    waiting::{WaitState, Waiting},
     ChromeFrame, PageFile,
 };
 use crate::{
@@ -105,7 +105,8 @@ pub(crate) fn frame(
             );
         }
     }
-    let waiting_pages = waiting::pages(forest);
+    let waiting = Waiting::of(forest);
+    let waiting_pages = waiting.pages();
     let waiting_name = waiting_pages.first().map_or_else(
         || "No waiting pages".into(),
         |next| {
@@ -131,9 +132,9 @@ pub(crate) fn frame(
         "newTree": new_tree,
         "tabs": tabs,
         "visits": visits,
-        "strip": strip_for_frame(frame, width),
+        "strip": strip_with_waiting(frame, width, &waiting),
         "treeView": tree_view_value(forest, workbench, viewport),
-        "waiting": { "name": waiting_name, "order": WaitingOrder::CHOSEN.label(), "ids": waiting_pages.iter().map(|v| v.id.to_string()).collect::<Vec<_>>() },
+        "waiting": { "name": waiting_name, "order": Waiting::order_label(), "ids": waiting_pages.iter().map(|v| v.id.to_string()).collect::<Vec<_>>() },
         "files": files_value(&frame.files),
         "captureEnabled": frame.capture_enabled,
         "mail": mail_value(&frame.mail),
@@ -216,8 +217,12 @@ fn playing_order(frame: &ChromeFrame) -> Vec<VisitId> {
 }
 
 pub(crate) fn strip_for_frame(frame: &ChromeFrame, width: f64) -> Value {
+    strip_with_waiting(frame, width, &Waiting::of(&frame.forest))
+}
+
+fn strip_with_waiting(frame: &ChromeFrame, width: f64, waiting: &Waiting<'_>) -> Value {
     let playing = playing_order(frame);
-    let mut strip = strip(&frame.forest, &frame.mail, &playing, width);
+    let mut strip = strip(&frame.forest, &frame.mail, &playing, waiting.len(), width);
     let target = |id: Option<VisitId>| {
         id.and_then(|id| frame.forest.visit(id))
             .map(|v| json!({ "id": v.id.to_string(), "label": v.label() }))
@@ -286,6 +291,7 @@ pub(crate) fn strip(
     forest: &ForestProjection,
     mail: &crate::mail::Mail,
     playing: &[VisitId],
+    waiting_count: usize,
     width: f64,
 ) -> Value {
     let elsewhere: Vec<_> = playing
@@ -293,7 +299,7 @@ pub(crate) fn strip(
         .copied()
         .filter(|id| Some(*id) != forest.current())
         .collect();
-    let pins = pins::pins(forest, mail, elsewhere.len(), width);
+    let pins = pins::pins(forest, mail, elsewhere.len(), waiting_count, width);
     let elsewhere: Vec<_> = elsewhere.iter().map(ToString::to_string).collect();
     let placed: Vec<_> = pins
         .placed
@@ -532,11 +538,11 @@ pub(crate) const SWITCHER_READ: usize = 8;
 /// most recently shown first. A quick Ctrl+Tab opens the first row.
 pub(crate) fn switcher_value(frame: &ChromeFrame, recent: &[VisitId]) -> Value {
     let forest = &frame.forest;
-    let waiting = waiting::pages(forest);
+    let waiting = Waiting::of(forest);
     let row =
         |visit: &Visit| visit_value(forest, visit, &frame.loaded, &frame.live, &frame.playing);
     json!({
-        "waiting": waiting.iter().take(SWITCHER_WAITING).map(|v| row(v)).collect::<Vec<_>>(),
+        "waiting": waiting.pages().iter().take(SWITCHER_WAITING).map(|v| row(v)).collect::<Vec<_>>(),
         "moreWaiting": waiting.len().saturating_sub(SWITCHER_WAITING),
         "read": recent.iter().filter_map(|id| forest.visit(*id)).take(SWITCHER_READ).map(row).collect::<Vec<_>>(),
     })
@@ -957,6 +963,7 @@ mod tests {
             .0,
             &crate::mail::Mail::default(),
             0,
+            1,
             1240.,
         );
         assert_eq!(strip["room"], pins.room - pins::NAV);
@@ -1002,6 +1009,7 @@ mod tests {
             .0,
             &crate::mail::Mail::default(),
             0,
+            1,
             390.,
         );
         assert_eq!(narrow["room"], pins.room);
@@ -1021,7 +1029,13 @@ mod tests {
     #[test]
     fn fully_listed_waiting_children_have_no_empty_more_row() {
         let (forest, _) = chain();
-        let value = strip(&forest, &crate::mail::Mail::default(), &[], 1240.);
+        let value = strip(
+            &forest,
+            &crate::mail::Mail::default(),
+            &[],
+            Waiting::of(&forest).len(),
+            1240.,
+        );
         let after = value["nodes"]
             .as_array()
             .unwrap()
@@ -1071,7 +1085,13 @@ mod tests {
             40,
         );
         for width in [390., 800., 1240., 1440.] {
-            let strip = super::strip(&forest, &crate::mail::Mail::default(), &[], width);
+            let strip = super::strip(
+                &forest,
+                &crate::mail::Mail::default(),
+                &[],
+                Waiting::of(&forest).len(),
+                width,
+            );
             let room = strip["room"].as_f64().unwrap();
             assert!(room < width);
             let layout = &strip;
@@ -1093,7 +1113,7 @@ mod tests {
             vec![],
         )
         .unwrap();
-        let strip = super::strip(&empty, &crate::mail::Mail::default(), &[], 800.);
+        let strip = super::strip(&empty, &crate::mail::Mail::default(), &[], 0, 800.);
         assert_eq!(strip["room"], 800. - pins::NAV);
         assert_eq!(strip["left"], pins::NAV);
         assert_eq!(strip["pins"], json!([]));
@@ -1594,7 +1614,13 @@ mod tests {
     #[test]
     fn edges_carry_four_control_points() {
         let (forest, _) = chain();
-        let strip = strip(&forest, &crate::mail::Mail::default(), &[], 1240.);
+        let strip = strip(
+            &forest,
+            &crate::mail::Mail::default(),
+            &[],
+            Waiting::of(&forest).len(),
+            1240.,
+        );
         let edge = &strip["edges"][0];
         assert_eq!(edge["c"].as_array().unwrap().len(), 4);
         assert_eq!(edge["c"][0].as_array().unwrap().len(), 2);
