@@ -63,7 +63,7 @@ Pointer positions in the default 1240x800 window, measured on `78dbbd1`. Check a
 | --- | --- |
 | Tab row | y 26. Forest button at 48, search pill at 1100, settings gear at 1218 |
 | Strip, first page | 70, 68 |
-| Waiting counter, zoomed-tree button | 1172, 68 and 1217, 68 |
+| Zoomed-tree button | 1217, 68 |
 | Fixture page link N | 390, 328 + 25.7 × (N − 1), so 328, 354, 379, 405 |
 
 ## Evidence

@@ -19,6 +19,7 @@ fn main() -> Result<()> {
     for mode in [ThemeMode::Dark, ThemeMode::Light] {
         ui.dispatch(ChromeIntent::SetTheme(mode));
         pump(200);
+        assert!(text(&ui, "#trees-help").contains("waits as a tab after the current page"));
         assert!(text(&ui, "#trees-help").contains("Ctrl+Tab"));
         assert!(text(&ui, "#trees-help").contains("Ctrl+Shift+T"));
         assert!(text(&ui, "#trees-help").contains("still open"));

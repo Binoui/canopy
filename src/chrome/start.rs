@@ -309,7 +309,7 @@ pub(super) fn help() -> Value {
         "title": "How trees work",
         "lines": [
             {"mark": "tree", "text": "Every link you follow grows the tree in the strip above. Back goes to the parent page."},
-            {"mark": "waiting", "text": "Middle-click a link to keep it waiting (green ring). Ctrl+Tab opens the next waiting page; hold Ctrl to pick a read one."},
+            {"mark": "waiting", "text": "Middle-click a link and it waits as a tab after the current page. Ctrl+Tab opens the first waiting tab. Hold Ctrl to pick a waiting or read page."},
             {"mark": "branches", "text": "Rest on a strip page to see its branches. Right-click a page for more: settle a branch, move it to its own tree, dismiss a waiting page."},
             {"mark": "settle", "text": "Done with a tree? Settle it with the cross on its tab. Nothing is deleted; Ctrl+Shift+T brings it back."}
         ],
