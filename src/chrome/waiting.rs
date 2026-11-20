@@ -26,55 +26,70 @@ impl WaitState {
     }
 }
 
-#[allow(dead_code, reason = "changing CHOSEN switches every consumer's order")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum WaitingOrder {
-    NewestFirst,
-    OldestFirst,
+#[derive(Default)]
+pub(crate) struct Waiting<'f> {
+    pages: Vec<&'f Visit>,
+    below: usize,
 }
 
-impl WaitingOrder {
-    pub(crate) const CHOSEN: Self = Self::NewestFirst;
-
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::NewestFirst => "newest first",
-            Self::OldestFirst => "oldest first",
-        }
-    }
-
-    fn sort(self, pages: &mut [&Visit]) {
-        // Stable sorting keeps preorder for pages queued in the same millisecond.
-        match self {
-            Self::NewestFirst => pages.sort_by_key(|v| std::cmp::Reverse(v.created_at)),
-            Self::OldestFirst => pages.sort_by_key(|v| v.created_at),
-        }
-    }
-}
-
-pub(crate) fn pages(forest: &ForestProjection) -> Vec<&Visit> {
-    pages_in(forest, WaitingOrder::CHOSEN)
-}
-
-fn pages_in(forest: &ForestProjection, order: WaitingOrder) -> Vec<&Visit> {
-    let Some(tree) = forest.current().and_then(|id| forest.tree_of(id)) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    let mut stack = vec![tree.root()];
-    while let Some(id) = stack.pop() {
-        let Some(visit) = forest.visit(id) else {
-            continue;
+impl<'f> Waiting<'f> {
+    pub(crate) fn of(forest: &'f ForestProjection) -> Self {
+        let Some(current) = forest.current() else {
+            return Self::default();
         };
-        if forest.is_waiting(id) {
-            out.push(visit);
+        let Some(tree) = forest.tree_of(current) else {
+            return Self::default();
+        };
+        let (mut below, mut elsewhere) = (Vec::new(), Vec::new());
+        let mut stack = vec![(tree.root(), false)];
+        while let Some((id, under_current)) = stack.pop() {
+            let Some(visit) = forest.visit(id) else {
+                continue;
+            };
+            if id != current && forest.is_waiting(id) {
+                if under_current {
+                    below.push(visit);
+                } else {
+                    elsewhere.push(visit);
+                }
+            }
+            if forest.pending_descendant_count(id).unwrap_or(0) > 0 {
+                let under = under_current || id == current;
+                stack.extend(
+                    forest
+                        .children(id)
+                        .iter()
+                        .rev()
+                        .map(|child| (*child, under)),
+                );
+            }
         }
-        if forest.pending_descendant_count(id).unwrap_or(0) > 0 {
-            stack.extend(forest.children(id).iter().rev().copied());
+        // Stable sorting keeps preorder for pages queued in the same millisecond.
+        below.sort_by_key(|v| std::cmp::Reverse(v.created_at));
+        elsewhere.sort_by_key(|v| std::cmp::Reverse(v.created_at));
+        let below_count = below.len();
+        below.extend(elsewhere);
+        Self {
+            pages: below,
+            below: below_count,
         }
     }
-    order.sort(&mut out);
-    out
+
+    pub(crate) fn pages(&self) -> &[&'f Visit] {
+        &self.pages
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.pages.len()
+    }
+
+    pub(crate) fn below(&self) -> usize {
+        self.below
+    }
+
+    pub(crate) fn order_label() -> &'static str {
+        "this page first, then newest"
+    }
 }
 
 #[cfg(test)]
@@ -96,8 +111,8 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, &created_at)| Visit {
-                dismissed_at: None,
-                branch_settled_at: None,
+                dismissed_at: (created_at == -2).then_some(54),
+                branch_settled_at: (created_at == -1).then_some(54),
                 id: ids[i],
                 parent: parents[i].map(|p| ids[p]),
                 url: url::Url::parse("https://example.org").unwrap(),
@@ -149,44 +164,44 @@ mod tests {
     }
 
     #[test]
-    fn waiting_order_is_current_tree_only_stable_and_reversible() {
+    fn waiting_order_groups_descendants_and_keeps_preorder_on_ties() {
         let parents = [
             None,
             Some(0),
-            Some(0),
-            Some(1),
             Some(1),
             Some(2),
+            Some(1),
+            Some(1),
+            Some(0),
             Some(0),
             None,
-            Some(7),
+            Some(8),
+            Some(0),
+            Some(10),
+            Some(1),
         ];
-        for settled in [false, true] {
-            let (forest, ids) = fixture(
-                &[0, 1, 2, 10, 30, 20, 40, 0, 50],
-                &parents,
-                Some(0),
-                settled,
-            );
-            assert_eq!(
-                pages(&forest).iter().map(|v| v.id).collect::<Vec<_>>(),
-                [ids[6], ids[4], ids[5], ids[3]]
-            );
-            assert_eq!(
-                pages_in(&forest, WaitingOrder::OldestFirst)
-                    .iter()
-                    .map(|v| v.id)
-                    .collect::<Vec<_>>(),
-                [ids[3], ids[5], ids[4], ids[6]]
-            );
-        }
-        let (forest, ids) = fixture(&[0, 1, 2, 10, 30, 10, 40, 0, 50], &parents, Some(0), false);
+        let times = [0, 1, 2, 10, 20, 20, 30, 40, 0, 50, -1, 52, -2];
+        let (mut forest, ids) = fixture(&times, &parents, Some(1), false);
+        let order = |forest: &ForestProjection| {
+            let waiting = Waiting::of(forest);
+            (
+                waiting.pages().iter().map(|v| v.id).collect::<Vec<_>>(),
+                waiting.below(),
+            )
+        };
         assert_eq!(
-            pages(&forest).iter().map(|v| v.id).collect::<Vec<_>>(),
-            [ids[6], ids[4], ids[3], ids[5]]
+            order(&forest),
+            (vec![ids[4], ids[5], ids[3], ids[7], ids[6]], 3)
         );
-        let (forest, _) = fixture(&[0, 1, 2, 10, 30, 20, 40, 0, 50], &parents, None, false);
-        assert!(pages(&forest).is_empty());
+        forest.show_current(ids[2]);
+        assert_eq!(
+            order(&forest),
+            (vec![ids[3], ids[7], ids[6], ids[4], ids[5]], 1)
+        );
+        forest.show_current(ids[4]);
+        assert_eq!(order(&forest), (vec![ids[7], ids[6], ids[5], ids[3]], 0));
+        let (forest, _) = fixture(&times, &parents, None, false);
+        assert_eq!(order(&forest), (vec![], 0));
     }
 
     #[test]
@@ -214,6 +229,6 @@ mod tests {
         let times: Vec<i64> = (0..20_000).collect();
         let parents: Vec<_> = (0usize..20_000).map(|i| i.checked_sub(1)).collect();
         let (forest, _) = fixture(&times, &parents, Some(0), false);
-        assert_eq!(pages(&forest).len(), 19_997);
+        assert_eq!(Waiting::of(&forest).len(), 19_997);
     }
 }

@@ -56,7 +56,7 @@ fn main() -> Result<()> {
     wait("empty forest toast", || {
         toast_text(&ui).as_deref() == Some("No other pages in this tree")
     })?;
-    assert!(!visible(&ui, "#waiting-pin"));
+    assert!(!visible(&ui, ".node.tab:not([inert])"));
     key("ctrl+shift+e")?;
     pump(200);
     assert_eq!(
@@ -74,18 +74,14 @@ fn main() -> Result<()> {
     key("Escape")?;
     prove_delivery(&ui)?;
     key("F6")?;
-    assert!(!visible(&ui, "#waiting-pin"));
+    assert!(!visible(&ui, ".node.tab:not([inert])"));
     for i in 0..3 {
         queue(&ui, &format!("link{i}"))?;
         if i == 0 {
             assert_eq!(
-                chrome(&ui, "getComputedStyle($('waiting-pin')).animationDuration")?,
-                "0.32s"
-            );
-            assert_eq!(
                 chrome(
                     &ui,
-                    "getComputedStyle(document.querySelector('.node.after')).animationDuration"
+                    "getComputedStyle(document.querySelector('.node.tab')).animationDuration"
                 )?,
                 "0.32s"
             );
@@ -99,10 +95,13 @@ fn main() -> Result<()> {
             toast_text(&ui).as_deref() == Some(&expected)
         })?;
         assert_eq!(chrome(&ui, "$('toast-status').textContent")?, expected);
-        assert!(text(&ui, ".node.after").contains(&(i + 1).to_string()));
+        assert_eq!(
+            chrome(&ui, "document.querySelectorAll('.node.tab').length")?,
+            i + 1
+        );
     }
     composed_waiting_toast(&ui)?;
-    println!("PASS middle-click announces link text, batches three waiting links and updates the After count.");
+    println!("PASS middle-click announces link text, batches three waiting links and shows each queued link as a tab.");
     let branch = ui
         .snapshot()?
         .visits
@@ -125,14 +124,22 @@ fn main() -> Result<()> {
     for i in 0..24 {
         queue(&ui, &format!("link{i}"))?;
     }
-    wait("counter", || text(&ui, "#waiting-pin .count") == "26")?;
+    wait("ordered waiting pages", || {
+        waiting(&ui).is_ok_and(|ids| ids.len() == 26)
+    })?;
+    assert!(chrome(&ui, "!document.getElementById('waiting-pin')")? == true);
     let snapshot = ui.snapshot()?;
     let mut queued: Vec<_> = snapshot
         .visits
         .iter()
         .filter(|v| v.state == VisitState::Queued)
         .collect();
-    queued.sort_by_key(|v| std::cmp::Reverse(v.created_at));
+    queued.sort_by_key(|v| {
+        (
+            v.parent != snapshot.current,
+            std::cmp::Reverse(v.created_at),
+        )
+    });
     assert_eq!(
         waiting(&ui)?,
         queued.iter().map(|v| v.id.to_string()).collect::<Vec<_>>()
@@ -145,27 +152,30 @@ fn main() -> Result<()> {
         chrome(&ui, "document.querySelector('#tab-row .tab[aria-selected=true]').title.includes('26 waiting')")? == true
     );
     wait("newest waiting page loaded", || {
-        visible(&ui, "#waiting-pin .pending-dot.loaded")
+        chrome(&ui, "strip.elements.get(S.frame.waiting.ids[0])?.querySelector('.pending-dot.loaded') != null").is_ok_and(|v| v == true)
     })?;
-    assert!(chrome(&ui, "document.querySelector('#waiting-pin img').getAttribute('src').includes(encodeURIComponent(S.frame.visits[canopy.state().waiting[0]].url))")? == true);
-    assert!(chrome(&ui, "S.strip.nodes.some(n => n.kind === 'after' && n.waiting === 24 && n.rows.length === 6 && n.more.includes('18 more waiting'))")? == true);
-    println!(
-        "PASS counter, next icon, state dot, tab count, newest order and hidden waiting pages."
-    );
-    for width in [1240, 800, 1440] {
+    assert!(chrome(&ui, "strip.elements.get(S.frame.waiting.ids[0]).querySelector('img').getAttribute('src').includes(encodeURIComponent(S.frame.visits[canopy.state().waiting[0]].url))")? == true);
+    assert!(chrome(&ui, "S.strip.nodes.some(n => n.kind === 'tab' && n.divider) || S.strip.nodes.some(n => n.kind === 'overflow')")? == true);
+    println!("PASS first tab icon and loaded mark, tab-row badge and exact waiting order.");
+    for width in [1240, 800, 1440, 390, 712] {
         ui.window.resize(width, 800);
         pump(400);
         settle(&ui)?;
         room_check(&ui)?;
-        open_list(&ui)?;
+        ui.pages.selected_page().focus();
+        key("F6")?;
+        wait(&format!("current list at {width}px"), || {
+            visible(&ui, "#strip-list")
+        })?;
         room_check(&ui)?;
+        key("F6")?;
         leave_strip(&ui)?;
     }
     ui.window.resize(800, 800);
     pump(400);
     settle(&ui)?;
     open_list(&ui)?;
-    let pin = rect(&ui, "#waiting-pin")?;
+    let pin = rect(&ui, ".node.overflow")?;
     let before = chrome(
         &ui,
         "document.getElementById('strip-canvas').style.transform",
@@ -181,9 +191,9 @@ fn main() -> Result<()> {
         )?,
         before
     );
-    assert_eq!(rect(&ui, "#waiting-pin")?, pin);
+    assert_eq!(rect(&ui, ".node.overflow")?, pin);
     leave_strip(&ui)?;
-    println!("PASS pinned counter and fitted strip stay still while scrolling; current pill fits reserved room at three widths.");
+    println!("PASS the fitted strip stays inside its clip at five widths and keeps its position while scrolling.");
     ui.window.resize(1240, 800);
     pump(400);
     key("ctrl+shift+e")?;
@@ -202,13 +212,18 @@ fn main() -> Result<()> {
             &ui,
             &format!("(S.frame.theme = '{theme}', canopy.present(S.frame), true)"),
         )?;
-        shots(&ui, &format!("{theme}-counter"))?;
+        shots(&ui, &format!("{theme}-tabs"))?;
         hover_waiting(&ui)?;
         wait("waiting list", || visible(&ui, "#popover.waiting"))?;
         assert!(text(&ui, ".pop-head").contains("Waiting in this tree · 26"));
-        assert!(chrome(&ui, "!$('waiting-pin').hasAttribute('title')")? == true);
+        assert!(
+            chrome(
+                &ui,
+                "document.querySelector('.node.overflow').getAttribute('aria-expanded') === 'true'"
+            )? == true
+        );
         assert!(chrome(&ui, "[...document.querySelectorAll('#popover .menu-detail')].some(e => e.textContent.startsWith('Waiting article'))")? == true);
-        assert!(text(&ui, ".pop-head").contains("newest first"));
+        assert!(text(&ui, ".pop-head").contains("this page first, then newest"));
         assert_eq!(
             chrome(
                 &ui,
@@ -226,9 +241,14 @@ fn main() -> Result<()> {
         shots(&ui, &format!("{theme}-list"))?;
         chrome(&ui, "(canopy.present(S.frame), true)")?;
         assert!(visible(&ui, "#popover.waiting"));
-        assert!(chrome(&ui, "!$('waiting-pin').hasAttribute('title')")? == true);
+        assert!(
+            chrome(
+                &ui,
+                "document.querySelector('.node.overflow').getAttribute('aria-expanded') === 'true'"
+            )? == true
+        );
         chrome(&ui, "(() => { window.unloadedFrame = structuredClone(S.frame); const v=S.frame.visits[S.frame.waiting.ids[0]]; v.loaded=true; v.when='loaded'; v.detail='loaded'; const u=S.frame.visits[S.frame.waiting.ids[1]]; u.loaded=false; u.when=''; u.detail=''; canopy.present(S.frame); return true; })()")?;
-        assert!(visible(&ui, "#waiting-pin .pending-dot.loaded"));
+        assert!(chrome(&ui, "strip.elements.get(S.frame.waiting.ids[0])?.querySelector('.pending-dot.loaded') != null").is_ok_and(|v| v == true));
         assert!(
             chrome(
                 &ui,
@@ -253,19 +273,24 @@ fn main() -> Result<()> {
     wait("list before empty frame", || {
         visible(&ui, "#popover.waiting")
     })?;
-    chrome(&ui, "(() => {window.waitingFrame = structuredClone(S.frame); const frame = structuredClone(S.frame); frame.waiting.ids=[]; frame.strip.pins=[]; frame.strip.room=innerWidth; canopy.present(frame); return true})()")?;
+    hover_chrome(&ui, "#popover.waiting [data-id]")?;
+    xdo(&["click", "3"])?;
+    wait("nested waiting-row menu", || {
+        visible(&ui, "#popover [data-node-action]")
+    })?;
+    chrome(&ui, "(() => {window.waitingFrame = structuredClone(S.frame); const frame = structuredClone(S.frame); frame.waiting.ids=[]; frame.strip.nodes=frame.strip.nodes.filter(n=>!['tab','overflow'].includes(n.kind)); frame.strip.trunk=frame.strip.nodes.map(n=>n.id); canopy.present(frame); return true})()")?;
     assert_eq!(
         chrome(&ui, "canopy.state().popover")?,
         serde_json::Value::Null
     );
     chrome(&ui, "(canopy.present(window.waitingFrame), true)")?;
     hover_waiting(&ui)?;
-    chrome(&ui, "(openPopover('waiting', $('waiting-pin'), null), leaveWaitingPin(), openPopover('settings', $('settings-button'), null), true)")?;
+    chrome(&ui, "(openQueue(document.querySelector('.node.overflow')), leaveQueue(), openPopover('settings', $('settings-button'), null), true)")?;
     pump(300);
     assert_eq!(chrome(&ui, "canopy.state().popover")?, "settings");
     key("Escape")?;
     println!(
-        "PASS empty frame closes waiting list and stale hover timer preserves another popover."
+        "PASS losing overflow closes its nested page menu and stale hover does not close another popover."
     );
     println!("PASS hover heading, all ordered rows, first-row state and hint, live frame refresh, loaded marks and top-right dot.");
     hover_waiting(&ui)?;
@@ -274,8 +299,33 @@ fn main() -> Result<()> {
     click_chrome(&ui, "#popover .menu-row:nth-of-type(2)")?;
     activated(&ui, &second)?;
     let next = waiting(&ui)?[0].clone();
-    click_chrome(&ui, "#waiting-pin")?;
+    let tab = format!("#strip-nodes [data-id='{next}']");
+    chrome(
+        &ui,
+        &format!(
+            "(window.pressedTab=document.querySelector({}),true)",
+            serde_json::to_string(&tab)?
+        ),
+    )?;
+    let (x, y) = chrome_point(&ui, &tab)?;
+    move_to(x, y)?;
+    xdo(&["mousedown", "1"])?;
+    wait("waiting tab press reaches the chrome", || {
+        chrome(&ui, "canopy.state().buttons").is_ok_and(|value| value == 1)
+    })?;
+    chrome(&ui, "(canopy.present(structuredClone(S.frame)), true)")?;
+    assert!(chrome(&ui, "canopy.state().deferred.includes('present')")? == true);
+    xdo(&["mouseup", "1"])?;
     activated(&ui, &next)?;
+    assert!(
+        chrome(
+            &ui,
+            "document.querySelector('#strip-nodes .pill') === window.pressedTab"
+        )? == true
+    );
+    println!(
+        "PASS a real click spans a held frame and keeps the same tab element as the current pill."
+    );
     for context in ["page", "strip", "palette", "start", "forest"] {
         match context {
             "page" => ui.pages.selected_page().focus(),
@@ -309,21 +359,25 @@ fn main() -> Result<()> {
         );
     }
     queue(&ui, "slow")?;
-    let next = waiting(&ui)?[0].clone();
-    let count = waiting(&ui)?.len();
+    let before = waiting(&ui)?;
+    let opening = &before[0];
     key("ctrl+Tab")?;
-    pump(50);
+    wait("slow page becomes current", || {
+        chrome(&ui, "S.frame.current").is_ok_and(|id| id == opening.as_str())
+    })?;
+    let next = waiting(&ui)?[0].clone();
+    assert_ne!(&next, opening);
     key("ctrl+Tab")?;
     activated(&ui, &next)?;
-    assert_eq!(waiting(&ui)?.len(), count - 1);
-    println!("PASS repeated Ctrl+Tab during a slow load asks for the same page.");
+    assert!(waiting(&ui)?.contains(opening));
+    println!("PASS repeated Ctrl+Tab during a slow load opens the next waiting page.");
     let mut read = Vec::new();
     while let Some(next) = waiting(&ui)?.first().cloned() {
         key("ctrl+Tab")?;
         activated(&ui, &next)?;
         read.push(next);
     }
-    assert!(!visible(&ui, "#waiting-pin"));
+    assert!(!visible(&ui, ".node.tab:not([inert])"));
     assert_eq!(
         chrome(&ui, "canopy.state().pins")?,
         serde_json::json!(["zoom"])
@@ -333,6 +387,7 @@ fn main() -> Result<()> {
             < f64::from(ui.window.allocated_width())
     );
     switch_read_pages(&ui, &read)?;
+    dismiss_tabs(&ui, &base)?;
     for theme in ["dark", "light"] {
         chrome(
             &ui,
@@ -474,6 +529,72 @@ fn loaded(ui: &Ui, path: &str) -> Result<()> {
     pump(100);
     Ok(())
 }
+fn dismiss_tabs(ui: &Ui, base: &str) -> Result<()> {
+    ui.pages
+        .selected_page()
+        .navigate(web_url(&format!("{base}/dismiss"))?, NavigationTarget::Root)?;
+    loaded(ui, "/dismiss")?;
+    for i in 0..3 {
+        queue(ui, &format!("link{i}"))?;
+    }
+    settle(ui)?;
+    let ids = waiting(ui)?;
+    let tab = |id: &str| format!("#strip-nodes .node.tab[data-id='{id}']");
+    ui.pages.selected_page().focus();
+    key("F6")?;
+    key("Right")?;
+    assert!(chrome_focused(ui, &tab(&ids[0])));
+    assert!(text(ui, "#strip-list").contains("queued from"));
+    assert!(visible(ui, "#strip-list [data-act=dismiss]"));
+    key("shift+F10")?;
+    wait("keyboard page menu", || {
+        visible(ui, "#popover [data-node-action=dismiss]")
+    })?;
+    key("Escape")?;
+    key("Delete")?;
+    wait("Delete transfers focus", || {
+        chrome_focused(ui, &tab(&ids[1]))
+    })?;
+    assert!(!waiting(ui)?.contains(&ids[0]));
+    settle(ui)?;
+    hover_chrome(ui, &tab(&ids[2]))?;
+    xdo(&["click", "2"])?;
+    wait("middle click dismisses", || {
+        waiting(ui).is_ok_and(|pages| !pages.contains(&ids[2]))
+    })?;
+    settle(ui)?;
+    hover_chrome(ui, &tab(&ids[1]))?;
+    let cross = format!("{} .x", tab(&ids[1]));
+    wait("waiting tab cross is visible", || visible(ui, &cross))?;
+    let (x, y) = chrome_point(ui, &cross)?;
+    move_to(x, y)?;
+    xdo(&["mousedown", "1"])?;
+    let pressed = format!("crossPress?.closest('.node')?.dataset.id === '{}'", ids[1]);
+    wait("press lands on the visible cross", || {
+        chrome(ui, &pressed).is_ok_and(|value| value == true)
+    })?;
+    xdo(&["mouseup", "1"])?;
+    wait("cross dismisses", || {
+        waiting(ui).is_ok_and(|pages| pages.is_empty())
+    })?;
+    queue(ui, "link3")?;
+    settle(ui)?;
+    ui.pages.selected_page().focus();
+    key("F6")?;
+    key("Right")?;
+    key("Delete")?;
+    wait("last Delete returns focus to the pill", || {
+        chrome_focused(ui, "#strip-nodes .pill") && waiting(ui).is_ok_and(|pages| pages.is_empty())
+    })?;
+    let snapshot = ui.snapshot()?;
+    assert!(ids.iter().all(|id| snapshot
+        .visits
+        .iter()
+        .any(|visit| visit.id.to_string() == *id && visit.dismissed_at.is_some())));
+    println!("PASS real keys and pointer open the tab card and menu, dismiss tabs, and return focus after Delete.");
+    Ok(())
+}
+
 fn waiting(ui: &Ui) -> Result<Vec<String>> {
     Ok(serde_json::from_value(chrome(
         ui,
@@ -517,16 +638,38 @@ fn activated(ui: &Ui, id: &str) -> Result<()> {
     Ok(())
 }
 fn room_check(ui: &Ui) -> Result<()> {
-    let (x, _, w, _) = rect(ui, "#waiting-pin")?;
+    let (x, _, w, _) = rect(ui, "#zoom-pin")?;
     assert!(x + w <= f64::from(ui.window.allocated_width()) - 7.5);
-    assert!(chrome(ui, "(() => {const p=document.querySelector('.node.pill').getBoundingClientRect(), r=canopy.state().room;return p.left>=-0.5 && p.right<=r+0.5})()")? == true);
+    assert!(
+        chrome(
+            ui,
+            r#"(() => {
+        const clip = $('strip-clip').getBoundingClientRect();
+        return S.strip.nodes.every(n => {
+            const r = strip.elements.get(n.id).getBoundingClientRect();
+            return r.left >= clip.left - 0.5 && r.right <= clip.right + 0.5;
+        });
+    })()"#
+        )? == true
+    );
+    assert!(
+        chrome(
+            ui,
+            r#"(() => {
+        const tabs = S.strip.nodes.filter(n => n.kind === 'tab');
+        const hidden = S.strip.nodes.find(n => n.kind === 'overflow');
+        return tabs.length + Number(hidden?.label ?? 0) === S.frame.waiting.ids.length
+            && tabs.every((n, i) => n.page === S.frame.waiting.ids[i]);
+    })()"#
+        )? == true
+    );
     Ok(())
 }
 fn hover_waiting(ui: &Ui) -> Result<()> {
     let (x, y) = page_point(ui, 400, 700)?;
     move_to(x, y)?;
     pump(50);
-    hover_chrome(ui, "#waiting-pin")
+    hover_chrome(ui, ".node.overflow")
 }
 fn shots(ui: &Ui, name: &str) -> Result<()> {
     if let Ok(folder) = std::env::var("CANOPY_WAITING_SHOTS") {
@@ -573,8 +716,6 @@ fn prove_delivery(ui: &Ui) -> Result<()> {
 fn prove_tree_sheet(ui: &Ui) -> Result<()> {
     let original = ui.snapshot()?.current.unwrap();
     let pin = rect(ui, "#zoom-pin")?;
-    let waiting = rect(ui, "#waiting-pin")?;
-    assert!(pin.0 > waiting.0 + waiting.2);
     assert!(pin.0 + pin.2 <= f64::from(ui.window.allocated_width()) - 7.5);
     key("ctrl+t")?;
     key("ctrl+shift+e")?;
@@ -583,7 +724,6 @@ fn prove_tree_sheet(ui: &Ui) -> Result<()> {
     assert_eq!(chrome(ui, "canopy.state().overlay")?, "tree");
     assert_eq!(rect(ui, "#zoom-pin")?, pin);
     assert!(visible(ui, "#zoom-pin[aria-pressed=true]"));
-    assert!(!visible(ui, "#waiting-pin"));
     assert_eq!(rect(ui, ".sheet-box")?.1, 42.);
     assert!(rect(ui, ".sheet-box")?.3 > 52.);
     assert_eq!(cover(ui), None);

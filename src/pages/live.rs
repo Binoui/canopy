@@ -2237,7 +2237,7 @@ impl NativeState {
             match result {
                 Ok(child) => {
                     self.owner().queue_background(child);
-                    self.emit(PageEvent::Changed);
+                    self.emit(PageEvent::Queued(child));
                     let queued_url = url.clone();
                     self.context(&url, move |state, context| {
                         if !state.valid(&ticket) {
