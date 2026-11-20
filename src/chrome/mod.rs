@@ -610,6 +610,11 @@ impl HtmlChrome {
         self.inner.call("fillLogin", &[]);
     }
 
+    pub fn queued(&self, child: VisitId) {
+        self.inner
+            .call("waiting", &[Value::Null, json!(child.to_string())]);
+    }
+
     pub fn waiting(&self, parent: VisitId, label: &str) {
         if self
             .inner

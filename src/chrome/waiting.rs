@@ -83,7 +83,6 @@ impl<'f> Waiting<'f> {
         self.pages.len()
     }
 
-    #[allow(dead_code, reason = "the waiting shelf uses the group boundary")]
     pub(crate) fn below(&self) -> usize {
         self.below
     }

@@ -241,9 +241,10 @@ fn main() -> Result<()> {
                     }
                     _ => {
                         assert_eq!(text(&ui, ".node.after .read-count"), "4");
-                        assert_eq!(text(&ui, ".node.after .wait-count"), "14");
-                        assert!(text(&ui, "#strip-list").contains("8 more waiting · 4 read"));
-                        assert_eq!(chrome(&ui,"[...document.querySelectorAll('#strip-list .menu-row[data-id]')].map(e=>e.dataset.id)")?, json!(ids[1..7].iter().map(ToString::to_string).collect::<Vec<_>>()));
+                        assert!(!visible(&ui, ".node.after .wait-count"));
+                        assert!(visible(&ui, "#strip-nodes .node.tab"));
+                        assert!(text(&ui, "#strip-list").contains("Read from this page · 4"));
+                        assert_eq!(chrome(&ui,"[...document.querySelectorAll('#strip-list .menu-row[data-id]')].map(e=>e.dataset.id)")?, json!(ids[15..19].iter().rev().map(ToString::to_string).collect::<Vec<_>>()));
                     }
                 }
                 let (away_x, away_y) = page_point(&ui, 800, 600)?;
@@ -358,7 +359,7 @@ fn main() -> Result<()> {
             }
             if *shape == "thread" && width == 820 {
                 item_list(&ui, selector)?;
-                let first = format!("#strip-list .menu-row[data-id='{}']", ids[1]);
+                let first = format!("#strip-list .menu-row[data-id='{}']", ids[18]);
                 hover_chrome(&ui, &first)?;
                 xdo(&["mousedown", "1"])?;
                 pump(80);
@@ -369,8 +370,8 @@ fn main() -> Result<()> {
                         .is_ok_and(|v| v == true)
                 })?;
                 xdo(&["mouseup", "1"])?;
-                wait("held row opens queued page", || {
-                    ui.snapshot().is_ok_and(|s| s.current == Some(ids[1]))
+                wait("held row opens the read child", || {
+                    ui.snapshot().is_ok_and(|s| s.current == Some(ids[18]))
                 })?;
             }
             println!("PASS {shape} folding, named list, counts, six-row cap, no gap, pointer travel and stable rows in both themes.");
@@ -400,6 +401,6 @@ fn main() -> Result<()> {
         visible(&ui, "#palette-context")
     })?;
     key("Escape")?;
-    println!("PASS list actions persist across frames, New branch opens the palette, more opens the tree, and a held waiting row survives a refresh.");
+    println!("PASS list actions persist across frames, New branch opens the palette, more opens the tree, and a held read row survives a refresh.");
     Ok(())
 }

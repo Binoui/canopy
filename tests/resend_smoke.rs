@@ -151,14 +151,10 @@ fn main() -> Result<()> {
     question(&ui)?;
     // The chrome remains actionable above the scrim.
     assert_eq!(ui.snapshot()?.current, Some(root));
-    click_chrome(&ui, ".node.after")?;
+    click_chrome(&ui, "#zoom-pin")?;
     wait("chrome input closes question", || {
         !visible(&ui, "#form-return")
     })?;
-    wait("named continuation list", || {
-        visible(&ui, "#strip-list .more")
-    })?;
-    click_chrome(&ui, "#strip-list .more")?;
     wait("continuation tree", || visible(&ui, "#tree-sheet"))?;
     click_chrome(&ui, "[data-side=list]")?;
     click_chrome(&ui, &format!(".tree-row[data-id='{next}']"))?;

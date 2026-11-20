@@ -191,11 +191,11 @@ impl Ui {
                     }
                     ui.chrome.loading(value);
                 }
-                PageEvent::Waiting { parent, label } => {
-                    // The pulse must land on the new count, including the first After item.
+                PageEvent::Queued(child) => {
                     ui.refresh();
-                    ui.chrome.waiting(parent, &label);
+                    ui.chrome.queued(child);
                 }
+                PageEvent::Waiting { parent, label } => ui.chrome.waiting(parent, &label),
                 PageEvent::Saved(message) => ui.chrome.toast(Toast::Info(message)),
                 PageEvent::Deleted { id, text } => {
                     if let Ok(forest) = ui

@@ -329,16 +329,28 @@ fn main() -> Result<()> {
         capture(&shots, "palette", theme)?;
         key("Escape")?;
         check(&ui, "document.activeElement.id === 'search-pill'")?;
-        focus(&ui, "#waiting-pin")?;
+        ui.window.resize(500, 800);
+        settle(&ui)?;
+        ui.pages.selected_page().focus();
+        key("F6")?;
+        let steps = chrome(
+            &ui,
+            "S.strip.trunk.length - S.strip.trunk.indexOf(current()) - 1",
+        )?
+        .as_u64()
+        .unwrap();
+        for _ in 0..steps {
+            key("Right")?;
+        }
         check(
             &ui,
-            "document.activeElement.getAttribute('aria-label').startsWith(S.frame.waiting.ids.length+' waiting, next '+S.frame.visits[S.frame.waiting.ids[0]].label)",
+            "document.activeElement.matches('.node.overflow[aria-haspopup=dialog]')",
         )?;
-        key("Down")?;
+        key("Return")?;
         check(&ui, "document.activeElement.matches('#popover [data-id]') && document.activeElement.getAttribute('aria-label').includes('waiting')")?;
         check(
             &ui,
-            "document.getElementById('waiting-pin').getAttribute('aria-expanded') === 'true'",
+            "document.querySelector('.node.overflow').getAttribute('aria-expanded') === 'true'",
         )?;
         capture(&shots, "waiting", theme)?;
         key("Menu")?;
@@ -348,7 +360,9 @@ fn main() -> Result<()> {
             "document.activeElement.matches('#popover.waiting [data-id]')",
         )?;
         key("Escape")?;
-        check(&ui, "document.activeElement.id === 'waiting-pin'")?;
+        check(&ui, "document.activeElement.matches('.node.overflow')")?;
+        ui.window.resize(820, 800);
+        settle(&ui)?;
         focus(&ui, "#zoom-pin")?;
         key("Return")?;
         wait("outline focus", || {
@@ -476,10 +490,10 @@ fn main() -> Result<()> {
         ui.pages.selected_page().focus();
         key("F6")?;
         key("Right")?;
-        check(&ui, "document.activeElement.matches('.node.after') && document.activeElement.getAttribute('aria-label').includes('14 waiting pages, 4 read pages')")?;
+        check(&ui, "document.activeElement.matches('.node.after') && document.activeElement.getAttribute('aria-label').includes('4 read pages')")?;
         capture(&shots, "after-count", theme)?;
         key("Down")?;
-        check(&ui, "document.activeElement.matches('#strip-list [data-id]') && document.activeElement.getAttribute('aria-label').includes('waiting')")?;
+        check(&ui, "document.activeElement.matches('#strip-list [data-id]') && !document.activeElement.getAttribute('aria-label').includes('waiting')")?;
         key("Escape")?;
         check(&ui, "document.activeElement.matches('.node.after')")?;
         key("Left")?;
@@ -506,7 +520,7 @@ fn main() -> Result<()> {
             &ui,
             "document.activeElement.matches('#strip-canvas .leaves')",
         )?;
-        check(&ui, "['tab-overflow','settings-button','waiting-pin','memory-dot'].every(id=>document.getElementById(id).getAttribute('aria-haspopup') === 'menu' && document.getElementById(id).getAttribute('aria-expanded') === 'false') && document.getElementById('tab-overflow').getAttribute('aria-label') === 'More trees'")?;
+        check(&ui, "['tab-overflow','settings-button','memory-dot'].every(id=>document.getElementById(id).getAttribute('aria-haspopup') === 'menu' && document.getElementById(id).getAttribute('aria-expanded') === 'false') && document.getElementById('tab-overflow').getAttribute('aria-label') === 'More trees'")?;
         check(&ui, "[...document.querySelectorAll('.fav b')].every(el=>el.getAttribute('aria-hidden') === 'true') && document.querySelector('#strip-nodes [aria-current=page]').nextElementSibling.id === 'memory-dot'")?;
         ui.pages.go(Go::Visit(*selected))?;
         pump(200);
@@ -535,7 +549,7 @@ fn main() -> Result<()> {
     }
     println!("PASS real keys enter and leave strip lists, node menus, tab Rename and Pin, settings, palette, waiting, forest, reader and pinned menus in both themes; tab focus survives frames.");
     check(&ui, "document.getElementById('tab-row').getAttribute('role') === 'tablist' && document.querySelectorAll('#tab-row [aria-selected=true]').length === 1")?;
-    check(&ui, "[...document.querySelectorAll('#strip-nodes .node, #strip-list [data-id]')].every(el=>!/(\\b0 branch|\\b0 waiting|\\b1 branch pages|waiting.*waiting)/.test(el.getAttribute('aria-label'))) && !/(waiting.*waiting)/.test(document.getElementById('waiting-pin').getAttribute('aria-label'))")?;
+    check(&ui, "[...document.querySelectorAll('#strip-nodes .node:not(.overflow), #strip-list [data-id]')].every(el=>!/(\\b0 branch|\\b0 waiting|\\b1 branch pages|waiting.*waiting)/.test(el.getAttribute('aria-label')))")?;
     println!("PASS DOM names and states expose tab selection, page location, branch counts, waiting, switches, theme, palette selection and live toast roles.");
     ui.window.close();
     Ok(())

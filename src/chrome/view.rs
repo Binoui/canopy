@@ -106,19 +106,6 @@ pub(crate) fn frame(
         }
     }
     let waiting = Waiting::of(forest);
-    let waiting_pages = waiting.pages();
-    let waiting_name = waiting_pages.first().map_or_else(
-        || "No waiting pages".into(),
-        |next| {
-            let visit = &visits[&next.id.to_string()];
-            let label = visit["label"].as_str().unwrap();
-            let state = visit["a11yState"]
-                .as_str()
-                .unwrap()
-                .replace(", waiting", "");
-            format!("{} waiting, next {label}{state}", waiting_pages.len())
-        },
-    );
     // A new tree has no root until its page commits; its tab is drawn from the address.
     let new_tree = match &frame.pending {
         Some(crate::browser::PendingTarget::NewTree(url)) => Some(json!({
@@ -134,7 +121,7 @@ pub(crate) fn frame(
         "visits": visits,
         "strip": strip(frame, width, &waiting),
         "treeView": tree_view_value(forest, workbench, viewport),
-        "waiting": { "name": waiting_name, "order": Waiting::order_label(), "ids": waiting_pages.iter().map(|v| v.id.to_string()).collect::<Vec<_>>() },
+        "waiting": { "order": Waiting::order_label(), "ids": waiting.pages().iter().map(|v| v.id.to_string()).collect::<Vec<_>>() },
         "files": files_value(&frame.files),
         "captureEnabled": frame.capture_enabled,
         "mail": mail_value(&frame.mail),
@@ -243,7 +230,7 @@ pub(crate) fn strip(frame: &ChromeFrame, width: f64, waiting: &Waiting<'_>) -> V
         .copied()
         .filter(|id| Some(*id) != forest.current())
         .collect();
-    let pins = pins::pins(forest, &frame.mail, elsewhere.len(), waiting.len(), width);
+    let pins = pins::pins(forest, &frame.mail, elsewhere.len(), width);
     let elsewhere: Vec<_> = elsewhere.iter().map(ToString::to_string).collect();
     let placed: Vec<_> = pins
         .placed
@@ -269,6 +256,7 @@ pub(crate) fn strip(frame: &ChromeFrame, width: f64, waiting: &Waiting<'_>) -> V
         current,
         room,
         forest.visit(current).map_or(120., pill_width),
+        waiting,
     );
     let path = forest.path(current);
     let state = |id: VisitId| {
@@ -291,7 +279,7 @@ pub(crate) fn strip(frame: &ChromeFrame, width: f64, waiting: &Waiting<'_>) -> V
             }
         )
     };
-    let nodes: Vec<_> = layout.iter().map(|node| {
+    let nodes: Vec<_> = layout.trail.iter().chain(&layout.shelf).enumerate().map(|(index, node)| {
         let ids = node.item.ids();
         let id = ids.last().copied().unwrap_or(current);
         let v = forest.visit(id).unwrap();
@@ -312,8 +300,12 @@ pub(crate) fn strip(frame: &ChromeFrame, width: f64, waiting: &Waiting<'_>) -> V
             StripItem::Earlier { ids } => ("earlier", format!("··· {} earlier", ids.len()), format!("{} earlier pages", ids.len()),
                 format!("From {} to {}", forest.visit(ids[0]).unwrap().label(), v.label()), "Most recent first".into(),
                 if node.total_rows > node.rows.len() { format!("{} more, in the tree view", node.total_rows - node.rows.len()) } else { String::new() }),
-            StripItem::After { waiting, read } => ("after", String::new(), v.label().to_owned(), site_line(v),
-                if waiting.is_empty() { String::new() } else { format!("Waiting from this page · {}", waiting.len()) }, nonzero_parts(&[(waiting.len().saturating_sub(node.rows.len()), "more waiting"), (read.len(), "read")])),
+            StripItem::After { read } => ("after", String::new(), v.label().to_owned(), site_line(v),
+                format!("Read from this page · {}", read.len()),
+                if node.total_rows > node.rows.len() { format!("{} more, in the tree view", node.total_rows - node.rows.len()) } else { String::new() }),
+            StripItem::Tab { .. } => ("tab", graph::short_name(forest, id), v.label().to_owned(),
+                short_host(&v.url).to_owned(), format!("Waiting · queued from {}", v.parent.map_or_else(|| "this tree".into(), |id| graph::short_name(forest, id))), String::new()),
+            StripItem::Overflow { hidden } => ("overflow", format!("+{hidden}"), String::new(), String::new(), String::new(), String::new()),
         };
         let rows: Vec<_> = node.rows.iter().map(|id| {
             let counts = if matches!(node.item, StripItem::Run { .. } | StripItem::Earlier { .. }) {
@@ -324,9 +316,11 @@ pub(crate) fn strip(frame: &ChromeFrame, width: f64, waiting: &Waiting<'_>) -> V
                     ago(forest.visit(*id).unwrap().opened_at.unwrap_or(forest.visit(*id).unwrap().created_at))
                 } else if forest.visit(*id).unwrap().branch_settled_at.is_some() { format!("{} pages put away", forest.descendant_count(*id).unwrap_or(0)+1) } else { nonzero_parts(&[(counts.pages, if counts.pages == 1 { "page" } else { "pages" }), (counts.waiting, "waiting")]) } })
         }).collect();
-        let (waiting, read) = match &node.item { StripItem::After { waiting, read } => (waiting.len(), read.len()), _ => (0, 0) };
         let page_head = matches!(node.item, StripItem::Root(_) | StripItem::Page(_) | StripItem::Parent(_) | StripItem::Current(_));
         let mut actions = Vec::new();
+        if kind == "tab" {
+            actions.push(json!({ "kind": "open", "label": "Open" }));
+        }
         if page_head {
             actions.push(json!({ "kind": if id == current { "reload" } else { "open" }, "label": if id == current { "Reload" } else { "Open" } }));
             actions.push(json!({ "kind": "branch", "label": "New branch here" }));
@@ -335,27 +329,67 @@ pub(crate) fn strip(frame: &ChromeFrame, width: f64, waiting: &Waiting<'_>) -> V
                 if forest.citation_parent_matches(id) { actions.push(json!({ "kind": "comment", "label": "Open comment" })); }
             }
         }
+        let (key, name, named, divider, read) = match &node.item {
+            StripItem::After { read } => (
+                format!("after-{current}"), format!("After {title}, {} read {}", read.len(), if read.len() == 1 { "page" } else { "pages" }) + &state(id),
+                false, false, read.len(),
+            ),
+            StripItem::Tab { below, named, divider, .. } => {
+                let mut name = format!("{title}, waiting");
+                if frame.loaded.contains(&id) { name.push_str(", loaded"); }
+                if let Some(parent) = v.parent.filter(|_| !*below) {
+                    name.push_str(&format!(", queued from {}", graph::short_name(forest, parent)));
+                }
+                (id.to_string(), name, *named, *divider, 0)
+            }
+            StripItem::Overflow { hidden } => (
+                "overflow".into(), format!("{hidden} more waiting {}, {} waiting in this tree", if hidden.get() == 1 { "page" } else { "pages" }, waiting.len()), false, false, 0
+            ),
+            _ => (
+                if id != current && forest.is_waiting(id) { format!("trail-{id}") } else { id.to_string() },
+                branch_name(&title, node.branches.read, 0, forest.is_waiting(id)) + &state(id),
+                kind == "root" && forest.visit(current).unwrap().parent == Some(id), false, 0
+            ),
+        };
         json!({
-            "preview": page_head, "actions": actions,
+            "preview": page_head || kind == "tab", "actions": actions,
             "moreTarget": if let StripItem::Earlier { ids } = &node.item { ids.first().copied().unwrap_or(current).to_string() } else { current.to_string() },
-            "id": if kind == "after" { format!("after-{current}") } else { id.to_string() },
-            "page": id.to_string(), "ids": ids.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            "id": key, "page": id.to_string(), "ids": ids.iter().map(ToString::to_string).collect::<Vec<_>>(),
             "playing": ids.iter().any(|id| playing.contains(id)),
-            "named": kind == "root" && forest.visit(current).unwrap().parent == Some(id),
-            "kind": kind, "name": (if kind == "after" { format!("After {title}{}{}", if waiting > 0 { format!(", {} waiting {}", waiting, if waiting == 1 { "page" } else { "pages" }) } else { String::new() }, if read > 0 { format!(", {read} read {}", if read == 1 { "page" } else { "pages" }) } else { String::new() }) } else { branch_name(&title, node.branches.read, 0, forest.is_waiting(id)) }) + &state(id), "label": label, "title": title, "meta": meta, "heading": heading, "more": more, "rows": rows,
+            "named": named, "divider": divider,
+            "kind": kind, "name": name, "label": label, "title": title, "meta": meta, "heading": heading, "more": more, "rows": rows,
             "badge": (kind != "pill" && node.branches.read > 0).then_some(node.branches.read),
-            "waiting": waiting, "read": read,
+            "read": read, "tip": (kind == "tab" && index == layout.trail.len()).then(|| format!("Next waiting page: {title} · Ctrl+Tab")),
             "x": node.rect.x, "y": node.rect.y, "w": node.rect.w, "s": node.rect.s,
         })
     }).collect();
-    let edges: Vec<_> = nodes.windows(2).zip(layout.windows(2)).map(|(nodes, rects)| {
-        let a = rects[0].rect; let b = rects[1].rect;
-        let x = a.x+a.w/2.; let end = b.x-b.w/2.;
-        json!({"from": nodes[0]["id"], "to": nodes[1]["id"], "kind": if nodes[1]["kind"] == "after" { "pending" } else { "path" },
-            "c": [[x,a.y], [x+5.,a.y], [end-5.,b.y], [end,b.y]]})
-    }).collect();
+    let edges: Vec<_> = nodes
+        .windows(2)
+        .zip(
+            layout
+                .trail
+                .iter()
+                .chain(&layout.shelf)
+                .zip(layout.trail.iter().chain(&layout.shelf).skip(1)),
+        )
+        .enumerate()
+        .filter_map(|(index, (nodes, (a, b)))| {
+            let kind = match &b.item {
+                StripItem::After { .. } => "below",
+                StripItem::Tab { below: true, .. } if index + 1 == layout.trail.len() => "waiting",
+                StripItem::Tab { .. } | StripItem::Overflow { .. } => return None,
+                _ => "path",
+            };
+            let (a, b) = (a.rect, b.rect);
+            let x = a.x + a.w / 2.;
+            let end = b.x - b.w / 2.;
+            json!({"from": nodes[0]["id"], "to": nodes[1]["id"], "kind": kind,
+                "c": [[x,a.y], [x+5.,a.y], [end-5.,b.y], [end,b.y]]})
+            .into()
+        })
+        .collect();
     json!({ "left": left, "room": room, "pins": placed, "playing": elsewhere, "height": graph::REST_HEIGHT, "width": room, "pan": 0, "back": target(frame.back), "forward": target(frame.forward),
-        "metrics": { "left": graph::ITEM_LEFT, "right": graph::ITEM_RIGHT, "border": graph::ITEM_BORDER, "icon": graph::ITEM_ICON, "parentGap": graph::PARENT_GAP, "runGap": graph::RUN_GAP },
+        "metrics": { "left": graph::ITEM_LEFT, "right": graph::ITEM_RIGHT, "border": graph::ITEM_BORDER, "icon": graph::ITEM_ICON, "parentGap": graph::PARENT_GAP, "runGap": graph::RUN_GAP, "dividerGap": graph::DIVIDER_GAP },
         "trunk": nodes.iter().map(|n| n["id"].clone()).collect::<Vec<_>>(), "nodes": nodes, "edges": edges })
 }
 
@@ -956,7 +990,6 @@ mod tests {
             .0,
             &crate::mail::Mail::default(),
             0,
-            1,
             1240.,
         );
         assert_eq!(strip["room"], pins.room - pins::NAV);
@@ -1002,7 +1035,6 @@ mod tests {
             .0,
             &crate::mail::Mail::default(),
             0,
-            1,
             390.,
         );
         assert_eq!(narrow["room"], pins.room);
@@ -1020,19 +1052,62 @@ mod tests {
     }
 
     #[test]
-    fn fully_listed_waiting_children_have_no_empty_more_row() {
-        let (forest, _) = chain();
+    fn waiting_child_is_a_tab_with_its_page_key_and_open_action() {
+        let (forest, ids) = chain();
         let value = strip_at(&frame_of(forest), 1240.);
-        let after = value["nodes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|n| n["kind"] == "after")
-            .unwrap();
-        assert_eq!(after["rows"].as_array().unwrap().len(), 1);
-        assert_eq!(after["more"], "");
+        let nodes = value["nodes"].as_array().unwrap();
+        let tab = nodes.iter().find(|n| n["kind"] == "tab").unwrap();
+        assert_eq!(tab["id"], ids[2].to_string());
+        assert_eq!(tab["actions"][0]["kind"], "open");
+        assert_eq!(tab["tip"], "Next waiting page: Page 2 · Ctrl+Tab");
+        assert!(nodes.iter().all(|n| n["kind"] != "after"));
         assert_eq!(nonzero_parts(&[(1, "page"), (0, "waiting")]), "1 page");
         assert_eq!(nonzero_parts(&[(0, "pages"), (2, "waiting")]), "2 waiting");
+    }
+
+    #[test]
+    fn a_waiting_ancestor_and_its_tab_have_distinct_strip_keys() {
+        let (original, ids) = chain();
+        let mut visits: Vec<_> = ids
+            .iter()
+            .map(|id| original.visit(*id).unwrap().clone())
+            .collect();
+        visits[0].state = VisitState::Queued;
+        visits[0].opened_at = None;
+        let forest = ForestProjection::from_snapshot(
+            Snapshot {
+                visits,
+                current: Some(ids[1]),
+            },
+            vec![TreeState {
+                root: TreeId(ids[0]),
+                last_visit: ids[1],
+                name: None,
+                last_event_at: None,
+                spot: crate::browser::Spot::Tab {
+                    pinned: false,
+                    position: 0,
+                },
+            }],
+        )
+        .unwrap();
+        let strip = strip_at(&frame_of(forest), 1240.);
+        let nodes = strip["nodes"].as_array().unwrap();
+        assert_eq!(nodes[0]["id"], format!("trail-{}", ids[0]));
+        assert_eq!(nodes[0]["page"], ids[0].to_string());
+        let root_tab = nodes
+            .iter()
+            .find(|node| node["kind"] == "tab" && node["page"] == ids[0].to_string())
+            .unwrap();
+        assert_eq!(root_tab["id"], ids[0].to_string());
+        assert_eq!(
+            nodes
+                .iter()
+                .map(|node| node["id"].as_str().unwrap())
+                .collect::<HashSet<_>>()
+                .len(),
+            nodes.len()
+        );
     }
 
     #[test]
@@ -1102,12 +1177,12 @@ mod tests {
     }
 
     #[test]
-    fn switcher_lists_five_waiting_pages_then_the_read_ones() {
+    fn one_waiting_order_serves_strip_frame_and_switcher() {
         use crate::browser::{Snapshot, Spot, TreeState, Visit, VisitState};
         let ids: Vec<VisitId> = (0..8)
             .map(|_| ulid::Ulid::new().to_string().parse().unwrap())
             .collect();
-        // 0 is the root and current page, 1 a read child, 2..8 waiting children.
+        // Pages 2 and 4 wait below the current page. The others wait below its root.
         let visits = (0..8)
             .map(|i| {
                 let opened = i < 2;
@@ -1115,7 +1190,7 @@ mod tests {
                     dismissed_at: None,
                     branch_settled_at: None,
                     id: ids[i],
-                    parent: (i > 0).then(|| ids[0]),
+                    parent: (i > 0).then(|| ids[usize::from(matches!(i, 2 | 4))]),
                     url: url::Url::parse(&format!("https://example.org/{i}")).unwrap(),
                     title: format!("Page {i}"),
                     created_at: i as i64,
@@ -1132,12 +1207,12 @@ mod tests {
         let forest = ForestProjection::from_snapshot(
             Snapshot {
                 visits,
-                current: Some(ids[0]),
+                current: Some(ids[1]),
             },
             vec![TreeState {
                 last_event_at: None,
                 root: TreeId(ids[0]),
-                last_visit: ids[0],
+                last_visit: ids[1],
                 name: None,
                 spot: Spot::Tab {
                     pinned: false,
@@ -1149,8 +1224,8 @@ mod tests {
         let frame = ChromeFrame {
             mail: crate::mail::Mail::default(),
             forest,
-            loaded: Default::default(),
-            live: [ids[1]].into_iter().collect(),
+            loaded: [ids[7]].into_iter().collect(),
+            live: [ids[0]].into_iter().collect(),
             playing: Default::default(),
             canopy_layout: Default::default(),
             shown: Default::default(),
@@ -1164,7 +1239,7 @@ mod tests {
             pending: None,
             files: vec![],
         };
-        let value = super::switcher_value(&frame, &[ids[1]]);
+        let value = super::switcher_value(&frame, &[ids[0]]);
         let listed = |key: &str| {
             value[key]
                 .as_array()
@@ -1174,9 +1249,49 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let id = |i: usize| ids[i].to_string();
-        assert_eq!(listed("waiting"), [id(7), id(6), id(5), id(4), id(3)]);
+        let expected = [id(4), id(2), id(7), id(6), id(5), id(3)];
+        assert_eq!(listed("waiting"), expected[..5]);
+        let rendered = super::frame(
+            &frame,
+            &[],
+            (1240., 800.),
+            &tree_view::Workbench::default(),
+            Surfaces::default(),
+        );
+        assert_eq!(rendered["waiting"]["ids"], json!(expected));
+        assert_eq!(rendered["waiting"]["order"], "this page first, then newest");
+        let tabs: Vec<_> = rendered["strip"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| node["kind"] == "tab")
+            .collect();
+        assert_eq!(
+            tabs.iter()
+                .map(|node| node["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(tabs[0]["tip"], "Next waiting page: Page 4 · Ctrl+Tab");
+        assert_eq!(tabs[1]["name"], "Page 2, waiting");
+        assert_eq!(
+            tabs[2]["name"],
+            "Page 7, waiting, loaded, queued from Page 0"
+        );
+        assert_eq!(tabs[2]["divider"], true);
+        assert!(tabs[2]["tip"].is_null());
+        let waiting_edges: Vec<_> = rendered["strip"]["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|edge| edge["kind"] == "waiting")
+            .collect();
+        assert_eq!(waiting_edges.len(), 1);
+        assert_eq!(waiting_edges[0]["to"], id(4));
+        assert_eq!(waiting_edges[0]["from"], id(1));
+        assert_eq!(rendered["strip"]["pins"][0]["kind"], "zoom");
         assert_eq!(value["moreWaiting"], 1);
-        assert_eq!(listed("read"), [id(1)]);
+        assert_eq!(listed("read"), [id(0)]);
         assert_eq!(value["read"][0]["live"], true);
     }
 

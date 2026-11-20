@@ -380,18 +380,18 @@ fn unanswered_loads_expire_and_the_next_link_loads() -> Result<()> {
     common::wait("three unanswered requests", || f.hits("/hang-c") == 1)?;
     let next = f.queue("/plain-next")?;
     assert_eq!(f.hits("/plain-next"), 0);
-    common::wait("waiting pin is hollow for real unloaded visit", || {
+    common::wait("waiting tab is hollow for real unloaded visit", || {
         common::chrome(
             &f.ui,
-            "!!document.querySelector('#waiting-pin .pending-dot:not(.loaded)')",
+            "!!document.querySelector('#strip-nodes .node.tab .pending-dot:not(.loaded)')",
         )
         .is_ok_and(|v| v == true)
     })?;
     f.committed(next)?;
-    common::wait("waiting pin is full after commit", || {
+    common::wait("waiting tab is full after commit", || {
         common::chrome(
             &f.ui,
-            "!!document.querySelector('#waiting-pin .pending-dot.loaded')",
+            "!!document.querySelector('#strip-nodes .node.tab .pending-dot.loaded')",
         )
         .is_ok_and(|v| v == true)
     })?;

@@ -338,19 +338,19 @@ function animateStrip(duration, growingPage = null) {
   if (reducedMotion.matches) duration = 0;
   const layout = targetLayout();
   if (!layout) return;
+  strip.target = layout;
   const changed = buildStrip(layout);
+  retireStripNodes(layout);
   const geometry = JSON.stringify([layout.nodes.map(({id, x, y, w, s}) => [id, x, y, w, s]), layout.edges, layout.pan]);
   // Keep WebKit's rendering clock warm without repainting unchanged geometry.
   // Letting it sleep delays the next visible update.
   strip.awakeUntil = performance.now() + duration;
   if (strip.geometry === geometry) {
-    strip.target = layout;
     if (changed && !strip.anim) drawStrip();
     if (duration && !strip.raf) strip.raf = requestAnimationFrame(tick);
     return;
   }
   strip.from = strip.shown;
-  strip.target = layout;
   strip.geometry = geometry;
   cancelAnimationFrame(strip.raf);
   strip.raf = null;
@@ -381,6 +381,29 @@ function tick(now) {
   if (strip.anim || now < strip.awakeUntil) strip.raf = requestAnimationFrame(tick);
 }
 
+function retireStripNodes(layout) {
+  const ids = new Set(layout.trunk);
+  const overflow = strip.elements.get('overflow');
+  if (!ids.has('overflow')) {
+    cancel('waitingOpen');
+    let queue = S.popover;
+    while (queue && queue.kind !== 'waiting') queue = queue.parent;
+    if (queue) {
+      const focused = $('popover').contains(document.activeElement);
+      overflow?.setAttribute('aria-expanded', 'false');
+      closePopover(false);
+      if (focused) strip.elements.get(current())?.focus();
+    }
+  }
+  for (const [id, el] of strip.elements) {
+    const leaving = !ids.has(id);
+    el.inert = leaving;
+    if (leaving) el.classList.remove('waiting-pulse');
+    const leaves = strip.leaves.get(id);
+    if (leaves) leaves.inert = leaving;
+  }
+}
+
 function pruneStrip() {
   for (const [id, el] of strip.elements) {
     if (!strip.target.nodes.some((n) => n.id === id)) {
@@ -402,6 +425,8 @@ const NODE_KINDS = {
   run: { page: false, click: 'list', enter: 'list', list: 'attached', entrance: true },
   earlier: { page: false, click: 'list', enter: 'list', list: 'attached', entrance: true },
   after: { page: false, click: 'list', enter: 'list', list: 'attached', entrance: true },
+  tab: { page: true, click: 'open', enter: 'open', list: 'attached' },
+  overflow: { page: false, click: 'queue', enter: 'queue', list: 'queue' },
 };
 
 function kindOf(node) {
@@ -413,6 +438,7 @@ const nodeAt = el => strip.target?.nodes.find(n => n.id === el.dataset.id);
 
 const NODE_ACTIONS = {
   open: node => activate(node.page),
+  queue: (node, el) => openQueue(el),
   list: (node, el, keyboard) => {
     showList(node.id);
     if (keyboard) $('strip-list').querySelector('button')?.focus();
@@ -421,10 +447,20 @@ const NODE_ACTIONS = {
 
 function wireNode(el) {
   el.addEventListener('mouseenter', () => {
-    if (nodeAt(el)) enterNode(el.dataset.id);
+    const node = nodeAt(el);
+    if (!node) return;
+    if (kindOf(node).list === 'queue') enterQueue(el);
+    else enterNode(node.id);
   });
-  el.addEventListener('mouseleave', leaveNode);
-  el.addEventListener('focus', () => showList(el.dataset.id));
+  el.addEventListener('mouseleave', event => {
+    const node = nodeAt(el);
+    if (node && kindOf(node).list === 'queue') leaveQueue();
+    else leaveNode(event);
+  });
+  el.addEventListener('focus', () => {
+    const node = nodeAt(el);
+    if (node && kindOf(node).list === 'attached') showList(node.id);
+  });
   el.addEventListener('click', () => {
     const node = nodeAt(el);
     if (node) NODE_ACTIONS[kindOf(node).click](node, el, false);
@@ -466,14 +502,23 @@ function buildStrip(layout) {
     if (kindOf(n).page) el.dataset.page = n.page;
     else delete el.dataset.page;
     el.draggable = !!el.dataset.page;
-    el.className = `node ${n.kind}` + (n.named ? ' named' : '') + (n.playing ? ' playing' : '') + markClass(v) + (el.classList.contains('waiting-pulse') ? ' waiting-pulse' : '');
+    const queue = kindOf(n).list === 'queue';
+    el.className = `node ${n.kind}` + (n.divider ? ' divided' : '') + (n.named ? ' named' : '') + (n.playing ? ' playing' : '') + markClass(v) + ((n.kind === 'tab' || queue) && el.classList.contains('waiting-pulse') ? ' waiting-pulse' : '');
     el.setAttribute('aria-label', n.name);
     el.setAttribute('aria-current', n.kind === 'pill' ? 'page' : 'false');
-    el.setAttribute('aria-controls', 'strip-list');
-    el.setAttribute('aria-expanded', String(S.list?.key === n.id));
-    el.removeAttribute('title');
-    const html = n.kind === 'after'
-      ? (n.read ? `<span class="read-count">${n.read}</span>` : '') + (n.waiting ? `<span class="count wait-count"><i></i>${n.waiting}</span>` : '')
+    el.setAttribute('aria-controls', queue ? 'popover' : 'strip-list');
+    if (queue) el.setAttribute('aria-haspopup', 'dialog');
+    else el.removeAttribute('aria-haspopup');
+    const expanded = queue
+      ? S.popover?.anchor === el || S.popover?.parent?.anchor === el
+      : S.list?.key === n.id;
+    el.setAttribute('aria-expanded', String(expanded));
+    setTooltip(el, n.tip ?? null);
+    const html = n.kind === 'tab'
+      ? markedFav(v, 16) + (n.named ? `<span class="item-label">${esc(n.label)}</span>` : '')
+        + (v.live ? `<i class="live-dot${filesOf(n.page).length ? ' above-leaves' : ''}"></i>` : '')
+      : n.kind === 'overflow' ? esc(n.label)
+      : n.kind === 'after' ? `<span class="read-count">${n.read}</span>`
       : n.kind === 'earlier' ? `<span>${esc(n.label)}</span>` + playingMark(n.playing)
       : n.kind === 'pill' ? playingFav(visitFav(v, 16), n.playing) + `<span class="pill-text"><span class="pill-title">${esc(v.label)}</span><span class="pill-site">${esc(v.site)}</span></span>` + (v.live ? '<i class="live-dot"></i>' : '')
       : playingFav(visitFav(v, n.kind === 'root' || n.kind === 'page' ? 16 : 14), n.playing) + (n.kind === 'parent' || n.kind === 'run' || n.named ? `<span class="item-label">${esc(n.label)}</span>` : '')
@@ -627,10 +672,12 @@ function drawStrip() {
   }
   for (const path of [...svg.children]) if (!kept.has(path.dataset.key)) path.remove();
   positionList();
-
+  if (S.popover?.kind === 'waiting') positionPopover(S.popover.anchor, S.popover.anchor);
 }
 
 function activate(id) {
+  cancel('waitingOpen');
+  cancel('waitingClose');
   uncover();
   if (id === current()) post({ t: 'focus', target: 'page' });
   else intent('restore', { id });
@@ -644,7 +691,7 @@ function walkTrunk(event) {
   const kind = kindOf(node);
   if (event.key === 'ArrowDown' || event.key === 'Enter') {
     event.preventDefault();
-    NODE_ACTIONS[event.key === 'Enter' ? kind.enter : 'list'](node, el, true);
+    NODE_ACTIONS[event.key === 'Enter' ? kind.enter : kind.list === 'queue' ? 'queue' : 'list'](node, el, true);
     return;
   }
   if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
@@ -667,8 +714,8 @@ function showList(key, origin = inputOrigin) {
   cancel('hideList');
   cancel('showList');
   const item = strip.target?.nodes.find((n) => n.id === key);
-  if (!item) return;
-  for (const [id, el] of strip.elements) el.setAttribute('aria-expanded', String(id === key));
+  if (!item || kindOf(item).list !== 'attached') return;
+  for (const [id, el] of strip.elements) if (el.getAttribute('aria-controls') === 'strip-list') el.setAttribute('aria-expanded', String(id === key));
   const previous = S.list;
   S.list = { key, origin: previous?.key === key ? previous.origin : origin, preview: previous?.key === key ? previous.preview : null };
   if (previous?.key !== key) $('strip-list').classList.remove('list-enter');
@@ -699,7 +746,7 @@ function hideList() {
   cancel('hideList');
   S.list = null;
   $('strip-list').classList.remove('list-enter');
-  for (const el of strip.elements.values()) el.setAttribute('aria-expanded', 'false');
+  for (const el of strip.elements.values()) if (el.getAttribute('aria-controls') === 'strip-list') el.setAttribute('aria-expanded', 'false');
   $('strip-list').hidden = true;
   syncLayer();
 }
@@ -829,7 +876,7 @@ $('strip-list').addEventListener('click', (event) => {
   }
   else if (action === 'stop') { intent('stop'); }
   else if (action === 'reload') { uncover(); intent('reload'); }
-  else if (action === 'open') { uncover(); intent('restore', { id: item.page }); }
+  else if (action === 'open') activate(item.page);
   else if (action === 'branch') {
     if (v.queued) intent('branch-queued', { id: item.page });
     else openPalette({ scope: item.page, text: '' });
@@ -889,24 +936,6 @@ function renderPlayingPin() {
   const label = first ? `Playing sound: ${names.join(', ')}` : 'Nothing playing';
   pin.setAttribute('aria-label', first ? `${label}. Go to ${first.label}` : label);
   setTooltip(pin, first ? `${label} · a click goes to ${first.label}` : '');
-}
-
-function renderWaitingPin() {
-  const ids = S.frame?.waiting.ids ?? [];
-  const next = visit(ids[0]);
-  $('waiting-pin').innerHTML = next ? markedFav(next, 16) + `<span class="count">${ids.length}</span>` : '';
-  $('waiting-pin').setAttribute('aria-label', S.frame?.waiting.name ?? 'No waiting pages');
-  setTooltip($('waiting-pin'), next ? `Next waiting page: ${next.label} · Ctrl+Tab` : '');
-}
-
-function openNextWaiting(id = S.frame?.waiting.ids[0]) {
-  cancel('waitingOpen');
-  cancel('waitingClose');
-  if (!id) { canopy.toast('info', 'No waiting pages in this tree'); return; }
-  closeReader();
-  closePalette(false);
-  closePopover(false);
-  activate(id);
 }
 
 // ---------- Ctrl+Tab page list ----------
@@ -969,7 +998,7 @@ function renderSwitcher() {
   chosen?.scrollIntoView({ block: 'nearest' });
   $('switcher').querySelectorAll('[data-id]').forEach((el) => el.addEventListener('click', () => {
     closeSwitcher();
-    openNextWaiting(el.dataset.id);
+    activate(el.dataset.id);
   }));
 }
 
@@ -985,19 +1014,19 @@ function closeSwitcher() {
 function commitSwitcher() {
   const sw = S.switcher;
   closeSwitcher();
-  if (sw) openNextWaiting(switcherRows(sw)[sw.index].id);
+  if (sw) activate(switcherRows(sw)[sw.index].id);
 }
 
-function enterWaitingPin() {
+function enterQueue(el) {
   cancel('waitingClose');
-  if (S.layer !== 'none' || S.popover) return;
+  if (nativeDrag || S.layer !== 'none' || S.popover) return;
   schedule('waitingOpen', 120, () => {
-    if (S.layer !== 'none' || S.popover || !S.frame?.waiting.ids.length) return;
-    openPopover('waiting', $('waiting-pin'), null);
+    if (nativeDrag || S.layer !== 'none' || S.popover || nodeAt(el)?.kind !== 'overflow') return;
+    openQueue(el);
   });
 }
 
-function leaveWaitingPin() {
+function leaveQueue() {
   cancel('waitingOpen');
   const popover = S.popover;
   if (popover?.kind === 'waiting') schedule('waitingClose', 220, () => {
@@ -1005,12 +1034,19 @@ function leaveWaitingPin() {
   });
 }
 
-$('waiting-pin').addEventListener('click', () => openNextWaiting());
+function openQueue(el) {
+  cancel('waitingOpen');
+  cancel('waitingClose');
+  if (S.popover?.kind === 'waiting' && S.popover.anchor === el) return;
+  closePopover(false);
+  openPopover('waiting', el, null);
+}
+
 $('playing-pin').addEventListener('click', () => { const id = $('playing-pin').dataset.go; if (id) activate(id); });
-$('waiting-pin').addEventListener('mouseenter', enterWaitingPin);
-$('waiting-pin').addEventListener('mouseleave', leaveWaitingPin);
 $('popover').addEventListener('mouseenter', () => cancel('waitingClose'));
-$('popover').addEventListener('mouseleave', leaveWaitingPin);
+$('popover').addEventListener('mouseleave', event => {
+  if (!event.relatedTarget?.closest('.node.overflow')) leaveQueue();
+});
 
 // ---------- popovers: Saved text menu, trees that do not fit, a tree's name ----------
 
@@ -1026,8 +1062,6 @@ function setTooltip(anchor, title) {
 /// the menu should not cover.
 function openPopover(kind, anchor, data, below = anchor) {
   const popover = $('popover');
-  const a = anchor.getBoundingClientRect();
-  const b = below.getBoundingClientRect();
   const parent = anchor.closest('#popover') ? S.popover : null;
   rememberFocus('popover', anchor);
   S.popover = { kind, anchor, data, parent, listKey: kind === 'node' ? S.list?.key : null };
@@ -1035,6 +1069,17 @@ function openPopover(kind, anchor, data, below = anchor) {
   setTooltip(anchor, anchor.getAttribute('title'));
   renderPopover();
   popover.hidden = false;
+  positionPopover(anchor, below);
+  post({ t: 'focus', target: 'chrome' });
+  controlsIn(popover)[0]?.focus();
+  if (S.layer !== 'palette') setLayer('menu');
+  syncLayer();
+}
+
+function positionPopover(anchor, below) {
+  const popover = $('popover');
+  const a = anchor.getBoundingClientRect();
+  const b = below.getBoundingClientRect();
   const width = popover.offsetWidth;
   popover.style.left = `${clamp(a.left, 8, window.innerWidth - width - 8)}px`;
   const windowHeight = S.windowHeight ?? window.innerHeight;
@@ -1043,10 +1088,6 @@ function openPopover(kind, anchor, data, below = anchor) {
   const above = belowRoom < 200 && a.top > belowRoom;
   popover.style.maxHeight = `${Math.max(40, above ? a.top - 20 : belowRoom - 14)}px`;
   popover.style.top = `${above ? Math.max(8, a.top - popover.offsetHeight - 6) : b.bottom + 6}px`;
-  post({ t: 'focus', target: 'chrome' });
-  controlsIn(popover)[0]?.focus();
-  if (S.layer !== 'palette') setLayer('menu');
-  syncLayer();
 }
 
 function keepPopoverInside() {
@@ -1168,6 +1209,17 @@ function refreshPopover() {
         : controls.find((el) => role === 'mail-tab' ? el.dataset.key === key : el.dataset.account === address);
       (row || (role === 'mail-tab' && popover.querySelector('.mail-tab[aria-selected="true"]')) || popover).focus({ preventScroll: true });
       row?.scrollIntoView({ block: 'nearest' });
+    }
+    return;
+  }
+  if (S.popover.kind === 'waiting') {
+    const active = document.activeElement;
+    const id = active?.dataset.id;
+    const hadFocus = popover.contains(active);
+    renderPopover();
+    if (hadFocus && S.popover) {
+      const rows = [...popover.querySelectorAll('[data-id]')];
+      (rows.find(row => row.dataset.id === id) ?? rows[0])?.focus({ preventScroll: true });
     }
     return;
   }
@@ -1300,12 +1352,12 @@ function renderPopover() {
   } else if (kind === 'waiting') {
     const { ids, order } = S.frame.waiting;
     if (!ids.length) { closePopover(false); return; }
-    popover.innerHTML = `<div class="pop-head"><span class="menu-heading grow">Waiting in this tree · ${ids.length}</span><span class="menu-detail">${esc(order)}</span></div>`
+    patchChildren(popover, `<div data-key="heading" class="pop-head"><span class="menu-heading grow">Waiting in this tree · ${ids.length}</span><span class="menu-detail">${esc(order)}</span></div>`
       + ids.map((id, i) => {
         const v = visit(id);
         return `<button class="menu-row${i === 0 ? ' next' : ''}" data-id="${id}" aria-current="${id === current() ? 'page' : 'false'}" aria-label="${esc(v.name)}">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.detail)}</span>${i === 0 ? '<kbd>Ctrl Tab</kbd>' : ''}</button>`;
-      }).join('');
-    popover.querySelectorAll('[data-id]').forEach((row) => row.addEventListener('click', () => openNextWaiting(row.dataset.id)));
+      }).join(''));
+    popover.querySelectorAll('[data-id]').forEach(row => { row.onclick = () => activate(row.dataset.id); });
   } else if (kind === 'save-login') {
     const save = S.save;
     if (!save) { closePopover(false); return; }
@@ -2058,7 +2110,6 @@ window.canopy = {
     applyStrip(frame.strip);
     paintLoading();
     renderPlayingPin();
-    renderWaitingPin();
     renderMailPin();
     applyTheme();
     // Overlays stay over the old page until the new one commits, as they always have.
@@ -2094,6 +2145,7 @@ window.canopy = {
     renderSheet(false);
     if (S.list) { renderList(); requestListPreview(); }
     if (S.popover) refreshPopover();
+    flushQueuedPulses();
     renderPaletteContext();
     syncLayer();
   },
@@ -2118,7 +2170,6 @@ window.canopy = {
   strip(layouts) {
     applyStrip(layouts);
     renderPlayingPin();
-    renderWaitingPin();
     renderMailPin();
     animateStrip(0);
     fitTabs();
@@ -2183,15 +2234,11 @@ window.canopy = {
     if (['errors', 'settings'].includes(S.popover?.kind)) refreshPopover();
     if (S.popover?.kind === 'errors' && value.unread) post({ t: 'errors', action: 'read' });
   },
-  waiting(text) {
-    this.toast('info', text);
-    if (reducedMotion.matches) return;
-    for (const el of [$('waiting-pin'), ...document.querySelectorAll('.node.after')]) {
-      el.classList.remove('waiting-pulse');
-      void el.offsetWidth;
-      el.classList.add('waiting-pulse');
-      el.onanimationend = () => el.classList.remove('waiting-pulse');
-    }
+  waiting(text, id) {
+    if (text != null) this.toast('info', text);
+    if (id == null) return;
+    queuedPulses.add(id);
+    flushQueuedPulses();
   },
   toast(kind, text, deleteId) {
     const toast = $('toast');
@@ -2340,8 +2387,26 @@ window.canopy = {
   },
 };
 
+const queuedPulses = new Set();
+function flushQueuedPulses() {
+  if (!queuedPulses.size || refresh.buttons || refresh.painting || nativeDrag) return;
+  const targets = new Set();
+  const waiting = new Set(S.frame?.waiting.ids);
+  for (const id of queuedPulses) {
+    if (!waiting.has(id)) continue;
+    const target = strip.target?.nodes.find(node => node.kind === 'tab' && node.id === id)
+      ?? strip.target?.nodes.find(node => node.kind === 'overflow');
+    if (target) targets.add(strip.elements.get(target.id));
+  }
+  queuedPulses.clear();
+  for (const el of targets) {
+    playEntrance(el, 'waiting-pulse');
+    el.onanimationend = () => el.classList.remove('waiting-pulse');
+  }
+}
+
 // A release must finish dispatching its click before any pressed element is replaced.
-const refresh = { buttons: 0, pending: new Map(), release: null };
+const refresh = { buttons: 0, pending: new Map(), release: null, painting: false };
 function rebuild(kind, apply, args) {
   if (!refresh.buttons && !nativeDrag) { apply(...args); return; }
   const key = kind === 'icons' ? `icons:${args[0]}` : kind;
@@ -2355,7 +2420,10 @@ function releaseRefresh() {
     if (nativeDrag) return;
     const pending = [...refresh.pending.values()];
     refresh.pending.clear();
-    for (const { apply, args } of pending) apply(...args);
+    refresh.painting = true;
+    try { for (const { apply, args } of pending) apply(...args); }
+    finally { refresh.painting = false; }
+    flushQueuedPulses();
   });
 }
 for (const kind of ['present', 'strip', 'icons', 'start', 'forest', 'logins', 'loginsLocked', 'saveLogin', 'paletteResults', 'previewResult', 'reader', 'readerList']) {
@@ -2795,12 +2863,6 @@ document.addEventListener('keydown', (event) => {
   rows[index % rows.length]?.focus();
   event.preventDefault();
 });
-$('waiting-pin').addEventListener('keydown', (event) => {
-  if (event.key !== 'ArrowDown') return;
-  event.preventDefault();
-  openPopover('waiting', $('waiting-pin'));
-});
-
 window.addEventListener('focus', () => {
   if (pageShows() && document.activeElement === document.body) {
     controlsIn(document.body).at(-1)?.focus();
