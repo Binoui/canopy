@@ -120,6 +120,8 @@ Canopy has no list of all downloads yet, and it cannot pause or resume one.
 
 When Canopy finds a signed-in Gmail account, the mail button shows the total unread count. Open it to see the newest messages first, under day headings. For multiple accounts, choose **All** or an account tab. The colored dots identify each account. A green dot on a sender tile marks mail that arrived since you last opened the list.
 
+Canopy gets site sender logos from Google's favicon service when you open the list. It sends only the sender's site name. Canopy stores each logo on disk and checks for an update after 30 days. A letter appears when a logo is unavailable or the sender uses a personal mailbox provider.
+
 Turn on **Group by sender** to put messages from the same sender together. Select a sender with several messages to expand or fold the group. Canopy remembers your grouping after a restart.
 
 Select a message to open it. Hover over a message or focus it with Tab to reveal **Mark read**. Select an account at the bottom to open its inbox.
