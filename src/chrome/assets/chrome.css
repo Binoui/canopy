@@ -482,7 +482,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 
 .node-menu-title { display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-bottom: 1px solid var(--border); font-weight: 600; max-width: 280px; }
 .node-menu-title span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#toast.settled { top: calc(var(--window-height) - 18px); transform: translate(-50%, -100%); }
+#toast.settled, #toast.deleted { top: calc(var(--window-height) - 18px); transform: translate(-50%, -100%); }
 .tree-tools { height: 42px; display: flex; align-items: center; gap: 12px; padding: 0 14px; }
 .tree-tools input { width: 240px; background: var(--tile); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
 .tree-tools button { padding: 5px 8px; border-radius: 6px; }

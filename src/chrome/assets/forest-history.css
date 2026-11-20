@@ -36,9 +36,13 @@
 .history-action:hover { background: var(--hover); }
 .history-item:hover .history-action, .history-item.selected .history-action, .history-item:focus-within .history-action { display: block; }
 .history-item:hover .history-meta, .history-item.selected .history-meta, .history-item:focus-within .history-meta { display: none; }
-.history-page { grid-column: 1 / -1; display: flex; align-items: center; gap: 7px; min-width: 150px; height: 26px; text-align: left; margin: 0 8px 0 calc(var(--outline-inset, 44px) + var(--indent)); padding-left: 10px; border-radius: 5px; }
-.history-page:first-of-type { border-top: 1px solid var(--border); }
-.history-page:hover { background: var(--hover); }
+.history-page-row { grid-column: 1 / -1; display: flex; align-items: center; gap: 4px; margin: 0 8px 0 calc(var(--outline-inset, 44px) + var(--indent)); border-radius: 5px; }
+.history-page-row:first-of-type { border-top: 1px solid var(--border); }
+.history-page-row:hover { background: var(--hover); }
+.history-page { flex: 1; display: flex; align-items: center; gap: 7px; min-width: 150px; height: 26px; text-align: left; padding-left: 10px; border-radius: 5px; }
+.history-page-delete { flex: none; padding: 3px 7px; margin-right: 2px; border-radius: 5px; font-size: 11px; color: var(--muted); opacity: 0; }
+.history-page-row:hover .history-page-delete, .history-page-row:focus-within .history-page-delete { opacity: 1; }
+.history-page-delete:hover { background: var(--hover); color: var(--text); }
 .history-page span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .history-page.last { color: var(--green-ink); }
 .history-page.waiting .fav { outline: 1px dashed var(--green); outline-offset: 2px; }

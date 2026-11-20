@@ -51,7 +51,7 @@ function renderHistory(h) {
       const mini=oldMini?.dataset.shape===shape ? oldMini.innerHTML : miniHtml(i.mini);
       const row = `<button class="forest-row" data-key="row" data-id="${i.id}" data-forest="row" data-tree-menu aria-selected="${i.selected}" aria-expanded="${i.unfolded}" tabindex="${i.selected ? 0 : -1}" aria-label="${esc(i.name)}"><span data-key="time" class="tm">${esc(i.time)}</span><span data-key="mini" class="history-mini" data-shape="${esc(shape)}">${mini}</span><span data-key="names" class="history-names"><b>${historyRuns(i.titleRuns)}</b><span>${i.trail.map(historyRuns).join(' · ')}${i.more ? ` · ${esc(i.more)}` : ''}</span></span><span data-key="meta" class="history-meta">${esc(i.meta)}</span></button>`;
       const actions = i.buttons.map(a=>`<button class="history-action ${a.act}" data-key="act-${a.act}" data-forest="act" data-act="${a.act}" data-id="${i.id}" aria-label="${esc(a.label)}" title="${esc(a.label)}">${a.act==='save'?icon('bookmark'):esc(a.label)}</button>`).join('');
-      const outline = i.outline ? i.outline.rows.map(r=>`<button class="history-page${r.last?' last':''}${r.waiting?' waiting':''}" data-key="page-${r.id}" data-forest="page" data-id="${r.id}" aria-label="${esc(r.label)}" style="--indent:${r.depth*16}px">${fav(r.url,!r.waiting,14)}<span>${esc(r.name)}</span></button>`).join('') + (i.outline.cut?`<div class="history-cut" data-key="cut">${esc(i.outline.cut)}</div>`:'') : '';
+      const outline = i.outline ? i.outline.rows.map(r=>`<div class="history-page-row" data-key="page-${r.id}" style="--indent:${r.depth*16}px"><button class="history-page${r.last?' last':''}${r.waiting?' waiting':''}" data-key="open" data-forest="page" data-id="${r.id}" aria-label="${esc(r.label)}">${fav(r.url,!r.waiting,14)}<span>${esc(r.name)}</span></button><button class="history-page-delete" data-key="delete" data-forest="delete-page" data-id="${r.id}" aria-label="${esc(r.delete.name)}" title="${esc(r.delete.label)}">${esc(r.delete.label)}</button></div>`).join('') + (i.outline.cut?`<div class="history-cut" data-key="cut">${esc(i.outline.cut)}</div>`:'') : '';
       content=row+actions+outline;
     }
     entries.push(`<div class="${cls}" data-key="${i.key}">${content}</div>`);
@@ -91,6 +91,7 @@ function forestHistoryClick(e) {
     case 'row': post({t:'forest',do:'select',tree:id});break;
     case 'act': treeAct(id,el.dataset.act);break;
     case 'page': post({t:'forest',do:'page',id});break;
+    case 'delete-page': post({t:'forest',do:'delete-page',id});break;
     case 'more': post({t:'forest',do:'more',edge:el.dataset.edge,before:el.dataset.before==='true'});break;
     case 'site': post({t:'forest',do:'site',site:el.dataset.site});break;
     case 'jump': post({t:'forest',do:'jump',bucket:el.dataset.bucket});break;
@@ -107,7 +108,10 @@ function forestHistoryKey(e) {
       case 'ArrowLeft': post({t:'forest',do:'fold',open:false});break;
       case 'Enter': if(e.target.closest('.forest-row'))post({t:'forest',do:'act',act:'open'});else return;break;
       case 's': case 'S': post({t:'forest',do:'act',act:'save'});break;
-      case 'Delete': post({t:'forest',do:'act',act:'delete'});break;
+      case 'Delete': {
+        const page=e.target.closest('.history-page-row [data-id]');
+        post(page?{t:'forest',do:'delete-page',id:page.dataset.id}:{t:'forest',do:'act',act:'delete'});break;
+      }
       default: if(!forestFindKey(e,'find'))return;
     }
   } else if(!forestFindKey(e,'find'))return;

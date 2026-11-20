@@ -6,7 +6,7 @@ Each row shows its settle time, a cropped Canopy miniature, its title, four page
 
 Click a row to select it and unfold its outline in place. Click it again to fold it. Only one outline is unfolded. Up and Down select without unfolding. Right or Space unfolds and Left folds. The outline keeps true preorder depth, marks the last page and stops at forty pages with a remaining count. Enter, a double click or Reopen resumes the last page and closes the forest. An outline page reopens that page.
 
-S saves the selection for later. Delete deletes it. The next row becomes selected when a tree leaves the results. Selected and hovered rows show Reopen, Save for later and Delete. The row menu adds Rename.
+S saves the selection for later. Delete deletes it. In an unfolded outline, each page shows Delete page on hover or focus, Delete branch when pages hang from it, or Delete tree on the root; Delete on a focused page does the same. The page goes with every page opened from it, and a tree whose last page went resumes at the nearest opened page above. The next row becomes selected when a tree leaves the results. Selected and hovered rows show Reopen, Save for later and Delete. The row menu adds Rename.
 
 Find matches titles, sites and the full titles of every page, including the root. Rust sends marked text runs. A matching page outside the first four leads the trail. If its short name conceals the match, the full title appears instead. The count says N of M trees. Escape clears both Find and the site filter, then closes the forest on the next press.
 

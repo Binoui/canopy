@@ -2025,15 +2025,30 @@ impl Pages {
         let forest =
             self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
         let result = self.browser.borrow_mut().delete_trees(trees)?;
-        let Some((id, record, mut landing)) = result else {
+        let Some((id, record, landing)) = result else {
             return Ok(());
         };
-        let title = record
-            .trees()
-            .first()
-            .and_then(|t| forest.tree(*t))
-            .map(|t| t.title.clone())
-            .unwrap_or_default();
+        let text = deleted_text(&forest, &record, None);
+        self.finish_delete(id, record, landing, text)
+    }
+    /// Deletes a page and every page opened from it, from an open or settled tree.
+    pub fn delete_branch(&self, head: VisitId) -> Result<()> {
+        let forest =
+            self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
+        let result = self.browser.borrow_mut().delete_branch(head)?;
+        let Some((id, record, landing)) = result else {
+            return Ok(());
+        };
+        let text = deleted_text(&forest, &record, Some(head));
+        self.finish_delete(id, record, landing, text)
+    }
+    fn finish_delete(
+        &self,
+        id: crate::browser::DeleteId,
+        record: crate::browser::Deleted,
+        mut landing: Landing,
+        text: String,
+    ) -> Result<()> {
         let cleanup = (|| -> Result<()> {
             let belongs = |page: &LivePage| {
                 page.current_visit()
@@ -2183,16 +2198,8 @@ impl Pages {
             }
             Ok(())
         })();
-        let count = record.trees().len();
         *self.deleted.borrow_mut() = Some(record);
-        self.receive(PageEvent::Deleted {
-            id: Some(id),
-            text: if count == 1 {
-                format!("Deleted ‘{title}’")
-            } else {
-                format!("Deleted {count} trees")
-            },
-        });
+        self.receive(PageEvent::Deleted { id: Some(id), text });
         self.receive(PageEvent::Changed);
         cleanup?;
         self.land(landing)
@@ -3047,6 +3054,30 @@ fn discard_continuation(
         .is_some_and(|c| c.state.ticket().belongs_to(navigation))
     {
         pending.take();
+    }
+}
+
+/// The feedback after a delete: the tree's title for one whole tree, otherwise the page
+/// and how many pages went with it.
+fn deleted_text(
+    forest: &ForestProjection,
+    record: &crate::browser::Deleted,
+    head: Option<VisitId>,
+) -> String {
+    match (record.trees(), head.and_then(|h| forest.visit(h))) {
+        ([tree], _) => format!(
+            "Deleted ‘{}’",
+            forest
+                .tree(*tree)
+                .map(|t| t.title.as_str())
+                .unwrap_or_default()
+        ),
+        ([], Some(page)) => match record.pages() {
+            1 => format!("Deleted ‘{}’", page.label()),
+            2 => format!("Deleted ‘{}’ and 1 page under it", page.label()),
+            n => format!("Deleted ‘{}’ and {} pages under it", page.label(), n - 1),
+        },
+        (trees, _) => format!("Deleted {} trees", trees.len()),
     }
 }
 
