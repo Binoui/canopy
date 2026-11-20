@@ -18,14 +18,23 @@ pub(crate) const NAV_MIN_ROOM: f64 = 280.;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Pin {
-    Waiting { count: usize },
-    Mail { unread: u32 },
+    /// Pages playing sound other than the one on screen; the first is a click away.
+    Playing {
+        count: usize,
+    },
+    Waiting {
+        count: usize,
+    },
+    Mail {
+        unread: u32,
+    },
     Zoom,
 }
 
 impl Pin {
     pub(crate) fn kind(self) -> &'static str {
         match self {
+            Self::Playing { .. } => "playing",
             Self::Waiting { .. } => "waiting",
             Self::Zoom => "zoom",
             Self::Mail { .. } => "mail",
@@ -36,9 +45,16 @@ impl Pin {
             Self::Zoom | Self::Mail { unread: 0 } => HEIGHT,
             Self::Mail { unread } => counted(unread as usize),
             Self::Waiting { count } => counted(count),
+            // The page's icon and a speaker, then a count once two or more play.
+            Self::Playing { count: 1 } => PLAYING,
+            Self::Playing { count } => {
+                PLAYING - 6. + (count.to_string().len() as f64 * 6.5 + 10.) + 6.
+            }
         }
     }
 }
+
+const PLAYING: f64 = 7. + 16. + 5. + 14. + 7.;
 
 fn counted(count: usize) -> f64 {
     7. + 16. + 7. + (count.to_string().len() as f64 * 6.5 + 10.) + 6.
@@ -50,12 +66,13 @@ pub(crate) struct Pins {
     pub placed: Vec<(Pin, Rect)>,
 }
 
-pub(crate) fn pins(forest: &ForestProjection, mail: &Mail, width: f64) -> Pins {
+pub(crate) fn pins(forest: &ForestProjection, mail: &Mail, playing: usize, width: f64) -> Pins {
     let count = waiting::pages(forest).len();
     place(
-        (count > 0)
-            .then_some(Pin::Waiting { count })
+        (playing > 0)
+            .then_some(Pin::Playing { count: playing })
             .into_iter()
+            .chain((count > 0).then_some(Pin::Waiting { count }))
             .chain((!mail.accounts.is_empty()).then(|| Pin::Mail {
                 unread: mail.unread(),
             }))
@@ -155,5 +172,27 @@ mod mail_tests {
         assert_eq!(Pin::Mail { unread: 0 }.width(), HEIGHT);
         assert!(Pin::Mail { unread: 12 }.width() > Pin::Mail { unread: 1 }.width());
         assert!(Pin::Mail { unread: 123 }.width() > Pin::Mail { unread: 12 }.width());
+    }
+
+    #[test]
+    fn playing_comes_first_and_grows_once_it_counts() {
+        let pins = place(
+            [
+                Pin::Playing { count: 1 },
+                Pin::Waiting { count: 2 },
+                Pin::Zoom,
+            ]
+            .into_iter(),
+            800.,
+        );
+        assert_eq!(
+            pins.placed
+                .iter()
+                .map(|(p, _)| p.kind())
+                .collect::<Vec<_>>(),
+            ["playing", "waiting", "zoom"]
+        );
+        assert!(Pin::Playing { count: 2 }.width() > Pin::Playing { count: 1 }.width());
+        assert!(Pin::Playing { count: 12 }.width() > Pin::Playing { count: 2 }.width());
     }
 }

@@ -345,6 +345,7 @@ mod tests {
             mail: Default::default(),
             loaded: Default::default(),
             live: Default::default(),
+            playing: Default::default(),
             capture_enabled: true,
             trees_help: true,
             theme: crate::browser::ThemeMode::Dark,

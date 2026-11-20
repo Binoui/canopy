@@ -14,6 +14,7 @@ const ICONS = {
   bookmark: '<path d="M6 3h12v18l-6-4-6 4z" stroke-width="1.7"/>',
   expand: '<path d="M9 4H4v5M15 4h5v5M4 15v5h5M20 15v5h-5" stroke-width="1.7"/>',
   collapse: '<path d="M4 9h5V4M20 9h-5V4M9 20v-5H4M15 20v-5h5" stroke-width="1.7"/>',
+  sound: '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor" stroke-width="1.6"/><path d="M15.5 9a4.2 4.2 0 0 1 0 6M18.3 6.5a8 8 0 0 1 0 11" stroke-width="1.9"/>',
   pinned: '<path d="M9 3h6l-1 7 4 4v2H6v-2l4-4zM12 16v6" stroke-width="1.6"/>',
   plus: '<path d="M12 5v14M5 12h14" stroke-width="1.9"/>',
   search: '<circle cx="11" cy="11" r="6.5" stroke-width="1.9"/><path d="M20 20l-4.2-4.2" stroke-width="1.9"/>',
@@ -134,8 +135,11 @@ function fav(url, opened, size) {
 const waitState = (v) => v.queued ? (v.loaded ? 'loaded' : 'unloaded') : null;
 const markClass = (v) => v.dismissed ? ' dismissed' : waitState(v) === 'loaded' ? ' pending loaded' : waitState(v) ? ' pending' : '';
 const visitFav = (v, size) => fav(v.url, waitState(v) !== 'unloaded', size);
+/// A page playing sound wears a speaker on its icon wherever the icon is drawn.
+const playingMark = (on) => on ? `<i class="playing-mark" aria-hidden="true">${icon('sound')}</i>` : '';
+const playingFav = (html, on) => on ? `<span class="mk">${html}${playingMark(true)}</span>` : html;
 const markedFav = (v, size, live = v.live) => `<span class="mk">${visitFav(v, size)}`
-  + (live ? '<i class="live-dot"></i>' : '')
+  + (live ? '<i class="live-dot"></i>' : '') + playingMark(v.playing)
   + (waitState(v) ? `<i class="pending-dot${waitState(v) === 'loaded' ? ' loaded' : ''}"></i>` : '') + '</span>';
 
 // ---------- timers and layers, as the GTK chrome's presentation state machine ----------
@@ -266,9 +270,10 @@ function renderTabs() {
     const pages = `${tree.pages} page${tree.pages === 1 ? '' : 's'}`;
     const pending = tree.pending ? `, ${tree.pending} waiting` : '';
     const pinned = tree.pinned ? ', pinned' : '';
+    const playing = tree.playing ? ', playing sound' : '';
     const key = index < 9 ? ` · Ctrl+${index + 1}` : '';
-    const html = `<button class="tab${tree.pinned ? ' pinned' : ''}" draggable="true" role="tab" tabindex="${active ? 0 : -1}" aria-selected="${active}" data-id="${tree.id}" title="${esc(`${tree.title}${sub ? ` · ${sub}` : ''} · ${pages}${pending}${pinned}${key}`)}" aria-label="${esc((sub ? `${tree.name}, on ${sub}` : tree.name) + pending)}">`
-      + (root ? `<span class="mk">${visitFav(root, 14)}</span>` : '')
+    const html = `<button class="tab${tree.pinned ? ' pinned' : ''}${tree.playing ? ' playing' : ''}" draggable="true" role="tab" tabindex="${active ? 0 : -1}" aria-selected="${active}" data-id="${tree.id}" title="${esc(`${tree.title}${sub ? ` · ${sub}` : ''} · ${pages}${pending}${pinned}${playing}${key}`)}" aria-label="${esc((sub ? `${tree.name}, on ${sub}` : tree.name) + pending + playing)}">`
+      + (root ? `<span class="mk">${visitFav(root, 14)}${playingMark(tree.playing)}</span>` : '')
       + `<span class="tab-title${sub ? ' two-line' : ''}"><span class="tab-name">${esc(tree.title)}</span>${sub ? `<span class="tab-sub">${esc(sub)}</span>` : ''}</span>`
       + (tree.pinned ? `<span class="tab-pinned-mark" aria-hidden="true">${icon('pinned')}</span>` : '')
       + (tree.pending ? '<i class="unread-dot" aria-hidden="true"></i>' : '')
@@ -280,6 +285,7 @@ function renderTabs() {
     const tab = kept.get(tree.id) ?? fresh;
     if (tab !== fresh) {
       tab.classList.toggle('pinned', tree.pinned);
+      tab.classList.toggle('playing', !!tree.playing);
       tab.setAttribute('aria-selected', String(active));
       setTooltip(tab, fresh.title);
       tab.setAttribute('aria-label', fresh.getAttribute('aria-label'));
@@ -430,7 +436,7 @@ function buildStrip(layout) {
     if (!['run', 'earlier', 'after'].includes(n.kind)) el.dataset.page = n.page;
     else delete el.dataset.page;
     el.draggable = !!el.dataset.page;
-    el.className = `node ${n.kind}` + (n.named ? ' named' : '') + markClass(v) + (el.classList.contains('waiting-pulse') ? ' waiting-pulse' : '');
+    el.className = `node ${n.kind}` + (n.named ? ' named' : '') + (n.playing ? ' playing' : '') + markClass(v) + (el.classList.contains('waiting-pulse') ? ' waiting-pulse' : '');
     el.setAttribute('aria-label', n.name);
     el.setAttribute('aria-current', n.kind === 'pill' ? 'page' : 'false');
     el.setAttribute('aria-controls', 'strip-list');
@@ -438,9 +444,9 @@ function buildStrip(layout) {
     el.removeAttribute('title');
     const html = n.kind === 'after'
       ? (n.read ? `<span class="read-count">${n.read}</span>` : '') + (n.waiting ? `<span class="count wait-count"><i></i>${n.waiting}</span>` : '')
-      : n.kind === 'earlier' ? `<span>${esc(n.label)}</span>`
-      : n.kind === 'pill' ? visitFav(v, 16) + `<span class="pill-text"><span class="pill-title">${esc(v.label)}</span><span class="pill-site">${esc(v.site)}</span></span>` + (v.live ? '<i class="live-dot"></i>' : '')
-      : visitFav(v, n.kind === 'root' || n.kind === 'page' ? 16 : 14) + (n.kind === 'parent' || n.kind === 'run' || n.named ? `<span class="item-label">${esc(n.label)}</span>` : '')
+      : n.kind === 'earlier' ? `<span>${esc(n.label)}</span>` + playingMark(n.playing)
+      : n.kind === 'pill' ? playingFav(visitFav(v, 16), n.playing) + `<span class="pill-text"><span class="pill-title">${esc(v.label)}</span><span class="pill-site">${esc(v.site)}</span></span>` + (v.live ? '<i class="live-dot"></i>' : '')
+      : playingFav(visitFav(v, n.kind === 'root' || n.kind === 'page' ? 16 : 14), n.playing) + (n.kind === 'parent' || n.kind === 'run' || n.named ? `<span class="item-label">${esc(n.label)}</span>` : '')
         + (v.live && n.kind !== 'run' ? `<i class="live-dot${filesOf(n.page).length ? ' above-leaves' : ''}"></i>` : '');
     if (el.dataset.html !== html) {
       el.innerHTML = html;
@@ -839,6 +845,19 @@ function renderMailPin() {
   setTooltip($('mail-pin'), pin.name);
 }
 
+/// Pages playing sound away from the screen stay one click away, whatever tree is shown.
+function renderPlayingPin() {
+  const ids = S.strip?.playing ?? [];
+  const first = visit(ids[0]);
+  const pin = $('playing-pin');
+  pin.dataset.go = first?.id ?? '';
+  pin.innerHTML = first ? visitFav(first, 16) + icon('sound') + (ids.length > 1 ? `<span class="count">${ids.length}</span>` : '') : '';
+  const names = ids.map((id) => visit(id)?.label).filter(Boolean);
+  const label = first ? `Playing sound: ${names.join(', ')}` : 'Nothing playing';
+  pin.setAttribute('aria-label', first ? `${label}. Go to ${first.label}` : label);
+  setTooltip(pin, first ? `${label} · a click goes to ${first.label}` : '');
+}
+
 function renderWaitingPin() {
   const ids = S.frame?.waiting.ids ?? [];
   const next = visit(ids[0]);
@@ -954,6 +973,7 @@ function leaveWaitingPin() {
 }
 
 $('waiting-pin').addEventListener('click', () => openNextWaiting());
+$('playing-pin').addEventListener('click', () => { const id = $('playing-pin').dataset.go; if (id) activate(id); });
 $('waiting-pin').addEventListener('mouseenter', enterWaitingPin);
 $('waiting-pin').addEventListener('mouseleave', leaveWaitingPin);
 $('popover').addEventListener('mouseenter', () => cancel('waitingClose'));
@@ -2004,6 +2024,7 @@ window.canopy = {
     visibleMailAccounts(S.frame.mail);
     applyStrip(frame.strip);
     paintLoading();
+    renderPlayingPin();
     renderWaitingPin();
     renderMailPin();
     applyTheme();
@@ -2063,6 +2084,7 @@ window.canopy = {
   },
   strip(layouts) {
     applyStrip(layouts);
+    renderPlayingPin();
     renderWaitingPin();
     renderMailPin();
     animateStrip(0);

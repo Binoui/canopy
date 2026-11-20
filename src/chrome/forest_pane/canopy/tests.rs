@@ -81,6 +81,7 @@ fn fold_owner_hub_and_six_page_chain_at_every_level() {
         forest: &f.forest,
         previous: Some(ids[0]),
         live: &f.live,
+        playing: &f.playing,
         shown: &f.shown,
     };
     let tree = &f.forest.tabs()[0];
@@ -124,6 +125,7 @@ fn ninety_page_run_preserves_both_roles_and_folds_at_each_level() {
         forest: &f.forest,
         previous: Some(ids[0]),
         live: &f.live,
+        playing: &f.playing,
         shown: &f.shown,
     };
     let tree = &f.forest.tabs()[0];
@@ -151,6 +153,7 @@ fn waiting_runs_choose_the_head_even_when_background_loaded() {
         forest: &f.forest,
         previous: None,
         live: &f.live,
+        playing: &f.playing,
         shown: &f.shown,
     };
     let mut tree = f.forest.tabs()[0].clone();
@@ -176,6 +179,7 @@ fn size_grows_slowly_and_is_capped_and_tips_report_showings() {
         forest: &f.forest,
         previous: Some(ids[0]),
         live: &f.live,
+        playing: &f.playing,
         shown: &f.shown,
     };
     let i = items::fold(&facts, &f.forest.tabs()[0], Level::Middle);
@@ -229,6 +233,7 @@ fn flow_item_boxes_do_not_overlap_and_trees_fit_resting_room() {
                 forest: &f.forest,
                 previous: Some(ids[0]),
                 live: &f.live,
+                playing: &f.playing,
                 shown: &f.shown,
             };
             let folded = vec![items::fold(&facts, &f.forest.tabs()[0], level)];
@@ -279,6 +284,7 @@ fn flow_item_boxes_do_not_overlap_and_trees_fit_resting_room() {
         forest: &f.forest,
         previous: Some(ids[0]),
         live: &f.live,
+        playing: &f.playing,
         shown: &f.shown,
     };
     for l in Level::ALL {
@@ -377,6 +383,7 @@ fn aggregate_memory_and_current_previous_marks_are_independent() {
         forest: &f.forest,
         previous: Some(ids[6]),
         live: &f.live,
+        playing: &f.playing,
         shown: &f.shown,
     };
     let folded = items::fold(&facts, &f.forest.tabs()[0], Level::Far);
@@ -388,6 +395,7 @@ fn aggregate_memory_and_current_previous_marks_are_independent() {
         forest: &f.forest,
         previous: Some(ids[6]),
         live: &f.live,
+        playing: &f.playing,
         shown: &f.shown,
     };
     let folded = items::fold(&facts, &f.forest.tabs()[0], Level::Far);
@@ -424,6 +432,7 @@ fn islands_boxes_clear_at_minimum_and_rest_and_chains_stay_compact() {
             forest: &f.forest,
             previous: Some(ids[0]),
             live: &f.live,
+            playing: &f.playing,
             shown: &f.shown,
         };
         for level in Level::ALL {
@@ -491,6 +500,7 @@ fn islands_wraps_trees_at_every_resting_zoom() {
         forest: &f.forest,
         previous: None,
         live: &f.live,
+        playing: &f.playing,
         shown: &f.shown,
     };
     for level in Level::ALL {
@@ -517,6 +527,7 @@ fn island_items(parents: &[Option<usize>]) -> Vec<items::Item> {
         forest: &f.forest,
         previous: ids.last().copied(),
         live: &f.live,
+        playing: &f.playing,
         shown: &f.shown,
     };
     items::fold(&facts, &f.forest.tabs()[0], Level::Near)
@@ -740,5 +751,32 @@ fn islands_coiled_chains_keep_their_edges_clear() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn a_page_playing_sound_keeps_its_own_item_at_every_level() {
+    let (mut f, ids) = fixture(7, false, false);
+    f.playing = [ids[2]].into_iter().collect();
+    let facts = Facts {
+        forest: &f.forest,
+        previous: None,
+        live: &f.live,
+        playing: &f.playing,
+        shown: &f.shown,
+    };
+    let tree = &f.forest.tabs()[0];
+    for level in Level::ALL {
+        let items = items::fold(&facts, tree, level);
+        let playing: Vec<_> = items.iter().filter(|i| i.appearance.playing).collect();
+        assert_eq!(playing.len(), 1, "{level:?}");
+        assert_eq!(playing[0].pages, [ids[2]], "{level:?}");
+        let value = playing[0].paint(&facts, level);
+        assert_eq!(value["playing"], true);
+        assert!(value["tip"].as_str().unwrap().contains("playing sound"));
+        assert!(items
+            .iter()
+            .filter(|i| !i.appearance.playing)
+            .all(|i| !i.pages.contains(&ids[2])));
     }
 }

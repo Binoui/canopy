@@ -82,6 +82,8 @@ pub struct ChromeFrame {
     pub loaded: std::collections::HashSet<VisitId>,
     /// Current documents retained in hidden, previously shown pages.
     pub live: std::collections::HashSet<VisitId>,
+    /// Pages the owner can hear now. The chrome keeps each one in reach and marks it.
+    pub playing: std::collections::HashSet<VisitId>,
     pub capture_enabled: bool,
     pub trees_help: bool,
     pub theme: ThemeMode,

@@ -126,6 +126,7 @@ function patchItems(value) {
       el.dataset.kind = item.kind;
       el.dataset.st = item.st ?? '';
       el.dataset.current = String(!!item.current); el.dataset.previous = String(!!item.previous);
+      el.dataset.playing = String(!!item.playing);
       if (item.page) el.dataset.page = item.page;
       if (item.kind === 'tree') {el.dataset.id = item.id; el.dataset.treeMenu = '';}
       el.setAttribute('aria-label',item.tip ?? `${item.t}, ${item.sub}`);
@@ -147,7 +148,7 @@ function itemHtml(item) {
   const tags = (item.tags ?? []).map(t => `<i class="tag${t === 'Back' ? ' back' : ''}">${esc(t)}</i>`).join('');
   const count = item.n ? `<i class="cnt">${esc(item.n)}</i>` : '';
   const lines = item.t ? `<span class="lb"><b>${esc(item.t)}</b>${item.sub ? `<em>${esc(item.sub)}</em>` : ''}</span>` : '';
-  return `<span class="tags">${tags}</span><span class="mk">${fav(item.url,item.st !== 'waiting',item.sz)}${count}</span>${lines}`;
+  return `<span class="tags">${tags}</span><span class="mk">${fav(item.url,item.st !== 'waiting',item.sz)}${playingMark(item.playing)}${count}</span>${lines}`;
 }
 function patchEdges(value) {
   const host = $('forest-canopy').querySelector('.canopy-edges g'), seen = new Set();

@@ -4,7 +4,7 @@ Press **Ctrl+E** or click **Canopy** at the left of the tabs to open the map. It
 
 **You are here** marks the current page. **Back** marks the last other page shown in this tree. The header's **Back to** button returns to that page and closes the map. It can alternate between a conversation and a test opened several pages deep. Returning through a folded site mark opens its most recently shown page, or its first page if none has been shown.
 
-The map distinguishes pages still open, visited pages whose view was released, and waiting pages never opened. A waiting page stays waiting after loading in the background. A page grows with its new and return showings, slowly and up to a cap. Reloads affect recency but do not make it bigger. Rest the pointer on an item for its full title, site, state and showing count.
+The map distinguishes pages still open, visited pages whose view was released, and waiting pages never opened. A page playing sound gets a violet ring and speaker, and keeps its own item at every zoom level, never folded into its site. A waiting page stays waiting after loading in the background. A page grows with its new and return showings, slowly and up to a cap. Reloads affect recency but do not make it bigger. Rest the pointer on an item for its full title, site, state and showing count.
 
 Use the wheel, **+**, **-**, or **Far**, **Middle** and **Near** to zoom. The point of the page under the pointer stays in place when a site unfolds or folds. Drag to move the map. A drag does not open a page.
 
