@@ -19,6 +19,7 @@ mod page_scale;
 mod palette;
 mod pinch;
 mod pins;
+mod sender_logos;
 mod start;
 mod tabs;
 mod tree_card;
@@ -30,6 +31,7 @@ use std::{
     borrow::Cow,
     cell::{Cell, RefCell},
     rc::{Rc, Weak},
+    sync::Mutex,
 };
 
 use anyhow::{Context, Result};
@@ -43,6 +45,7 @@ use wry::{
 
 pub use favicon::Favicons;
 use palette::{Group, PaletteItem};
+use sender_logos::SenderLogos;
 
 use crate::{
     browser::{
@@ -59,12 +62,6 @@ const INDEX: &str = include_str!("assets/index.html");
 const CSS: &str = include_str!("assets/chrome.css");
 const SCRIPT: &str = include_str!("assets/chrome.js");
 const INTER: &[u8] = include_bytes!("../../assets/fonts/InterVariable.ttf");
-
-thread_local! {
-    /// The icon cache, for the protocol handler, which wry wants `Send` but calls on the
-    /// main thread.
-    static FAVICONS: RefCell<Weak<Favicons>> = const { RefCell::new(Weak::new()) };
-}
 
 /// The query and rows last sent to the view, and their default row.
 type ShownPalette = (String, Vec<(Group, PaletteItem)>, usize);
@@ -285,6 +282,7 @@ struct Inner {
     system_dark: Cell<bool>,
     host: RefCell<Option<Weak<dyn ChromeHost>>>,
     _favicons: Rc<Favicons>,
+    _logos: Option<Rc<SenderLogos>>,
     ready: Cell<bool>,
     /// Calls made before the view loaded, replayed once it reports ready.
     queue: RefCell<Vec<String>>,
@@ -315,15 +313,40 @@ struct Inner {
 impl HtmlChrome {
     /// Adds the chrome view to `container`, above the page already in it.
     pub fn mount(container: &gtk::Fixed, favicons: Rc<Favicons>) -> Result<Self> {
+        Self::mount_inner(container, favicons, None)
+    }
+
+    pub(crate) fn mount_with_mail(
+        container: &gtk::Fixed,
+        pages: &Rc<crate::pages::Pages>,
+        origin: Option<crate::mail::Origin>,
+        data: &std::path::Path,
+    ) -> Result<Self> {
+        let logos = origin.map(|origin| SenderLogos::new(origin, pages, data));
+        Self::mount_inner(container, pages.favicons(), logos)
+    }
+
+    fn mount_inner(
+        container: &gtk::Fixed,
+        favicons: Rc<Favicons>,
+        logos: Option<Rc<SenderLogos>>,
+    ) -> Result<Self> {
         use wry::WebViewBuilderExtUnix;
 
-        FAVICONS.with(|slot| *slot.borrow_mut() = Rc::downgrade(&favicons));
+        // Wry requires a Send + Sync handler, but WebKitGTK calls it on the GTK thread.
+        let icons = Mutex::new(glib::thread_guard::ThreadGuard::new((
+            Rc::downgrade(&favicons),
+            logos.as_ref().map(Rc::downgrade),
+        )));
         let slot: Rc<RefCell<Weak<Inner>>> = Rc::default();
         let messages = slot.clone();
         let view = WebViewBuilder::new()
             .with_transparent(true)
             .with_bounds(rect(0., 0., 1., CHROME_HEIGHT))
-            .with_custom_protocol("canopy".into(), |_, request| serve(&request))
+            .with_custom_protocol("canopy".into(), move |_, request| {
+                let (favicons, logos) = icons.lock().unwrap().get_ref().clone();
+                serve(&request, &favicons, logos.as_ref())
+            })
             .with_ipc_handler(move |request: Request<String>| {
                 let weak = messages.borrow().clone();
                 let body = request.into_body();
@@ -354,6 +377,7 @@ impl HtmlChrome {
             system_dark: Cell::new(true),
             host: RefCell::new(None),
             _favicons: favicons.clone(),
+            _logos: logos.clone(),
             ready: Cell::new(false),
             queue: RefCell::new(Vec::new()),
             size: Cell::new((1., 1.)),
@@ -400,6 +424,14 @@ impl HtmlChrome {
                 inner.call("icons", &[json!(url), json!(revision)]);
             }
         });
+        if let Some(logos) = logos {
+            let weak = Rc::downgrade(&inner);
+            logos.connect_changed(move |sites| {
+                if let Some(inner) = weak.upgrade() {
+                    inner.call("icons", &[Value::Null, Value::Null, json!(sites)]);
+                }
+            });
+        }
         Ok(Self { inner })
     }
 
@@ -1461,7 +1493,11 @@ const FOREST_ASSETS: &[(&str, &str, &[u8])] = &[
     ),
 ];
 
-fn serve(request: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
+fn serve(
+    request: &Request<Vec<u8>>,
+    favicons: &Weak<Favicons>,
+    logos: Option<&Weak<SenderLogos>>,
+) -> Response<Cow<'static, [u8]>> {
     let respond = |kind: &str, body: Cow<'static, [u8]>| {
         Response::builder()
             .header(CONTENT_TYPE, kind)
@@ -1486,34 +1522,39 @@ fn serve(request: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
         "/inter.ttf" => respond("font/ttf", Cow::Borrowed(INTER)),
         "/icon" => {
             let query = request.uri().query().unwrap_or_default();
-            let mut url = None;
+            let mut target = None;
             let mut opened = false;
             let mut sender = false;
             for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
                 match &*key {
-                    "u" => url = Url::parse(&value).ok(),
+                    "u" => target = Some(value),
                     "o" => opened = value == "1",
                     "sender" => sender = value == "1",
                     _ => {}
                 }
             }
-            let png = url.and_then(|url| {
-                FAVICONS.with(|slot| {
-                    let cache = slot.borrow().upgrade()?;
-                    if sender {
-                        cache.sender_png(url.host_str()?)
-                    } else {
-                        cache.png(&url, opened)
-                    }
-                })
+            let png = target.and_then(|target| {
+                if sender {
+                    logos?.upgrade()?.png(&target)
+                } else {
+                    let url = Url::parse(&target).ok()?;
+                    favicons.upgrade()?.png(&url, opened)
+                }
             });
-            match png {
+            let mut response = match png {
                 Some(png) => respond("image/png", Cow::Owned(png.to_vec())),
                 None => Response::builder()
                     .status(404)
                     .body(Cow::Borrowed(&[][..]))
                     .expect("a static response builds"),
+            };
+            if sender {
+                use wry::http::header::{HeaderValue, CACHE_CONTROL};
+                response
+                    .headers_mut()
+                    .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
             }
+            response
         }
         _ => Response::builder()
             .status(404)

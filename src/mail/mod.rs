@@ -57,11 +57,23 @@ impl MessageId {
 
 /// Gmail's web origin, or a local fixture's origin.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Origin(Url);
+pub struct Origin {
+    web: Url,
+    kind: OriginKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OriginKind {
+    Gmail,
+    Fixture,
+}
 
 impl Origin {
     pub fn gmail() -> Self {
-        Self(Url::parse("https://mail.google.com").unwrap())
+        Self {
+            web: Url::parse("https://mail.google.com").unwrap(),
+            kind: OriginKind::Gmail,
+        }
     }
 
     pub fn configured() -> Option<Self> {
@@ -84,11 +96,31 @@ impl Origin {
             && url.path() == "/"
             && url.query().is_none()
             && url.fragment().is_none())
-        .then_some(Self(url))
+        .then_some(Self {
+            web: url,
+            kind: OriginKind::Fixture,
+        })
+    }
+
+    #[cfg(feature = "desktop")]
+    pub(crate) fn sender_logo_url(&self, host: &str) -> Url {
+        // The mail provider already knows the sender. Contacting the sender's site
+        // would let that site know when the user opens the popup.
+        let mut url = match self.kind {
+            OriginKind::Gmail => Url::parse("https://t3.gstatic.com/faviconV2").unwrap(),
+            OriginKind::Fixture => self.web.join("/faviconV2").unwrap(),
+        };
+        url.query_pairs_mut()
+            .append_pair("client", "SOCIAL")
+            .append_pair("type", "FAVICON")
+            .append_pair("fallback_opts", "TYPE,SIZE,URL")
+            .append_pair("url", &format!("http://{host}"))
+            .append_pair("size", "64");
+        url
     }
 
     fn feed(&self, number: AccountNumber) -> Url {
-        self.0
+        self.web
             .join(&format!("/mail/u/{}/feed/atom", number.get()))
             .unwrap()
     }
@@ -96,11 +128,11 @@ impl Origin {
     /// Gmail resolves an address in place of the account number to that account's current
     /// number, so the link survives renumbering (measured 2026-11-17).
     fn inbox(&self, address: &str) -> Url {
-        self.0.join(&format!("/mail/u/{address}")).unwrap()
+        self.web.join(&format!("/mail/u/{address}")).unwrap()
     }
 
     fn serves(&self, url: &Url) -> bool {
-        self.0.origin() == url.origin()
+        self.web.origin() == url.origin()
     }
 
     fn concerns(&self, page: &Url) -> bool {
@@ -441,5 +473,31 @@ mod tests {
         let origin = Origin::gmail();
         assert!(origin.concerns(&Url::parse("https://accounts.google.com/login").unwrap()));
         assert_eq!(origin.feed(AccountNumber(2)).path(), "/mail/u/2/feed/atom");
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn each_mail_origin_chooses_its_own_logo_service() {
+        for (origin, service) in [
+            (Origin::gmail(), "https://t3.gstatic.com"),
+            (
+                Origin::parse("http://localhost:42").unwrap(),
+                "http://localhost:42",
+            ),
+        ] {
+            let url = origin.sender_logo_url("example.test");
+            assert_eq!(url.origin().ascii_serialization(), service);
+            assert_eq!(url.path(), "/faviconV2");
+            assert_eq!(
+                url.query_pairs().collect::<Vec<_>>(),
+                [
+                    ("client".into(), "SOCIAL".into()),
+                    ("type".into(), "FAVICON".into()),
+                    ("fallback_opts".into(), "TYPE,SIZE,URL".into()),
+                    ("url".into(), "http://example.test".into()),
+                    ("size".into(), "64".into()),
+                ]
+            );
+        }
     }
 }

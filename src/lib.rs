@@ -11,6 +11,8 @@ pub mod session;
 pub mod suggest;
 
 #[cfg(feature = "desktop")]
+mod atomic_file;
+#[cfg(feature = "desktop")]
 pub mod chrome;
 #[cfg(feature = "desktop")]
 pub mod login_helper;

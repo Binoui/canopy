@@ -2254,17 +2254,21 @@ window.canopy = {
     animateStrip(0);
     fitTabs();
   },
-  icons(url, revision) {
+  icons(url, revision, mailSites) {
+    if (mailSites) {
+      S.mailIconRevision += 1;
+      for (const img of document.querySelectorAll('.mail-tile img')) {
+        const src = new URL(img.src);
+        if (!mailSites.includes(src.searchParams.get('u'))) continue;
+        src.searchParams.set('r', S.mailIconRevision);
+        img.src = src.href;
+      }
+      return;
+    }
     S.revisions.set(iconSite(url), revision);
     for (const img of document.querySelectorAll('.fav img')) {
       const src = new URL(img.src);
       if (iconSite(src.searchParams.get('u')) !== iconSite(url)) continue;
-      src.searchParams.set('r', revision);
-      img.src = src.href;
-    }
-    S.mailIconRevision = revision;
-    for (const img of document.querySelectorAll('.mail-tile img')) {
-      const src = new URL(img.src);
       src.searchParams.set('r', revision);
       img.src = src.href;
     }
@@ -2950,6 +2954,7 @@ window.addEventListener('focus', () => {
 });
 
 function openMail() {
+  S.mailIconRevision += 1;
   openPopover('mail', $('mail-pin'));
   intent('mail-opened');
 }

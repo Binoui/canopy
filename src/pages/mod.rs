@@ -475,6 +475,10 @@ impl Pages {
         self.context.fetch(url, cancel, done);
     }
 
+    pub(crate) async fn fetch_without_cookies(&self, url: &Url) -> Result<Fetched> {
+        self.context.fetch_without_cookies(url).await
+    }
+
     /// Runs an unmapped page with shared website data and no Canopy visit or capture.
     /// Dropping its ticket cancels it without calling back.
     pub fn run_errand(

@@ -3,7 +3,6 @@ mod canopy_layout;
 mod logins;
 mod mail_popup;
 mod save_watch;
-mod settings;
 
 use std::{
     cell::{Cell, RefCell},
@@ -84,7 +83,8 @@ impl Ui {
         scroller.add(&fixed);
         window.add(&scroller);
         let pages = Pages::mount(&fixed, browser, &data_dir.join("profile"))?;
-        let chrome = HtmlChrome::mount(&fixed, pages.favicons())?;
+        let mail_origin = crate::mail::Origin::configured();
+        let chrome = HtmlChrome::mount_with_mail(&fixed, &pages, mail_origin.clone(), data_dir)?;
         pages.set_chrome(&chrome.native());
         {
             use webkit2gtk::{WebContextExt, WebViewExt};
@@ -108,15 +108,14 @@ impl Ui {
         let ui = Rc::new_cyclic(|me: &Weak<Ui>| {
             let host: Weak<dyn ChromeHost> = me.clone();
             chrome.attach(host);
-            let mail =
-                crate::mail::MailWatch::start(pages.clone(), crate::mail::Origin::configured(), {
-                    let me = me.clone();
-                    move |signed_out| {
-                        if let Some(ui) = me.upgrade() {
-                            ui.mail_checked(&signed_out);
-                        }
+            let mail = crate::mail::MailWatch::start(pages.clone(), mail_origin, {
+                let me = me.clone();
+                move |signed_out| {
+                    if let Some(ui) = me.upgrade() {
+                        ui.mail_checked(&signed_out);
                     }
-                });
+                }
+            });
             let desktop = appearance::Desktop::watch({
                 let me = me.clone();
                 move || {
