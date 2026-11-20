@@ -140,6 +140,12 @@ pub(crate) fn frame(
         "files": files_value(&frame.files),
         "forest": surfaces.forest.then(|| forest_layout.cloned().unwrap_or_else(|| forest_frame(forest))),
         "captureEnabled": frame.capture_enabled,
+        "bookmarked": current.and_then(|id| forest.visit(id)).is_some_and(|visit| {
+            frame
+                .bookmarks
+                .iter()
+                .any(|mark| mark.url.as_str() == visit.url.as_str())
+        }),
         "mail": mail_value(&frame.mail),
         "treesHelp": frame.trees_help,
         "theme": match frame.theme {
@@ -1273,6 +1279,7 @@ mod tests {
             .unwrap();
         assert_eq!(pill["id"], ids[1].to_string());
         assert_eq!(value["theme"], "dark");
+        assert_eq!(value["bookmarked"], false);
         assert!(value["mail"]["pin"].is_null());
         assert_eq!(value["forest"]["count"], "1 tree · 3 pages");
     }

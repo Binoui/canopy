@@ -58,7 +58,7 @@ fn main() -> Result<()> {
         for mut stream in listener.incoming().flatten() {
             let mut request = [0; 4096];
             let _ = stream.read(&mut request);
-            let body = "<title>Tooltip fixture</title><a id='waiting' href='/waiting'>An article to read later</a>";
+            let body = "<title>Tooltip fixture</title><a id='waiting' href='/waiting'>An article to read later</a> <a id='child' href='/child'>Follow a branch</a>";
             let _ = write!(
                 stream,
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -73,10 +73,57 @@ fn main() -> Result<()> {
     wait("fixture loaded", || {
         text(&ui, ".tab-name").contains("Tooltip fixture")
     })?;
+    let root = chrome(&ui, "current()")?;
+    chrome(
+        &ui,
+        r#"(() => {
+        const root = current();
+        const observer = new MutationObserver(() => {
+            const pill = document.querySelector('#strip-nodes .pill');
+            if (current() !== root && pill?.style.opacity === '0') {
+                window.branchStartedHidden = true;
+                observer.disconnect();
+            }
+        });
+        observer.observe($('strip-nodes'), {subtree: true, attributes: true, childList: true});
+    })()"#,
+    )?;
+    let (x, y) = element_point(&ui, "child")?;
+    move_to(x, y)?;
+    xdo(&["click", "1"])?;
+    wait("new child fades in at the end of its connector", || {
+        chrome(&ui, "window.branchStartedHidden && document.querySelector('#strip-nodes .pill')?.style.opacity === '1'")
+            .is_ok_and(|v| v == true)
+    })?;
+    key("alt+Left")?;
+    wait("return to parent", || {
+        chrome(&ui, "current()").is_ok_and(|v| v == root)
+    })?;
     let (x, y) = element_point(&ui, "waiting")?;
     move_to(x, y)?;
     xdo(&["click", "2"])?;
     wait("waiting counter", || visible(&ui, "#waiting-pin"))?;
+    for enabled in [false, true] {
+        gtk::Settings::default()
+            .unwrap()
+            .set_property("gtk-enable-animations", enabled);
+        wait("motion preference applied", || {
+            chrome(&ui, "reducedMotion.matches").is_ok_and(|v| v == !enabled)
+        })?;
+        key("ctrl+e")?;
+        wait("forest current page", || {
+            visible(&ui, ".forest-node[aria-current=page]")
+        })?;
+        let animation = chrome(&ui, "getComputedStyle(document.querySelector('.forest-node[aria-current=page]')).animationName")?;
+        assert_eq!(animation, if enabled { "forest-locate" } else { "none" });
+        key("Escape")?;
+        wait("forest closed", || !visible(&ui, "#forest"))?;
+        move_to(1300, 900)?;
+        item_list(&ui, "#strip-nodes .after")?;
+        let animation = chrome(&ui, "getComputedStyle($('strip-list')).animationName")?;
+        assert_eq!(animation, if enabled { "list-enter" } else { "none" });
+        key("Escape")?;
+    }
     for theme in ["dark", "light"] {
         chrome(&ui, &format!("(intent('theme', {{mode:'{theme}'}}), true)"))?;
         wait("theme", || {

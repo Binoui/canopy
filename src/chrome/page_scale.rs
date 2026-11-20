@@ -14,6 +14,11 @@ impl HtmlChrome {
 }
 
 pub(super) fn intent(message: &Value) -> Option<ChromeIntent> {
-    (message["action"].as_str()? == "reset")
-        .then_some(ChromeIntent::PageScale(PageScaleAction::Reset))
+    let action = match message["action"].as_str()? {
+        "increase" => PageScaleAction::Increase,
+        "decrease" => PageScaleAction::Decrease,
+        "reset" => PageScaleAction::Reset,
+        _ => return None,
+    };
+    Some(ChromeIntent::PageScale(action))
 }

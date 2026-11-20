@@ -268,7 +268,7 @@ fn main() -> Result<()> {
         ui.chrome.offer_save(None);
         focus(&ui, "#settings-button")?;
         key("Return")?;
-        check(&ui, "document.activeElement.matches('#theme-mode button')")?;
+        check(&ui, "document.activeElement.id === 'menu-find'")?;
         check(&ui, &format!("document.querySelector('#theme-mode [data-mode={theme}]').getAttribute('aria-pressed') === 'true'"))?;
         check(
             &ui,
@@ -276,9 +276,9 @@ fn main() -> Result<()> {
         )?;
         capture(&shots, "settings", theme)?;
         key("End")?;
-        check(&ui, "document.activeElement.id === 'recent-errors'")?;
+        check(&ui, "document.activeElement.id === 'menu-quit'")?;
         key("Up")?;
-        check(&ui, "document.activeElement.id === 'show-trees-help'")?;
+        check(&ui, "document.activeElement.id === 'recent-errors'")?;
         key("Up")?;
         check(
             &ui,

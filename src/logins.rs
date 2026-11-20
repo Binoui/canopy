@@ -89,9 +89,11 @@ pub trait LoginProvider {
     }
 }
 
+pub(crate) const VAULT_NAME: &str = "Canopy vault";
+
 impl LoginProvider for Logins {
     fn name(&self) -> String {
-        "the vault on this computer".into()
+        VAULT_NAME.into()
     }
 
     fn for_page(&self, page: &Url, done: Done<Vec<SavedLogin>>) {

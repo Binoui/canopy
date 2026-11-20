@@ -138,6 +138,11 @@ pub enum ChromeIntent {
     Decline(crate::suggest::SuggestionKey),
     SetTheme(ThemeMode),
     ShowTreesHelp(bool),
+    /// Bookmark the page on screen, or remove that bookmark.
+    ToggleBookmark,
+    /// Open find on the page on screen.
+    OpenFind,
+    Quit,
     CancelContinuation,
     Restore(VisitId),
     Reload,
@@ -169,6 +174,7 @@ pub enum ChromeIntent {
     },
     /// Unlock the password manager that holds the logins.
     UnlockLogins,
+    SetPasswordProvider(PasswordChoice),
     /// Answer save offer number `offer`: keep the login, or not now.
     AnswerSave {
         offer: u64,
@@ -183,6 +189,12 @@ pub enum ChromeIntent {
         session: crate::pages::FindId,
         action: crate::pages::FindAction,
     },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PasswordChoice {
+    Vault,
+    Bitwarden,
 }
 
 /// A login waiting for the user to say whether to keep it.
@@ -533,6 +545,13 @@ impl HtmlChrome {
     /// with `None`, that it no longer has to.
     pub fn logins_locked(&self, keeper: Option<&str>) {
         self.inner.call("loginsLocked", &[json!(keeper)]);
+    }
+
+    pub(crate) fn password_settings(&self, active: Option<&str>, next: &str, bitwarden: bool) {
+        self.inner.call(
+            "passwordSettings",
+            &[json!({ "active": active, "next": next, "bitwarden": bitwarden })],
+        );
     }
 
     /// Fills the only offered login, or opens the list when there are several.
@@ -1191,11 +1210,16 @@ impl Inner {
                 _ => ThemeMode::System,
             }),
             "trees-help" => ChromeIntent::ShowTreesHelp(message["show"].as_bool()?),
+            "toggle-bookmark" => ChromeIntent::ToggleBookmark,
+            "find-open" => ChromeIntent::OpenFind,
+            "quit" => ChromeIntent::Quit,
             "capture" => ChromeIntent::SetCaptureEnabled(message["on"].as_bool()?),
             "remember" => ChromeIntent::RememberSelection,
             "open-file" => ChromeIntent::OpenFile(message["file"].as_i64()?),
             "open-file-folder" => ChromeIntent::OpenFileFolder(message["file"].as_i64()?),
             "unlock-logins" => ChromeIntent::UnlockLogins,
+            "password-vault" => ChromeIntent::SetPasswordProvider(PasswordChoice::Vault),
+            "password-bitwarden" => ChromeIntent::SetPasswordProvider(PasswordChoice::Bitwarden),
             "save-login" => ChromeIntent::AnswerSave {
                 offer: message["offer"].as_u64()?,
                 save: message["save"].as_bool()?,
