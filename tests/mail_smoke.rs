@@ -2,7 +2,7 @@ mod common;
 
 use std::{
     cell::RefCell,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     io::{BufRead, BufReader, Write},
     net::TcpListener,
     rc::Rc,
@@ -32,6 +32,7 @@ enum Mode {
     Long,
     Timeline,
     Arrival,
+    Logos,
     Gap,
     Trim,
     Empty,
@@ -54,6 +55,7 @@ struct Seen {
     mode: Mode,
     slow: bool,
     requests: Vec<(String, String, String)>,
+    logos: Vec<(String, HashMap<String, String>)>,
     stray: String,
     conversation: Conversation,
     read: HashSet<(usize, String)>,
@@ -73,10 +75,15 @@ impl Fixture {
         let seen = Arc::new(Mutex::new(Seen::default()));
         let state = seen.clone();
         let server_origin = origin.clone();
+        let icon = gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, true, 8, 16, 16)
+            .unwrap();
+        icon.fill(0x2c_75_c4_ff);
+        let png: Arc<[u8]> = icon.save_to_bufferv("png", &[])?.into();
         thread::spawn(move || {
             for stream in listener.incoming().flatten() {
                 let seen = state.clone();
                 let origin = server_origin.clone();
+                let png = png.clone();
                 thread::spawn(move || {
                     let mut stream = stream;
                     let mut reader = BufReader::new(&stream);
@@ -85,21 +92,37 @@ impl Fixture {
                         return;
                     }
                     let path = line.split_whitespace().nth(1).unwrap_or("/").to_owned();
-                    let (mut cookie, mut agent) = (String::new(), String::new());
+                    let mut headers = HashMap::new();
                     loop {
                         line.clear();
                         if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
                             break;
                         }
                         if let Some((key, value)) = line.split_once(':') {
-                            match key.to_ascii_lowercase().as_str() {
-                                "cookie" => cookie = value.trim().to_owned(),
-                                "user-agent" => agent = value.trim().to_owned(),
-                                _ => (),
-                            }
+                            headers.insert(key.to_ascii_lowercase(), value.trim().to_owned());
                         }
                     }
                     drop(reader);
+                    if path.starts_with("/faviconV2?") {
+                        let url = Url::parse(&format!("{origin}{path}")).unwrap();
+                        let site = url
+                            .query_pairs()
+                            .find(|(key, _)| key == "url")
+                            .unwrap()
+                            .1
+                            .into_owned();
+                        let status = if site == "http://with-logo.test" {
+                            "200 OK"
+                        } else {
+                            "404 Not Found"
+                        };
+                        seen.lock().unwrap().logos.push((site, headers));
+                        let _ = write!(stream, "HTTP/1.1 {status}\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", png.len());
+                        let _ = stream.write_all(&png);
+                        return;
+                    }
+                    let cookie = headers.remove("cookie").unwrap_or_default();
+                    let agent = headers.remove("user-agent").unwrap_or_default();
                     let signed_in = cookie.contains("SID=fixture");
                     seen.lock()
                         .unwrap()
@@ -427,6 +450,7 @@ fn main() -> Result<()> {
     assert!(!visible(&reopened, ".mail-kid"));
     reopened.window.close();
     println!("PASS mail sender grouping persists when the same profile is reopened.");
+    sender_logos()?;
     println!("PASS mail first failure: a profile with no successfully read account keeps the button hidden.");
     println!("PASS mail fetch: HttpOnly cookies and page User-Agent match, redirects remain unfollowed, cancellation answers once.");
     Ok(())
@@ -961,6 +985,95 @@ fn sender_groups(ui: &Ui, fixture: &Fixture) -> Result<()> {
     Ok(())
 }
 
+fn sender_logos() -> Result<()> {
+    let data = tempfile::tempdir()?;
+    let fixture = Fixture::serve()?;
+    fixture.set(Mode::Logos);
+    std::env::set_var("CANOPY_GMAIL_ORIGIN", &fixture.origin);
+
+    let start = || -> Result<Rc<Ui>> {
+        let ui = Ui::new(data.path())?;
+        ui.window.show_all();
+        ready(&ui)?;
+        ui.mail.set_gap(Duration::ZERO);
+        ui.open(&[fixture.url("/signin")])?;
+        wait("logo fixture signed in", || visible(&ui, "#mail-pin"))?;
+        Ok(ui)
+    };
+    let open_and_check = |ui: &Ui| -> Result<()> {
+        click_chrome(ui, "#mail-pin")?;
+        wait("site logo loads in the open popup", || {
+            visible(ui, ".mail-row[data-id='111'] .mail-tile.has-icon img")
+        })?;
+        assert!(visible(
+            ui,
+            ".mail-row[data-id='222'] .mail-tile:not(.has-icon) b"
+        ));
+        assert!(visible(ui, ".mail-row[data-id='555'] .mail-tile.round b"));
+        assert!(!visible(ui, ".mail-row[data-id='555'] .mail-tile img"));
+        Ok(())
+    };
+
+    let ui = start()?;
+    assert!(
+        fixture.seen.lock().unwrap().logos.is_empty(),
+        "checking mail alone requests no logos"
+    );
+    open_and_check(&ui)?;
+    wait("the second 404 is cached on disk", || {
+        data.path()
+            .join("sender-logos/no-logo.test/missing")
+            .is_file()
+    })?;
+    key("Escape")?;
+    open_and_check(&ui)?;
+    ui.window.close();
+    drop(ui);
+
+    let ui = start()?;
+    open_and_check(&ui)?;
+    pump(300);
+    ui.window.close();
+
+    let seen = fixture.seen.lock().unwrap();
+    let hits = seen
+        .logos
+        .iter()
+        .map(|(site, _)| site.as_str())
+        .collect::<Vec<_>>();
+    let mut sorted = hits.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        sorted,
+        [
+            "http://no-logo.test",
+            "http://with-logo.test",
+            "http://www.no-logo.test"
+        ]
+    );
+    assert!(
+        hits.iter().position(|site| *site == "http://no-logo.test")
+            < hits
+                .iter()
+                .position(|site| *site == "http://www.no-logo.test")
+    );
+    let page_agent = &seen.requests.iter().find(|r| r.0 == "/signin").unwrap().2;
+    assert!(!page_agent.is_empty());
+    for (site, headers) in &seen.logos {
+        assert!(
+            !headers.contains_key("cookie"),
+            "{site} received a Cookie header"
+        );
+        assert!(
+            !headers.contains_key("referer"),
+            "{site} received a Referer header"
+        );
+        assert_eq!(headers.get("user-agent"), Some(page_agent));
+    }
+    println!("PASS mail logos: trimmed sites load on demand, misses and round tiles show letters, and a second open and restart reuse the cache without sending cookies or a referrer.");
+    Ok(())
+}
+
 fn atom(
     origin: &str,
     n: usize,
@@ -970,7 +1083,7 @@ fn atom(
 ) -> String {
     let ids: &[&str] = if mode == Mode::Arrival && n == 1 {
         &["666", "555"]
-    } else if mode == Mode::Timeline && n == 1 {
+    } else if matches!(mode, Mode::Logos | Mode::Timeline) && n == 1 {
         &["555"]
     } else if n != 0 || mode == Mode::Empty {
         &[]
@@ -1006,6 +1119,9 @@ fn atom(
                 (Mode::Arrival, "666") => ("Jordan", "reviews@code.example.test"),
                 (Mode::Arrival, "555") => ("Camille", "camille@gmail.com"),
                 (Mode::Arrival, _) => ("Maya", "REVIEWS@CODE.EXAMPLE.TEST"),
+                (Mode::Logos, "111") => ("Logo sender", "news@updates.with-logo.test"),
+                (Mode::Logos, "222") => ("No logo", "hello@no-logo.test"),
+                (Mode::Logos, "555") => ("Camille", "camille@gmail.com"),
                 _ => (SENDER, ""),
             };
             format!("<entry><id>tag:gmail.google.com,2004:{id}</id><title>Tom &amp; Jerry&#39;s lunch</title><summary>{SNIPPET}</summary><author><name>{from}</name><email>{address}</email></author><issued>{issued}</issued><link href=\"{origin}/mail/u/{n}?message_id={id}\"/></entry>")

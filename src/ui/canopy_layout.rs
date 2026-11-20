@@ -26,7 +26,7 @@ impl Setting {
         self.layout.get()
     }
     pub fn save(&self, layout: CanopyLayout) -> Result<()> {
-        super::settings::write(&self.directory.join(FILE), format!("{}\n", layout.name()))
+        crate::atomic_file::write(&self.directory.join(FILE), format!("{}\n", layout.name()))
             .context("Could not save the Canopy layout")?;
         self.layout.set(layout);
         Ok(())

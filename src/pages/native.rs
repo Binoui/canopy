@@ -397,6 +397,22 @@ pub struct Fetched {
     pub body: Vec<u8>,
 }
 
+impl Fetched {
+    fn from_message(message: &soup::Message, body: Vec<u8>) -> Self {
+        use glib::translate::IntoGlib;
+        Self {
+            status: message.status().into_glib() as u16,
+            location: message
+                .response_headers()
+                .and_then(|h| h.one("Location"))
+                .map(|s| s.to_string()),
+            body,
+        }
+    }
+}
+
+const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 type FetchDone = Box<dyn FnOnce(Result<Fetched>)>;
 
 struct Fetch {
@@ -418,6 +434,58 @@ impl Fetch {
 }
 
 impl PageContext {
+    fn fetch_session(&self) -> &soup::Session {
+        use soup::prelude::SessionExt;
+        use webkit2gtk::SettingsExt;
+
+        self.session.get_or_init(|| {
+            let session = soup::Session::new();
+            let settings = self
+                .sources
+                .borrow()
+                .iter()
+                .filter_map(|s| s.view.upgrade())
+                .find_map(|v| WebViewExt::settings(&v))
+                .unwrap_or_default();
+            if let Some(agent) = settings.user_agent() {
+                session.set_user_agent(&agent);
+            }
+            session
+        })
+    }
+
+    pub(super) async fn fetch_without_cookies(&self, url: &Url) -> Result<Fetched> {
+        use gio::prelude::InputStreamExt;
+        use glib::prelude::StaticType;
+        use soup::prelude::SessionExt;
+
+        const MAX_BODY: usize = 256 * 1024;
+        let priority = glib::Priority::DEFAULT;
+        let message = soup::Message::new("GET", url.as_str())?;
+        message.set_flags(soup::MessageFlags::NO_REDIRECT);
+        message.disable_feature(soup::CookieJar::static_type());
+        message.disable_feature(soup::AuthManager::static_type());
+        let session = self.fetch_session();
+        glib::future_with_timeout(FETCH_TIMEOUT, async {
+            let stream = session.send_future(&message, priority).await?;
+            let mut body = Vec::new();
+            loop {
+                let chunk = stream
+                    .read_bytes_future((MAX_BODY + 1 - body.len()).min(8192), priority)
+                    .await?;
+                if chunk.is_empty() {
+                    return Ok(Fetched::from_message(&message, body));
+                }
+                anyhow::ensure!(
+                    body.len() + chunk.len() <= MAX_BODY,
+                    "The fetch body is too large."
+                );
+                body.extend_from_slice(&chunk);
+            }
+        })
+        .await?
+    }
+
     /// Reads live cookies for this URL, including HttpOnly cookies. The callback runs once,
     /// after this call returns, within 30 seconds including the cookie lookup.
     pub fn fetch(
@@ -427,41 +495,21 @@ impl PageContext {
         done: impl FnOnce(Result<Fetched>) + 'static,
     ) {
         use gio::prelude::CancellableExt;
-        use glib::translate::IntoGlib;
         use soup::prelude::SessionExt;
-        use webkit2gtk::{CookieManagerExt, SettingsExt, WebsiteDataManagerExt};
+        use webkit2gtk::{CookieManagerExt, WebsiteDataManagerExt};
 
-        let session = self
-            .session
-            .get_or_init(|| {
-                let session = soup::Session::new();
-                let settings = self
-                    .sources
-                    .borrow()
-                    .iter()
-                    .filter_map(|s| s.view.upgrade())
-                    .find_map(|v| WebViewExt::settings(&v))
-                    .unwrap_or_default();
-                if let Some(agent) = settings.user_agent() {
-                    session.set_user_agent(&agent);
-                }
-                session
-            })
-            .clone();
+        let session = self.fetch_session().clone();
         let fetch = Rc::new(Fetch {
             done: RefCell::new(Some(Box::new(done))),
             timer: RefCell::new(None),
             cancel: cancel.cloned().unwrap_or_default(),
         });
         let timeout = fetch.clone();
-        *fetch.timer.borrow_mut() = Some(glib::timeout_add_local_once(
-            std::time::Duration::from_secs(30),
-            move || {
-                timeout.timer.borrow_mut().take();
-                timeout.cancel.cancel();
-                timeout.finish(Err(anyhow::anyhow!("The fetch took too long to answer.")));
-            },
-        ));
+        *fetch.timer.borrow_mut() = Some(glib::timeout_add_local_once(FETCH_TIMEOUT, move || {
+            timeout.timer.borrow_mut().take();
+            timeout.cancel.cancel();
+            timeout.finish(Err(anyhow::anyhow!("The fetch took too long to answer.")));
+        }));
         let manager = self
             .native
             .website_data_manager()
@@ -509,15 +557,8 @@ impl PageContext {
                     Some(&cancel),
                     move |body| {
                         fetch.finish(
-                            body.map(|body| Fetched {
-                                status: response.status().into_glib() as u16,
-                                location: response
-                                    .response_headers()
-                                    .and_then(|h| h.one("Location"))
-                                    .map(|s| s.to_string()),
-                                body: body.to_vec(),
-                            })
-                            .map_err(Into::into),
+                            body.map(|body| Fetched::from_message(&response, body.to_vec()))
+                                .map_err(Into::into),
                         );
                     },
                 );

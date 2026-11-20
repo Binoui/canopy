@@ -124,7 +124,7 @@ impl Setting {
             "newAfter": preferences.look.new_after,
             "grouping": preferences.grouping.name(),
         });
-        super::settings::write(&self.path, value.to_string())
+        crate::atomic_file::write(&self.path, value.to_string())
     }
 
     #[cfg(feature = "gui-smoke")]

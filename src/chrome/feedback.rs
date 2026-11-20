@@ -65,7 +65,9 @@ impl ErrorView {
             .with_visible(false)
             .with_focused(false)
             .with_bounds(super::rect(0., 0., 1., 1.))
-            .with_custom_protocol("canopy".into(), |_, request| super::serve(&request))
+            .with_custom_protocol("canopy".into(), |_, request| {
+                super::serve(&request, &std::rc::Weak::new(), None)
+            })
             .with_ipc_handler(move |request| {
                 let inner = inner.clone();
                 let body = request.into_body();

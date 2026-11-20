@@ -1,6 +1,6 @@
 use std::{fs, io, path::Path};
 
-pub(super) fn write(path: &Path, bytes: impl AsRef<[u8]>) -> io::Result<()> {
+pub(crate) fn write(path: &Path, bytes: impl AsRef<[u8]>) -> io::Result<()> {
     let temporary = path.with_extension("tmp");
     let result = (|| {
         fs::write(&temporary, bytes)?;

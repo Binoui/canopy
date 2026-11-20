@@ -1940,7 +1940,7 @@ fn sender_tile(domain: Option<&str>) -> Value {
             json!({"shape": "round", "icon": null})
         }
         Some(domain) => {
-            json!({"shape": "square", "icon": format!("https://{domain}/")})
+            json!({"shape": "square", "icon": sender_site(domain)})
         }
         _ => json!({"shape": "square", "icon": null}),
     }
@@ -2156,7 +2156,7 @@ mod mail_tests {
         assert_eq!(rows[1]["tile"], json!({"shape": "square", "icon": null}));
         assert_eq!(
             rows[4]["tile"],
-            json!({"shape": "square", "icon": "https://mail.example.org/"})
+            json!({"shape": "square", "icon": "example.org"})
         );
         assert_eq!(rows[0]["sender"], "jo@gmail.com");
         assert_eq!(rows[1]["sender"], "A sender");
