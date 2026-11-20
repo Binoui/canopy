@@ -394,6 +394,44 @@ function pruneStrip() {
   }
 }
 
+const NODE_KINDS = {
+  root: { page: true, click: 'open', enter: 'list', list: 'attached' },
+  page: { page: true, click: 'open', enter: 'list', list: 'attached' },
+  parent: { page: true, click: 'open', enter: 'list', list: 'attached' },
+  pill: { page: true, click: 'open', enter: 'list', list: 'attached' },
+  run: { page: false, click: 'list', enter: 'list', list: 'attached', entrance: true },
+  earlier: { page: false, click: 'list', enter: 'list', list: 'attached', entrance: true },
+  after: { page: false, click: 'list', enter: 'list', list: 'attached', entrance: true },
+};
+
+function kindOf(node) {
+  if (!Object.hasOwn(NODE_KINDS, node.kind)) throw new Error(`Unknown strip kind: ${node.kind}`);
+  return NODE_KINDS[node.kind];
+}
+
+const nodeAt = el => strip.target?.nodes.find(n => n.id === el.dataset.id);
+
+const NODE_ACTIONS = {
+  open: node => activate(node.page),
+  list: (node, el, keyboard) => {
+    showList(node.id);
+    if (keyboard) $('strip-list').querySelector('button')?.focus();
+  },
+};
+
+function wireNode(el) {
+  el.addEventListener('mouseenter', () => {
+    if (nodeAt(el)) enterNode(el.dataset.id);
+  });
+  el.addEventListener('mouseleave', leaveNode);
+  el.addEventListener('focus', () => showList(el.dataset.id));
+  el.addEventListener('click', () => {
+    const node = nodeAt(el);
+    if (node) NODE_ACTIONS[kindOf(node).click](node, el, false);
+  });
+  el.addEventListener('keydown', walkTrunk);
+}
+
 /// One element per node, kept across frames so hovers and transitions survive a re-layout.
 function buildStrip(layout) {
   let changed = false;
@@ -417,15 +455,7 @@ function buildStrip(layout) {
       el = document.createElement('button');
       el.className = 'node';
       el.dataset.id = n.id;
-      el.addEventListener('mouseenter', () => enterNode(el.dataset.id));
-      el.addEventListener('mouseleave', leaveNode);
-      el.addEventListener('focus', () => showList(el.dataset.id));
-      el.addEventListener('click', () => {
-        const item = strip.target.nodes.find((n) => n.id === el.dataset.id);
-        if (['run', 'earlier', 'after'].includes(item.kind)) showList(item.id);
-        else activate(item.page);
-      });
-      el.addEventListener('keydown', walkTrunk);
+      wireNode(el);
       nodes.appendChild(el);
       strip.elements.set(n.id, el);
     }
@@ -433,7 +463,7 @@ function buildStrip(layout) {
     el.style.width = `${n.w}px`;
     el.style.height = `${n.s}px`;
     el.style.transformOrigin = '0 0';
-    if (!['run', 'earlier', 'after'].includes(n.kind)) el.dataset.page = n.page;
+    if (kindOf(n).page) el.dataset.page = n.page;
     else delete el.dataset.page;
     el.draggable = !!el.dataset.page;
     el.className = `node ${n.kind}` + (n.named ? ' named' : '') + (n.playing ? ' playing' : '') + markClass(v) + (el.classList.contains('waiting-pulse') ? ' waiting-pulse' : '');
@@ -608,10 +638,13 @@ function activate(id) {
 
 /// Left and Right walk the trunk while a node has the keyboard.
 function walkTrunk(event) {
+  const el = event.currentTarget;
+  const node = nodeAt(el);
+  if (!node) return;
+  const kind = kindOf(node);
   if (event.key === 'ArrowDown' || event.key === 'Enter') {
     event.preventDefault();
-    showList(event.currentTarget.dataset.id);
-    $('strip-list').querySelector('button')?.focus();
+    NODE_ACTIONS[event.key === 'Enter' ? kind.enter : 'list'](node, el, true);
     return;
   }
   if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
@@ -640,7 +673,7 @@ function showList(key, origin = inputOrigin) {
   S.list = { key, origin: previous?.key === key ? previous.origin : origin, preview: previous?.key === key ? previous.preview : null };
   if (previous?.key !== key) $('strip-list').classList.remove('list-enter');
   renderList();
-  if (previous?.key !== key && ['run', 'earlier', 'after'].includes(item.kind)) {
+  if (previous?.key !== key && kindOf(item).entrance) {
     playEntrance($('strip-list'), 'list-enter');
   }
   requestListPreview();
