@@ -409,11 +409,12 @@ impl Ui {
                 Some(current) => browser.forward(current)?,
                 None => None,
             };
+            let mail_popup = self.mail_popup.get();
             Ok(ChromeFrame {
                 shown: browser.showings()?,
                 canopy_layout: self.canopy_layout.get(),
                 mail: self.mail.mail(),
-                mail_view: MailView::new(self.mail_popup.get().new_after()),
+                mail_view: MailView::new(mail_popup.look.new_after(), mail_popup.grouping),
                 loaded: self.pages.loaded_visits(),
                 live: self.pages.hidden_visits(),
                 playing: self.pages.playing_visits(),
@@ -925,6 +926,13 @@ impl ChromeHost for Ui {
                 self.schedule_refresh();
                 return;
             }
+            ChromeIntent::SetMailGrouping(grouping) => {
+                if let Err(error) = self.mail_popup.set_grouping(grouping) {
+                    self.report_error(&error.to_string());
+                }
+                self.schedule_refresh();
+                return;
+            }
             _ => {}
         }
         if let ChromeIntent::AnswerFormReturn { question, proceed } = intent {
@@ -967,7 +975,8 @@ impl ChromeHost for Ui {
         let result = match intent {
             ChromeIntent::AnswerFormReturn { .. }
             | ChromeIntent::Mail(_)
-            | ChromeIntent::MailOpened => unreachable!(),
+            | ChromeIntent::MailOpened
+            | ChromeIntent::SetMailGrouping(_) => unreachable!(),
             ChromeIntent::CancelContinuation => Ok(()),
             ChromeIntent::OpenPath { first, second } => self.pages.open_path(first, second),
             ChromeIntent::Bookmark { url, title } => {
