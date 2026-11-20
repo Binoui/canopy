@@ -1,9 +1,6 @@
 //! Pinned strip controls and the room left for the tree.
 
-use super::{
-    graph::{Rect, TRUNK_Y},
-    waiting,
-};
+use super::graph::{Rect, TRUNK_Y};
 use crate::{forest::ForestProjection, mail::Mail};
 
 const MARGIN: f64 = 8.;
@@ -22,9 +19,6 @@ pub(crate) enum Pin {
     Playing {
         count: usize,
     },
-    Waiting {
-        count: usize,
-    },
     Mail {
         unread: u32,
     },
@@ -35,7 +29,6 @@ impl Pin {
     pub(crate) fn kind(self) -> &'static str {
         match self {
             Self::Playing { .. } => "playing",
-            Self::Waiting { .. } => "waiting",
             Self::Zoom => "zoom",
             Self::Mail { .. } => "mail",
         }
@@ -44,7 +37,6 @@ impl Pin {
         match self {
             Self::Zoom | Self::Mail { unread: 0 } => HEIGHT,
             Self::Mail { unread } => counted(unread as usize),
-            Self::Waiting { count } => counted(count),
             // The page's icon and a speaker, then a count once two or more play.
             Self::Playing { count: 1 } => PLAYING,
             Self::Playing { count } => {
@@ -67,12 +59,10 @@ pub(crate) struct Pins {
 }
 
 pub(crate) fn pins(forest: &ForestProjection, mail: &Mail, playing: usize, width: f64) -> Pins {
-    let count = waiting::pages(forest).len();
     place(
         (playing > 0)
             .then_some(Pin::Playing { count: playing })
             .into_iter()
-            .chain((count > 0).then_some(Pin::Waiting { count }))
             .chain((!mail.accounts.is_empty()).then(|| Pin::Mail {
                 unread: mail.unread(),
             }))
@@ -109,7 +99,7 @@ mod tests {
     use super::*;
     #[test]
     fn zoom_is_rightmost_and_the_controls_do_not_overlap() {
-        let pins = place([Pin::Waiting { count: 3 }, Pin::Zoom].into_iter(), 800.);
+        let pins = place([Pin::Mail { unread: 3 }, Pin::Zoom].into_iter(), 800.);
         let a = pins.placed[0].1;
         let b = pins.placed[1].1;
         assert!(a.x + a.w / 2. < b.x - b.w / 2.);
@@ -127,7 +117,7 @@ mod tests {
         );
         let mut previous = 0.;
         for count in [1, 12, 120] {
-            let pins = place(std::iter::once(Pin::Waiting { count }), 800.);
+            let pins = place(std::iter::once(Pin::Mail { unread: count }), 800.);
             let r = pins.placed[0].1;
             assert!(r.w > previous);
             assert_eq!(r.x + r.w / 2., 792.);
@@ -136,7 +126,7 @@ mod tests {
             previous = r.w;
         }
         assert_eq!(
-            place(std::iter::once(Pin::Waiting { count: 1 }), 20.).room,
+            place(std::iter::once(Pin::Mail { unread: 1 }), 20.).room,
             0.
         );
     }
@@ -147,28 +137,7 @@ mod mail_tests {
     use super::*;
 
     #[test]
-    fn mail_sits_between_waiting_and_zoom_and_grows_with_its_digits() {
-        let pins = place(
-            [
-                Pin::Waiting { count: 2 },
-                Pin::Mail { unread: 3 },
-                Pin::Zoom,
-            ]
-            .into_iter(),
-            800.,
-        );
-        assert_eq!(
-            pins.placed
-                .iter()
-                .map(|(p, _)| p.kind())
-                .collect::<Vec<_>>(),
-            ["waiting", "mail", "zoom"]
-        );
-        assert_eq!(pins.placed[2].1.x + pins.placed[2].1.w / 2., 792.);
-        assert!(pins
-            .placed
-            .windows(2)
-            .all(|p| p[0].1.x + p[0].1.w / 2. < p[1].1.x - p[1].1.w / 2.));
+    fn mail_is_an_icon_at_zero_and_grows_with_its_digits() {
         assert_eq!(Pin::Mail { unread: 0 }.width(), HEIGHT);
         assert!(Pin::Mail { unread: 12 }.width() > Pin::Mail { unread: 1 }.width());
         assert!(Pin::Mail { unread: 123 }.width() > Pin::Mail { unread: 12 }.width());
@@ -179,7 +148,7 @@ mod mail_tests {
         let pins = place(
             [
                 Pin::Playing { count: 1 },
-                Pin::Waiting { count: 2 },
+                Pin::Mail { unread: 2 },
                 Pin::Zoom,
             ]
             .into_iter(),
@@ -190,7 +159,7 @@ mod mail_tests {
                 .iter()
                 .map(|(p, _)| p.kind())
                 .collect::<Vec<_>>(),
-            ["playing", "waiting", "zoom"]
+            ["playing", "mail", "zoom"]
         );
         assert!(Pin::Playing { count: 2 }.width() > Pin::Playing { count: 1 }.width());
         assert!(Pin::Playing { count: 12 }.width() > Pin::Playing { count: 2 }.width());

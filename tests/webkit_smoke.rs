@@ -450,11 +450,14 @@ fn main() -> Result<()> {
         .context("queued target=_blank")?;
     assert_eq!(pending.parent, Some(a));
     assert_eq!(ui.snapshot()?.current, Some(a));
-    item_list(&ui, "#strip-nodes .after")?;
     click_chrome(&ui, &node(pending.id))?;
     loaded(&ui, "/d", 6)?;
     assert_eq!(ui.snapshot()?.current, Some(pending.id));
-    open_list(&ui)?;
+    ui.pages.selected_page().focus();
+    key("F6")?;
+    wait("opened waiting page has its branch action", || {
+        visible(&ui, "#strip-list [data-act=branch]")
+    })?;
     click_chrome(&ui, "#strip-list [data-act=branch]")?;
     wait("palette anchored after the commit", || {
         visible(&ui, "#palette") && chrome_focused(&ui, "#palette-input")

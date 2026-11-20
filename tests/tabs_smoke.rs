@@ -84,7 +84,7 @@ fn main() -> Result<()> {
     let ui = tab_reorder(ui, &data)?;
     settle(&ui)?;
     assert_eq!(chrome(&ui, "(() => { const el = document.getElementById('memory-dot'); const r = el.getBoundingClientRect(); return [-11, 11].every(dx => [-11, 11].every(dy => el.contains(document.elementFromPoint(r.x+r.width/2+dx, r.y+r.height/2+dy)))) })()")?, true);
-    assert_eq!(chrome(&ui, "[...document.querySelectorAll('.tab:not([hidden]):not(.icon-only) .tab-settle')].every(el => el.offsetWidth >= 24 && el.offsetHeight >= 24)")?, true);
+    assert_eq!(chrome(&ui, "[...document.querySelectorAll('#tab-row .tab:not([hidden]):not(.icon-only) .tab-settle')].every(el => el.offsetWidth >= 24 && el.offsetHeight >= 24)")?, true);
     println!("PASS saved-text dot and tab settle have 24 by 24 hit areas.");
     for width in [1240, 480] {
         ui.window.resize(width, 800);
@@ -138,7 +138,7 @@ fn main() -> Result<()> {
                 chrome(
                     &ui,
                     r#"(() => {
-                const tabs = [...document.querySelectorAll('.tab')].filter(t => !t.hidden);
+                const tabs = [...document.querySelectorAll('#tab-row .tab')].filter(t => !t.hidden);
                 const active = document.querySelector('.tab[aria-selected=true]');
                 const arrow = document.getElementById('tab-overflow');
                 const plus = document.getElementById('new-tree');
@@ -160,7 +160,7 @@ fn main() -> Result<()> {
                 assert_eq!(
                     chrome(
                         &ui,
-                        "[...document.querySelectorAll('.tab')].filter(t => !t.hidden).length"
+                        "[...document.querySelectorAll('#tab-row .tab')].filter(t => !t.hidden).length"
                     )?,
                     16
                 );
@@ -207,7 +207,7 @@ fn main() -> Result<()> {
     assert_eq!(
         chrome(
             &ui,
-            "(() => { const on = document.querySelector('.tab[aria-selected=true]').offsetWidth; return on >= 200 && on <= 280 && [...document.querySelectorAll('.tab')].every(t => t.offsetWidth <= on); })()"
+            "(() => { const on = document.querySelector('.tab[aria-selected=true]').offsetWidth; return on >= 200 && on <= 280 && [...document.querySelectorAll('#tab-row .tab')].every(t => t.offsetWidth <= on); })()"
         )?,
         true
     );
@@ -242,7 +242,7 @@ fn review_regressions(ui: &Ui) -> Result<()> {
     pump(500);
     chrome(ui, "(treeAct(S.frame.tabs[0].id,'open'), true)")?;
     pump(500);
-    chrome(ui, "(() => { window.reviewFrames = []; const present = canopy.present; canopy.present = (...args) => { present(...args); const on = document.querySelector('.tab[aria-selected=true]'); window.reviewFrames.push(!on.classList.contains('icon-only') && on.offsetWidth >= 110 && [...document.querySelectorAll('.tab:not([aria-selected=true])')].every(t => t.hidden || t.classList.contains('icon-only'))); }; return true; })()")?;
+    chrome(ui, "(() => { window.reviewFrames = []; const present = canopy.present; canopy.present = (...args) => { present(...args); const on = document.querySelector('.tab[aria-selected=true]'); window.reviewFrames.push(!on.classList.contains('icon-only') && on.offsetWidth >= 110 && [...document.querySelectorAll('#tab-row .tab:not([aria-selected=true])')].every(t => t.hidden || t.classList.contains('icon-only'))); }; return true; })()")?;
     let target = chrome(
         ui,
         "document.querySelector('.tab[aria-selected=true] + .tab.icon-only')?.dataset.id",

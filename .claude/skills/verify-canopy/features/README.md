@@ -23,7 +23,7 @@ Each feature file opens with an H1 and one paragraph of user-visible behavior, t
 - [Page size](./page-scale.md) covers keyboard and wheel scaling, the reset badge, per-site policy and restart persistence.
 - [Fork a tree](./fork.md) covers starting a tree, following links, going back, branching, and keeping the tree across a restart.
 - [Tabs and the strip](./tabs-and-strip.md) covers switching trees, page cards in the strip, keyboard walking, and the zoomed tree.
-- [Waiting pages](./waiting-pages.md) covers middle-clicked links that wait in the tree, the counter, and Ctrl+Tab.
+- [Waiting pages](./waiting-pages.md) covers middle-clicked links, waiting tabs, overflow and Ctrl+Tab.
 - [Settle and the forest](./settle-and-forest.md) covers settling a tree, undo, and finding it again in the forest view.
 - [Back and forward](./back-and-forward.md) covers parent and child navigation by keyboard and mouse, cold restores, and closing overlays.
 - [Find in page](./find-in-page.md) covers the find bar: counting matches, stepping, closing, and closing when the page changes.
