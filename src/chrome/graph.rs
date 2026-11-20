@@ -328,9 +328,15 @@ fn fit_shelf(room: &ShelfRoom<'_>) -> ShelfFit {
         std::iter::once(room.total).chain([3, 2, 1, 0].into_iter().filter(|n| *n < room.total))
     {
         if let Some(extra) = extras.get(named) {
-            let width = icons + extra;
-            if width + floors <= room.free {
-                return done(Shelf::All { named }, width);
+            if icons + extra + floors <= room.free {
+                // Past the rung, a name is added only where it costs the pill and the
+                // parent's name nothing.
+                let spare = room.free - room.parent.natural - room.pill.natural - icons;
+                let named = (named..extras.len())
+                    .rev()
+                    .find(|more| extras[*more] <= spare)
+                    .unwrap_or(named);
+                return done(Shelf::All { named }, icons + extras[named]);
             }
         }
     }
@@ -830,6 +836,15 @@ mod tests {
             room.free -= 1.;
             assert_eq!(fit_shelf(&room).shelf, below, "just below {free}");
         }
+        let wide = ShelfRoom {
+            free: 1200.,
+            names: &[90.; 12],
+            total: 12,
+            ..room
+        };
+        let fit = fit_shelf(&wide);
+        assert_eq!(fit.shelf, Shelf::All { named: 6 }, "spare room names more");
+        assert_eq!((fit.parent, fit.pill), (120., 250.));
         room.free = 746.;
         assert_eq!(fit_shelf(&room).parent, 91.);
         assert_eq!(fit_shelf(&room).pill, 250.);
