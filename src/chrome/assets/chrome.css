@@ -605,6 +605,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .mail-kid::before { content: ""; position: absolute; left: 0; top: 0; width: 11px; height: 50%; border: solid var(--line); border-width: 0 0 1.5px 1.5px; border-bottom-left-radius: 7px; }
 .mail-kid:not(:last-child)::after { content: ""; position: absolute; left: 0; top: 50%; bottom: 0; border-left: 1.5px solid var(--line); }
 .mail-kid > .mail-row { padding: 5px 8px; border-radius: 8px; }
+.mail-kid .mail-from { flex: none; max-width: 40%; }
 .mail-kid:is(:hover, :has(:focus-visible)) { background: none; }
 .mail-kid:is(:hover, :has(:focus-visible)) > .mail-row { background: var(--hover); }
 .mail-kid .mail-mark { width: 24px; height: 24px; right: 4px; }

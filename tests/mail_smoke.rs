@@ -899,7 +899,7 @@ fn sender_groups(ui: &Ui, fixture: &Fixture) -> Result<()> {
         visible(ui, ".mail-group-toggle[aria-pressed=true]")
     })?;
     assert!(!visible(ui, ".mail-day"));
-    assert_eq!(text(ui, ".mail-group-head .mail-from"), "code.example.test");
+    assert_eq!(text(ui, ".mail-group-head .mail-from"), "example.test");
     assert_eq!(text(ui, ".mail-group-head .mail-snippet"), "and 2 more");
     assert!(visible(ui, ".mail-group-head .mail-new"));
     assert!(

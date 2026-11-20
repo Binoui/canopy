@@ -1800,6 +1800,21 @@ fn sender_domain(address: Option<&str>) -> Option<String> {
     }
 }
 
+/// The part of a sender's domain that names the site: `service.tiktok.com` is `tiktok.com`.
+/// There is no public suffix list here, so a short or generic second-to-last label
+/// (`co.uk`, `gouv.fr`) counts as part of the suffix.
+fn sender_site(domain: &str) -> &str {
+    const SUFFIX_PARTS: &[&str] = &["com", "org", "net", "gov", "edu", "gouv", "asso"];
+    let labels: Vec<&str> = domain.split('.').collect();
+    let keep = match labels.len().checked_sub(2).map(|i| labels[i]) {
+        Some(part) if part.len() <= 2 || SUFFIX_PARTS.contains(&part) => 3,
+        _ => 2,
+    };
+    let skipped = labels.len().saturating_sub(keep);
+    let offset: usize = labels[..skipped].iter().map(|label| label.len() + 1).sum();
+    &domain[offset..]
+}
+
 fn sender_tile(domain: Option<&str>) -> Value {
     match domain {
         Some(domain) if PERSONAL_MAIL.contains(&domain) => {
@@ -1865,7 +1880,7 @@ fn mail_value(mail: &crate::mail::Mail, view: &MailView) -> Value {
         let sender = m.from_address.as_ref().map_or_else(|| m.from.clone(), |s| s.to_lowercase());
         let domain = sender_domain(m.from_address.as_deref());
         json!({
-            "fresh": fresh, "sender": sender, "senderSite": domain,
+            "fresh": fresh, "sender": sender, "senderSite": domain.as_deref().map(sender_site),
             "account": a.address, "id": m.id.as_str(), "from": m.from, "subject": m.subject,
             "snippet": m.snippet, "day": day, "when": when, "ago": ago, "name": name,
             "tile": sender_tile(domain.as_deref()),
@@ -2027,7 +2042,17 @@ mod mail_tests {
         assert_eq!(rows[0]["sender"], "jo@gmail.com");
         assert_eq!(rows[1]["sender"], "A sender");
         assert_eq!(rows[4]["sender"], "bot@mail.example.org");
-        assert_eq!(rows[4]["senderSite"], "mail.example.org");
+        assert_eq!(rows[4]["senderSite"], "example.org");
+        for (domain, site) in [
+            ("service.tiktok.com", "tiktok.com"),
+            ("a.b.example.org", "example.org"),
+            ("github.com", "github.com"),
+            ("mail.amazon.co.uk", "amazon.co.uk"),
+            ("impots.gouv.fr", "impots.gouv.fr"),
+            ("localhost", "localhost"),
+        ] {
+            assert_eq!(sender_site(domain), site);
+        }
         assert_eq!(frame["grouping"], "day");
         assert_eq!(
             mail_value(&mail, &MailView::new(None, Grouping::Sender))["grouping"],
