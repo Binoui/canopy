@@ -50,6 +50,7 @@ const S = {
   pageScale: null,
   loading: null,
   logins: null,
+  passwordSettings: null,
   save: null,
   locked: null,
   strip: null,
@@ -1040,7 +1041,7 @@ function closePopover(restoreFocus = true) {
   if (S.layer === 'menu') setLayer(restingLayer());
   if (restoreFocus && parent) {
     openPopover(parent.kind, parent.anchor, parent.data);
-    const row = [...$('popover').querySelectorAll('[data-id]')].find((el) => el.dataset.id === anchor.dataset.id && el.dataset.start === anchor.dataset.start);
+    const row = anchor.id ? $(anchor.id) : [...$('popover').querySelectorAll('[data-id]')].find((el) => el.dataset.id === anchor.dataset.id && el.dataset.start === anchor.dataset.start);
     row?.focus();
   } else if (restoreFocus) returnFocus('popover');
   syncLayer();
@@ -1059,8 +1060,8 @@ function renderLoginChip() {
   chip.hidden = !S.save && !names.length && !S.locked;
   chip.dataset.offer = String(!!S.save);
   if (S.save) {
-    chip.innerHTML = `${icon('key')}<span>${S.save.update ? 'Update password?' : 'Save login?'}</span>`;
-    setTooltip(chip, `${S.save.update ? 'Update the saved password' : 'Save the login'} for ${loginLabel(S.save.username)} on ${S.save.site}`);
+    chip.innerHTML = `${icon('key')}<span>${esc(saveAction(S.save))}?</span>`;
+    setTooltip(chip, `${S.save.update ? 'Update the saved password' : 'Save the login'} for ${loginLabel(S.save.username)} on ${S.save.site} in ${S.save.keeper}`);
   } else if (S.locked && !names.length) {
     chip.innerHTML = `${icon('key')}<span>${esc(`Unlock ${S.locked}`)}</span>`;
     setTooltip(chip, `Unlock ${S.locked} to fill a saved login · Ctrl+Shift+L`);
@@ -1076,6 +1077,8 @@ function renderLoginChip() {
   }
   fitTabs();
 }
+
+const saveAction = (offer) => `${offer.update ? 'Update in' : 'Save to'} ${offer.keeper}`;
 
 function answerSave(save) {
   const offer = S.save?.offer;
@@ -1278,8 +1281,7 @@ function renderPopover() {
     if (!save) { closePopover(false); return; }
     popover.innerHTML = `<div class="menu-heading">${save.update ? 'Update the saved password?' : 'Save this login?'}</div>`
       + `<div class="menu-row" id="save-login-account">${icon('key')}<span class="grow">${esc(loginLabel(save.username))}</span><span class="menu-detail">${esc(save.site)}</span></div>`
-      + `<div class="menu-hint">Kept in ${esc(save.keeper)}.</div>`
-      + `<div class="card-actions save-actions"><button class="action" data-save="1">${save.update ? 'Update' : 'Save'}</button><button class="action" data-save="0">Not now</button></div>`;
+      + `<div class="card-actions save-actions"><button class="action" data-save="1">${esc(saveAction(save))}</button><button class="action" data-save="0">Not now</button></div>`;
     popover.querySelectorAll('[data-save]').forEach((button) => button.addEventListener('click', () => answerSave(button.dataset.save === '1')));
   } else if (kind === 'logins') {
     popover.innerHTML = '<div class="menu-heading">Saved logins for this site</div>'
@@ -1373,15 +1375,68 @@ function renderPopover() {
       + (S.errors.recent.length ? S.errors.recent.map((e, i) => `<div class="menu-error" data-key="error-${i}">${esc(e.text)}<small>${esc(e.when)}</small></div>`).join('') : '<div class="menu-hint" data-key="empty">No recent errors</div>'));
     $('clear-errors').disabled = !S.errors.recent.length;
     $('clear-errors').onclick = () => post({ t: 'errors', action: 'clear' });
+  } else if (kind === 'passwords') {
+    const { active, next, bitwarden } = S.passwordSettings;
+    const choice = (key, name, detail, enabled) =>
+      `<button class="menu-row" id="password-${key}" aria-pressed="${next === name}"${enabled ? '' : ' disabled'}><span class="grow">${name}</span><span class="menu-detail">${detail}</span>${next === name ? '<span aria-hidden="true">✓</span>' : ''}</button>`;
+    popover.innerHTML = '<div class="menu-heading">Passwords</div>'
+      + `<div class="menu-hint" id="password-active">${active ? `Saving logins to ${esc(active)}` : 'Saving logins is unavailable'}</div>`
+      + '<div class="menu-heading">Use after restart</div>'
+      + choice('vault', 'Canopy vault', 'This computer', true)
+      + choice('bitwarden', 'Bitwarden', '', bitwarden)
+      + (next && !['Canopy vault', 'Bitwarden'].includes(next) ? `<div class="menu-hint">Configured helper: ${esc(next)}</div>` : '')
+      + (!bitwarden ? '<div class="menu-hint">Install the Canopy Bitwarden helper to use Bitwarden.</div>' : '')
+      + '<div class="menu-hint">Existing logins stay in their current vault.</div>';
+    $('password-vault').onclick = () => intent('password-vault');
+    $('password-bitwarden').onclick = () => intent('password-bitwarden');
   } else if (kind === 'settings') {
     const theme = S.frame?.theme ?? 'dark';
-    patchChildren(popover, '<div class="menu-heading" data-key="title">Settings</div>'
+    const page = current();
+    const onPage = !!(page && visit(page));
+    const bookmarked = !!S.frame?.bookmarked;
+    const percent = S.pageScale?.page === page ? S.pageScale.percent : 100;
+    const back = S.strip?.back;
+    const forward = S.strip?.forward;
+    const item = (id, label, shortcut, enabled = true) =>
+      `<button class="menu-row" role="menuitem" id="${id}" data-key="${id}"${enabled ? '' : ' disabled'}><span class="grow">${esc(label)}</span>${shortcut ? `<kbd>${esc(shortcut)}</kbd>` : ''}</button>`;
+    const zoomButton = (id, text, name, title) =>
+      `<button id="${id}" aria-label="${esc(name)}" title="${esc(title)}"${onPage ? '' : ' disabled'}>${text}</button>`;
+    popover.setAttribute('aria-label', 'Menu');
+    patchChildren(popover, '<div class="menu-heading" data-key="page-title">This page</div>'
+      + item('menu-find', 'Find in page', 'Ctrl F', onPage)
+      + item('menu-bookmark', bookmarked ? 'Remove bookmark' : 'Bookmark this page', 'Ctrl D', onPage)
+      + item('menu-copy', 'Copy address', '', onPage)
+      + item('menu-reload', 'Reload', 'Ctrl R', onPage)
+      + `<div class="menu-row menu-zoom" data-key="zoom"><span class="grow">Page size</span><span class="zoom-steps">${zoomButton('menu-zoom-out', '−', 'Smaller', 'Smaller · Ctrl+−')}${zoomButton('menu-zoom-reset', `${percent}%`, 'Reset page size', 'Reset page size · Ctrl+0')}${zoomButton('menu-zoom-in', '+', 'Larger', 'Larger · Ctrl++')}</span></div>`
+      + '<div class="menu-separator" data-key="trees-separator"></div><div class="menu-heading" data-key="trees-title">Trees</div>'
+      + item('menu-back', back ? `Back to ${back.label}` : 'Back', 'Alt Left', !!back)
+      + item('menu-forward', forward ? `Forward to ${forward.label}` : 'Forward', 'Alt Right', !!forward)
+      + item('menu-new-tree', 'New tree', 'Ctrl T')
+      + item('menu-forest', 'Forest', 'Ctrl E')
+      + item('show-trees-help', 'How trees work', 'F1')
+      + '<div class="menu-separator" data-key="settings-separator"></div><div class="menu-heading" data-key="title">Settings</div>'
       + '<div class="menu-heading" data-key="theme-title">Theme</div><div class="segmented" id="theme-mode" data-key="theme">'
       + ['dark', 'light', 'system'].map((mode) => `<button data-mode="${mode}" aria-pressed="${mode === theme}">${mode[0].toUpperCase()}${mode.slice(1)}</button>`).join('')
       + '</div><div class="menu-separator" data-key="capture-separator"></div>'
+      + `<button class="menu-row" role="menuitem" id="menu-passwords" data-key="passwords" aria-haspopup="dialog"${S.passwordSettings ? '' : ' disabled'}><span class="grow">Passwords</span><span class="menu-detail">${esc(S.passwordSettings?.active ?? 'Unavailable')}</span></button>`
       + captureRow()
-      + '<div class="menu-separator" data-key="help-separator"></div><button class="menu-row" id="show-trees-help" data-key="help"><span class="grow">How trees work</span><kbd>F1</kbd></button>'
-      + '<button class="menu-row" id="recent-errors" data-key="errors"><span class="grow">Recent errors</span>' + (S.errors.unread ? '<i class="error-dot"></i>' : '') + '</button>');
+      + `<button class="menu-row" role="menuitem" id="recent-errors" data-key="errors"><span class="grow">Recent errors</span>${S.errors.unread ? '<i class="error-dot"></i>' : ''}</button>`
+      + '<div class="menu-separator" data-key="quit-separator"></div>'
+      + item('menu-quit', 'Quit', 'Ctrl Q'));
+    const act = (id, fn) => { $(id).onclick = fn; };
+    act('menu-passwords', () => openPopover('passwords', $('menu-passwords')));
+    act('menu-find', () => { closePopover(false); intent('find-open'); });
+    act('menu-bookmark', () => { closePopover(false); intent('toggle-bookmark'); });
+    act('menu-copy', () => { const url = visit(page)?.url; closePopover(false); if (url) post({ t: 'copy', text: url }); });
+    act('menu-reload', () => { closePopover(false); uncover(); intent('reload'); });
+    act('menu-zoom-out', () => intent('page-scale', { action: 'decrease' }));
+    act('menu-zoom-reset', () => intent('page-scale', { action: 'reset' }));
+    act('menu-zoom-in', () => intent('page-scale', { action: 'increase' }));
+    act('menu-back', () => { closePopover(false); uncover(); intent('back'); });
+    act('menu-forward', () => { closePopover(false); uncover(); intent('forward'); });
+    act('menu-new-tree', () => { closePopover(false); window.canopy.newTree(); });
+    act('menu-forest', () => { closePopover(false); window.canopy.toggleForest(); });
+    act('menu-quit', () => { closePopover(false); intent('quit'); });
     $('recent-errors').onclick = () => { closePopover(false); openPopover('errors', $('settings-button')); post({ t: 'errors', action: 'read' }); };
     $('show-trees-help').onclick = () => { closePopover(false); intent('trees-help', { show: true }); };
     wireCaptureRow();
@@ -1983,7 +2038,7 @@ window.canopy = {
     controlsIn($('popover'))[0]?.focus();
     syncLayer();
   },
-  pageScale(value) { S.pageScale = value; renderPageScale(); },
+  pageScale(value) { S.pageScale = value; renderPageScale(); if (S.popover?.kind === 'settings') refreshPopover(); },
   viewport(height) { S.windowHeight = height; document.documentElement.style.setProperty('--window-height', `${height}px`); positionList(); syncLayer(); },
   start(value, initial = false) {
     if (!S.frame || S.surface !== 'start') return;
@@ -2103,6 +2158,10 @@ window.canopy = {
     S.logins = offer.names.length ? offer : null;
     renderLoginChip();
   },
+  passwordSettings(value) {
+    S.passwordSettings = value;
+    if (['passwords', 'settings'].includes(S.popover?.kind)) refreshPopover();
+  },
   loginsLocked(keeper) {
     S.locked = keeper;
     renderLoginChip();
@@ -2110,6 +2169,7 @@ window.canopy = {
   saveLogin(offer) {
     S.save = offer;
     renderLoginChip();
+    if (S.popover?.kind === 'save-login') refreshPopover();
   },
   fillLogin() { fillLogin(); },
   switcher(action, value) {

@@ -5,7 +5,7 @@ mod save_watch;
 
 use std::{
     cell::{Cell, RefCell},
-    path::Path,
+    path::{Path, PathBuf},
     rc::{Rc, Weak},
 };
 
@@ -44,6 +44,7 @@ pub struct Ui {
     cookie_monitor: gio::FileMonitor,
     draining_cookies: Cell<bool>,
     cookies_pending: Cell<bool>,
+    data_dir: PathBuf,
     /// Where saved logins are kept. `None` when the vault could not be opened.
     logins: RefCell<Option<Rc<dyn LoginProvider>>>,
     /// The page on screen that shows sign-in fields, and the number of the lookup made
@@ -136,6 +137,7 @@ impl Ui {
                 cookie_monitor,
                 draining_cookies: Cell::new(false),
                 cookies_pending: Cell::new(false),
+                data_dir: data_dir.to_owned(),
                 logins: RefCell::new(logins),
                 login_page: RefCell::new(None),
                 lookups: Cell::new(0),
@@ -265,6 +267,7 @@ impl Ui {
             }
         });
         ui.chrome.set_system_dark(ui.desktop.prefers_dark());
+        ui.show_password_settings();
         ui.refresh();
         if let Some(problem) = logins_problem {
             ui.report_error(&problem);
@@ -954,6 +957,18 @@ impl ChromeHost for Ui {
                 self.schedule_refresh();
                 result
             }
+            ChromeIntent::ToggleBookmark => {
+                self.toggle_bookmark();
+                Ok(())
+            }
+            ChromeIntent::OpenFind => {
+                self.pages.find(FindTarget::Selected, FindAction::Open);
+                Ok(())
+            }
+            ChromeIntent::Quit => {
+                self.window.close();
+                Ok(())
+            }
             ChromeIntent::ShowTreesHelp(show) => {
                 let result = self.pages.set_trees_help(show);
                 self.schedule_refresh();
@@ -1033,6 +1048,7 @@ impl ChromeHost for Ui {
             ChromeIntent::OpenFileFolder(id) => ui.open_file(id, true),
             ChromeIntent::FillLogin { offer, index } => ui.fill_login(offer, index),
             ChromeIntent::AnswerSave { offer, save } => ui.answer_save(offer, save),
+            ChromeIntent::SetPasswordProvider(choice) => ui.choose_password_provider(choice),
             ChromeIntent::UnlockLogins => {
                 ui.unlock_logins();
                 Ok(())

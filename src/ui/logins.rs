@@ -12,11 +12,13 @@ use url::Url;
 
 use super::Ui;
 use crate::{
-    chrome::{SaveOffer, Toast},
+    chrome::{PasswordChoice, SaveOffer, Toast},
     login_helper::{self, LoginHelper},
-    logins::{Login, LoginProvider, Logins, Reply, SavedLogin},
+    logins::{Login, LoginProvider, Logins, Reply, SavedLogin, VAULT_NAME},
     pages::LoginEvent,
 };
+
+const BITWARDEN: &str = "bitwarden";
 
 /// The provider the user chose: the helper named in the data folder, or the vault on this
 /// computer. A helper that cannot be found falls back to the vault, with the reason.
@@ -47,6 +49,28 @@ impl Ui {
     pub fn set_login_provider(&self, provider: Rc<dyn LoginProvider>) {
         *self.logins.borrow_mut() = Some(provider);
         self.offer_logins(None);
+        self.show_password_settings();
+    }
+
+    pub(super) fn show_password_settings(&self) {
+        let active = self.login_provider().map(|provider| provider.name());
+        let next = login_helper::configured(&self.data_dir)
+            .map(|name| LoginHelper::configured_display_name(&name));
+        self.chrome.password_settings(
+            active.as_deref(),
+            next.as_deref().unwrap_or(VAULT_NAME),
+            LoginHelper::find(BITWARDEN).is_ok(),
+        );
+    }
+
+    pub(super) fn choose_password_provider(&self, choice: PasswordChoice) -> Result<()> {
+        let result = match choice {
+            PasswordChoice::Vault => login_helper::configure(&self.data_dir, None),
+            PasswordChoice::Bitwarden => LoginHelper::find(BITWARDEN)
+                .and_then(|_| login_helper::configure(&self.data_dir, Some(BITWARDEN))),
+        };
+        self.show_password_settings();
+        result
     }
 
     fn login_provider(&self) -> Option<Rc<dyn LoginProvider>> {

@@ -96,7 +96,7 @@ Recovering the comment or permalink depends on the site's DOM. When that context
 
 For a post that appears later in a dynamic feed, select the passage and press **Ctrl+S**. Automatic capture does not keep saving everything that appears while you scroll.
 
-Without `--data-dir`, Canopy keeps its database and WebKit profile in `$XDG_DATA_HOME/canopy`, or in `~/.local/share/canopy`. Canopy starts dark. The gear at the end of the tab row opens **Settings**, where **Theme** offers **Dark**, **Light** or **System**, and **Remember pages** turns automatic capture on or off. The chrome follows the desktop reduced-motion preference. Right-clicking its background shows no menu. Text fields keep their copy and paste menu.
+Without `--data-dir`, Canopy keeps its database and WebKit profile in `$XDG_DATA_HOME/canopy`, or in `~/.local/share/canopy`. Canopy starts dark. The gear at the end of the tab row opens the menu. **This page** offers Find, Bookmark, Copy address, Reload and page size. **Trees** offers Back, Forward, New tree, Forest and How trees work. **Settings** offers **Theme** (**Dark**, **Light** or **System**), **Passwords**, **Remember pages**, and **Recent errors**. **Quit** closes Canopy. The chrome follows the desktop reduced-motion preference. Right-clicking its background shows no menu. Text fields keep their copy and paste menu.
 
 The theme persists in the `theme_mode` session setting and applies immediately. With **System**, it follows the desktop's dark preference.
 
@@ -126,15 +126,17 @@ The keyring may ask you to unlock it the first time a login is filled. Sign-up a
 
 ### Save a login
 
-When you sign in or sign up with a login the vault does not hold, the key button reads **Save login?** once the site has let you in. For a saved account with a different password, it reads **Update password?**. Click it and choose **Save** or **Update** to keep the login, or **Not now** to let it go. Nothing is saved until you choose. An offer you do not answer goes away after five minutes.
+When you sign in or sign up with a login the vault does not hold, the key button names the destination once the site has let you in, for example **Save to Canopy vault?** or **Save to Bitwarden?**. For a saved account with a different password, it offers to update the password in that provider. Click the button and confirm the destination to keep the login, or **Not now** to let it go. Nothing is saved until you choose. An offer you do not answer goes away after five minutes.
 
 Canopy waits for the page to stop asking for a password before it offers. If the site sends you back to its sign-in page, or nothing happens for a minute, there is no offer. A site that keeps its sign-in form on screen after letting you in gets no offer either.
 
-A login you save stays in the encrypted vault on this computer, next to the ones brought in from Chrome, and replaces the imported copy of the same account. Importing from Chrome again does not bring the old password back. There is no list of saved logins to edit or delete yet, and no way to tell Canopy never to ask for a site.
+With **Canopy vault** selected, a login you save stays in the encrypted vault on this computer, next to the ones brought in from Chrome, and replaces the imported copy of the same account. Importing from Chrome again does not bring the old password back. There is no list of saved logins to edit or delete yet, and no way to tell Canopy never to ask for a site.
 
 ### Keep logins in your password manager
 
-Canopy can read and save logins in a password manager you already use, in place of its own vault. It reaches the manager through a helper, a small program called `canopy-login-NAME`. To choose one, run:
+Open **Settings → Passwords** to see where Canopy currently saves logins. Choose **Canopy vault** for encrypted storage on this computer or **Bitwarden** if its helper is installed. Restart Canopy to use your choice. Existing logins stay with their original provider.
+
+Canopy reaches an external manager through a helper, a small program called `canopy-login-NAME`. To select a helper from the command line, run:
 
 ```sh
 canopy --login-helper NAME

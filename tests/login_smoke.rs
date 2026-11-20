@@ -128,6 +128,14 @@ fn fields(ui: &Ui) -> Result<serde_json::Value> {
 fn main() -> Result<()> {
     let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
+    let fixture_bin = directory.path().join("bin");
+    std::fs::create_dir(&fixture_bin)?;
+    std::os::unix::fs::symlink("/bin/false", fixture_bin.join("canopy-login-bitwarden"))?;
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::set_var(
+        "PATH",
+        std::env::join_paths(std::iter::once(fixture_bin).chain(std::env::split_paths(&path)))?,
+    );
     start(directory.path())?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let base = web_url(&format!("http://{}/", listener.local_addr()?))?;
@@ -149,9 +157,40 @@ fn main() -> Result<()> {
         }
     });
     let origin = WebOrigin::of(&base).unwrap();
+    // A configured helper need not be unlocked to see or change the destination.
+    let custom = directory.path().join("canopy-login-example");
+    std::os::unix::fs::symlink("/bin/false", &custom)?;
+    canopy::login_helper::configure(directory.path(), custom.to_str())?;
+    let first = Ui::new(directory.path())?;
+    first.window.show_all();
+    ready(&first)?;
+    click_chrome(&first, "#settings-button")?;
+    click_chrome(&first, "#menu-passwords")?;
+    assert_eq!(text(&first, "#password-active"), "Saving logins to Example");
+    click_chrome(&first, "#password-bitwarden")?;
+    wait("Bitwarden selected for next start", || {
+        visible(&first, "#password-bitwarden[aria-pressed='true']")
+            && canopy::login_helper::configured(directory.path()).as_deref() == Some("bitwarden")
+    })?;
+    assert_eq!(text(&first, "#password-active"), "Saving logins to Example");
+    click_chrome(&first, "#password-vault")?;
+    wait("local vault selected for next start", || {
+        visible(&first, "#password-vault[aria-pressed='true']")
+            && canopy::login_helper::configured(directory.path()).is_none()
+    })?;
+    assert_eq!(text(&first, "#password-active"), "Saving logins to Example");
+    key("Escape")?;
+    wait("Escape returns to the Passwords settings row", || {
+        chrome_focused(&first, "#menu-passwords")
+    })?;
+    first.window.close();
+    drop(first);
     let ui = Ui::new(directory.path())?;
     ui.window.show_all();
     ready(&ui)?;
+    click_chrome(&ui, "#settings-button")?;
+    assert_eq!(text(&ui, "#menu-passwords .menu-detail"), "Canopy vault");
+    click_chrome(&ui, "#settings-button")?;
     ui.set_login_provider(Rc::new(Accounts {
         origin: origin.clone(),
         accounts: store(&[("alice", "fake-alice")]),
@@ -402,7 +441,7 @@ fn saving(ui: &Ui, base: &Url, origin: WebOrigin) -> Result<()> {
     let offer = save_offer(ui);
     assert_eq!(offer["update"], false);
     assert_eq!(offer["site"], host);
-    assert_eq!(text(ui, "#login-chip"), "Save login?");
+    assert_eq!(text(ui, "#login-chip"), "Save to the test accounts?");
     assert_eq!(
         accounts.borrow().len(),
         1,
@@ -435,7 +474,7 @@ fn saving(ui: &Ui, base: &Url, origin: WebOrigin) -> Result<()> {
     wait("a changed password is offered as an update", || {
         save_offer(ui)["update"] == true
     })?;
-    assert_eq!(text(ui, "#login-chip"), "Update password?");
+    assert_eq!(text(ui, "#login-chip"), "Update in the test accounts?");
     click_chrome(ui, "#login-chip")?;
     wait("the update question", || {
         visible(ui, "#popover [data-save='0']")
@@ -451,7 +490,10 @@ fn saving(ui: &Ui, base: &Url, origin: WebOrigin) -> Result<()> {
     wait("the update question", || {
         visible(ui, "#popover [data-save='1']")
     })?;
-    assert_eq!(text(ui, "#popover [data-save='1']"), "Update");
+    assert_eq!(
+        text(ui, "#popover [data-save='1']"),
+        "Update in the test accounts"
+    );
     click_chrome(ui, "#popover [data-save='1']")?;
     wait("the password is updated", || {
         accounts
@@ -559,7 +601,7 @@ fn helper(ui: &Ui, base: &Url, directory: &std::path::Path) -> Result<()> {
     wait("the save question", || {
         visible(ui, "#popover [data-save='1']")
     })?;
-    assert_eq!(text(ui, "#popover .menu-hint"), "Kept in Test.");
+    assert_eq!(text(ui, "#popover [data-save='1']"), "Save to Test");
     click_chrome(ui, "#popover [data-save='1']")?;
     wait("the helper stores the login", || {
         std::fs::read_to_string(&kept).is_ok_and(|kept| kept.contains("fake-yan"))

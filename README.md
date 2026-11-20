@@ -173,10 +173,10 @@ Each heading links to its part of the [guide](docs/guide.md).
 
 ### [Logins, yours or your password manager's](docs/guide.md#sign-in-with-a-saved-login)
 
-- Saved logins live in an encrypted vault whose key stays in your system keyring.
+- By default, saved logins live in an encrypted Canopy vault whose key stays in your system keyring.
 - Nothing is filled until you ask, with the key button or **Ctrl+Shift+L**, and only on the exact site the login was saved for.
-- Canopy offers to save a login once the site has let you in.
-- Prefer your own manager? `canopy --login-helper bitwarden` uses Bitwarden through its `bw` tool, and a [helper for another manager](docs/guide.md#write-a-helper) is a small program that answers three questions in JSON.
+- Once a site lets you in, Canopy offers to save the login and names the vault that will receive it.
+- Open **Settings → Passwords** to see the active vault or choose Bitwarden for your next session. Bitwarden uses its `bw` tool. A [helper for another manager](docs/guide.md#write-a-helper) is a small program that answers three questions in JSON.
 
 ### [Coming from Chrome](docs/guide.md#bring-your-chrome-history)
 

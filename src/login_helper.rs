@@ -88,10 +88,10 @@ impl LoginHelper {
     /// Finds the helper called `name`: a path, or the `<name>` of a `canopy-login-<name>`
     /// program next to Canopy or on the PATH.
     pub fn find(name: &str) -> Result<Self> {
+        let command = Self::command(name);
         let program = if name.contains('/') {
-            PathBuf::from(name)
+            command
         } else {
-            let file = format!("{PREFIX}{name}");
             let beside = std::env::current_exe()
                 .ok()
                 .and_then(|exe| Some(exe.parent()?.to_owned()));
@@ -99,34 +99,49 @@ impl LoginHelper {
             beside
                 .into_iter()
                 .chain(std::env::split_paths(&path))
-                .map(|directory| directory.join(&file))
+                .map(|directory| directory.join(&command))
                 .find(|candidate| candidate.is_file())
                 .with_context(|| {
-                    format!("The login helper {name} was not found. Canopy looks for a program called {file} next to itself and on your PATH.")
+                    format!("The login helper {name} was not found. Canopy looks for a program called {} next to itself and on your PATH.", command.display())
                 })?
         };
         if !program.is_file() {
             bail!("The login helper {} was not found.", program.display());
         }
-        let stem = program
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let short = stem.strip_prefix(PREFIX).unwrap_or(&stem);
-        let mut letters = short.chars();
-        let name = letters
-            .next()
-            .map(|first| first.to_uppercase().chain(letters).collect())
-            .unwrap_or_else(|| "the login helper".to_owned());
         Ok(Self {
             inner: Rc::new(Inner {
+                name: Self::display_name(&program),
                 program,
-                name,
                 state: RefCell::new(None),
                 found: RefCell::default(),
                 next_id: Cell::new(1),
             }),
         })
+    }
+
+    pub(crate) fn configured_display_name(name: &str) -> String {
+        Self::display_name(&Self::command(name))
+    }
+
+    fn command(name: &str) -> PathBuf {
+        if name.contains('/') {
+            name.into()
+        } else {
+            format!("{PREFIX}{name}").into()
+        }
+    }
+
+    fn display_name(command: &Path) -> String {
+        let stem = command
+            .file_stem()
+            .map(|stem| stem.to_string_lossy())
+            .unwrap_or_default();
+        let short = stem.strip_prefix(PREFIX).unwrap_or(&stem);
+        let mut letters = short.chars();
+        letters
+            .next()
+            .map(|first| first.to_uppercase().chain(letters).collect())
+            .unwrap_or_else(|| "the login helper".to_owned())
     }
 }
 

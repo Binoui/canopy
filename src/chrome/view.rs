@@ -136,6 +136,12 @@ pub(crate) fn frame(
         "waiting": { "name": waiting_name, "order": WaitingOrder::CHOSEN.label(), "ids": waiting_pages.iter().map(|v| v.id.to_string()).collect::<Vec<_>>() },
         "files": files_value(&frame.files),
         "captureEnabled": frame.capture_enabled,
+        "bookmarked": current.and_then(|id| forest.visit(id)).is_some_and(|visit| {
+            frame
+                .bookmarks
+                .iter()
+                .any(|mark| mark.url.as_str() == visit.url.as_str())
+        }),
         "mail": mail_value(&frame.mail),
         "treesHelp": frame.trees_help,
         "theme": match frame.theme {
@@ -1498,6 +1504,7 @@ mod tests {
             .unwrap();
         assert_eq!(pill["id"], ids[1].to_string());
         assert_eq!(value["theme"], "dark");
+        assert_eq!(value["bookmarked"], false);
         assert!(value["mail"]["pin"].is_null());
         assert!(value.get("forest").is_none());
     }
