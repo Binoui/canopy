@@ -340,6 +340,7 @@ function animateStrip(duration, growingPage = null) {
   if (!layout) return;
   strip.target = layout;
   const changed = buildStrip(layout);
+  applyRefocus(layout);
   retireStripNodes(layout);
   const geometry = JSON.stringify([layout.nodes.map(({id, x, y, w, s}) => [id, x, y, w, s]), layout.edges, layout.pan]);
   // Keep WebKit's rendering clock warm without repainting unchanged geometry.
@@ -379,6 +380,22 @@ function tick(now) {
     }
   }
   if (strip.anim || now < strip.awakeUntil) strip.raf = requestAnimationFrame(tick);
+}
+
+function applyRefocus(layout) {
+  const transfer = S.refocus;
+  if (!transfer) return;
+  if (document.activeElement !== strip.elements.get(transfer.id)) {
+    S.refocus = null;
+    return;
+  }
+  if (layout.nodes.some(node => node.kind === 'tab' && node.id === transfer.id)) return;
+  S.refocus = null;
+  const tabs = layout.nodes.filter(node => node.kind === 'tab');
+  const next = tabs[Math.min(transfer.index, tabs.length - 1)]
+    ?? layout.nodes.find(node => node.kind === 'overflow')
+    ?? layout.nodes.find(node => node.kind === 'pill');
+  strip.elements.get(next?.id)?.focus();
 }
 
 function retireStripNodes(layout) {
@@ -425,7 +442,7 @@ const NODE_KINDS = {
   run: { page: false, click: 'list', enter: 'list', list: 'attached', entrance: true },
   earlier: { page: false, click: 'list', enter: 'list', list: 'attached', entrance: true },
   after: { page: false, click: 'list', enter: 'list', list: 'attached', entrance: true },
-  tab: { page: true, click: 'open', enter: 'open', list: 'attached' },
+  tab: { page: true, click: 'open', enter: 'open', list: 'attached', dismiss: true },
   overflow: { page: false, click: 'queue', enter: 'queue', list: 'queue' },
 };
 
@@ -461,9 +478,24 @@ function wireNode(el) {
     const node = nodeAt(el);
     if (node && kindOf(node).list === 'attached') showList(node.id);
   });
-  el.addEventListener('click', () => {
+  el.addEventListener('click', event => {
     const node = nodeAt(el);
-    if (node) NODE_ACTIONS[kindOf(node).click](node, el, false);
+    const pressed = crossPress;
+    crossPress = null;
+    if (!node) return;
+    const cross = event.target.closest('[data-act="dismiss"]');
+    if (cross) {
+      if (cross === pressed && event.detail <= 1 && kindOf(node).dismiss) intent('dismiss', { id: node.page });
+      return;
+    }
+    NODE_ACTIONS[kindOf(node).click](node, el, false);
+  });
+  el.addEventListener('auxclick', event => {
+    const node = nodeAt(el);
+    if (event.button === 1 && node && kindOf(node).dismiss) {
+      event.preventDefault();
+      intent('dismiss', { id: node.page });
+    }
   });
   el.addEventListener('keydown', walkTrunk);
 }
@@ -484,6 +516,7 @@ function buildStrip(layout) {
     const v = visit(n.page);
     if (!v) continue;
     let el = strip.elements.get(n.id);
+    if (el) el.inert = false;
     const paint = JSON.stringify([n, v, n.ids.map(filesOf), S.list?.key === n.id]);
     if (el?.dataset.paint === paint) continue;
     changed = true;
@@ -515,7 +548,7 @@ function buildStrip(layout) {
     el.setAttribute('aria-expanded', String(expanded));
     setTooltip(el, n.tip ?? null);
     const html = n.kind === 'tab'
-      ? markedFav(v, 16) + (n.named ? `<span class="item-label">${esc(n.label)}</span>` : '')
+      ? markedFav(v, 16) + (n.named ? `<span class="item-label">${esc(n.label)}</span><span class="x" data-act="dismiss" aria-hidden="true">${icon('close')}</span>` : '')
         + (v.live ? `<i class="live-dot${filesOf(n.page).length ? ' above-leaves' : ''}"></i>` : '')
       : n.kind === 'overflow' ? esc(n.label)
       : n.kind === 'after' ? `<span class="read-count">${n.read}</span>`
@@ -692,6 +725,14 @@ function walkTrunk(event) {
   if (event.key === 'ArrowDown' || event.key === 'Enter') {
     event.preventDefault();
     NODE_ACTIONS[event.key === 'Enter' ? kind.enter : kind.list === 'queue' ? 'queue' : 'list'](node, el, true);
+    return;
+  }
+  if (event.key === 'Delete' && kind.dismiss) {
+    event.preventDefault();
+    if (event.repeat) return;
+    const tabs = strip.target.nodes.filter(item => item.kind === 'tab');
+    S.refocus = { id: node.id, index: tabs.indexOf(node) };
+    intent('dismiss', { id: node.page });
     return;
   }
   if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
@@ -877,6 +918,7 @@ $('strip-list').addEventListener('click', (event) => {
   else if (action === 'stop') { intent('stop'); }
   else if (action === 'reload') { uncover(); intent('reload'); }
   else if (action === 'open') activate(item.page);
+  else if (action === 'dismiss') intent('dismiss', { id: item.page });
   else if (action === 'branch') {
     if (v.queued) intent('branch-queued', { id: item.page });
     else openPalette({ scope: item.page, text: '' });
@@ -2611,7 +2653,7 @@ document.addEventListener('dragstart', event => {
     event.preventDefault();
     return;
   }
-  settlePress = null;
+  crossPress = null;
   cancel('showList');
   cancel('hideList');
   previewSeq += 1;
@@ -2671,20 +2713,20 @@ document.addEventListener('drop', event => {
 });
 document.addEventListener('dragend', finishNativeDrag);
 
-let settlePress = null;
+let crossPress = null;
 window.addEventListener('mousedown', (event) => {
-  settlePress = null;
-  const cross = event.target.closest('#tab-row [data-settle]');
+  crossPress = null;
+  const cross = event.target.closest('#tab-row [data-settle], #strip-nodes .node.tab [data-act="dismiss"]');
   if (event.button !== 0 || !cross || event.detail > 1) return;
   const r = cross.getBoundingClientRect();
   if (getComputedStyle(cross).visibility === 'visible' && Number(getComputedStyle(cross).opacity) > 0
       && event.clientX >= r.left && event.clientX < r.right && event.clientY >= r.top && event.clientY < r.bottom) {
-    settlePress = cross;
+    crossPress = cross;
   }
 }, true);
 $('tab-row').addEventListener('click', (event) => {
-  const pressed = settlePress;
-  settlePress = null;
+  const pressed = crossPress;
+  crossPress = null;
   const close = event.target.closest('[data-settle]');
   if (close) {
     if (close === pressed && event.detail <= 1) treeAct(close.dataset.settle, 'settle');

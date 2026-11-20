@@ -320,6 +320,7 @@ pub(crate) fn strip(frame: &ChromeFrame, width: f64, waiting: &Waiting<'_>) -> V
         let mut actions = Vec::new();
         if kind == "tab" {
             actions.push(json!({ "kind": "open", "label": "Open" }));
+            actions.push(json!({ "kind": "dismiss", "label": "Dismiss" }));
         }
         if page_head {
             actions.push(json!({ "kind": if id == current { "reload" } else { "open" }, "label": if id == current { "Reload" } else { "Open" } }));

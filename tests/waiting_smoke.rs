@@ -387,6 +387,7 @@ fn main() -> Result<()> {
             < f64::from(ui.window.allocated_width())
     );
     switch_read_pages(&ui, &read)?;
+    dismiss_tabs(&ui, &base)?;
     for theme in ["dark", "light"] {
         chrome(
             &ui,
@@ -528,6 +529,72 @@ fn loaded(ui: &Ui, path: &str) -> Result<()> {
     pump(100);
     Ok(())
 }
+fn dismiss_tabs(ui: &Ui, base: &str) -> Result<()> {
+    ui.pages
+        .selected_page()
+        .navigate(web_url(&format!("{base}/dismiss"))?, NavigationTarget::Root)?;
+    loaded(ui, "/dismiss")?;
+    for i in 0..3 {
+        queue(ui, &format!("link{i}"))?;
+    }
+    settle(ui)?;
+    let ids = waiting(ui)?;
+    let tab = |id: &str| format!("#strip-nodes .node.tab[data-id='{id}']");
+    ui.pages.selected_page().focus();
+    key("F6")?;
+    key("Right")?;
+    assert!(chrome_focused(ui, &tab(&ids[0])));
+    assert!(text(ui, "#strip-list").contains("queued from"));
+    assert!(visible(ui, "#strip-list [data-act=dismiss]"));
+    key("shift+F10")?;
+    wait("keyboard page menu", || {
+        visible(ui, "#popover [data-node-action=dismiss]")
+    })?;
+    key("Escape")?;
+    key("Delete")?;
+    wait("Delete transfers focus", || {
+        chrome_focused(ui, &tab(&ids[1]))
+    })?;
+    assert!(!waiting(ui)?.contains(&ids[0]));
+    settle(ui)?;
+    hover_chrome(ui, &tab(&ids[2]))?;
+    xdo(&["click", "2"])?;
+    wait("middle click dismisses", || {
+        waiting(ui).is_ok_and(|pages| !pages.contains(&ids[2]))
+    })?;
+    settle(ui)?;
+    hover_chrome(ui, &tab(&ids[1]))?;
+    let cross = format!("{} .x", tab(&ids[1]));
+    wait("waiting tab cross is visible", || visible(ui, &cross))?;
+    let (x, y) = chrome_point(ui, &cross)?;
+    move_to(x, y)?;
+    xdo(&["mousedown", "1"])?;
+    let pressed = format!("crossPress?.closest('.node')?.dataset.id === '{}'", ids[1]);
+    wait("press lands on the visible cross", || {
+        chrome(ui, &pressed).is_ok_and(|value| value == true)
+    })?;
+    xdo(&["mouseup", "1"])?;
+    wait("cross dismisses", || {
+        waiting(ui).is_ok_and(|pages| pages.is_empty())
+    })?;
+    queue(ui, "link3")?;
+    settle(ui)?;
+    ui.pages.selected_page().focus();
+    key("F6")?;
+    key("Right")?;
+    key("Delete")?;
+    wait("last Delete returns focus to the pill", || {
+        chrome_focused(ui, "#strip-nodes .pill") && waiting(ui).is_ok_and(|pages| pages.is_empty())
+    })?;
+    let snapshot = ui.snapshot()?;
+    assert!(ids.iter().all(|id| snapshot
+        .visits
+        .iter()
+        .any(|visit| visit.id.to_string() == *id && visit.dismissed_at.is_some())));
+    println!("PASS real keys and pointer open the tab card and menu, dismiss tabs, and return focus after Delete.");
+    Ok(())
+}
+
 fn waiting(ui: &Ui) -> Result<Vec<String>> {
     Ok(serde_json::from_value(chrome(
         ui,
