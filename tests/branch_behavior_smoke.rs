@@ -67,16 +67,20 @@ struct Server {
     hits: Arc<Mutex<BTreeMap<String, usize>>>,
     gates: Arc<Mutex<HashSet<String>>>,
 }
-/// Routes like YouTube: a click waits for "data", then changes the address by script. The
-/// second link sets the new title before the address, the third only moves a `#part`.
+/// The first link changes the address before the video renders. The second sets the title first.
 const YT_PAGE: &str = "<!doctype html><title>yt home</title><body style='margin:0;height:4000px'>\
 <a id=v1 href='/yt/watch?v=1' style='display:block;width:300px;height:60px'>one</a>\
 <a id=v2 href='/yt/watch?v=2' data-first=1 style='display:block;width:300px;height:60px'>two</a>\
 <a id=v3 href='#comments' style='display:block;width:300px;height:60px'>comments</a>\
+<a id=v4 href='/yt/watch?v=4' style='display:block;width:300px;height:60px'>same title</a>\
 <a id=home href='/yt' style='display:block;width:300px;height:60px'>home</a>\
+<main>Home recommendations</main>\
 <script>document.addEventListener('click',e=>{const a=e.target.closest('a');if(!a||a.id==='v3')return;e.preventDefault();\
-const n=new URL(a.href).searchParams.get('v');const title=n?'Video '+n:'yt home';\
-setTimeout(()=>{if(a.dataset.first)document.title=title;history.pushState({},'',a.href);document.title=title},600)})</script></body>";
+const n=new URL(a.href).searchParams.get('v');const render=()=>{\
+document.querySelector('main').textContent=n?'Transcript for video '+n:'Home recommendations';\
+if(n!=='4')document.title=n?'Video '+n:'yt home'};\
+setTimeout(()=>{if(a.dataset.first)render();history.pushState({},'',a.href);\
+if(!a.dataset.first)setTimeout(render,600)},600)})</script></body>";
 fn page_body(path: &str) -> String {
     format!("<!doctype html><title>{path}</title><body style='margin:0;height:10000px'><input id='field'><a id='fork' href='/d'>fork</a><div id='fragment' style='margin-top:5000px'>end</div></body>")
 }
@@ -1039,6 +1043,7 @@ fn visit_of(f: &Fixture, id: VisitId) -> canopy::browser::Visit {
 /// title; a route nobody clicked, or a `#part`, stays on the page.
 fn click_route() -> Result<()> {
     let f = Fixture::new()?;
+    f.pages.set_capture_enabled(true)?;
     let home = f.navigate("/yt")?;
     painted(&f)?;
     click_el(&f, "v1", "1")?;
@@ -1055,6 +1060,20 @@ fn click_route() -> Result<()> {
     assert_eq!(first.parent, Some(home));
     assert_eq!(first.url.query(), Some("v=1"));
     assert_eq!(visit_of(&f, home).title, "yt home");
+    wait("first video's capture", || {
+        f.pages
+            .read(|b| b.captures(one))
+            .is_ok_and(|c| !c.is_empty())
+    })?;
+    let captures = f.pages.read(|b| b.captures(one))?;
+    let capture = &captures[0];
+    println!(
+        "RESULT click_route capture_title={:?} capture_text={:?}",
+        capture.title, capture.text
+    );
+    assert_eq!(captures.len(), 1);
+    assert_eq!(capture.title, "Video 1");
+    assert_eq!(capture.text, "Transcript for video 1");
 
     painted(&f)?;
     click_el(&f, "v2", "1")?;
@@ -1092,6 +1111,83 @@ fn click_route() -> Result<()> {
         "Back shows the first video: {}",
         uri_path(&f)
     );
+    Ok(())
+}
+
+fn route_capture_requires_title_change() -> Result<()> {
+    let f = Fixture::new()?;
+    f.pages.set_capture_enabled(true)?;
+    let home = f.navigate("/yt")?;
+    painted(&f)?;
+    click_el(&f, "v4", "1")?;
+    wait("same-title video page", || f.cursor() != Some(home))?;
+    let video = f.cursor().unwrap();
+    assert_eq!(visit_of(&f, video).url.query(), Some("v=4"));
+    pump_for(3500);
+    assert_eq!(visit_of(&f, video).title, "yt home");
+    let captures = f.pages.read(|b| b.captures(video))?;
+    println!(
+        "RESULT route_capture_requires_title_change captures={}",
+        captures.len()
+    );
+    assert!(captures.is_empty(), "unchanged title must leave no capture");
+
+    f.eval("document.title = 'Late title'; return true;")?;
+    wait("late visit title", || {
+        visit_of(&f, video).title == "Late title"
+    })?;
+    assert!(
+        !wait_for(500, || f
+            .pages
+            .read(|b| b.captures(video))
+            .is_ok_and(|c| !c.is_empty())),
+        "a title arriving after the wait must not start a capture"
+    );
+    Ok(())
+}
+
+fn route_capture_drops_replaced_visit() -> Result<()> {
+    let f = Fixture::new()?;
+    f.pages.set_capture_enabled(true)?;
+    let home = f.navigate("/yt")?;
+    painted(&f)?;
+    click_el(&f, "v4", "1")?;
+    wait("same-title video page", || f.cursor() != Some(home))?;
+    let four = f.cursor().unwrap();
+    assert_eq!(visit_of(&f, four).url.query(), Some("v=4"));
+
+    click_el(&f, "v1", "1")?;
+    wait("replacement video title", || {
+        f.cursor() != Some(four) && visit_of(&f, f.cursor().unwrap()).title == "Video 1"
+    })?;
+    let one = f.cursor().unwrap();
+    wait("replacement video's capture", || {
+        f.pages
+            .read(|b| b.captures(one))
+            .is_ok_and(|c| !c.is_empty())
+    })?;
+    let captures = f.pages.read(|b| b.captures(four))?;
+    println!(
+        "RESULT route_capture_drops_replaced_visit captures={}",
+        captures.len()
+    );
+    assert!(
+        captures.is_empty(),
+        "a superseded visit must receive no capture"
+    );
+
+    click_el(&f, "v4", "1")?;
+    wait("another same-title video page", || f.cursor() != Some(one))?;
+    let four_again = f.cursor().unwrap();
+    assert_eq!(visit_of(&f, four_again).url.query(), Some("v=4"));
+    let article = f.navigate("/article")?;
+    wait("cross-document capture", || {
+        f.pages
+            .read(|b| b.captures(article))
+            .is_ok_and(|c| !c.is_empty())
+    })?;
+    assert_eq!(f.pages.read(|b| b.captures(article))?[0].title, "/article");
+    assert!(f.pages.read(|b| b.captures(four_again))?.is_empty());
     Ok(())
 }
 
@@ -1279,6 +1375,14 @@ fn main() -> Result<()> {
             switch_regressions::owner_action_during_switch("page-timer-after-click")
         }),
         ("click_route", click_route),
+        (
+            "route_capture_requires_title_change",
+            route_capture_requires_title_change,
+        ),
+        (
+            "route_capture_drops_replaced_visit",
+            route_capture_drops_replaced_visit,
+        ),
         ("click_route_returns_home", click_route_returns_home),
         (
             "link_returns_to_ancestor_after_redirect",

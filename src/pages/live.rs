@@ -4,6 +4,7 @@ pub(super) mod loading;
 use std::{
     cell::{Cell, RefCell},
     rc::{Rc, Weak},
+    time::Duration,
 };
 use webkit2gtk::AuthenticationRequestExt;
 
@@ -40,6 +41,7 @@ const WORLD: &str = "canopy-reading-memory";
 /// How long after a click or Enter a script route still counts as the person's step. Sites
 /// like YouTube fetch the next page's data before they change the address.
 const ROUTE_AFTER_PRESS: std::time::Duration = std::time::Duration::from_secs(4);
+const ROUTE_SETTLED: Duration = Duration::from_secs(3);
 const HELPER: &str = include_str!("../capture.js");
 /// Script message the helper posts, debounced, when the page scrolls.
 const SCROLLED: &str = "canopyScrolled";
@@ -1874,6 +1876,7 @@ impl NativeState {
         self.accept_issue();
         self.start_attempt(target.clone());
         let ticket = self.loading_ticket();
+        let title_at_commit = self.native.title();
         let committed = self.commit_attempt(target.clone());
         if let Some(ticket) = ticket {
             self.finish_loading(ticket);
@@ -1885,15 +1888,7 @@ impl NativeState {
                 self.bind_document();
                 self.update_title();
                 self.emit(PageEvent::Changed);
-                if self
-                    .owner()
-                    .browser
-                    .borrow()
-                    .capture_enabled()
-                    .unwrap_or(false)
-                {
-                    self.capture(CaptureKind::Page, false);
-                }
+                self.capture_route_later(title_at_commit);
             }
             Ok(false) => {
                 self.issue
@@ -2632,6 +2627,30 @@ impl NativeState {
             self.report(result);
             self.emit(PageEvent::Changed);
         }
+    }
+
+    /// A script route changes the address before the site swaps in the new page. YouTube
+    /// still shows the previous page's text or title a second later, so the text is read
+    /// once the route has settled, and never while the old page's title is up.
+    fn capture_route_later(self: &Rc<Self>, old_title: Option<glib::GString>) {
+        let Some(ticket) = self.ticket() else { return };
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(ROUTE_SETTLED, move || {
+            let Some(state) = Pages::enter_native(&weak) else {
+                return;
+            };
+            if state.valid(&ticket)
+                && state.native.title() != old_title
+                && state
+                    .owner()
+                    .browser
+                    .borrow()
+                    .capture_enabled()
+                    .unwrap_or(false)
+            {
+                state.capture(CaptureKind::Page, false);
+            }
+        });
     }
 
     fn capture(self: &Rc<Self>, kind: CaptureKind, explicit: bool) {

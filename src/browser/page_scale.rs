@@ -120,7 +120,7 @@ mod tests {
             browser
                 .connection
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))?,
-            16
+            17
         );
         assert_eq!(
             browser.connection.query_row(
@@ -158,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn refuses_v17_and_invalid_stored_steps() -> Result<()> {
+    fn refuses_v18_and_invalid_stored_steps() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("forest.sqlite3");
         let browser = Browser::open(&path)?;
@@ -168,7 +168,7 @@ mod tests {
             [site.as_str()],
         )?;
         assert!(browser.page_scale(&site).is_err());
-        browser.connection.pragma_update(None, "user_version", 17)?;
+        browser.connection.pragma_update(None, "user_version", 18)?;
         drop(browser);
         assert!(Browser::open(&path)
             .err()
