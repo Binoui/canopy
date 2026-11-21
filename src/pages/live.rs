@@ -4,7 +4,7 @@ pub(super) mod loading;
 use std::{
     cell::{Cell, RefCell},
     rc::{Rc, Weak},
-    time::{Duration, Instant},
+    time::Duration,
 };
 use webkit2gtk::AuthenticationRequestExt;
 
@@ -41,7 +41,7 @@ const WORLD: &str = "canopy-reading-memory";
 /// How long after a click or Enter a script route still counts as the person's step. Sites
 /// like YouTube fetch the next page's data before they change the address.
 const ROUTE_AFTER_PRESS: std::time::Duration = std::time::Duration::from_secs(4);
-const ROUTE_CAPTURE_WAIT: Duration = Duration::from_secs(3);
+const ROUTE_SETTLED: Duration = Duration::from_secs(3);
 const HELPER: &str = include_str!("../capture.js");
 /// Script message the helper posts, debounced, when the page scrolls.
 const SCROLLED: &str = "canopyScrolled";
@@ -81,12 +81,6 @@ struct HistoryEntry {
     document: u64,
     post: bool,
     needs_get: bool,
-}
-
-struct PendingRouteCapture {
-    ticket: Document,
-    title_at_commit: Option<glib::GString>,
-    deadline: Instant,
 }
 
 enum Issue {
@@ -145,7 +139,6 @@ struct NativeState {
     load_generation: Cell<u64>,
     foreground_generation: Cell<u64>,
     same_document_request: RefCell<Option<Url>>,
-    route_capture: Cell<Option<PendingRouteCapture>>,
     /// When the person last clicked or pressed Enter in this page. A script route that
     /// follows soon after, as on YouTube, is a step of its own in the tree.
     pressed: Cell<Option<std::time::Instant>>,
@@ -572,7 +565,6 @@ impl LivePage {
             load_generation: Cell::new(0),
             foreground_generation: Cell::new(0),
             same_document_request: RefCell::new(None),
-            route_capture: Cell::new(None),
             pressed: Cell::new(None),
             issued: RefCell::new(None),
             history: RefCell::new(Vec::new()),
@@ -990,7 +982,6 @@ impl LivePage {
                 native.connect_title_notify(move |_| {
                     if let Some(state) = Pages::enter_native(&weak) {
                         state.update_title();
-                        state.capture_settled_route();
                     }
                 }),
             ));
@@ -1892,7 +1883,6 @@ impl NativeState {
         self.start_attempt(target.clone());
         let ticket = self.loading_ticket();
         let title_at_commit = self.native.title();
-        let deadline = Instant::now() + ROUTE_CAPTURE_WAIT;
         let committed = self.commit_attempt(target.clone());
         if let Some(ticket) = ticket {
             self.finish_loading(ticket);
@@ -1902,24 +1892,9 @@ impl NativeState {
             Ok(true) => {
                 *self.issue.borrow_mut() = Issue::Idle;
                 self.bind_document();
-                let enabled = self
-                    .owner()
-                    .browser
-                    .borrow()
-                    .capture_enabled()
-                    .unwrap_or(false);
-                self.route_capture
-                    .set(
-                        self.ticket()
-                            .filter(|_| enabled)
-                            .map(|ticket| PendingRouteCapture {
-                                ticket,
-                                title_at_commit,
-                                deadline,
-                            }),
-                    );
                 self.update_title();
                 self.emit(PageEvent::Changed);
+                self.capture_route_later(title_at_commit);
             }
             Ok(false) => {
                 self.issue
@@ -2660,22 +2635,28 @@ impl NativeState {
         }
     }
 
-    fn capture_settled_route(self: &Rc<Self>) {
-        let Some(pending) = self.route_capture.take() else {
-            return;
-        };
-        if Instant::now() >= pending.deadline || !self.valid(&pending.ticket) {
-            return;
-        }
-        if self
-            .native
-            .title()
-            .is_some_and(|title| pending.title_at_commit.as_ref() != Some(&title))
-        {
-            self.capture(CaptureKind::Page, false);
-        } else {
-            self.route_capture.set(Some(pending));
-        }
+    /// A script route changes the address before the site swaps in the new page. YouTube
+    /// still shows the previous page's text or title a second later, so the text is read
+    /// once the route has settled, and never while the old page's title is up.
+    fn capture_route_later(self: &Rc<Self>, old_title: Option<glib::GString>) {
+        let Some(ticket) = self.ticket() else { return };
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(ROUTE_SETTLED, move || {
+            let Some(state) = Pages::enter_native(&weak) else {
+                return;
+            };
+            if state.valid(&ticket)
+                && state.native.title() != old_title
+                && state
+                    .owner()
+                    .browser
+                    .borrow()
+                    .capture_enabled()
+                    .unwrap_or(false)
+            {
+                state.capture(CaptureKind::Page, false);
+            }
+        });
     }
 
     fn capture(self: &Rc<Self>, kind: CaptureKind, explicit: bool) {
