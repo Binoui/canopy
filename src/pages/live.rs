@@ -29,7 +29,7 @@ mod mouse;
 pub(super) mod page_scale;
 
 use crate::{
-    address::web_url,
+    address::{same_resource, web_url},
     browser::{
         CaptureKind, CapturePayload, Document, LoadTicket, Navigation, NavigationTarget,
         SourceContext, Visibility, VisitId,
@@ -1114,11 +1114,7 @@ impl LivePage {
                     let Some(state) = Pages::enter_native(&weak) else {
                         return;
                     };
-                    state.main_frame_post.set(
-                        state.loading_ticket().map(|ticket| {
-                            (ticket, request.http_method().as_deref() == Some("POST"))
-                        }),
-                    );
+                    state.note_main_frame_method(request);
                     let weak = Rc::downgrade(&state);
                     // The typed binding treats the absent redirect response as non-null.
                     resource.connect_local("sent-request", false, move |values| {
@@ -1131,11 +1127,7 @@ impl LivePage {
                         };
                         if let Some(state) = Pages::enter_native(&weak) {
                             if state.native.main_resource().as_ref() == Some(&resource) {
-                                state
-                                    .main_frame_post
-                                    .set(state.loading_ticket().map(|ticket| {
-                                        (ticket, request.http_method().as_deref() == Some("POST"))
-                                    }));
+                                state.note_main_frame_method(&request);
                             }
                         }
                         None
@@ -1548,22 +1540,12 @@ impl LivePage {
     }
 
     pub(super) fn open_saved(&self, capture: &crate::browser::Capture) -> Result<()> {
-        let target = capture
-            .citation_url
-            .clone()
-            .unwrap_or_else(|| capture.document_url.clone());
-        let source = SourceContext {
-            page_url: capture.document_url.clone(),
-            citation_url: capture.citation_url.clone(),
-            link_text: capture.title.clone(),
-            excerpt: capture.text.chars().take(1000).collect(),
-        };
-        let url = self.state.owner().browser.borrow_mut().follow_link(
-            &mut self.state.navigation.borrow_mut(),
-            capture.visit,
-            target,
-            source,
-        )?;
+        let url = self
+            .state
+            .owner()
+            .browser
+            .borrow()
+            .open_saved_link(&mut self.state.navigation.borrow_mut(), capture)?;
         self.state.load(url);
         Ok(())
     }
@@ -1658,6 +1640,18 @@ impl NativeState {
             }
             _ => None,
         }
+    }
+
+    fn note_main_frame_method(&self, request: &webkit2gtk::URIRequest) {
+        self.main_frame_post
+            .set(self.loading_ticket().map(|ticket| {
+                let post = request.http_method().as_deref() == Some("POST");
+                if post {
+                    // A redirect to GET changes the history method but still follows a POST.
+                    self.navigation.borrow_mut().mark_form_post(ticket);
+                }
+                (ticket, post)
+            }));
     }
 
     fn commit_attempt(&self, url: Url) -> Result<bool> {
@@ -2759,14 +2753,6 @@ fn live_entries(list: &webkit2gtk::BackForwardList) -> Vec<BackForwardListItem> 
     entries.extend(list.forward_list());
     entries.extend(list.current_item());
     entries
-}
-
-fn same_resource(left: &Url, right: &Url) -> bool {
-    let mut left = left.clone();
-    let mut right = right.clone();
-    left.set_fragment(None);
-    right.set_fragment(None);
-    left == right
 }
 
 fn string(value: &Value, name: &str, limit: usize) -> String {

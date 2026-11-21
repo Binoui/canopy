@@ -45,11 +45,19 @@ pub enum Visibility {
     Hidden,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(super) enum NewVisitOrigin {
+    Explicit,
+    Page,
+    FormPost,
+}
+
 #[derive(Clone, Debug)]
 pub(super) enum Intent {
     New {
         parent: Option<VisitId>,
         source: Option<Box<super::SourceContext>>,
+        origin: NewVisitOrigin,
     },
     Restore {
         visit: VisitId,
@@ -180,9 +188,23 @@ impl Navigation {
             Intent::New {
                 parent,
                 source: None,
+                origin: NewVisitOrigin::Page,
             },
             url,
         )
+    }
+
+    pub(crate) fn mark_form_post(&mut self, ticket: LoadTicket) {
+        if let Pending::Loading {
+            ticket: active,
+            intent: Intent::New { origin, .. },
+            ..
+        } = &mut self.pending
+        {
+            if *active == ticket {
+                *origin = NewVisitOrigin::FormPost;
+            }
+        }
     }
 
     pub fn redirected(&mut self, ticket: LoadTicket, actual: Url) {
@@ -291,6 +313,7 @@ mod tests {
             Intent::New {
                 parent: None,
                 source: None,
+                origin: NewVisitOrigin::Explicit,
             },
             url.clone(),
         );
@@ -301,6 +324,7 @@ mod tests {
             Intent::New {
                 parent: None,
                 source: None,
+                origin: NewVisitOrigin::Explicit,
             },
             url,
         );
