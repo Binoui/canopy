@@ -303,7 +303,7 @@ impl Browser {
              INSERT OR IGNORE INTO session(singleton, current_id) VALUES(1, NULL);",
         )?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version > 16 {
+        if version > 17 {
             bail!("This database comes from a newer version of Canopy.");
         }
         if version == 0 {
@@ -508,6 +508,22 @@ impl Browser {
         if version < 16 {
             let tx = connection.transaction()?;
             places::migrate_16(&tx)?;
+            tx.commit()?;
+        }
+        if version < 17 {
+            let tx = connection.transaction()?;
+            tx.execute_batch(
+                "DELETE FROM captures
+                 WHERE kind='page' AND EXISTS (
+                     SELECT 1 FROM visits AS visit
+                     JOIN visits AS parent ON parent.id=visit.parent_id
+                     WHERE visit.id=captures.visit_id
+                       AND captures.title=parent.title
+                       AND captures.title<>visit.title
+                       AND visit.url<>parent.url
+                 );
+                 PRAGMA user_version=17;",
+            )?;
             tx.commit()?;
         }
         Ok(Self { connection })
@@ -2343,7 +2359,7 @@ mod tests {
             b.connection
                 .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            16
+            17
         );
     }
 
@@ -3227,6 +3243,61 @@ mod tests {
     }
 
     #[test]
+    fn migration_17_removes_stale_route_captures_and_their_fts_rows() -> Result<()> {
+        let db = memory().browser.connection;
+        let visits = [1_u128, 2, 3, 4].map(|id| Ulid::from(id).to_string());
+        for (index, path, title) in [
+            (0, "home", "Home"),
+            (1, "video", "Video"),
+            (2, "same-title", "Home"),
+            (3, "home", "Other title"),
+        ] {
+            let parent = (index != 0).then_some(&visits[0]);
+            db.execute(
+                "INSERT INTO visits(id,parent_id,url,title,created_at,opened_at) VALUES(?1,?2,?3,?4,1,1)",
+                params![visits[index], parent, url(path).as_str(), title],
+            )?;
+        }
+        for (id, visit, path, title, kind) in [
+            (1, 1, "video", "Home", "page"),
+            (2, 1, "video", "Home", "page"),
+            (3, 1, "video", "Video", "page"),
+            (4, 2, "same-title", "Home", "page"),
+            (5, 3, "home", "Home", "page"),
+            (6, 1, "video", "Home", "selection"),
+            (7, 1, "video", "Unrelated title", "page"),
+        ] {
+            db.execute(
+                "INSERT INTO captures(id,visit_id,document_url,title,body,captured_at,kind)
+                 VALUES(?1,?2,?3,?4,'migrationneedle',?1,?5)",
+                params![id, visits[visit], url(path).as_str(), title, kind],
+            )?;
+        }
+        db.pragma_update(None, "user_version", 16)?;
+        let fts_ids = |db: &Connection| -> Result<Vec<i64>> {
+            Ok(db
+                .prepare("SELECT rowid FROM captures_fts WHERE captures_fts MATCH 'migrationneedle' ORDER BY rowid")?
+                .query_map([], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?)
+        };
+        assert_eq!(fts_ids(&db)?, [1, 2, 3, 4, 5, 6, 7]);
+
+        let browser = Browser::with_connection(db)?;
+        let db = browser.connection;
+        let stored = db
+            .prepare("SELECT id FROM captures ORDER BY id")?
+            .query_map([], |row| row.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert_eq!(stored, [3, 4, 5, 6, 7]);
+        assert_eq!(fts_ids(&db)?, stored);
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?,
+            17
+        );
+        Ok(())
+    }
+
+    #[test]
     fn captures_keep_versions_and_selection_hits_are_individual() {
         let mut browser = memory();
         let visit = follow(&mut browser, "article", NavigationTarget::Root);
@@ -3592,9 +3663,9 @@ mod tests {
     }
 
     #[test]
-    fn migration_from_v1_initializes_targets_and_preserves_theme_on_reopen() {
+    fn migration_from_v0_initializes_targets_and_preserves_theme_on_reopen() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("v1.db");
+        let path = dir.path().join("v0.db");
         let a = VisitId(Ulid::new());
         let child = VisitId(Ulid::new());
         let b = VisitId(Ulid::new());
@@ -3602,20 +3673,19 @@ mod tests {
             let connection = Connection::open(&path).unwrap();
             connection.execute_batch("CREATE TABLE visits(id TEXT PRIMARY KEY NOT NULL,
                 parent_id TEXT REFERENCES visits(id), url TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
-                created_at INTEGER NOT NULL, opened_at INTEGER);
+                created_at INTEGER NOT NULL);
                 CREATE TABLE session(singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-                current_id TEXT REFERENCES visits(id), capture_enabled INTEGER NOT NULL DEFAULT 1);
-                PRAGMA user_version=1;").unwrap();
+                current_id TEXT REFERENCES visits(id));").unwrap();
             for (id, parent) in [(a, None), (child, Some(a)), (b, None)] {
                 connection
                     .execute(
-                        "INSERT INTO visits VALUES(?1,?2,'https://example.org','',1,1)",
+                        "INSERT INTO visits VALUES(?1,?2,'https://example.org','',1)",
                         params![id.to_string(), parent.map(|id| id.to_string())],
                     )
                     .unwrap();
             }
             connection
-                .execute("INSERT INTO session VALUES(1,?1,1)", [child.to_string()])
+                .execute("INSERT INTO session VALUES(1,?1)", [child.to_string()])
                 .unwrap();
         }
         let expected = {

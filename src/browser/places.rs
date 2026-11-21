@@ -753,7 +753,7 @@ mod tests {
             b.connection
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            16
+            17
         );
         assert_eq!(
             b.connection
@@ -799,7 +799,7 @@ mod tests {
             b.connection
                 .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            16
+            17
         );
         assert!(!b
             .connection
