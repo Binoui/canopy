@@ -4,6 +4,7 @@ pub(super) mod loading;
 use std::{
     cell::{Cell, RefCell},
     rc::{Rc, Weak},
+    time::{Duration, Instant},
 };
 use webkit2gtk::AuthenticationRequestExt;
 
@@ -40,6 +41,7 @@ const WORLD: &str = "canopy-reading-memory";
 /// How long after a click or Enter a script route still counts as the person's step. Sites
 /// like YouTube fetch the next page's data before they change the address.
 const ROUTE_AFTER_PRESS: std::time::Duration = std::time::Duration::from_secs(4);
+const ROUTE_CAPTURE_WAIT: Duration = Duration::from_secs(3);
 const HELPER: &str = include_str!("../capture.js");
 /// Script message the helper posts, debounced, when the page scrolls.
 const SCROLLED: &str = "canopyScrolled";
@@ -79,6 +81,12 @@ struct HistoryEntry {
     document: u64,
     post: bool,
     needs_get: bool,
+}
+
+struct PendingRouteCapture {
+    ticket: Document,
+    title_at_commit: Option<glib::GString>,
+    deadline: Instant,
 }
 
 enum Issue {
@@ -137,6 +145,7 @@ struct NativeState {
     load_generation: Cell<u64>,
     foreground_generation: Cell<u64>,
     same_document_request: RefCell<Option<Url>>,
+    route_capture: Cell<Option<PendingRouteCapture>>,
     /// When the person last clicked or pressed Enter in this page. A script route that
     /// follows soon after, as on YouTube, is a step of its own in the tree.
     pressed: Cell<Option<std::time::Instant>>,
@@ -563,6 +572,7 @@ impl LivePage {
             load_generation: Cell::new(0),
             foreground_generation: Cell::new(0),
             same_document_request: RefCell::new(None),
+            route_capture: Cell::new(None),
             pressed: Cell::new(None),
             issued: RefCell::new(None),
             history: RefCell::new(Vec::new()),
@@ -980,6 +990,7 @@ impl LivePage {
                 native.connect_title_notify(move |_| {
                     if let Some(state) = Pages::enter_native(&weak) {
                         state.update_title();
+                        state.capture_settled_route();
                     }
                 }),
             ));
@@ -1880,6 +1891,8 @@ impl NativeState {
         self.accept_issue();
         self.start_attempt(target.clone());
         let ticket = self.loading_ticket();
+        let title_at_commit = self.native.title();
+        let deadline = Instant::now() + ROUTE_CAPTURE_WAIT;
         let committed = self.commit_attempt(target.clone());
         if let Some(ticket) = ticket {
             self.finish_loading(ticket);
@@ -1889,17 +1902,24 @@ impl NativeState {
             Ok(true) => {
                 *self.issue.borrow_mut() = Issue::Idle;
                 self.bind_document();
-                self.update_title();
-                self.emit(PageEvent::Changed);
-                if self
+                let enabled = self
                     .owner()
                     .browser
                     .borrow()
                     .capture_enabled()
-                    .unwrap_or(false)
-                {
-                    self.capture(CaptureKind::Page, false);
-                }
+                    .unwrap_or(false);
+                self.route_capture
+                    .set(
+                        self.ticket()
+                            .filter(|_| enabled)
+                            .map(|ticket| PendingRouteCapture {
+                                ticket,
+                                title_at_commit,
+                                deadline,
+                            }),
+                    );
+                self.update_title();
+                self.emit(PageEvent::Changed);
             }
             Ok(false) => {
                 self.issue
@@ -2637,6 +2657,24 @@ impl NativeState {
             );
             self.report(result);
             self.emit(PageEvent::Changed);
+        }
+    }
+
+    fn capture_settled_route(self: &Rc<Self>) {
+        let Some(pending) = self.route_capture.take() else {
+            return;
+        };
+        if Instant::now() >= pending.deadline || !self.valid(&pending.ticket) {
+            return;
+        }
+        if self
+            .native
+            .title()
+            .is_some_and(|title| pending.title_at_commit.as_ref() != Some(&title))
+        {
+            self.capture(CaptureKind::Page, false);
+        } else {
+            self.route_capture.set(Some(pending));
         }
     }
 
