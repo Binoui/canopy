@@ -3013,6 +3013,102 @@ mod tests {
     }
 
     #[test]
+    fn page_navigation_returns_to_the_nearest_matching_ancestor() {
+        let mut browser = memory();
+        let root = follow(&mut browser, "same#root", NavigationTarget::Root);
+        let nearer = follow_child(&mut browser, "same#nearer");
+        let child = follow_child(&mut browser, "child");
+        browser.started(url("redirect")).unwrap();
+        browser.redirected(url("same#landed"));
+        assert!(browser.committed(url("same#landed")).unwrap());
+
+        let snapshot = browser.snapshot().unwrap();
+        assert_eq!(snapshot.current, Some(nearer));
+        assert_eq!(snapshot.visits.len(), 3);
+        assert_eq!(browser.visit(root).unwrap().url, url("same#root"));
+        assert_eq!(browser.visit(nearer).unwrap().parent, Some(root));
+        assert_eq!(browser.visit(child).unwrap().parent, Some(nearer));
+        assert_eq!(
+            events(&browser).last(),
+            Some(&(nearer, Some(child), "return".into()))
+        );
+    }
+
+    #[test]
+    fn page_navigation_to_the_current_resource_records_a_reload() {
+        let mut browser = memory();
+        let root = follow(&mut browser, "same", NavigationTarget::Root);
+        let child = follow_child(&mut browser, "same#child");
+        browser.started(url("same")).unwrap();
+        assert!(browser.committed(url("same")).unwrap());
+
+        let snapshot = browser.snapshot().unwrap();
+        assert_eq!(snapshot.current, Some(child));
+        assert_eq!(snapshot.visits.len(), 2);
+        assert_eq!(browser.visit(child).unwrap().parent, Some(root));
+        assert_eq!(
+            events(&browser).last(),
+            Some(&(child, Some(child), "reload".into()))
+        );
+    }
+
+    #[test]
+    fn typed_ancestor_address_creates_a_child() {
+        let mut browser = memory();
+        let root = follow(&mut browser, "root", NavigationTarget::Root);
+        let child = follow_child(&mut browser, "child");
+        let typed = follow_child(&mut browser, "root");
+
+        assert_ne!(typed, root);
+        assert_eq!(browser.visit(typed).unwrap().parent, Some(child));
+        assert_eq!(
+            events(&browser).last(),
+            Some(&(typed, Some(child), "new".into()))
+        );
+    }
+
+    #[test]
+    fn hidden_navigation_to_an_ancestor_creates_a_child() {
+        let mut browser = memory();
+        let root = follow(&mut browser, "root", NavigationTarget::Root);
+        let child = follow_child(&mut browser, "child");
+        let arrivals = events(&browser);
+        let ticket = browser.navigation.native_request(url("root"));
+        browser.navigation.started(ticket);
+        assert!(browser
+            .browser
+            .commit_load(
+                &mut browser.navigation,
+                ticket,
+                url("root"),
+                Visibility::Hidden
+            )
+            .unwrap());
+
+        let document = browser.navigation.current.as_ref().unwrap();
+        assert_ne!(document.visit, root);
+        assert_eq!(browser.visit(document.visit).unwrap().parent, Some(child));
+        assert_eq!(browser.current_id().unwrap(), Some(child));
+        assert_eq!(events(&browser), arrivals);
+    }
+
+    #[test]
+    fn page_navigation_to_an_off_path_address_creates_a_child() {
+        let mut browser = memory();
+        let root = follow(&mut browser, "root", NavigationTarget::Root);
+        let sibling = follow_child(&mut browser, "same");
+        let other_tree = follow(&mut browser, "same", NavigationTarget::Root);
+        let child = follow(&mut browser, "child", NavigationTarget::ChildOf(root));
+        browser.started(url("same")).unwrap();
+        assert!(browser.committed(url("same")).unwrap());
+
+        let landed = browser.current_id().unwrap().unwrap();
+        assert_ne!(landed, sibling);
+        assert_ne!(landed, other_tree);
+        assert_eq!(browser.visit(landed).unwrap().parent, Some(child));
+    }
+
+    #[test]
     fn every_arrival_on_a_page_is_logged_with_the_page_before_it() {
         let mut browser = memory();
         let a = follow(&mut browser, "a", NavigationTarget::Root);
