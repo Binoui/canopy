@@ -21,7 +21,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use ulid::Ulid;
 use url::Url;
 
-use crate::address::web_url;
+use crate::address::{same_resource, web_url};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct VisitId(Ulid);
@@ -246,7 +246,7 @@ impl Snapshot {
 
 mod navigation;
 pub use navigation::{Document, LoadTicket, Navigation, PendingTarget, ViewId, Visibility};
-use navigation::{Intent, Pending};
+use navigation::{Intent, NewVisitOrigin, Pending};
 
 const MAX_TREE_NAME: usize = 80;
 
@@ -826,6 +826,7 @@ impl Browser {
             Intent::New {
                 parent,
                 source: None,
+                origin: NewVisitOrigin::Explicit,
             },
             url.clone(),
         );
@@ -932,17 +933,25 @@ impl Browser {
         web_url(url.as_str())?;
         let mut intent = intent.clone();
         let previous = self.current_id()?;
-        // The same address loading again over an error or sign-in page (after signing in,
-        // or once the page exists) is that page working now, not a page under it.
         if let Intent::New {
             parent: Some(parent),
+            origin,
             ..
         } = intent
         {
             if visibility == Visibility::Selected && previous == Some(parent) {
-                let shown = self.visit(parent)?;
-                if shown.url == url && crate::naming::is_error_page(&shown.title, &shown.url) {
-                    intent = Intent::Restore { visit: parent };
+                let matching = match origin {
+                    NewVisitOrigin::Page => self.nearest_matching_visit(parent, &url)?,
+                    NewVisitOrigin::Explicit => {
+                        // An address retried over an error or sign-in page can repair that visit.
+                        let shown = self.visit(parent)?;
+                        (shown.url == url && crate::naming::is_error_page(&shown.title, &shown.url))
+                            .then_some(parent)
+                    }
+                    NewVisitOrigin::FormPost => None,
+                };
+                if let Some(visit) = matching {
+                    intent = Intent::Restore { visit };
                 }
             }
         }
@@ -954,7 +963,7 @@ impl Browser {
         let transaction = self.connection.transaction()?;
         let now = now_ms()?;
         let id = match intent {
-            Intent::New { parent, source } => {
+            Intent::New { parent, source, .. } => {
                 let id = VisitId(Ulid::new());
                 transaction.execute(
                     "INSERT INTO visits(id, parent_id, url, title, created_at, opened_at) VALUES (?1, ?2, ?3, '', ?4, ?4)",
@@ -982,6 +991,23 @@ impl Browser {
         transaction.commit()?;
         navigation.publish(id, url);
         Ok(true)
+    }
+
+    fn nearest_matching_visit(&self, from: VisitId, url: &Url) -> Result<Option<VisitId>> {
+        let mut statement = self.connection.prepare_cached(
+            "WITH RECURSIVE path(id, parent_id, url, depth) AS (
+                 SELECT id, parent_id, url, 0 FROM visits WHERE id=?1
+                 UNION ALL
+                 SELECT v.id, v.parent_id, v.url, p.depth+1 FROM visits v JOIN path p ON v.id=p.parent_id
+             ) SELECT id, url FROM path ORDER BY depth",
+        )?;
+        let mut rows = statement.query([from.to_string()])?;
+        while let Some(row) = rows.next()? {
+            if same_resource(&web_url(&row.get::<_, String>(1)?)?, url) {
+                return Ok(Some(row.get::<_, String>(0)?.parse()?));
+            }
+        }
+        Ok(None)
     }
 
     pub(crate) fn update_unopened_url(
@@ -1134,12 +1160,24 @@ impl Browser {
         url: Url,
         source: SourceContext,
     ) -> Result<Url> {
+        self.request_link(navigation, parent, url, source, NewVisitOrigin::Page)
+    }
+
+    fn request_link(
+        &self,
+        navigation: &mut Navigation,
+        parent: VisitId,
+        url: Url,
+        source: SourceContext,
+        origin: NewVisitOrigin,
+    ) -> Result<Url> {
         web_url(url.as_str())?;
         let source = self.checked_source(parent, source)?;
         navigation.request(
             Intent::New {
                 parent: Some(parent),
                 source: Some(Box::new(source)),
+                origin,
             },
             url.clone(),
         );
@@ -1164,8 +1202,38 @@ impl Browser {
         let Some(citation) = source.citation_url.clone() else {
             return Ok(None);
         };
-        self.follow_link(navigation, parent, citation, source)
-            .map(Some)
+        self.request_link(
+            navigation,
+            parent,
+            citation,
+            source,
+            NewVisitOrigin::Explicit,
+        )
+        .map(Some)
+    }
+
+    pub(crate) fn open_saved_link(
+        &self,
+        navigation: &mut Navigation,
+        capture: &Capture,
+    ) -> Result<Url> {
+        let target = capture
+            .citation_url
+            .as_ref()
+            .unwrap_or(&capture.document_url);
+        let source = SourceContext {
+            page_url: capture.document_url.clone(),
+            citation_url: capture.citation_url.clone(),
+            link_text: capture.title.clone(),
+            excerpt: capture.text.chars().take(1000).collect(),
+        };
+        self.request_link(
+            navigation,
+            capture.visit,
+            target.clone(),
+            source,
+            NewVisitOrigin::Explicit,
+        )
     }
 
     fn checked_source(&self, parent: VisitId, mut source: SourceContext) -> Result<SourceContext> {
@@ -3106,6 +3174,26 @@ mod tests {
         assert_ne!(landed, sibling);
         assert_ne!(landed, other_tree);
         assert_eq!(browser.visit(landed).unwrap().parent, Some(child));
+    }
+
+    #[test]
+    fn form_post_to_an_ancestor_creates_a_child() {
+        let mut browser = memory();
+        let root = follow(&mut browser, "root", NavigationTarget::Root);
+        let child = follow_child(&mut browser, "form");
+        let ticket = browser.navigation.native_request(url("submit"));
+        browser.navigation.started(ticket);
+        browser.navigation.mark_form_post(ticket);
+        browser.redirected(url("root"));
+        assert!(browser.committed(url("root")).unwrap());
+
+        let result = browser.current_id().unwrap().unwrap();
+        assert_ne!(result, root);
+        assert_eq!(browser.visit(result).unwrap().parent, Some(child));
+        assert_eq!(
+            events(&browser).last(),
+            Some(&(result, Some(child), "new".into()))
+        );
     }
 
     #[test]

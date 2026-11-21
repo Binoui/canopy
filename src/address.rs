@@ -63,6 +63,14 @@ pub fn web_url(input: &str) -> Result<Url> {
     Ok(url)
 }
 
+pub(crate) fn same_resource(left: &Url, right: &Url) -> bool {
+    let mut left = left.clone();
+    let mut right = right.clone();
+    left.set_fragment(None);
+    right.set_fragment(None);
+    left == right
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
