@@ -73,11 +73,12 @@ const YT_PAGE: &str = "<!doctype html><title>yt home</title><body style='margin:
 <a id=v2 href='/yt/watch?v=2' data-first=1 style='display:block;width:300px;height:60px'>two</a>\
 <a id=v3 href='#comments' style='display:block;width:300px;height:60px'>comments</a>\
 <a id=v4 href='/yt/watch?v=4' style='display:block;width:300px;height:60px'>same title</a>\
+<a id=home href='/yt' style='display:block;width:300px;height:60px'>home</a>\
 <main>Home recommendations</main>\
 <script>document.addEventListener('click',e=>{const a=e.target.closest('a');if(!a||a.id==='v3')return;e.preventDefault();\
 const n=new URL(a.href).searchParams.get('v');const render=()=>{\
-document.querySelector('main').textContent='Transcript for video '+n;\
-if(n!=='4')document.title='Video '+n};\
+document.querySelector('main').textContent=n?'Transcript for video '+n:'Home recommendations';\
+if(n!=='4')document.title=n?'Video '+n:'yt home'};\
 setTimeout(()=>{if(a.dataset.first)render();history.pushState({},'',a.href);\
 if(!a.dataset.first)setTimeout(render,600)},600)})</script></body>";
 fn page_body(path: &str) -> String {
@@ -1190,6 +1191,96 @@ fn route_capture_drops_replaced_visit() -> Result<()> {
     Ok(())
 }
 
+fn click_route_returns_home() -> Result<()> {
+    let f = Fixture::new()?;
+    let home = f.navigate("/yt")?;
+    painted(&f)?;
+    click_el(&f, "v1", "1")?;
+    wait("video one", || {
+        f.cursor() != Some(home) && visit_of(&f, f.cursor().unwrap()).title == "Video 1"
+    })?;
+    let one = f.cursor().unwrap();
+    let before = f.events().len();
+    click_el(&f, "home", "1")?;
+    wait("home route committed", || f.events().len() > before)?;
+    assert_eq!(f.cursor(), Some(home), "home reuses the root visit");
+    assert_eq!(f.visits_with_path("/yt"), 1);
+    assert_eq!(f.events().last(), Some(&("/yt".into(), "return".into())));
+
+    f.pages.go(Go::Parent)?;
+    assert!(f.arrives(one, 4000), "Back from home reaches video one");
+    assert_eq!(uri_path(&f), "/yt/watch?v=1");
+    f.pages.selected_page().native.go_forward();
+    assert!(f.arrives(home, 4000), "WebKit Forward reaches home");
+    assert_eq!(uri_path(&f), "/yt");
+    f.eval("document.title='Home after Forward'; scrollTo(0,550); return true;")?;
+    wait("home title and scroll saved", || {
+        visit_of(&f, home).title == "Home after Forward"
+            && f.pages.read(|b| b.scroll(home)).ok().flatten() == Some(550)
+    })?;
+    assert_eq!(visit_of(&f, one).title, "Video 1");
+
+    f.eval("scrollTo(0,0); return true;")?;
+    painted(&f)?;
+    click_el(&f, "v2", "1")?;
+    wait("video two", || {
+        f.cursor() != Some(home) && visit_of(&f, f.cursor().unwrap()).title == "Video 2"
+    })?;
+    assert_eq!(visit_of(&f, f.cursor().unwrap()).parent, Some(home));
+    assert_eq!(visit_of(&f, one).parent, Some(home));
+    assert_eq!(f.visits_with_path("/yt"), 1);
+    Ok(())
+}
+
+fn link_returns_to_ancestor_after_redirect() -> Result<()> {
+    let f = Fixture::new()?;
+    let root = f.navigate("/return-root")?;
+    let child = f.navigate("/return-child")?;
+    f.eval("document.body.insertAdjacentHTML('afterbegin', '<a id=back href=/redirect/return-root>return</a>'); return true;")?;
+    painted(&f)?;
+    click_el(&f, "back", "1")?;
+    wait("redirect committed", || {
+        f.cursor_path() == "/return-root" && !f.pages.selected_page().native.is_loading()
+    })?;
+    assert_eq!(
+        f.cursor(),
+        Some(root),
+        "the final URL reuses the root visit"
+    );
+    assert_eq!(f.visits_with_path("/return-root"), 1);
+    assert_eq!(
+        f.events().last(),
+        Some(&("/return-root".into(), "return".into()))
+    );
+    f.pages.go(Go::Parent)?;
+    assert!(f.arrives(child, 4000), "Back reaches the link's page");
+    f.pages.selected_page().native.go_forward();
+    assert!(f.arrives(root, 4000), "WebKit Forward reaches the root");
+    Ok(())
+}
+
+fn post_to_ancestor_creates_child() -> Result<()> {
+    for (form, post, landing) in [
+        ("/form", "POST /post-result", "/post-result"),
+        ("/prg-form", "POST /prg", "/prg-result"),
+    ] {
+        let f = Fixture::new()?;
+        let root = f.navigate(landing)?;
+        let form = f.navigate(form)?;
+        painted(&f)?;
+        click_el(&f, "go", "1")?;
+        wait("POST result committed", || {
+            f.cursor_path() == landing && !f.pages.selected_page().native.is_loading()
+        })?;
+        assert_eq!(f.server.hits(post), 1);
+        let result = f.cursor().unwrap();
+        assert_ne!(result, root);
+        assert_eq!(visit_of(&f, result).parent, Some(form));
+        assert_eq!(f.events().last(), Some(&(landing.into(), "new".into())));
+    }
+    Ok(())
+}
+
 fn no_content_ends_load() -> Result<()> {
     for path in ["/nocontent", "/nc205"] {
         let f = Fixture::new()?;
@@ -1291,6 +1382,15 @@ fn main() -> Result<()> {
         (
             "route_capture_drops_replaced_visit",
             route_capture_drops_replaced_visit,
+        ),
+        ("click_route_returns_home", click_route_returns_home),
+        (
+            "link_returns_to_ancestor_after_redirect",
+            link_returns_to_ancestor_after_redirect,
+        ),
+        (
+            "post_to_ancestor_creates_child",
+            post_to_ancestor_creates_child,
         ),
         ("no_content", no_content_ends_load),
         ("hash_pulse", || bg_nav("/hash-pulse", 900)),
