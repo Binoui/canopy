@@ -1757,7 +1757,8 @@ function queryPalette() {
   if (!S.palette) return;
   paletteSeq += 1;
   S.palette.seq = paletteSeq;
-  post({ t: 'palette', q: $('palette-input').value, seq: paletteSeq });
+  S.palette.asked = $('palette-input').value;
+  post({ t: 'palette', q: S.palette.asked, seq: paletteSeq });
 }
 
 function renderPalette() {
@@ -1780,8 +1781,9 @@ function renderPalette() {
 function runPalette(index, newTree) {
   const palette = S.palette;
   if (!palette) return;
-  const row = palette.rows[index];
   const query = $('palette-input').value;
+  // Rows still listed for earlier words say nothing about these: Rust runs their own default.
+  const row = palette.shown === query ? palette.rows[index] : null;
   post({ t: 'run', q: query, item: row ? row.item : null, newTree, scope: palette.scope });
   const reading = row?.kind !== 'saved';
   closePalette(reading);
@@ -2529,6 +2531,7 @@ window.canopy = {
   },
   paletteResults(seq, { rows, first }) {
     if (!S.palette || seq !== S.palette.seq) return;
+    S.palette.shown = S.palette.asked;
     S.palette.rows = rows;
     S.palette.selected = Math.max(rows.findIndex((row) => row.item === first), 0);
     renderPalette();

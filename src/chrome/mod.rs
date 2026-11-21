@@ -1210,8 +1210,12 @@ impl Inner {
             }
             "palette" => {
                 let query = message["q"].as_str().unwrap_or_default();
+                let scope = self
+                    .palette_scope
+                    .get()
+                    .map_or(PaletteScope::NewTree, PaletteScope::From);
                 let rows = {
-                    let (items, first) = self.palette_items(query);
+                    let (items, first) = self.palette_items(query, scope);
                     let frame = self.frame.borrow();
                     let forest = &frame
                         .as_ref()
@@ -1232,16 +1236,16 @@ impl Inner {
                     .as_ref()
                     .filter(|(q, _, _)| q == query)
                     .cloned();
+                let scope = match message["scope"].as_str() {
+                    Some(id) => PaletteScope::From(id.parse()?),
+                    None => PaletteScope::NewTree,
+                };
                 let (items, index) = match shown {
                     Some((_, items, first)) => (
                         items,
                         message["item"].as_u64().map_or(first, |i| i as usize),
                     ),
-                    None => self.palette_items(query),
-                };
-                let scope = match message["scope"].as_str() {
-                    Some(id) => PaletteScope::From(id.parse()?),
-                    None => PaletteScope::NewTree,
+                    None => self.palette_items(query, scope),
                 };
                 let new_tree = message["newTree"].as_bool().unwrap_or(false);
                 let intent = {
@@ -1278,7 +1282,11 @@ impl Inner {
     }
 
     /// Fresh results for `query`, independent of the rows the view was last sent.
-    fn palette_items(&self, query: &str) -> (Vec<(Group, PaletteItem)>, usize) {
+    fn palette_items(
+        &self,
+        query: &str,
+        scope: PaletteScope,
+    ) -> (Vec<(Group, PaletteItem)>, usize) {
         let (hits, imported) = match self.host() {
             Some(host) if !query.trim().is_empty() => (
                 host.search(query).unwrap_or_default(),
@@ -1290,8 +1298,14 @@ impl Inner {
         let Some(frame) = frame.as_ref() else {
             return (Vec::new(), 0);
         };
-        let (mut items, first) =
-            palette::results(query, hits, imported, &frame.bookmarks, &frame.forest);
+        let (mut items, first) = palette::results(
+            query,
+            hits,
+            imported,
+            &frame.bookmarks,
+            &frame.forest,
+            scope,
+        );
         if query.trim().is_empty() {
             let suggestions = if self.start.get() {
                 self.suggested.borrow().clone()
