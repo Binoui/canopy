@@ -41,6 +41,23 @@ fn start_page(ui: &Ui) -> Result<()> {
     wait("start page focused", || chrome_focused(ui, "#start-search"))
 }
 
+/// The kind of row Enter runs, once the palette lists the rows for `words` with a page or
+/// saved text of the forest among them.
+fn enter_kind(ui: &Ui, words: &str) -> Result<String> {
+    let listed = format!(
+        "(rows => rows.some(r => r.kind === 'search' && r.title.includes({words:?})) && rows.some(r => r.kind === 'page' || r.kind === 'saved'))(canopy.state().rows)"
+    );
+    wait("rows for the typed words", || {
+        chrome(ui, &listed).is_ok_and(|listed| listed == true)
+    })?;
+    let kind = chrome(
+        ui,
+        "document.querySelector('.palette-item[aria-selected=true]').dataset.kind",
+    )?;
+    key("Escape")?;
+    Ok(kind.as_str().unwrap_or_default().to_owned())
+}
+
 fn shots(ui: &Ui, name: &str) -> Result<()> {
     if std::env::var_os("CANOPY_NEWTREE_SHOTS").is_some() {
         move_to(5, 590)?;
@@ -246,6 +263,18 @@ fn main() -> Result<()> {
         visible(&ui, &format!(".tab[data-id='{root}']"))
     })?;
     assert!(!visible(&ui, "#strip-placeholder"));
+    pump(200);
+    settle(&ui)?;
+    key("ctrl+k")?;
+    wait("palette from a page", || {
+        chrome_focused(&ui, "#palette-input")
+    })?;
+    type_text("Recipes")?;
+    assert_ne!(
+        enter_kind(&ui, "Recipes")?,
+        "search",
+        "from a page Enter opens the first result"
+    );
     start_page(&ui)?;
     type_text("q")?;
     wait("typed palette", || visible(&ui, "#palette"))?;
@@ -260,6 +289,16 @@ fn main() -> Result<()> {
     );
     assert!(text(&ui, "#palette-context").contains("New tree"));
     key("Escape")?;
+    for (words, kind) in [("Recipes", "search"), ("Weekend", "bookmark")] {
+        wait("start page focused again", || {
+            chrome_focused(&ui, "#start-search")
+        })?;
+        type_text(&words[..1])?;
+        wait("typed palette", || visible(&ui, "#palette"))?;
+        type_text(&words[1..])?;
+        assert_eq!(enter_kind(&ui, words)?, kind);
+    }
+    println!("PASS in a new tree Enter searches the web for words and opens the bookmark they name; from a page it opens the first result.");
     click_chrome(&ui, "#start-search")?;
     wait("search click palette", || visible(&ui, "#palette"))?;
     key("Escape")?;

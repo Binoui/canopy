@@ -196,7 +196,7 @@ Each heading links to its part of the [guide](docs/guide.md).
 | --- | --- |
 | **Ctrl+K**, **Ctrl+L** | Open the palette: search your forest and saved text, or go to an address. **Ctrl+L** selects the current address. |
 | **Enter**, **Alt+Enter** | In the palette, open the result here, or in a new tree. |
-| **Ctrl+T** | Open the New tree tab. Start typing to search in a new tree. |
+| **Ctrl+T** | Open the New tree tab. Type words and press **Enter** to search the web in a new tree. Type a bookmark's name to open that bookmark. |
 | **Ctrl+1** to **Ctrl+9** | Switch to a tree. |
 | **Ctrl+Shift+PageUp**, **Ctrl+Shift+PageDown** | Move the active tab left or right. |
 | **Ctrl+W** | Close the New tree tab, or settle the current tree while reading. |

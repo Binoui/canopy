@@ -1823,8 +1823,9 @@ mod tests {
             .unwrap()
             .iter()
             .any(|r| r["detail"] == "2 pages put away"));
+        let scope = super::super::PaletteScope::NewTree;
         assert!(
-            super::super::palette::results("", vec![], vec![], &[], &frame.forest)
+            super::super::palette::results("", vec![], vec![], &[], &frame.forest, scope)
                 .0
                 .is_empty()
         );
