@@ -1,4 +1,5 @@
 pub use native::Fetched;
+mod blocking;
 mod errand;
 pub use errand::{ErrandEnd, ErrandTicket};
 mod live;

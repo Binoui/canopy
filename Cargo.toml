@@ -8,11 +8,12 @@ license = "MIT"
 
 [features]
 default = ["desktop"]
-desktop = ["dep:gtk", "dep:gdk", "dep:glib", "dep:gio", "dep:webkit2gtk", "dep:wry", "dep:javascriptcore", "dep:soup3"]
+desktop = ["dep:adblock", "dep:gtk", "dep:gdk", "dep:glib", "dep:gio", "dep:webkit2gtk", "dep:wry", "dep:javascriptcore", "dep:soup3"]
 gui-smoke = ["desktop"]
 
 [dependencies]
 anyhow = "1"
+adblock = { version = "=0.13.6", default-features = false, features = ["content-blocking", "full-regex-handling"], optional = true }
 rusqlite = "0.37"
 ulid = "1"
 url = "2.5"
