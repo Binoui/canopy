@@ -113,6 +113,28 @@ Pages clones a live-page handle or observer before calling it. Browser, navigati
 
 Back uses an entry still present in WebKit's history only when its visit belongs to the current open tree, otherwise the parent in the forest. Page-script and mouse Back cannot reopen a settled tree or cross into another open tree. Back from the blank start page does nothing. The list's changed signals drop the bindings of removed entries and bind same-document entries to their visit. One exception: when a page script adds an entry for another resource (not only another `#part`) within 4 s of a left click or Enter in the page, as YouTube does when a video is opened, that entry becomes a child visit with the route's title. Each press counts for the first added entry only, so routes a page makes on its own, replaceState, and `#part` links stay on the visit. Each entry also keeps its native document group, because a return can move the list before Started. This group tells a return within the same document from a full load, even at an identical URL. A full commit gets a fresh group unless it is a back or forward traversal. A traversal onto an unbound entry falls back to the forest parent. The native cursor is read at changed or Committed, never at notify::uri. A restore only traverses an entry from another native document. On a pushState route, F5 and a visit-node click load the stored visit URL, so neither leaves an attempt waiting for load signals that a same-document traversal never sends. A cold resume reloads the URL and restores the recorded scroll. WebKit's page cache can keep the DOM and the forms of an entry still present.
 
+## Blocking follows the top page
+
+Each content profile has one blocking controller in `PageContext`. It follows
+the top-frame load signals of live views, including background views. Canopy sets
+the destination before it issues a native load. The controller attaches shared
+WebKit filters to each eligible view's content manager. Errand views keep their
+own managers outside this path. A site exception uses the same origin definition
+as page size. While a form-return confirmation is open, the shown page keeps
+its filters. Continue applies the form result's site policy before navigation.
+
+The controller fetches lists through the cookie-free Soup session and converts
+them on a worker. WebKit compiles one list at a time. Each new compiled list has
+a fresh identifier. An atomic manifest update publishes successful replacements
+together and keeps the previous version of any failed list. Preferences live in
+`content-blocking` beside the database. The source files, compiled lists, and
+manifest live in the profile's `blocklists/` folder.
+
+The first browsing commands wait for stored lists to open, with a one-second
+limit. If the store is empty or unreadable, Canopy starts browsing and adds
+the filters when they are ready. Changes to the global switch refit open pages.
+A site switch also queues one reload for the document that owned the menu row.
+
 ## The chrome is an HTML view above the page
 
 The tabs, the tree strip, the palette, the attached lists, the menus, the "New tree" page, the forest view and the reader are drawn in HTML. A second, transparent webview, served by the `canopy://` scheme, sits above the page. Rust keeps the state and every decision: the layouts, the palette results and the intents. The view receives JSON and sends clicks and keys back over IPC.

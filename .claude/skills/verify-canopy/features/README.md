@@ -20,6 +20,7 @@ Each feature file opens with an H1 and one paragraph of user-visible behavior, t
 
 ## Features
 
+- [Ads and trackers](./blocking.md) covers first-list preparation, both switches, and restart persistence.
 - [Page size](./page-scale.md) covers keyboard and wheel scaling, the reset badge, per-site policy and restart persistence.
 - [Fork a tree](./fork.md) covers starting a tree, following links, going back, branching, and keeping the tree across a restart.
 - [Tabs and the strip](./tabs-and-strip.md) covers switching trees, page cards in the strip, keyboard walking, and the zoomed tree.

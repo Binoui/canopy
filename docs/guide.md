@@ -103,6 +103,24 @@ Without `--data-dir`, Canopy keeps its database and WebKit profile in `$XDG_DATA
 
 The theme persists in the `theme_mode` session setting and applies immediately. With **System**, it follows the desktop's dark preference.
 
+## Ads and trackers
+
+Canopy blocks requests to ads and trackers and hides matching page elements by
+default. Canopy fetches EasyList, EasyPrivacy, and Liste FR from their publishers
+at startup when needed and refreshes each list about once a week. On a fresh
+profile, pages can load while the first lists are prepared. YouTube's in-video
+ads and cookie banners are outside the scope of blocking.
+
+- Use **Settings → Block ads and trackers** to turn blocking off or on in
+  every open page. The change applies to future requests without a reload.
+  Hidden elements can reappear the next time the page loads.
+- Use **This page → Block on this site** in the same menu to make an exception
+  for the site's scheme, host, and port. Canopy reloads the page you are viewing.
+  The exception applies to that site in every tree and follows the top page.
+  If another site embeds the excepted site, the embedding page's setting applies.
+
+Canopy remembers both switches across restarts.
+
 ## Download files
 
 A link to a file Canopy cannot show, such as an archive or a file the site marks as an attachment, is saved instead of opened. **Download Linked File** and **Save Image As** in the page's context menu save too. Canopy does not ask where to save. Files go to your download folder, the XDG download directory or `~/Downloads`, which Canopy creates when it is missing.
