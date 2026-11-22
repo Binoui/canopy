@@ -285,6 +285,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .menu-row:disabled { color: var(--faint); }
 .menu-row .grow { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .menu-detail { font-size: 11.5px; color: var(--muted); }
+.menu-row[role="switch"] .menu-detail { max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .menu-error { font-size: 11.5px; padding: 4px 8px; }
 .file-row { display: flex; align-items: center; gap: 2px; }
 .file-row .menu-row { flex: 1; min-width: 0; }

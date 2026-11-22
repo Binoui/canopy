@@ -13,7 +13,13 @@ use std::{
 use anyhow::{Context, Result};
 use glib::prelude::ObjectExt;
 use serde_json::{json, Value};
-use webkit2gtk::UserContentManager;
+use url::Url;
+use webkit2gtk::{LoadEvent, UserContentManager, WebView, WebViewExt};
+
+use crate::{
+    address::{web_url, WebOrigin},
+    browser::Document,
+};
 
 use super::{native::PageContext, PageEvent};
 use lists::{Manifest, Record, Source};
@@ -40,6 +46,7 @@ pub(super) struct Blocking {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Settings {
     on: bool,
+    unblocked: BTreeSet<WebOrigin>,
 }
 
 impl Settings {
@@ -48,13 +55,25 @@ impl Settings {
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
+        let unblocked = value["unblocked"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|site| {
+                let raw = site.as_str()?;
+                let origin = WebOrigin::of(&web_url(raw).ok()?)?;
+                (origin.as_str() == raw).then_some(origin)
+            })
+            .collect();
         Self {
             on: value["on"].as_bool().unwrap_or(true),
+            unblocked,
         }
     }
 
     fn save(&self, file: &Path) -> Result<()> {
-        let bytes = serde_json::to_vec(&json!({"on": self.on}))?;
+        let unblocked: Vec<_> = self.unblocked.iter().map(WebOrigin::as_str).collect();
+        let bytes = serde_json::to_vec(&json!({"on": self.on, "unblocked": unblocked}))?;
         crate::atomic_file::write(file, bytes)
             .context("Could not save content blocking preferences.")
     }
@@ -64,6 +83,14 @@ impl Settings {
 pub struct BlockingView {
     pub on: bool,
     pub detail: Option<&'static str>,
+    pub site: Option<SiteView>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SiteView {
+    pub(crate) origin: WebOrigin,
+    pub(crate) document: Document,
+    pub(crate) on: bool,
 }
 
 impl Default for BlockingView {
@@ -71,6 +98,7 @@ impl Default for BlockingView {
         Self {
             on: true,
             detail: None,
+            site: None,
         }
     }
 }
@@ -89,7 +117,50 @@ struct Installed {
 
 struct Followed {
     manager: glib::WeakRef<UserContentManager>,
+    top: TopSite,
     holds: Vec<String>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+enum Site {
+    Web(WebOrigin),
+    #[default]
+    Other,
+}
+
+impl Site {
+    fn of(url: Option<&Url>) -> Self {
+        url.and_then(WebOrigin::of).map_or(Self::Other, Self::Web)
+    }
+}
+
+#[derive(Default)]
+struct TopSite {
+    committed: Site,
+    loading: Option<Site>,
+}
+
+enum Top {
+    Loading(Site),
+    Committed(Site),
+    Ended,
+}
+
+impl TopSite {
+    fn report(&mut self, top: Top) {
+        match top {
+            Top::Loading(site) => self.loading = Some(site),
+            Top::Committed(site) => {
+                self.committed = site;
+                self.loading = None;
+            }
+            Top::Ended => self.loading = None,
+        }
+    }
+
+    fn effective(&self) -> &Site {
+        self.loading.as_ref().unwrap_or(&self.committed)
+    }
 }
 
 impl Blocking {
@@ -207,10 +278,21 @@ impl Blocking {
         });
     }
 
-    pub(super) fn view(&self) -> BlockingView {
+    pub(super) fn view(&self, document: Option<Document>) -> BlockingView {
+        let settings = self.settings.borrow();
+        let site = document.filter(|_| settings.on).and_then(|document| {
+            let origin = WebOrigin::of(&document.page_url)?;
+            let on = !settings.unblocked.contains(&origin);
+            Some(SiteView {
+                origin,
+                document,
+                on,
+            })
+        });
         BlockingView {
-            on: self.settings.borrow().on,
+            on: settings.on,
             detail: detail(&self.activity.borrow(), self.compiled.borrow().is_empty()),
+            site,
         }
     }
 
@@ -220,7 +302,10 @@ impl Blocking {
             if current.on == on {
                 return Ok(());
             }
-            let next = Settings { on };
+            let next = Settings {
+                on,
+                ..current.clone()
+            };
             next.save(&self.settings_file)?;
             *current = next;
         }
@@ -243,6 +328,28 @@ impl Blocking {
         Ok(())
     }
 
+    pub(super) fn set_site(&self, origin: WebOrigin, on: bool) -> Result<bool> {
+        {
+            let mut current = self.settings.borrow_mut();
+            if !current.on {
+                return Ok(false);
+            }
+            let mut next = current.clone();
+            let changed = if on {
+                next.unblocked.remove(&origin)
+            } else {
+                next.unblocked.insert(origin)
+            };
+            if !changed {
+                return Ok(false);
+            }
+            next.save(&self.settings_file)?;
+            *current = next;
+        }
+        self.refit();
+        Ok(true)
+    }
+
     pub(super) fn startup_pending(&self) -> bool {
         self.start_gate.borrow().is_some()
     }
@@ -255,33 +362,88 @@ impl Blocking {
         }
     }
 
-    pub(super) fn follow(&self, manager: &UserContentManager) {
+    pub(super) fn follow(
+        self: &Rc<Self>,
+        view: &WebView,
+        manager: &UserContentManager,
+    ) -> Option<glib::SignalHandlerId> {
         if self.sources.is_empty() {
-            return;
+            return None;
         }
         let mut page = Followed {
             manager: manager.downgrade(),
+            top: TopSite::default(),
             holds: Vec::new(),
         };
-        let compiled = self.compiled.borrow();
-        refit_page(
-            self.settings.borrow().on.then_some(&*compiled),
-            &mut page,
-            manager,
-        );
+        self.fit(&mut page, manager);
         let mut pages = self.pages.borrow_mut();
         pages.retain(|page| page.manager.upgrade().is_some());
         pages.push(page);
+        drop(pages);
+        let weak = Rc::downgrade(self);
+        Some(view.connect_load_changed(move |view, event| {
+            let Some(blocking) = weak.upgrade() else {
+                return;
+            };
+            let report = match event {
+                LoadEvent::Started | LoadEvent::Redirected => {
+                    // A warm restore can start while WebKit still reports an empty URI.
+                    let Some(uri) = view.uri().filter(|uri| !uri.is_empty()) else {
+                        return;
+                    };
+                    Top::Loading(Site::of(web_url(&uri).ok().as_ref()))
+                }
+                LoadEvent::Committed => Top::Committed(Site::of(
+                    view.uri().and_then(|uri| web_url(&uri).ok()).as_ref(),
+                )),
+                LoadEvent::Finished => Top::Ended,
+                _ => return,
+            };
+            blocking.report_top(view, report);
+        }))
+    }
+
+    pub(super) fn loading(&self, view: &WebView, url: Option<&Url>) {
+        if !self.sources.is_empty() {
+            self.report_top(view, Top::Loading(Site::of(url)));
+        }
+    }
+
+    pub(super) fn hold_navigation(&self, view: &WebView) {
+        self.report_top(view, Top::Ended);
+    }
+
+    fn report_top(&self, view: &WebView, top: Top) {
+        let Some(manager) = view.user_content_manager() else {
+            return;
+        };
+        if let Some(page) = self
+            .pages
+            .borrow_mut()
+            .iter_mut()
+            .find(|page| page.manager.upgrade().as_ref() == Some(&manager))
+        {
+            page.top.report(top);
+            self.fit(page, &manager);
+        }
+    }
+
+    fn fit(&self, page: &mut Followed, manager: &UserContentManager) {
+        let compiled = self.compiled.borrow();
+        let enabled = wanted(
+            &self.settings.borrow(),
+            !compiled.is_empty(),
+            page.top.effective(),
+        );
+        refit_page(enabled.then_some(&*compiled), page, manager);
     }
 
     fn refit(&self) {
-        let compiled = self.compiled.borrow();
-        let wanted = self.settings.borrow().on.then_some(&*compiled);
         self.pages.borrow_mut().retain_mut(|page| {
             let Some(manager) = page.manager.upgrade() else {
                 return false;
             };
-            refit_page(wanted, page, &manager);
+            self.fit(page, &manager);
             true
         });
     }
@@ -428,6 +590,12 @@ impl Drop for Blocking {
             timer.remove();
         }
     }
+}
+
+fn wanted(settings: &Settings, available: bool, site: &Site) -> bool {
+    settings.on
+        && available
+        && !matches!(site, Site::Web(origin) if settings.unblocked.contains(origin))
 }
 
 fn refit_page(
@@ -657,12 +825,73 @@ mod tests {
     fn settings_round_trip_and_failed_save() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let file = dir.path().join("content-blocking");
-        let off = Settings { on: false };
+        let origin = WebOrigin::of(&web_url("https://example.org:8080")?).unwrap();
+        let off = Settings {
+            on: false,
+            unblocked: BTreeSet::from([origin]),
+        };
         off.save(&file)?;
         assert_eq!(Settings::load(&file), off);
         fs::create_dir(file.with_extension("tmp"))?;
-        assert!(Settings { on: true }.save(&file).is_err());
+        assert!(Settings {
+            on: true,
+            unblocked: BTreeSet::new()
+        }
+        .save(&file)
+        .is_err());
         assert_eq!(Settings::load(&file), off);
+        Ok(())
+    }
+
+    #[test]
+    fn settings_drop_non_canonical_sites() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("content-blocking");
+        fs::write(
+            &file,
+            r#"{"on":true,"unblocked":["https://example.org","https://example.org:443","https://example.org/path","file:///tmp",7]}"#,
+        )?;
+        let settings = Settings::load(&file);
+        assert_eq!(settings.unblocked.len(), 1);
+        assert_eq!(
+            settings.unblocked.first().unwrap().as_str(),
+            "https://example.org"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn top_site_falls_back_to_the_committed_site() -> Result<()> {
+        let a = web_url("http://a.test/page")?;
+        let b = web_url("http://b.test/elsewhere")?;
+        let mut top = TopSite::default();
+        top.report(Top::Loading(Site::of(Some(&a))));
+        top.report(Top::Committed(Site::of(Some(&a))));
+        top.report(Top::Loading(Site::of(Some(&b))));
+        assert_eq!(top.effective(), &Site::of(Some(&b)));
+        top.report(Top::Ended);
+        assert_eq!(top.effective(), &Site::of(Some(&a)));
+        Ok(())
+    }
+
+    #[test]
+    fn only_an_exact_top_origin_is_excepted() -> Result<()> {
+        let excepted = web_url("https://example.org")?;
+        let mut settings = Settings {
+            on: true,
+            unblocked: BTreeSet::from([WebOrigin::of(&excepted).unwrap()]),
+        };
+        assert!(!wanted(&settings, true, &Site::of(Some(&excepted))));
+        for address in [
+            "http://example.org",
+            "https://www.example.org",
+            "https://example.org:8080",
+        ] {
+            assert!(wanted(&settings, true, &Site::of(Some(&web_url(address)?))));
+        }
+        assert!(!wanted(&settings, false, &Site::Other));
+        settings.on = false;
+        assert!(!wanted(&settings, true, &Site::Other));
         Ok(())
     }
 

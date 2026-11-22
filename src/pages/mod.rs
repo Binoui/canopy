@@ -10,8 +10,8 @@ pub(crate) mod stack;
 use crate::{
     address::WebOrigin,
     browser::{
-        Browser, Landing, LoadTicket, MoveOutcome, MoveTo, NavigationTarget, TabPlacement,
-        ThemeMode, TreeId, VisitId,
+        Browser, Document, Landing, LoadTicket, MoveOutcome, MoveTo, NavigationTarget,
+        TabPlacement, ThemeMode, TreeId, VisitId,
     },
     chrome::{Favicons, CHROME_HEIGHT},
     forest::ForestProjection,
@@ -33,7 +33,7 @@ use std::{
     rc::{Rc, Weak},
 };
 use url::Url;
-use webkit2gtk::WebViewExt;
+use webkit2gtk::{BackForwardListItemExt, WebViewExt};
 
 pub enum Go {
     Visit(VisitId),
@@ -202,7 +202,7 @@ enum Command {
     Settle(SettleTarget),
     Dismiss(VisitId),
     MoveBranch { head: VisitId, to: MoveTo },
-    Reload,
+    Reload(Option<Document>),
 }
 
 #[derive(Clone, Copy)]
@@ -1134,7 +1134,7 @@ impl Pages {
                 Command::Settle(target) => self.settle(target),
                 Command::Dismiss(head) => self.dismiss(head),
                 Command::MoveBranch { head, to } => self.move_branch(head, to),
-                Command::Reload => self.reload(),
+                Command::Reload(document) => self.reload_for(document),
             };
             if let Err(error) = result {
                 self.receive(PageEvent::Error(error.to_string()));
@@ -1877,6 +1877,10 @@ impl Pages {
             Go::Parent => {
                 if let Some(item) = page.native_back() {
                     self.cancel_candidate();
+                    let target = item
+                        .uri()
+                        .and_then(|uri| crate::address::web_url(&uri).ok());
+                    self.context.blocking.loading(&page.native, target.as_ref());
                     page.native.go_to_back_forward_list_item(&item);
                     Ok(())
                 } else {
@@ -2561,6 +2565,16 @@ impl Pages {
         }
     }
     pub fn reload(&self) -> Result<()> {
+        self.reload_for(None)
+    }
+
+    fn reload_for(&self, document: Option<Document>) -> Result<()> {
+        if document
+            .as_ref()
+            .is_some_and(|document| self.blocking_document().as_ref() != Some(document))
+        {
+            return Ok(());
+        }
         self.answer_form_return(false);
         if self.retired_selected() {
             return Ok(());
@@ -2568,7 +2582,9 @@ impl Pages {
         if (self.context.blocking.startup_pending() || self.busy())
             && self.branches.live.borrow().is_some()
         {
-            self.commands.borrow_mut().push_back(Command::Reload);
+            self.commands
+                .borrow_mut()
+                .push_back(Command::Reload(document));
             self.publish_loading();
             self.end_hold();
             return Ok(());
@@ -2613,8 +2629,25 @@ impl Pages {
         page.fill_login(origin, username, password, done);
         Ok(())
     }
+    fn blocking_document(&self) -> Option<Document> {
+        self.branches.live.borrow().as_ref()?.document()
+    }
+
     pub fn blocking_view(&self) -> BlockingView {
-        self.context.blocking.view()
+        self.context.blocking.view(self.blocking_document())
+    }
+
+    pub fn set_site_blocking(&self, document: Document, on: bool) -> Result<()> {
+        if self.blocking_document().as_ref() != Some(&document) {
+            return Ok(());
+        }
+        let Some(origin) = WebOrigin::of(&document.page_url) else {
+            return Ok(());
+        };
+        if self.context.blocking.set_site(origin, on)? {
+            self.reload_for(Some(document))?;
+        }
+        Ok(())
     }
 
     pub fn set_blocking(&self, on: bool) -> Result<()> {

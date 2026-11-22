@@ -1077,6 +1077,11 @@ impl ChromeHost for Ui {
             ChromeIntent::ReadCaptures(visit) => ui.read_captures(visit),
             ChromeIntent::OpenSaved(id) => self.pages.go(Go::Saved(id)),
             ChromeIntent::SetBlocking(on) => self.pages.set_blocking(on),
+            ChromeIntent::SetSiteBlocking { document, on } => {
+                let result = self.pages.set_site_blocking(document, on);
+                self.schedule_refresh();
+                result
+            }
             ChromeIntent::SetCaptureEnabled(enabled) => {
                 let result = self.pages.set_capture_enabled(enabled);
                 self.schedule_refresh();

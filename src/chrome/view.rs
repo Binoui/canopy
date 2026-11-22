@@ -129,6 +129,16 @@ pub(crate) fn frame(
             "label": "Block ads and trackers",
             "on": frame.blocking.on,
             "detail": frame.blocking.detail,
+            "site": frame.blocking.site.as_ref().map(|site| {
+                let origin = site.origin.as_str();
+                json!({
+                    "label": "Block on this site",
+                    "detail": origin.split_once("://").map_or(origin, |(_, host)| host),
+                    "on": site.on,
+                    "origin": origin,
+                    "document": site.document.identity(),
+                })
+            }),
         },
         "bookmarked": current.and_then(|id| forest.visit(id)).is_some_and(|visit| {
             frame

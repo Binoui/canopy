@@ -201,6 +201,10 @@ pub enum ChromeIntent {
     OpenSaved(i64),
     SetCaptureEnabled(bool),
     SetBlocking(bool),
+    SetSiteBlocking {
+        document: crate::browser::Document,
+        on: bool,
+    },
     RememberSelection,
     /// Open a downloaded file with the app the desktop uses for it.
     OpenFile(i64),
@@ -1446,6 +1450,18 @@ impl Inner {
             "find-open" => ChromeIntent::OpenFind,
             "quit" => ChromeIntent::Quit,
             "blocking" => ChromeIntent::SetBlocking(message["on"].as_bool()?),
+            "block-site" if !self.start.get() => {
+                let site = frame.blocking.site.as_ref()?;
+                if message["origin"].as_str() != Some(site.origin.as_str())
+                    || message["document"].as_str() != Some(site.document.identity().as_str())
+                {
+                    return None;
+                }
+                ChromeIntent::SetSiteBlocking {
+                    document: site.document.clone(),
+                    on: message["on"].as_bool()?,
+                }
+            }
             "capture" => ChromeIntent::SetCaptureEnabled(message["on"].as_bool()?),
             "remember" => ChromeIntent::RememberSelection,
             "open-file" => ChromeIntent::OpenFile(message["file"].as_i64()?),

@@ -26,7 +26,7 @@ use gtk::prelude::*;
 use javascriptcore::ValueExt;
 use serde_json::Value;
 use url::Url;
-use webkit2gtk::{WebView, WebViewExt};
+use webkit2gtk::{SettingsExt, WebView, WebViewExt};
 
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 
@@ -96,6 +96,16 @@ impl Server {
             write!(stream, "HTTP/1.1 302 Found\r\nLocation: /filter-a.txt\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
             return Ok(());
         }
+        if let Some(tag) = path.strip_prefix("/jump/") {
+            let host = if tag.ends_with("to-a") {
+                "127.0.0.1"
+            } else {
+                "localhost"
+            };
+            let location = self.url(host, &format!("page/{tag}"));
+            write!(stream, "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
+            return Ok(());
+        }
         let (status, kind, body) = match path {
             "/filter-a.txt" | "/list-b.txt" => {
                 let index = usize::from(path == "/list-b.txt");
@@ -130,8 +140,22 @@ impl Server {
             }
             path if path.starts_with("/page/") => {
                 let tag = path.trim_start_matches("/page/");
-                ("200 OK", "text/html", page_html(tag))
+                let mut body = page_html(tag);
+                use std::fmt::Write;
+                if tag == "site-root" {
+                    let child = self.url("localhost", "page/site-child");
+                    write!(body, r#"<a id="child" href="{child}">Other site</a>"#)?;
+                }
+                if tag == "form-root" {
+                    body.push_str(r#"<form method="post" action="/page/form-result"><button id="form-submit">Submit</button></form>"#);
+                }
+                if tag.starts_with("embed-") {
+                    let frame = self.url("127.0.0.1", "frame");
+                    write!(body, r#"<iframe src="{frame}"></iframe>"#)?;
+                }
+                ("200 OK", "text/html", body)
             }
+            "/frame" => ("200 OK", "text/html", page_html("nested")),
             path if path
                 .split('?')
                 .next()
@@ -178,6 +202,11 @@ impl Server {
     }
 
     fn assert_load(&self, view: &WebView, tag: &str, ads: [bool; 3], display: &str) -> Result<()> {
+        self.assert_requests(view, tag, ads)?;
+        assert_display(view, display)
+    }
+
+    fn assert_requests(&self, view: &WebView, tag: &str, ads: [bool; 3]) -> Result<()> {
         let kinds = ["ads", "ads2", "track"];
         let mut stopped = serde_json::Map::new();
         stopped.insert("control".into(), "load".into());
@@ -195,13 +224,6 @@ impl Server {
             view_js(view, "JSON.stringify(window.outcomes || {})")
                 .is_ok_and(|value| value == Value::Object(stopped.clone()))
         })?;
-        assert_eq!(
-            view_js(
-                view,
-                "JSON.stringify(getComputedStyle(document.querySelector('.adbox')).display)"
-            )?,
-            display
-        );
         pump(300);
         assert!(
             self.hits(&format!("/control/{tag}.js")) > 0,
@@ -248,6 +270,15 @@ fn view_js(view: &WebView, script: &str) -> Result<Value> {
     wait("page JavaScript", || output.borrow().is_some())?;
     let string = output.borrow_mut().take().unwrap()?;
     Ok(serde_json::from_str(&string)?)
+}
+
+fn assert_display(view: &WebView, expected: &str) -> Result<()> {
+    let display = view_js(
+        view,
+        "JSON.stringify(getComputedStyle(document.querySelector('.adbox')).display)",
+    )?;
+    assert_eq!(display, expected);
+    Ok(())
 }
 
 fn navigate(ui: &Ui, url: Url, target: NavigationTarget) -> Result<VisitId> {
@@ -425,7 +456,7 @@ fn main() -> Result<()> {
     wait("main switch off", || {
         switch_on(&ui, "blocking").is_ok_and(|on| !on)
     })?;
-    assert!(chrome_focused(&ui, "#blocking"));
+    focus_switch(&ui, "blocking")?;
     server.assert_late_script(&shown, "/ads/live-switch.js?off", true)?;
     server.assert_late_script(&first, "/ads/retained-switch.js?off", true)?;
     ui.pages.check_blocklists(now + DAY * 8);
@@ -582,6 +613,311 @@ fn main() -> Result<()> {
     println!(
         "PASS a cancelled refresh publishes nothing and the saved Off switch survives restart."
     );
+    let persisted = site_journey(&ui, &server)?;
     close(ui);
+    let ui = Ui::new(data.path())?;
+    ui.window.show_all();
+    ui.resume(&[])?;
+    wait_for_page(&ui, &persisted)?;
+    ready(&ui)?;
+    open_settings(&ui)?;
+    assert!(switch_on(&ui, "blocking")?);
+    assert!(!switch_on(&ui, "site-blocking")?);
+    server.assert_load(
+        &ui.pages.selected_page().native,
+        "persist-site",
+        [true; 3],
+        "block",
+    )?;
+    assert_eq!(server.hits("/list-b.txt"), b_hits + 1);
+    println!("PASS the site exception survives restart and its row is available only on a web page while blocking is on.");
+    close(ui);
+    startup_recovery(data.path(), &folder, &server)?;
+    Ok(())
+}
+
+fn focus_switch(ui: &Ui, id: &str) -> Result<()> {
+    let selector = format!("#{id}");
+    key("Home")?;
+    for _ in 0..24 {
+        if chrome_focused(ui, &selector) {
+            return Ok(());
+        }
+        key("Down")?;
+    }
+    anyhow::bail!("Could not focus {id} with the keyboard.")
+}
+
+fn site_journey(ui: &Ui, server: &Server) -> Result<Url> {
+    key("Escape")?;
+    let filtered = [true, false, false];
+    navigate(
+        ui,
+        server.url("127.0.0.1", "page/site-hidden"),
+        NavigationTarget::Root,
+    )?;
+    let hidden = ui.pages.selected_page().native.clone();
+    server.assert_load(&hidden, "site-hidden", filtered, "none")?;
+    let stale = chrome(ui, "S.frame.blocking.site")?;
+    assert_eq!(stale["on"], true);
+    let root = server.url("127.0.0.1", "page/site-root");
+    navigate(ui, root.clone(), NavigationTarget::Root)?;
+    let view = ui.pages.selected_page().native.clone();
+    server.assert_load(&view, "site-root", filtered, "none")?;
+    let stale = serde_json::to_string(&stale)?;
+    chrome(
+        ui,
+        &format!("(() => {{ intent('block-site', {{ ...{stale}, on: false }}); return true; }})()"),
+    )?;
+    pump(150);
+    open_settings(ui)?;
+    assert!(
+        switch_on(ui, "site-blocking")?,
+        "a stale same-origin row was ignored"
+    );
+    assert_eq!(server.hits("/page/site-root"), 1);
+    click_chrome(ui, "#site-blocking")?;
+    wait("one site reload", || server.hits("/page/site-root") == 2)?;
+    let root_visit = wait_for_page(ui, &root)?;
+    server.assert_load(&view, "site-root", [true; 3], "block")?;
+    assert_eq!(server.hits("/page/site-root"), 2);
+    server.assert_late_script(&hidden, "/ads2/retained-site.js", true)?;
+    assert_eq!(server.hits("/page/site-hidden"), 1);
+    let cached = view_js(&view, "JSON.stringify(window.nonce)")?;
+    key("Escape")?;
+
+    let (x, y) = element_point(ui, "child")?;
+    click_at(x, y)?;
+    let child = server.url("localhost", "page/site-child");
+    wait_for_page(ui, &child)?;
+    assert_eq!(view, ui.pages.selected_page().native);
+    server.assert_load(&view, "site-child", filtered, "none")?;
+    key("alt+Left")?;
+    wait_for_page(ui, &root)?;
+    assert_eq!(ui.snapshot()?.current, Some(root_visit));
+    wait("native Back restored the cached document", || {
+        view_js(&view, "JSON.stringify(window.wasCached === true)").is_ok_and(|value| value == true)
+    })?;
+    assert_eq!(view_js(&view, "JSON.stringify(window.nonce)")?, cached);
+    assert_eq!(server.hits("/page/site-root"), 2);
+    assert_display(&view, "block")?;
+    server.assert_late_script(&view, "/ads2/cached-site.js", true)?;
+    key("alt+Right")?;
+    let child_visit = wait_for_page(ui, &child)?;
+    assert_display(&view, "none")?;
+    server.assert_late_script(&view, "/ads2/forward-site.js", false)?;
+    let return_url = server.url("127.0.0.1", "page/site-return");
+    navigate(ui, return_url, NavigationTarget::ChildOf(child_visit))?;
+    server.assert_load(&view, "site-return", [true; 3], "block")?;
+    println!("PASS a site switch updates retained pages and reloads only the initiating document. Stale same-origin intents are ignored. Canopy's cross-origin loads and cached Back and Forward use the destination's policy.");
+
+    navigate(
+        ui,
+        server.url("127.0.0.1", "page/embed-off"),
+        NavigationTarget::Root,
+    )?;
+    wait("excepted top page allowed the iframe probe", || {
+        server.hits("/ads2/nested.js") == 1
+    })?;
+    let parent = navigate(
+        ui,
+        server.url("localhost", "page/embed-on"),
+        NavigationTarget::Root,
+    )?;
+    wait("other top page loaded the iframe control", || {
+        server.hits("/control/nested.js") == 2
+    })?;
+    assert_eq!(server.hits("/ads2/nested.js"), 1);
+    assert_eq!(server.hits("/track/nested.js"), 1);
+    let redirect_to_a = server.url("127.0.0.1", "page/redirect-to-a");
+    ui.pages.go(Go::Address {
+        url: server.url("localhost", "jump/redirect-to-a"),
+        target: NavigationTarget::ChildOf(parent),
+    })?;
+    let parent = wait_for_page(ui, &redirect_to_a)?;
+    server.assert_requests(&ui.pages.selected_page().native, "redirect-to-a", [true; 3])?;
+    let redirect_to_b = server.url("localhost", "page/redirect-to-b");
+    ui.pages.go(Go::Address {
+        url: server.url("127.0.0.1", "jump/redirect-to-b"),
+        target: NavigationTarget::ChildOf(parent),
+    })?;
+    wait_for_page(ui, &redirect_to_b)?;
+    server.assert_load(
+        &ui.pages.selected_page().native,
+        "redirect-to-b",
+        filtered,
+        "none",
+    )?;
+    println!("PASS redirects use the final site's subresource policy in both directions. An iframe from the excepted site remains filtered under another top page.");
+
+    form_return_policy(ui, server)?;
+
+    let keyboard = server.url("127.0.0.1", "page/site-keyboard");
+    navigate(ui, keyboard.clone(), NavigationTarget::Root)?;
+    open_settings(ui)?;
+    focus_switch(ui, "site-blocking")?;
+    key("Return")?;
+    wait("site re-enabled and reloaded", || {
+        server.hits("/page/site-keyboard") == 2
+    })?;
+    wait_for_page(ui, &keyboard)?;
+    assert_display(&ui.pages.selected_page().native, "none")?;
+    server.assert_late_script(
+        &ui.pages.selected_page().native,
+        "/ads2/site-keyboard-late.js",
+        false,
+    )?;
+    assert_eq!(server.hits("/page/site-keyboard"), 2);
+    key("Escape")?;
+    key("ctrl+t")?;
+    wait("new tree surface", || {
+        chrome(ui, "canopy.state().surface").is_ok_and(|value| value == "start")
+    })?;
+    open_settings(ui)?;
+    assert!(!visible(ui, "#site-blocking"));
+    key("Escape")?;
+
+    let persisted = server.url("127.0.0.1", "page/persist-site");
+    navigate(ui, persisted.clone(), NavigationTarget::Root)?;
+    open_settings(ui)?;
+    click_chrome(ui, "#blocking")?;
+    wait("site row absent while blocking is off", || {
+        !visible(ui, "#site-blocking")
+    })?;
+    focus_switch(ui, "blocking")?;
+    key("space")?;
+    wait("site row returns with blocking on", || {
+        visible(ui, "#site-blocking")
+    })?;
+    click_chrome(ui, "#site-blocking")?;
+    wait("persisted site excepted", || {
+        switch_on(ui, "site-blocking").is_ok_and(|on| !on)
+    })?;
+    Ok(persisted)
+}
+
+fn startup_recovery(data: &Path, folder: &Path, server: &Server) -> Result<()> {
+    let catalog = folder.join("lists.json");
+    let mut aged: Value = serde_json::from_slice(&fs::read(&catalog)?)?;
+    for record in aged.as_object_mut().unwrap().values_mut() {
+        record["compiled_at"] =
+            (record["compiled_at"].as_u64().unwrap() - (DAY * 8).as_secs()).into();
+    }
+    let aged = serde_json::to_vec(&aged)?;
+    fs::write(&catalog, &aged)?;
+    let before = server.hits("/list-a.txt");
+    server.set(List::Held, List::Initial);
+    let ui = Ui::new(data)?;
+    ui.window.show_all();
+    let command_line = server.url("localhost", "page/command-line");
+    ui.resume(std::slice::from_ref(&command_line))?;
+    let forwarded = server.url("localhost", "page/forwarded");
+    ui.open(std::slice::from_ref(&forwarded))?;
+    wait_for_page(&ui, &forwarded)?;
+    server.assert_load(
+        &ui.pages.selected_page().native,
+        "forwarded",
+        [true, false, false],
+        "none",
+    )?;
+    wait("stale lists fetched on start", || {
+        server.hits("/list-a.txt") == before + 1
+    })?;
+    server.set(List::Updated, List::Initial);
+    wait("stale catalog replaced", || {
+        fs::read(&catalog).is_ok_and(|current| current != aged)
+    })?;
+    println!("PASS warm startup opens the first forwarded page with its old filters while a stale catalog refreshes.");
+    close(ui);
+
+    let previous = fs::read(&catalog)?;
+    for entry in fs::read_dir(folder.join("compiled"))? {
+        let path = entry?.path();
+        let broken = folder.join("unreadable-filter");
+        fs::write(&broken, b"invalid WebKit content filter")?;
+        fs::rename(broken, path)?;
+    }
+    server.set(List::Held, List::Initial);
+    let ui = Ui::new(data)?;
+    ui.window.show_all();
+    let unreadable = server.url("localhost", "page/unreadable");
+    ui.resume(std::slice::from_ref(&unreadable))?;
+    wait_for_page(&ui, &unreadable)?;
+    server.assert_load(
+        &ui.pages.selected_page().native,
+        "unreadable",
+        [true; 3],
+        "block",
+    )?;
+    server.set(List::Updated, List::Initial);
+    wait("unreadable filters rebuilt", || {
+        fs::read(&catalog).is_ok_and(|current| current != previous)
+    })?;
+    server.assert_late_script(
+        &ui.pages.selected_page().native,
+        "/ads2/after-recovery.js",
+        false,
+    )?;
+    println!("PASS a start with unreadable compiled files browses while fresh filters are prepared and then installs them live.");
+    close(ui);
+
+    let another = tempfile::tempdir()?;
+    let ui = launch(another.path())?;
+    wait("second data folder has its own catalog", || {
+        another.path().join("blocklists/lists.json").is_file()
+    })?;
+    navigate(
+        &ui,
+        server.url("127.0.0.1", "page/second-profile"),
+        NavigationTarget::Root,
+    )?;
+    server.assert_load(
+        &ui.pages.selected_page().native,
+        "second-profile",
+        [true, false, false],
+        "none",
+    )?;
+    assert!(!another.path().join("content-blocking").exists());
+    println!(
+        "PASS a second data folder fetches independent filters and inherits no site exception."
+    );
+    close(ui);
+    Ok(())
+}
+
+fn form_return_policy(ui: &Ui, server: &Server) -> Result<()> {
+    navigate(
+        ui,
+        server.url("127.0.0.1", "page/form-root"),
+        NavigationTarget::Root,
+    )?;
+    let view = ui.pages.selected_page().native.clone();
+    WebViewExt::settings(&view)
+        .context("page settings")?
+        .set_enable_page_cache(false);
+    let (x, y) = element_point(ui, "form-submit")?;
+    click_at(x, y)?;
+    let result = server.url("127.0.0.1", "page/form-result");
+    let post = wait_for_page(ui, &result)?;
+    let child = server.url("localhost", "page/form-child");
+    navigate(ui, child.clone(), NavigationTarget::ChildOf(post))?;
+    key("alt+Left")?;
+    wait("Back asks before returning to the form result", || {
+        visible(ui, "#form-return")
+    })?;
+    server.assert_late_script(&view, "/ads2/form-policy.js?held", false)?;
+    key("Escape")?;
+    wait_for_page(ui, &child)?;
+    server.assert_late_script(&view, "/ads2/form-policy.js?cancelled", false)?;
+
+    key("alt+Left")?;
+    wait("second form return question", || {
+        visible(ui, "#form-return")
+    })?;
+    click_chrome(ui, "#form-return-continue")?;
+    wait_for_page(ui, &result)?;
+    assert_eq!(server.hits("/page/form-result"), 2);
+    server.assert_load(&view, "form-result", [true; 3], "block")?;
+    println!("PASS a held or cancelled form return keeps the shown page's filters. Continue applies the form result's site exception before resending.");
     Ok(())
 }

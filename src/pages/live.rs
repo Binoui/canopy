@@ -263,6 +263,10 @@ impl LivePage {
         self.cancel();
         self.detach();
     }
+    pub(super) fn document(&self) -> Option<Document> {
+        self.state.ticket()
+    }
+
     pub(super) fn current_visit(&self) -> Option<VisitId> {
         self.state
             .navigation
@@ -554,7 +558,9 @@ impl LivePage {
             native.show_all();
             native.grab_focus();
         }
-        context.blocking.follow(&manager);
+        if let Some(signal) = context.blocking.follow(&native, &manager) {
+            signals.push((native.clone().upcast(), signal));
+        }
         let state = Rc::new(NativeState {
             native: native.clone(),
             lifecycle: Cell::new(Lifecycle::Live),
@@ -1855,6 +1861,11 @@ impl NativeState {
                         .browser
                         .borrow()
                         .requested_restore(&state.navigation.borrow());
+                    state
+                        .owner()
+                        .context
+                        .blocking
+                        .loading(&state.native, Some(&url));
                     if let Some(entry) = returning.and_then(|visit| state.entry(visit, &url)) {
                         *state.traversal.borrow_mut() = Some((requested, entry.clone()));
                         state.native.go_to_back_forward_list_item(&entry);
@@ -1959,6 +1970,16 @@ impl NativeState {
         self.emit(PageEvent::FormReturn(None));
         if proceed {
             if !self.decide_navigation(&decision, PolicyDecisionType::NavigationAction) {
+                let target = decision
+                    .downcast_ref::<NavigationPolicyDecision>()
+                    .and_then(|decision| decision.navigation_action())
+                    .and_then(|action| action.request())
+                    .and_then(|request| request.uri())
+                    .and_then(|uri| web_url(&uri).ok());
+                self.owner()
+                    .context
+                    .blocking
+                    .loading(&self.native, target.as_ref());
                 decision.use_();
             }
         } else {
@@ -2038,6 +2059,7 @@ impl NativeState {
                     });
                     if main && !restored {
                         let owner = self.owner();
+                        owner.context.blocking.hold_navigation(&self.native);
                         let candidate = owner.branches.candidate.borrow().clone();
                         if let Some(page) = candidate.filter(|p| {
                             p.native == self.native && owner.branches.candidate_live.get().is_some()
@@ -2201,6 +2223,10 @@ impl NativeState {
                     Err(error) => self.emit(PageEvent::Error(error.to_string())),
                 }
             } else {
+                self.owner()
+                    .context
+                    .blocking
+                    .loading(&self.native, Some(&url));
                 self.native.load_uri(url.as_str());
             }
             return true;
