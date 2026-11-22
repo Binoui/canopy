@@ -1656,6 +1656,7 @@ function renderPopover() {
       + '</div><div class="menu-separator" data-key="capture-separator"></div>'
       + `<button class="menu-row" role="menuitem" id="menu-passwords" data-key="passwords" aria-haspopup="dialog"${S.passwordSettings ? '' : ' disabled'}><span class="grow">Passwords</span><span class="menu-detail">${esc(S.passwordSettings?.active ?? 'Unavailable')}</span></button>`
       + captureRow()
+      + switchRow('blocking', S.frame?.blocking)
       + `<button class="menu-row" role="menuitem" id="recent-errors" data-key="errors"><span class="grow">Recent errors</span>${S.errors.unread ? '<i class="error-dot"></i>' : ''}</button>`
       + '<div class="menu-separator" data-key="quit-separator"></div>'
       + item('menu-quit', 'Quit', 'Ctrl Q'));
@@ -1676,6 +1677,7 @@ function renderPopover() {
     $('recent-errors').onclick = () => { closePopover(false); openPopover('errors', $('settings-button')); post({ t: 'errors', action: 'read' }); };
     $('show-trees-help').onclick = () => { closePopover(false); intent('trees-help', { show: true }); };
     wireCaptureRow();
+    if ($('blocking')) act('blocking', () => intent('blocking', { on: !S.frame.blocking.on }));
     popover.querySelectorAll('[data-mode]').forEach((button) => button.onclick = () => {
       S.frame.theme = button.dataset.mode;
       applyTheme();
@@ -1683,6 +1685,11 @@ function renderPopover() {
       refreshPopover();
     });
   }
+}
+
+function switchRow(id, row) {
+  if (!row) return '';
+  return `<button class="menu-row" role="switch" aria-checked="${row.on}" id="${id}" data-key="${id}"><span class="grow">${esc(row.label)}</span>${row.detail ? `<span class="menu-detail">${esc(row.detail)}</span>` : ''}<span class="switch" aria-hidden="true"></span></button>`;
 }
 
 function captureRow() {

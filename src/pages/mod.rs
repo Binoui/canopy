@@ -1,6 +1,7 @@
 pub use native::Fetched;
 mod blocking;
 mod errand;
+pub use blocking::BlockingView;
 pub use errand::{ErrandEnd, ErrandTicket};
 mod live;
 mod native;
@@ -2612,6 +2613,14 @@ impl Pages {
         page.fill_login(origin, username, password, done);
         Ok(())
     }
+    pub fn blocking_view(&self) -> BlockingView {
+        self.context.blocking.view()
+    }
+
+    pub fn set_blocking(&self, on: bool) -> Result<()> {
+        self.context.blocking.set_on(on)
+    }
+
     pub fn set_capture_enabled(&self, enabled: bool) -> Result<()> {
         let page = self
             .branches

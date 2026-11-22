@@ -421,6 +421,7 @@ impl Ui {
                 playing: self.pages.playing_visits(),
                 forest,
                 capture_enabled: browser.capture_enabled()?,
+                blocking: self.pages.blocking_view(),
                 trees_help: browser.trees_help()?,
                 theme: browser.theme_mode()?,
                 declined: browser.declined()?,
@@ -1075,6 +1076,7 @@ impl ChromeHost for Ui {
             ChromeIntent::ReadCapture(id) => ui.read_capture(id),
             ChromeIntent::ReadCaptures(visit) => ui.read_captures(visit),
             ChromeIntent::OpenSaved(id) => self.pages.go(Go::Saved(id)),
+            ChromeIntent::SetBlocking(on) => self.pages.set_blocking(on),
             ChromeIntent::SetCaptureEnabled(enabled) => {
                 let result = self.pages.set_capture_enabled(enabled);
                 self.schedule_refresh();

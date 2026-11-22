@@ -300,6 +300,17 @@ fn close(ui: Rc<Ui>) {
     pump(250);
 }
 
+fn switch_on(ui: &Ui, id: &str) -> Result<bool> {
+    chrome(
+        ui,
+        &format!("document.getElementById('{id}')?.getAttribute('aria-checked')"),
+    )?
+    .as_str()
+    .context("switch is visible")?
+    .parse()
+    .context("switch state")
+}
+
 fn recent(ui: &Ui) -> usize {
     chrome(ui, "S.errors.recent.length")
         .ok()
@@ -315,6 +326,10 @@ fn main() -> Result<()> {
     let folder = data.path().join("blocklists");
     let ui = launch(data.path())?;
     wait("held list fetch", || server.hits("/filter-a.txt") == 1)?;
+    open_settings(&ui)?;
+    assert!(text(&ui, "#blocking").contains("Preparing lists"));
+    assert!(switch_on(&ui, "blocking")?);
+    key("Escape")?;
     navigate(
         &ui,
         server.url("127.0.0.1", "page/first"),
@@ -403,8 +418,35 @@ fn main() -> Result<()> {
     println!("PASS background filtering before first show, unfiltered errands, and reuse of two shared compiled lists.");
 
     let now = SystemTime::now();
-    ui.pages
-        .check_blocklists(now + DAY * 7 - Duration::from_secs(2));
+    let nonce = view_js(&shown, "JSON.stringify(window.nonce)")?;
+    open_settings(&ui)?;
+    assert!(!text(&ui, "#blocking").contains("Preparing lists"));
+    click_chrome(&ui, "#blocking")?;
+    wait("main switch off", || {
+        switch_on(&ui, "blocking").is_ok_and(|on| !on)
+    })?;
+    assert!(chrome_focused(&ui, "#blocking"));
+    server.assert_late_script(&shown, "/ads/live-switch.js?off", true)?;
+    server.assert_late_script(&first, "/ads/retained-switch.js?off", true)?;
+    ui.pages.check_blocklists(now + DAY * 8);
+    pump(300);
+    assert_eq!(
+        server.hits("/list-a.txt"),
+        1,
+        "off suppresses the daily check"
+    );
+    key("space")?;
+    wait("main switch on", || {
+        switch_on(&ui, "blocking").is_ok_and(|on| on)
+    })?;
+    server.assert_late_script(&shown, "/ads/live-switch.js?on", false)?;
+    server.assert_late_script(&first, "/ads/retained-switch.js?on", false)?;
+    assert_eq!(view_js(&shown, "JSON.stringify(window.nonce)")?, nonce);
+    assert_eq!(server.hits("/page/next"), 1);
+    key("Escape")?;
+    println!("PASS main switch changes requests on shown and retained pages, accepts pointer and keyboard, and pauses refresh without reloading.");
+
+    ui.pages.check_blocklists(now + DAY * 6);
     pump(300);
     assert_eq!(server.hits("/list-a.txt"), 1);
     server.set(List::Updated, List::Initial);
@@ -492,6 +534,54 @@ fn main() -> Result<()> {
     )?;
     assert_eq!(server.hits("/list-a.txt"), 4);
     println!("PASS deleting the profile's blocklists folder rebuilds the two lists.");
+    let manifest = fs::read(folder.join("lists.json"))?;
+    let b_hits = server.hits("/list-b.txt");
+    server.set(List::Initial, List::Held);
+    ui.pages.check_blocklists(now + DAY * 8);
+    wait("second fetch held after the first list compiled", || {
+        server.hits("/list-b.txt") == b_hits + 1
+    })?;
+    open_settings(&ui)?;
+    click_chrome(&ui, "#blocking")?;
+    wait("main switch off during refresh", || {
+        switch_on(&ui, "blocking").is_ok_and(|on| !on)
+    })?;
+    server.set(List::Initial, List::Initial);
+    pump(400);
+    assert_eq!(fs::read(folder.join("lists.json"))?, manifest);
+    assert_eq!(recent(&ui), 0);
+    close(ui);
+
+    let last = server.url("localhost", "page/rebuilt");
+    let ui = Ui::new(data.path())?;
+    ui.window.show_all();
+    ui.resume(&[])?;
+    wait_for_page(&ui, &last)?;
+    ready(&ui)?;
+    open_settings(&ui)?;
+    assert!(!switch_on(&ui, "blocking")?);
+    server.assert_late_script(
+        &ui.pages.selected_page().native,
+        "/ads2/cancel.js?off",
+        true,
+    )?;
+    click_chrome(&ui, "#blocking")?;
+    wait("main switch on after restored off", || {
+        switch_on(&ui, "blocking").is_ok_and(|on| on)
+    })?;
+    wait("cancelled compilation reclaimed", || {
+        compiled_count(&folder) == 2
+    })?;
+    server.assert_late_script(
+        &ui.pages.selected_page().native,
+        "/ads2/cancel.js?on",
+        false,
+    )?;
+    assert_eq!(fs::read(folder.join("lists.json"))?, manifest);
+    assert_eq!(server.hits("/list-b.txt"), b_hits + 1);
+    println!(
+        "PASS a cancelled refresh publishes nothing and the saved Off switch survives restart."
+    );
     close(ui);
     Ok(())
 }

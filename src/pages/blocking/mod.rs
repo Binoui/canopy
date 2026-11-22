@@ -12,6 +12,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use glib::prelude::ObjectExt;
+use serde_json::{json, Value};
 use webkit2gtk::UserContentManager;
 
 use super::{native::PageContext, PageEvent};
@@ -25,6 +26,8 @@ const MAX_LIST_BYTES: usize = 16 * 1024 * 1024;
 pub(super) struct Blocking {
     context: Weak<PageContext>,
     folder: PathBuf,
+    settings_file: PathBuf,
+    settings: RefCell<Settings>,
     sources: Vec<Source>,
     store: OnceCell<FilterStore>,
     activity: RefCell<Activity>,
@@ -32,6 +35,44 @@ pub(super) struct Blocking {
     compiled: RefCell<BTreeMap<String, Installed>>,
     pages: RefCell<Vec<Followed>>,
     daily: RefCell<Option<glib::SourceId>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Settings {
+    on: bool,
+}
+
+impl Settings {
+    fn load(file: &Path) -> Self {
+        let value: Value = fs::read(file)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        Self {
+            on: value["on"].as_bool().unwrap_or(true),
+        }
+    }
+
+    fn save(&self, file: &Path) -> Result<()> {
+        let bytes = serde_json::to_vec(&json!({"on": self.on}))?;
+        crate::atomic_file::write(file, bytes)
+            .context("Could not save content blocking preferences.")
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BlockingView {
+    pub on: bool,
+    pub detail: Option<&'static str>,
+}
+
+impl Default for BlockingView {
+    fn default() -> Self {
+        Self {
+            on: true,
+            detail: None,
+        }
+    }
 }
 
 enum Activity {
@@ -53,9 +94,12 @@ struct Followed {
 
 impl Blocking {
     pub(super) fn new(data_dir: &Path, context: Weak<PageContext>) -> Self {
+        let settings_file = data_dir.join("content-blocking");
         Self {
             context,
             folder: data_dir.join("blocklists"),
+            settings: RefCell::new(Settings::load(&settings_file)),
+            settings_file,
             sources: lists::configured(),
             store: OnceCell::new(),
             activity: RefCell::new(Activity::Dormant),
@@ -67,7 +111,19 @@ impl Blocking {
     }
 
     pub(super) fn start(self: &Rc<Self>) {
-        if self.sources.is_empty() {
+        if !self.settings.borrow().on || self.sources.is_empty() {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        *self.daily.borrow_mut() = Some(glib::timeout_add_local(DAY, move || {
+            let Some(blocking) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            blocking.check(SystemTime::now());
+            glib::ControlFlow::Continue
+        }));
+        if !matches!(*self.activity.borrow(), Activity::Dormant) {
+            self.check(SystemTime::now());
             return;
         }
         let store = self
@@ -149,14 +205,42 @@ impl Blocking {
                 blocking.check(SystemTime::now());
             }
         });
-        let weak = Rc::downgrade(self);
-        *self.daily.borrow_mut() = Some(glib::timeout_add_local(DAY, move || {
-            let Some(blocking) = weak.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
-            blocking.check(SystemTime::now());
-            glib::ControlFlow::Continue
-        }));
+    }
+
+    pub(super) fn view(&self) -> BlockingView {
+        BlockingView {
+            on: self.settings.borrow().on,
+            detail: detail(&self.activity.borrow(), self.compiled.borrow().is_empty()),
+        }
+    }
+
+    pub(super) fn set_on(self: &Rc<Self>, on: bool) -> Result<()> {
+        {
+            let mut current = self.settings.borrow_mut();
+            if current.on == on {
+                return Ok(());
+            }
+            let next = Settings { on };
+            next.save(&self.settings_file)?;
+            *current = next;
+        }
+        self.refit();
+        if on {
+            self.start();
+        } else {
+            if let Some(daily) = self.daily.borrow_mut().take() {
+                daily.remove();
+            }
+            let mut activity = self.activity.borrow_mut();
+            if let Activity::Refreshing(task) = &*activity {
+                task.abort();
+                *activity = Activity::Idle;
+            }
+            drop(activity);
+            self.release_startup();
+        }
+        self.emit(PageEvent::Changed);
+        Ok(())
     }
 
     pub(super) fn startup_pending(&self) -> bool {
@@ -179,7 +263,12 @@ impl Blocking {
             manager: manager.downgrade(),
             holds: Vec::new(),
         };
-        refit_page(&self.compiled.borrow(), &mut page, manager);
+        let compiled = self.compiled.borrow();
+        refit_page(
+            self.settings.borrow().on.then_some(&*compiled),
+            &mut page,
+            manager,
+        );
         let mut pages = self.pages.borrow_mut();
         pages.retain(|page| page.manager.upgrade().is_some());
         pages.push(page);
@@ -187,17 +276,18 @@ impl Blocking {
 
     fn refit(&self) {
         let compiled = self.compiled.borrow();
+        let wanted = self.settings.borrow().on.then_some(&*compiled);
         self.pages.borrow_mut().retain_mut(|page| {
             let Some(manager) = page.manager.upgrade() else {
                 return false;
             };
-            refit_page(&compiled, page, &manager);
+            refit_page(wanted, page, &manager);
             true
         });
     }
 
     pub(super) fn check(self: &Rc<Self>, now: SystemTime) {
-        if !matches!(*self.activity.borrow(), Activity::Idle) {
+        if !self.settings.borrow().on || !matches!(*self.activity.borrow(), Activity::Idle) {
             return;
         }
         let manifest = Manifest::load(&self.folder);
@@ -341,15 +431,16 @@ impl Drop for Blocking {
 }
 
 fn refit_page(
-    compiled: &BTreeMap<String, Installed>,
+    compiled: Option<&BTreeMap<String, Installed>>,
     page: &mut Followed,
     manager: &UserContentManager,
 ) {
-    let wanted = compiled.values().map(|item| &item.record.identifier);
+    let filters = compiled.into_iter().flat_map(BTreeMap::values);
+    let wanted = filters.clone().map(|item| &item.record.identifier);
     if page.holds.iter().eq(wanted.clone()) {
         return;
     }
-    for item in compiled.values() {
+    for item in filters {
         if !page.holds.contains(&item.record.identifier) {
             item.filter.attach(manager);
         }
@@ -360,6 +451,10 @@ fn refit_page(
         }
     }
     page.holds = wanted.cloned().collect();
+}
+
+fn detail(activity: &Activity, empty: bool) -> Option<&'static str> {
+    (empty && matches!(activity, Activity::Refreshing(_))).then_some("Preparing lists…")
 }
 
 struct Refreshed {
@@ -542,6 +637,34 @@ impl Drop for PauseMeter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_missing_or_unreadable_mean_on() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("content-blocking");
+        assert!(Settings::load(&file).on);
+        fs::create_dir(&file)?;
+        assert!(Settings::load(&file).on);
+        fs::remove_dir(&file)?;
+        for text in ["false", "not JSON", r#"{"on":"invalid"}"#] {
+            fs::write(&file, text)?;
+            assert!(Settings::load(&file).on);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn settings_round_trip_and_failed_save() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("content-blocking");
+        let off = Settings { on: false };
+        off.save(&file)?;
+        assert_eq!(Settings::load(&file), off);
+        fs::create_dir(file.with_extension("tmp"))?;
+        assert!(Settings { on: true }.save(&file).is_err());
+        assert_eq!(Settings::load(&file), off);
+        Ok(())
+    }
 
     #[test]
     fn one_line_per_round() {
