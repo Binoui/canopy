@@ -10,7 +10,7 @@ use gtk::prelude::*;
 use url::Url;
 use webkit2gtk::{DownloadExt, URIRequestExt, WebContextExt, WebViewExt};
 
-use super::PageEvent;
+use super::{blocking::Blocking, PageEvent};
 type Observer = RefCell<Option<Rc<dyn Fn(PageEvent)>>>;
 type RecordDownload = dyn Fn(VisitId, &Path, u64, Option<&Url>) -> Result<()>;
 type PageLookup = Box<dyn Fn(Option<&Url>) -> Result<Option<VisitId>>>;
@@ -23,6 +23,7 @@ struct DownloadSource {
 pub struct PageContext {
     pub(crate) native: webkit2gtk::WebContext,
     pub favicons: Rc<Favicons>,
+    pub(super) blocking: Rc<Blocking>,
     record: RefCell<Option<Rc<RecordDownload>>>,
     observer: Observer,
     sources: RefCell<Vec<DownloadSource>>,
@@ -57,8 +58,9 @@ impl PageContext {
         let database = context
             .favicon_database()
             .context("The favicon database is unavailable.")?;
-        let state = Rc::new(Self {
+        let state = Rc::new_cyclic(|weak| Self {
             native: context,
+            blocking: Rc::new(Blocking::new(data_dir, weak.clone())),
             favicons: Favicons::new(&database),
             record: RefCell::new(None),
             observer: RefCell::new(None),
@@ -134,7 +136,7 @@ impl PageContext {
         *self.observer.borrow_mut() = Some(Rc::new(callback));
     }
 
-    fn emit(&self, event: PageEvent) {
+    pub(super) fn emit(&self, event: PageEvent) {
         let observer = self.observer.borrow().clone();
         if let Some(observer) = observer {
             observer(event);
@@ -455,36 +457,42 @@ impl PageContext {
         })
     }
 
-    pub(super) async fn fetch_without_cookies(&self, url: &Url) -> Result<Fetched> {
+    pub(super) fn fetch_without_cookies(
+        &self,
+        url: &Url,
+        limit: usize,
+    ) -> impl std::future::Future<Output = Result<Fetched>> + 'static {
         use gio::prelude::InputStreamExt;
         use glib::prelude::StaticType;
         use soup::prelude::SessionExt;
 
-        const MAX_BODY: usize = 256 * 1024;
-        let priority = glib::Priority::DEFAULT;
-        let message = soup::Message::new("GET", url.as_str())?;
-        message.set_flags(soup::MessageFlags::NO_REDIRECT);
-        message.disable_feature(soup::CookieJar::static_type());
-        message.disable_feature(soup::AuthManager::static_type());
-        let session = self.fetch_session();
-        glib::future_with_timeout(FETCH_TIMEOUT, async {
-            let stream = session.send_future(&message, priority).await?;
-            let mut body = Vec::new();
-            loop {
-                let chunk = stream
-                    .read_bytes_future((MAX_BODY + 1 - body.len()).min(8192), priority)
-                    .await?;
-                if chunk.is_empty() {
-                    return Ok(Fetched::from_message(&message, body));
+        let message = soup::Message::new("GET", url.as_str());
+        let session = self.fetch_session().clone();
+        async move {
+            let priority = glib::Priority::DEFAULT;
+            let message = message?;
+            message.set_flags(soup::MessageFlags::NO_REDIRECT);
+            message.disable_feature(soup::CookieJar::static_type());
+            message.disable_feature(soup::AuthManager::static_type());
+            glib::future_with_timeout(FETCH_TIMEOUT, async {
+                let stream = session.send_future(&message, priority).await?;
+                let mut body = Vec::new();
+                loop {
+                    let chunk = stream
+                        .read_bytes_future((limit + 1 - body.len()).min(8192), priority)
+                        .await?;
+                    if chunk.is_empty() {
+                        return Ok(Fetched::from_message(&message, body));
+                    }
+                    anyhow::ensure!(
+                        body.len() + chunk.len() <= limit,
+                        "The fetch body is too large."
+                    );
+                    body.extend_from_slice(&chunk);
                 }
-                anyhow::ensure!(
-                    body.len() + chunk.len() <= MAX_BODY,
-                    "The fetch body is too large."
-                );
-                body.extend_from_slice(&chunk);
-            }
-        })
-        .await?
+            })
+            .await?
+        }
     }
 
     /// Reads live cookies for this URL, including HttpOnly cookies. The callback runs once,

@@ -65,6 +65,7 @@ pub enum PageEvent {
     Loading(bool),
     LoadState(LoadingReadout),
     Error(String),
+    BlockingError(String),
     Remembered(i64),
     Download(DownloadEvent),
     OpenBranchPalette {
@@ -450,6 +451,7 @@ impl Pages {
             glib::ControlFlow::Continue
         });
         BACKGROUND_WINDOWS.with(|windows| windows.borrow_mut().push(Rc::downgrade(&pages)));
+        pages.context.blocking.start();
         Ok(pages)
     }
 
@@ -477,8 +479,13 @@ impl Pages {
         self.context.fetch(url, cancel, done);
     }
 
-    pub(crate) async fn fetch_without_cookies(&self, url: &Url) -> Result<Fetched> {
-        self.context.fetch_without_cookies(url).await
+    pub(crate) async fn fetch_without_cookies(&self, url: &Url, limit: usize) -> Result<Fetched> {
+        self.context.fetch_without_cookies(url, limit).await
+    }
+
+    #[cfg(feature = "gui-smoke")]
+    pub fn check_blocklists(&self, now: std::time::SystemTime) {
+        self.context.blocking.check(now);
     }
 
     /// Runs an unmapped page with shared website data and no Canopy visit or capture.

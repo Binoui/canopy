@@ -305,3 +305,9 @@ required-features = ["gui-smoke"]
 name = "page_overrides_smoke"
 harness = false
 required-features = ["gui-smoke"]
+
+[[test]]
+name = "blocking_smoke"
+path = "tests/blocking_smoke.rs"
+harness = false
+required-features = ["gui-smoke"]

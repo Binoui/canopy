@@ -214,7 +214,9 @@ impl Ui {
                     ui.schedule_refresh();
                 }
                 PageEvent::Settled(message) => ui.chrome.settled(&message),
-                PageEvent::Error(message) => ui.chrome.toast(Toast::Error(message)),
+                PageEvent::Error(message) | PageEvent::BlockingError(message) => {
+                    ui.chrome.toast(Toast::Error(message));
+                }
                 PageEvent::Remembered(_) => ui
                     .chrome
                     .toast(Toast::Info("Selection remembered on this computer.".into())),

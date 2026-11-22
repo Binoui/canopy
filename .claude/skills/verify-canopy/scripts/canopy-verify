@@ -45,7 +45,7 @@ has_window() { xdo search --onlyvisible --name Canopy >/dev/null 2>&1; }
 start_app() {
   # Not app_env: a backgrounded function runs in a subshell, and $! would be that shell, not Canopy.
   env -u WAYLAND_DISPLAY DISPLAY="$DISPLAY_NUM" GDK_BACKEND=x11 XDG_RUNTIME_DIR="$RUN/rt" \
-    "$BIN" --data-dir "$RUN/data" "$@" >>"$RUN/canopy.log" 2>&1 &
+    CANOPY_BLOCKLISTS="${CANOPY_BLOCKLISTS-}" "$BIN" --data-dir "$RUN/data" "$@" >>"$RUN/canopy.log" 2>&1 &
   echo $! >"$RUN/canopy.pid"
   wait_for "the Canopy window" 60 has_window
   sleep 2
@@ -211,7 +211,7 @@ cmd_url() { load; local title=${*:-Home}; echo "http://${CANOPY_HOST:-fixture}.l
 cmd_open() {
   load
   [ $# -gt 0 ] || die "open ADDRESS..."
-  app_env "$BIN" --data-dir "$RUN/data" "$@" >>"$RUN/canopy.log" 2>&1
+  app_env env CANOPY_BLOCKLISTS="${CANOPY_BLOCKLISTS-}" "$BIN" --data-dir "$RUN/data" "$@" >>"$RUN/canopy.log" 2>&1
   sleep 1.5
 }
 

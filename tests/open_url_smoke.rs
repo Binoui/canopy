@@ -25,7 +25,7 @@ fn main() -> Result<()> {
     let one = tempfile::tempdir()?;
     let two = tempfile::tempdir()?;
 
-    let help = Command::new(CANOPY)
+    let help = canopy_command()
         .args(["--data-dir", &one.path().display().to_string(), "--help"])
         .env_remove("DISPLAY")
         .env_remove("WAYLAND_DISPLAY")
@@ -65,7 +65,7 @@ fn main() -> Result<()> {
     first.ensure_running()?;
     println!("PASS a launch without URL only reaches the window; several URLs become several trees and the last shows.");
 
-    let refused = Command::new(CANOPY)
+    let refused = canopy_command()
         .args([
             "--data-dir",
             &one.path().display().to_string(),
@@ -79,7 +79,7 @@ fn main() -> Result<()> {
 
     let writer = Connection::open(one.path().join("forest.sqlite3"))?;
     writer.execute_batch("BEGIN IMMEDIATE")?;
-    let unopened = Command::new(CANOPY)
+    let unopened = canopy_command()
         .args([
             "--data-dir",
             &one.path().display().to_string(),
@@ -96,7 +96,7 @@ fn main() -> Result<()> {
     first.ensure_running()?;
     println!("PASS when the window cannot open an address, the launch fails instead of exiting 0.");
 
-    let import = Command::new(CANOPY)
+    let import = canopy_command()
         .args([
             "--data-dir",
             &one.path().display().to_string(),
@@ -150,6 +150,12 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn canopy_command() -> Command {
+    let mut command = Command::new(CANOPY);
+    command.env("CANOPY_BLOCKLISTS", "");
+    command
+}
+
 struct Canopy {
     child: Child,
     data_dir: std::path::PathBuf,
@@ -157,7 +163,7 @@ struct Canopy {
 
 impl Canopy {
     fn start(data_dir: &Path, urls: &[&str]) -> Result<Self> {
-        let child = Command::new(CANOPY)
+        let child = canopy_command()
             .arg("--data-dir")
             .arg(data_dir)
             .args(urls)
@@ -201,7 +207,7 @@ impl Drop for Canopy {
 }
 
 fn launch(data_dir: &Path, urls: &[&str]) -> Result<ExitStatus> {
-    let mut child = Command::new(CANOPY)
+    let mut child = canopy_command()
         .arg("--data-dir")
         .arg(data_dir)
         .args(urls)

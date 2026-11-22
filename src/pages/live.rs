@@ -554,6 +554,7 @@ impl LivePage {
             native.show_all();
             native.grab_focus();
         }
+        context.blocking.follow(&manager);
         let state = Rc::new(NativeState {
             native: native.clone(),
             lifecycle: Cell::new(Lifecycle::Live),
