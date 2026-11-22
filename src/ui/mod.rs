@@ -189,7 +189,7 @@ impl Ui {
                     ui.schedule_refresh();
                 }
                 PageEvent::Changed | PageEvent::Loading(false) => ui.schedule_refresh(),
-                PageEvent::Loading(true) => {}
+                PageEvent::Loading(true) | PageEvent::BlockingStoreReady => {}
                 PageEvent::LoadState(value) => {
                     if ui.pages.pending_target() != *ui.shown_pending.borrow() {
                         ui.schedule_refresh();

@@ -450,6 +450,29 @@ fn main() -> Result<()> {
 
     drop((first, shown));
     close(ui);
+    let last = server.url("localhost", "page/failed");
+    let before = server.hits("/page/failed");
+    let ui = Ui::new(data.path())?;
+    ui.window.show_all();
+    ui.resume(&[])?;
+    wait("restored page's first main request", || {
+        server.hits("/page/failed") == before + 1
+    })?;
+    wait_for_page(&ui, &last)?;
+    server.assert_load(
+        &ui.pages.selected_page().native,
+        "failed",
+        [true, false, false],
+        "none",
+    )?;
+    assert_eq!(
+        server.hits("/list-a.txt"),
+        3,
+        "fresh compiled lists opened without another fetch"
+    );
+    println!("PASS a warm start filters the first restored page while its list endpoints are unavailable.");
+    close(ui);
+
     fs::remove_dir_all(&folder)?;
     server.set(List::Updated, List::Initial);
     let ui = launch(data.path())?;

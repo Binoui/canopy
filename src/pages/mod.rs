@@ -66,6 +66,7 @@ pub enum PageEvent {
     LoadState(LoadingReadout),
     Error(String),
     BlockingError(String),
+    BlockingStoreReady,
     Remembered(i64),
     Download(DownloadEvent),
     OpenBranchPalette {
@@ -524,6 +525,11 @@ impl Pages {
 
     // Clone the observer and end every state borrow before WebKit, GTK or Ui can reenter.
     fn receive(&self, event: PageEvent) {
+        if matches!(event, PageEvent::BlockingStoreReady) {
+            self.drain_commands();
+            self.start_background();
+            return;
+        }
         let settled = matches!(event, PageEvent::Loading(false));
         let continuation_selected = self.continuation.borrow().as_ref().is_none_or(|c| {
             self.branches
@@ -1093,7 +1099,8 @@ impl Pages {
         self.publish_loading();
         let count = self.commands.borrow().len();
         for _ in 0..count {
-            if self.busy()
+            if self.context.blocking.startup_pending()
+                || self.busy()
                 || !self.retiring.borrow().is_empty()
                 || self.retired_selected()
                     && matches!(
@@ -1306,7 +1313,8 @@ impl Pages {
             let window = windows
                 .iter()
                 .filter(|window| {
-                    !window.busy()
+                    !window.context.blocking.startup_pending()
+                        && !window.busy()
                         && !window.cooling.get()
                         && LATEST_MEMORY_SAMPLE
                             .with(|sample| sample.get())
@@ -1805,7 +1813,7 @@ impl Pages {
                     .is_some_and(|page| page.current_visit() == Some(*parent)),
                 _ => false,
             };
-        if self.busy() && !in_place {
+        if self.context.blocking.startup_pending() || (self.busy() && !in_place) {
             self.commands
                 .borrow_mut()
                 .push_back(Command::Go(Box::new(go), None, false));
@@ -2556,7 +2564,9 @@ impl Pages {
         if self.retired_selected() {
             return Ok(());
         }
-        if self.busy() && self.branches.live.borrow().is_some() {
+        if (self.context.blocking.startup_pending() || self.busy())
+            && self.branches.live.borrow().is_some()
+        {
             self.commands.borrow_mut().push_back(Command::Reload);
             self.publish_loading();
             self.end_hold();

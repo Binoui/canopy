@@ -19,6 +19,7 @@ use lists::{Manifest, Record, Source};
 use webkit::{Filter, FilterStore};
 
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+const START_WAIT: Duration = Duration::from_secs(1);
 const MAX_LIST_BYTES: usize = 16 * 1024 * 1024;
 
 pub(super) struct Blocking {
@@ -27,6 +28,7 @@ pub(super) struct Blocking {
     sources: Vec<Source>,
     store: OnceCell<FilterStore>,
     activity: RefCell<Activity>,
+    start_gate: RefCell<Option<glib::SourceId>>,
     compiled: RefCell<BTreeMap<String, Installed>>,
     pages: RefCell<Vec<Followed>>,
     daily: RefCell<Option<glib::SourceId>>,
@@ -57,6 +59,7 @@ impl Blocking {
             sources: lists::configured(),
             store: OnceCell::new(),
             activity: RefCell::new(Activity::Dormant),
+            start_gate: RefCell::default(),
             compiled: RefCell::default(),
             pages: RefCell::default(),
             daily: RefCell::default(),
@@ -78,6 +81,15 @@ impl Blocking {
             .filter_map(|source| Some((source.id.clone(), manifest.0.get(&source.id)?.clone())))
             .collect();
         *self.activity.borrow_mut() = Activity::Opening;
+        if !records.is_empty() {
+            let weak = Rc::downgrade(self);
+            *self.start_gate.borrow_mut() = Some(glib::timeout_add_local(START_WAIT, move || {
+                if let Some(blocking) = weak.upgrade() {
+                    blocking.release_startup();
+                }
+                glib::ControlFlow::Break
+            }));
+        }
         let weak = Rc::downgrade(self);
         let sources_dir = self.folder.join("sources");
         glib::MainContext::default().spawn_local(async move {
@@ -102,6 +114,7 @@ impl Blocking {
             );
             *blocking.compiled.borrow_mut() = loaded;
             blocking.refit();
+            blocking.release_startup();
             drop(blocking);
 
             let named: BTreeSet<_> = manifest
@@ -144,6 +157,18 @@ impl Blocking {
             blocking.check(SystemTime::now());
             glib::ControlFlow::Continue
         }));
+    }
+
+    pub(super) fn startup_pending(&self) -> bool {
+        self.start_gate.borrow().is_some()
+    }
+
+    fn release_startup(&self) {
+        let timer = self.start_gate.borrow_mut().take();
+        if let Some(timer) = timer {
+            timer.remove();
+            self.emit(PageEvent::BlockingStoreReady);
+        }
     }
 
     pub(super) fn follow(&self, manager: &UserContentManager) {
@@ -308,6 +333,9 @@ impl Drop for Blocking {
         }
         if let Some(daily) = self.daily.get_mut().take() {
             daily.remove();
+        }
+        if let Some(timer) = self.start_gate.get_mut().take() {
+            timer.remove();
         }
     }
 }
