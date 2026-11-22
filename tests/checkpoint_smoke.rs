@@ -141,7 +141,7 @@ impl Fixture {
         let pages = Pages::mount(
             &fixed,
             Browser::open(&directory.path().join("forest.sqlite3"))?,
-            &directory.path().join("profile"),
+            directory.path(),
         )?;
         window.show_all();
         pages.resize(1000., 800.);

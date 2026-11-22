@@ -30,8 +30,9 @@ pub struct PageContext {
 }
 
 impl PageContext {
-    pub fn new(profile: &Path) -> Result<Rc<Self>> {
-        std::fs::create_dir_all(profile)?;
+    pub fn new(data_dir: &Path) -> Result<Rc<Self>> {
+        let profile = data_dir.join("profile");
+        std::fs::create_dir_all(&profile)?;
         use webkit2gtk::{
             CookieManagerExt, CookiePersistentStorage, WebsiteDataManager, WebsiteDataManagerExt,
         };

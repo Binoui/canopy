@@ -82,7 +82,7 @@ impl Ui {
         let fixed = crate::pages::stack::Stack::fixed();
         scroller.add(&fixed);
         window.add(&scroller);
-        let pages = Pages::mount(&fixed, browser, &data_dir.join("profile"))?;
+        let pages = Pages::mount(&fixed, browser, data_dir)?;
         let mail_origin = crate::mail::Origin::configured();
         let chrome = HtmlChrome::mount_with_mail(&fixed, &pages, mail_origin.clone(), data_dir)?;
         pages.set_chrome(&chrome.native());

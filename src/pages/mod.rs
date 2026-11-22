@@ -348,8 +348,8 @@ pub struct Pages {
 }
 
 impl Pages {
-    pub fn mount(container: &gtk::Fixed, browser: Browser, profile: &Path) -> Result<Rc<Self>> {
-        let context = native::PageContext::new(profile)?;
+    pub fn mount(container: &gtk::Fixed, browser: Browser, data_dir: &Path) -> Result<Rc<Self>> {
+        let context = native::PageContext::new(data_dir)?;
         let budget = crate::budget::Budget::of_machine()?;
         let pages = Rc::new_cyclic(|me| Self {
             me: me.clone(),

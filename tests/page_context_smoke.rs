@@ -39,7 +39,7 @@ fn main() -> Result<()> {
     canopy::init_desktop()?;
     let browser = Browser::open(&directory.path().join("forest.sqlite3"))?;
     let fixed = gtk::Fixed::new();
-    let pages = Pages::mount(&fixed, browser, &directory.path().join("profile"))?;
+    let pages = Pages::mount(&fixed, browser, directory.path())?;
     let weak = pages.selected_page().native.downgrade();
     let favicons = pages.favicons();
     pages.release_selected_page();
