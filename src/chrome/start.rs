@@ -312,16 +312,29 @@ pub(super) fn help(keys: &crate::shortcuts::Presentation) -> Value {
     use crate::shortcuts::CommandId;
 
     let switch = keys.text(CommandId::Switch);
-    let hold = &keys.switcher.hold;
-    let next = &keys.switcher.next;
     let undo = keys.text(CommandId::UndoSettle);
+    let mut waiting =
+        "Middle-click a link and it waits as a tab after the current page.".to_owned();
+    if !switch.is_empty() {
+        waiting.push_str(&format!(" {switch} opens the first waiting tab."));
+    }
+    if let Some(footer) = &keys.switcher {
+        let (hold, next) = (&footer.hold, &footer.next);
+        waiting.push_str(&format!(" Keep holding {hold} to see the filmstrip of waiting and read pages. Step with {next} or the arrow keys, then release {hold} to open the selected page."));
+    }
+    let mut settle =
+        "Done with a tree? Settle it with the cross on its tab. Nothing is deleted".to_owned();
+    if !undo.is_empty() {
+        settle.push_str(&format!("; {undo} brings it back"));
+    }
+    settle.push('.');
     json!({
         "title": "How trees work",
         "lines": [
             {"mark": "tree", "text": "Every link you follow grows the tree in the strip above. Back goes to the parent page."},
-            {"mark": "waiting", "text": format!("Middle-click a link and it waits as a tab after the current page. {switch} opens the first waiting tab. Keep holding {hold} to see the filmstrip of waiting and read pages. Step with {next} or the arrow keys, then release {hold} to open the selected page.")},
+            {"mark": "waiting", "text": waiting},
             {"mark": "branches", "text": "Rest on a strip page to see its branches. Right-click a page for more: settle a branch, move it to its own tree, dismiss a waiting page."},
-            {"mark": "settle", "text": format!("Done with a tree? Settle it with the cross on its tab. Nothing is deleted; {undo} brings it back.")}
+            {"mark": "settle", "text": settle}
         ],
         "legend": [
             [{"mark": "waiting", "text": "waiting"}],

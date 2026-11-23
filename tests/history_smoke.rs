@@ -196,9 +196,9 @@ fn main() -> Result<()> {
     wait(
         "Back names the parent and Forward the child shown last",
         || {
-            nav("#nav-back").is_ok_and(|v| v == json!([false, "Back to Long page · Alt+Left"]))
+            nav("#nav-back").is_ok_and(|v| v == json!([false, "Back to Long page · Alt+←"]))
                 && nav("#nav-forward")
-                    .is_ok_and(|v| v == json!([false, "Forward to Long page · Alt+Right"]))
+                    .is_ok_and(|v| v == json!([false, "Forward to Long page · Alt+→"]))
         },
     )?;
     click_chrome(&reopened, "#nav-back")?;
@@ -206,9 +206,8 @@ fn main() -> Result<()> {
     wait(
         "on the root, Back is off and Forward names the page just left",
         || {
-            nav("#nav-forward")
-                .is_ok_and(|v| v == json!([false, "Forward to Next page · Alt+Right"]))
-                && nav("#nav-back").is_ok_and(|v| v == json!([true, "Back · Alt+Left"]))
+            nav("#nav-forward").is_ok_and(|v| v == json!([false, "Forward to Next page · Alt+→"]))
+                && nav("#nav-back").is_ok_and(|v| v == json!([true, "Back · Alt+←"]))
         },
     )?;
     click_chrome(&reopened, "#nav-forward")?;
@@ -223,7 +222,7 @@ fn main() -> Result<()> {
         .navigate(server.url("/side")?, NavigationTarget::ChildOf(long))?;
     arrived(&reopened, "/side")?;
     wait("Back names the page WebKit's history returns to", || {
-        nav("#nav-back").is_ok_and(|v| v == json!([false, "Back to Next page · Alt+Left"]))
+        nav("#nav-back").is_ok_and(|v| v == json!([false, "Back to Next page · Alt+←"]))
     })?;
     click_chrome(&reopened, "#nav-back")?;
     assert_eq!(arrived(&reopened, "/next")?, next);

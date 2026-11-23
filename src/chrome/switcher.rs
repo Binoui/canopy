@@ -9,7 +9,11 @@ use std::{
 
 use pictures::{Picture, Pixels, Sizes};
 
-use crate::{browser::VisitId, forest::ForestProjection};
+use crate::{
+    browser::VisitId,
+    forest::ForestProjection,
+    shortcuts::{KeyCombo, Modifiers},
+};
 
 use super::waiting::Waiting;
 
@@ -79,6 +83,8 @@ enum Phase {
 
 struct Armed {
     id: u64,
+    hold: Modifiers,
+    invoked_with: KeyCombo,
     choices: SwitchChoices,
     pages: Weak<Pages>,
     timer: Option<glib::SourceId>,
@@ -107,6 +113,7 @@ pub(super) struct Row {
 
 struct Opening {
     id: u64,
+    hold: Modifiers,
     here: Option<VisitId>,
     selected: VisitId,
     rows: Vec<Row>,
@@ -165,9 +172,18 @@ impl Opening {
     }
 }
 
-fn modifiers_held(window: &gtk::Window, modifiers: gdk::ModifierType) -> bool {
-    gdk::Keymap::for_display(&window.display())
-        .is_some_and(|keymap| keymap.modifier_state() & modifiers.bits() == modifiers.bits())
+impl Switcher {
+    fn hold(&self) -> Option<Modifiers> {
+        match &self.phase {
+            Phase::Armed(armed) => Some(armed.hold),
+            Phase::Showing(opening) => Some(opening.hold),
+            _ => None,
+        }
+    }
+}
+
+fn modifiers_held(window: &gtk::Window, hold: Modifiers) -> bool {
+    gdk::Keymap::for_display(&window.display()).is_some_and(|keymap| hold.are_held(&keymap))
 }
 
 impl HtmlChrome {
@@ -175,7 +191,7 @@ impl HtmlChrome {
         &self,
         pages: &Rc<Pages>,
         window: &gtk::Window,
-        modifiers: gdk::ModifierType,
+        combo: KeyCombo,
     ) -> Result<()> {
         let inner = &self.inner;
         inner.finish_switcher(false);
@@ -191,10 +207,10 @@ impl HtmlChrome {
             self.toast(super::Toast::Info("No other pages in this tree".into()));
             return Ok(());
         };
-        if !modifiers_held(window, modifiers) {
+        let Some(hold) = combo.hold().filter(|&hold| modifiers_held(window, hold)) else {
             inner.open_switch_choice(first);
             return Ok(());
-        }
+        };
         let id = {
             let mut switcher = inner.switcher.borrow_mut();
             switcher.next += 1;
@@ -218,7 +234,7 @@ impl HtmlChrome {
             }
             if window
                 .upgrade()
-                .is_some_and(|window| modifiers_held(&window, modifiers))
+                .is_some_and(|window| modifiers_held(&window, hold))
             {
                 inner.reveal_switcher(None);
             } else {
@@ -227,6 +243,8 @@ impl HtmlChrome {
         });
         inner.switcher.borrow_mut().phase = Phase::Armed(Armed {
             id,
+            hold,
+            invoked_with: combo,
             choices,
             pages: Rc::downgrade(pages),
             timer: Some(timer),
@@ -252,10 +270,27 @@ impl HtmlChrome {
     }
 
     pub(crate) fn switcher_active(&self) -> bool {
-        matches!(
-            self.inner.switcher.borrow().phase,
-            Phase::Armed(_) | Phase::Showing(_)
-        )
+        self.inner.switcher.borrow().hold().is_some()
+    }
+
+    pub(crate) fn switcher_tab(&self, combo: KeyCombo) -> Option<bool> {
+        self.inner
+            .switcher
+            .borrow()
+            .hold()
+            .and_then(|hold| combo.held_tab_direction(hold))
+    }
+
+    pub(crate) fn release_switcher_modifier(&self, key: gdk::keys::Key) {
+        let releases = self
+            .inner
+            .switcher
+            .borrow()
+            .hold()
+            .is_some_and(|hold| hold.released_by(key));
+        if releases {
+            self.finish_switcher(true);
+        }
     }
 
     pub(crate) fn dismiss_switcher_selection(&self) -> bool {
@@ -360,6 +395,7 @@ impl Inner {
         });
         let mut opening = Opening {
             id: armed.id,
+            hold: armed.hold,
             here: armed.choices.here,
             selected: armed.choices.first().unwrap(),
             rows,
@@ -392,6 +428,7 @@ impl Inner {
                     value
                 })
                 .collect();
+            let keys = armed.invoked_with.switcher_footer(armed.hold);
             json!({
                 "opening": opening.id.to_string(),
                 "selected": opening.selected.to_string(),
@@ -399,6 +436,10 @@ impl Inner {
                 "layout": opening.capture_layout.value(),
                 "timing": cfg!(feature = "gui-smoke"),
                 "moreWaiting": opening.more_waiting,
+                "keys": {
+                    "next": keys.next, "previous": keys.previous,
+                    "alternate": keys.alternate, "hold": keys.hold,
+                },
             })
         };
         self.switcher.borrow_mut().phase = Phase::Showing(Box::new(opening));

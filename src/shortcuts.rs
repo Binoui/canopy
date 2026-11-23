@@ -1,8 +1,15 @@
+mod bindings;
+
+use std::path::Path;
+
 use crate::{
     chrome::{ForestView, PaletteSeed},
     pages::PageScaleAction,
 };
 use gdk::keys::{constants as key, Key};
+use gdk::ModifierType as M;
+
+use bindings::Bindings;
 
 const TREE_DIGITS: std::ops::RangeInclusive<u32> = 1..=9;
 
@@ -38,19 +45,26 @@ pub(crate) enum Shortcut {
     Escape,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Modifiers(gdk::ModifierType);
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct Modifiers(M);
 
 impl Modifiers {
-    const NONE: Self = Self(gdk::ModifierType::empty());
-    const CONTROL: Self = Self(gdk::ModifierType::CONTROL_MASK);
-    const ALT: Self = Self(gdk::ModifierType::MOD1_MASK);
-    const SHIFT: Self = Self(gdk::ModifierType::SHIFT_MASK);
-    const CONTROL_SHIFT: Self =
-        Self(gdk::ModifierType::CONTROL_MASK.union(gdk::ModifierType::SHIFT_MASK));
+    const NONE: Self = Self(M::empty());
+    const CONTROL: Self = Self(M::CONTROL_MASK);
+    const ALT: Self = Self(M::MOD1_MASK);
+    const SHIFT: Self = Self(M::SHIFT_MASK);
+    const SUPER: Self = Self(M::SUPER_MASK);
+    const CONTROL_SHIFT: Self = Self(M::CONTROL_MASK.union(M::SHIFT_MASK));
+    const HOLD: M = M::CONTROL_MASK.union(M::MOD1_MASK).union(M::SUPER_MASK);
+    const EDITABLE: M = Self::HOLD.union(M::SHIFT_MASK);
+    const NAMES: [(Self, &'static str); 4] = [
+        (Self::CONTROL, "Ctrl"),
+        (Self::SHIFT, "Shift"),
+        (Self::ALT, "Alt"),
+        (Self::SUPER, "Super"),
+    ];
 
-    fn held(state: gdk::ModifierType) -> Self {
-        use gdk::ModifierType as M;
+    fn held(state: M) -> Self {
         Self(
             state
                 & (M::CONTROL_MASK
@@ -64,21 +78,64 @@ impl Modifiers {
                     | M::META_MASK),
         )
     }
+
+    fn from_keymap(state: M, keymap: Option<&gdk::Keymap>) -> Self {
+        let mut held = Self::held(state);
+        if let Some(keymap) = keymap.filter(|_| {
+            held.0
+                .intersects(M::MOD3_MASK | M::MOD4_MASK | M::MOD5_MASK)
+        }) {
+            let mut super_mask = M::SUPER_MASK;
+            if keymap.map_virtual_modifiers(&mut super_mask) && held.0.intersects(super_mask) {
+                held.0.remove(super_mask);
+                held.0.insert(M::SUPER_MASK);
+            }
+        }
+        held
+    }
+
+    pub(crate) fn are_held(self, keymap: &gdk::Keymap) -> bool {
+        Self::from_keymap(M::from_bits_truncate(keymap.modifier_state()), Some(keymap))
+            .0
+            .contains(self.0)
+    }
+
+    pub(crate) fn released_by(self, key: Key) -> bool {
+        let modifier = match key {
+            key::Control_L | key::Control_R => Self::CONTROL,
+            key::Alt_L | key::Alt_R => Self::ALT,
+            key::Super_L | key::Super_R => Self::SUPER,
+            _ => return false,
+        };
+        self.0.contains(modifier.0)
+    }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct KeyCombo {
     held: Modifiers,
     key: Key,
 }
 
 impl KeyCombo {
-    pub(crate) fn from_event(event: &gdk::EventKey) -> Self {
-        Self::new(Modifiers::held(event.state()), event.keyval())
+    pub(crate) fn from_event(event: &gdk::EventKey, keymap: Option<&gdk::Keymap>) -> Self {
+        Self::new(
+            Modifiers::from_keymap(event.state(), keymap),
+            event.keyval(),
+        )
     }
 
-    pub(crate) fn modifiers(self) -> gdk::ModifierType {
-        self.held.0
+    pub(crate) fn hold(self) -> Option<Modifiers> {
+        let hold = self.held.0 & Modifiers::HOLD;
+        (!hold.is_empty()).then_some(Modifiers(hold))
+    }
+
+    pub(crate) fn held_tab_direction(self, hold: Modifiers) -> Option<bool> {
+        match self.key {
+            key::Tab if self.held == hold => Some(false),
+            key::Tab | key::ISO_Left_Tab if self.held.0 == hold.0 | M::SHIFT_MASK => Some(true),
+            _ => None,
+        }
     }
 
     fn new(held: Modifiers, key: Key) -> Self {
@@ -100,6 +157,39 @@ impl KeyCombo {
     }
 }
 
+/// `EventKey::is_modifier` is unset for some modifier presses on X11.
+pub(crate) fn is_modifier_key(value: Key) -> bool {
+    matches!(
+        value,
+        key::Shift_L
+            | key::Shift_R
+            | key::Control_L
+            | key::Control_R
+            | key::Alt_L
+            | key::Alt_R
+            | key::Meta_L
+            | key::Meta_R
+            | key::Super_L
+            | key::Super_R
+            | key::Hyper_L
+            | key::Hyper_R
+            | key::Mode_switch
+            | key::ISO_Level3_Shift
+            | key::ISO_Level3_Latch
+            | key::ISO_Level3_Lock
+            | key::ISO_Level5_Shift
+            | key::ISO_Level5_Latch
+            | key::ISO_Level5_Lock
+            | key::ISO_Group_Latch
+            | key::ISO_Group_Lock
+            | key::ISO_Lock
+            | key::Shift_Lock
+            | key::Caps_Lock
+            | key::Num_Lock
+            | key::Scroll_Lock
+    )
+}
+
 #[derive(Clone, Copy)]
 enum Defaults {
     Exact {
@@ -109,13 +199,10 @@ enum Defaults {
     TreeDigits([Modifiers; 2]),
 }
 
+#[derive(Clone, Copy)]
 struct Command {
     id: CommandId,
     stable_id: &'static str,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Command name for the shortcut editor")
-    )]
     name: &'static str,
     #[cfg_attr(
         not(test),
@@ -125,6 +212,13 @@ struct Command {
     defaults: Defaults,
 }
 
+impl Command {
+    fn editable(self) -> bool {
+        !matches!(self.id, CommandId::TreeDigit | CommandId::Escape)
+    }
+}
+
+#[derive(Clone, Copy)]
 enum Group {
     Navigation,
     Trees,
@@ -132,8 +226,8 @@ enum Group {
     Browser,
 }
 
-#[cfg(test)]
 impl Group {
+    #[cfg(test)]
     fn label(&self) -> &'static str {
         match self {
             Self::Navigation => "Navigation",
@@ -146,7 +240,7 @@ impl Group {
 
 macro_rules! commands {
     ($($id:ident, $stable_id:literal, $name:literal, $group:ident, $kind:ident $args:tt;)*) => {
-        #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         #[repr(usize)]
         pub(crate) enum CommandId { $($id),* }
 
@@ -208,32 +302,11 @@ commands! {
     Escape, "escape", "Close or stop", Browser, exact(Shortcut::Escape; NONE+Escape);
 }
 
-pub(crate) struct Bindings {
-    rows: &'static [Command],
-}
-
-impl Bindings {
-    pub(crate) fn defaults() -> Self {
-        Self { rows: COMMANDS }
-    }
-
-    pub(crate) fn resolve(&self, combo: KeyCombo) -> Option<Shortcut> {
-        self.rows.iter().find_map(|row| match row.defaults {
-            Defaults::Exact { action, combos } => combos.contains(&combo).then_some(action),
-            Defaults::TreeDigits(held) => combo.tree_digit(held).map(Shortcut::Tree),
-        })
-    }
-}
-
 impl Modifiers {
     fn names(self) -> impl Iterator<Item = &'static str> {
-        [
-            (Self::CONTROL, "Ctrl"),
-            (Self::SHIFT, "Shift"),
-            (Self::ALT, "Alt"),
-        ]
-        .into_iter()
-        .filter_map(move |(mask, name)| self.0.contains(mask.0).then_some(name))
+        Self::NAMES
+            .into_iter()
+            .filter_map(move |(mask, name)| self.0.contains(mask.0).then_some(name))
     }
 
     fn label(self) -> String {
@@ -256,30 +329,49 @@ impl KeyCombo {
     }
 
     fn key_name(self) -> String {
-        match self.key {
+        let key = self.key;
+        let name = match key {
             key::Escape => "Esc".into(),
             key::minus => "−".into(),
-            key::Page_Up => "Page Up".into(),
-            key::Page_Down => "Page Down".into(),
-            key => match key.to_unicode().filter(|c| !c.is_control()) {
+            key::Return | key::ISO_Enter | key::KP_Enter => "Enter".into(),
+            key::Tab | key::ISO_Left_Tab | key::KP_Tab => "Tab".into(),
+            key::Page_Up | key::KP_Page_Up => "Page Up".into(),
+            key::Page_Down | key::KP_Page_Down => "Page Down".into(),
+            key::space | key::KP_Space => "Space".into(),
+            key::BackSpace => "Backspace".into(),
+            key::Left | key::KP_Left => "←".into(),
+            key::Right | key::KP_Right => "→".into(),
+            key::Up | key::KP_Up => "↑".into(),
+            key::Down | key::KP_Down => "↓".into(),
+            _ => match key.to_unicode().filter(|c| !c.is_control()) {
                 Some(c) => c.to_uppercase().collect(),
-                None => key.name().map_or_else(String::new, |name| name.to_string()),
+                None => key.name().map_or_else(String::new, |name| {
+                    name.strip_prefix("KP_").unwrap_or(&name).replace('_', " ")
+                }),
             },
+        };
+        if (*key::KP_Space..=*key::KP_Equal).contains(&*key) {
+            format!("Keypad {name}")
+        } else {
+            name
         }
     }
 
-    fn cli_key_name(self) -> String {
-        match self.key {
-            key::Left => "←".into(),
-            key::Right => "→".into(),
-            key::Up => "↑".into(),
-            key::Down => "↓".into(),
-            _ => self.key_name(),
+    pub(crate) fn switcher_footer(self, hold: Modifiers) -> SwitcherFooter {
+        let local = Self::new(Modifiers::NONE, key::Tab);
+        let alternate = self.held_tab_direction(hold).is_none().then(|| {
+            Self {
+                held: Modifiers(self.held.0 & !hold.0),
+                key: self.key,
+            }
+            .label(" ")
+        });
+        SwitcherFooter {
+            next: local.label(" "),
+            previous: Self::new(Modifiers::SHIFT, key::Tab).label(" "),
+            alternate,
+            hold: hold.names().collect::<Vec<_>>().join(" or "),
         }
-    }
-
-    fn cli_label(self) -> String {
-        self.with_key_name(&self.cli_key_name(), "+")
     }
 }
 
@@ -287,33 +379,21 @@ impl CommandId {
     pub(crate) fn stable_id(self) -> &'static str {
         COMMANDS[self as usize].stable_id
     }
-}
 
-impl Bindings {
-    fn row(&self, id: CommandId) -> &Command {
-        self.rows
-            .iter()
-            .find(|row| row.id == id)
-            .expect("each command has a default row")
+    fn command(self) -> &'static Command {
+        &COMMANDS[self as usize]
     }
 
-    fn primary(&self, id: CommandId) -> KeyCombo {
-        match self.row(id).defaults {
-            Defaults::Exact { combos, .. } => combos[0],
-            Defaults::TreeDigits(_) => unreachable!("tree digits are a family of combinations"),
-        }
-    }
-
-    fn tree_digits(&self) -> (Modifiers, std::ops::RangeInclusive<u32>) {
-        let Defaults::TreeDigits(held) = self.row(CommandId::TreeDigit).defaults else {
+    fn tree_digit_modifiers() -> [Modifiers; 2] {
+        let Defaults::TreeDigits(held) = CommandId::TreeDigit.command().defaults else {
             unreachable!("tree digits have a fixed row");
         };
-        (held[0], TREE_DIGITS)
+        held
     }
 }
 
 pub(crate) struct ShortcutSettings {
-    pub(crate) bindings: Bindings,
+    bindings: Bindings,
 }
 
 impl ShortcutSettings {
@@ -323,41 +403,38 @@ impl ShortcutSettings {
         }
     }
 
+    pub(crate) fn load(data_dir: &Path) -> (Self, Option<String>) {
+        let (bindings, problem) = Bindings::load(&data_dir.join("shortcuts"));
+        (Self { bindings }, problem)
+    }
+
+    pub(crate) fn bindings(&self) -> &Bindings {
+        &self.bindings
+    }
+
     pub(crate) fn presentation(&self) -> Presentation {
         let bindings = &self.bindings;
-        let labels = bindings
-            .rows
+        let labels = COMMANDS
             .iter()
-            .map(|row| {
+            .filter_map(|row| {
                 let labels = match row.defaults {
-                    Defaults::Exact { combos, .. } => Labels {
-                        chip: combos[0].label(" "),
-                        text: combos[0].label("+"),
-                    },
+                    Defaults::Exact { .. } => bindings.primary(row.id)?.labels(),
                     Defaults::TreeDigits([primary, _]) => Labels {
                         chip: digit_range_label(primary, " "),
                         text: digit_range_label(primary, "+"),
                     },
                 };
-                (row.stable_id, labels)
+                Some((row.stable_id, labels))
             })
             .collect();
-        let (held, digits) = bindings.tree_digits();
-        let digit_labels = digits
+        let [held, _] = CommandId::tree_digit_modifiers();
+        let digit_labels = TREE_DIGITS
             .map(|digit| format!("{}+{digit}", held.label()))
             .collect();
 
-        let switch = bindings.primary(CommandId::Switch);
-        let backwards = bindings.primary(CommandId::PreviousTree);
-        let switcher = SwitcherFooter {
-            next: switch.key_name(),
-            previous: KeyCombo {
-                held: Modifiers(backwards.held.0 & !switch.held.0),
-                key: backwards.key,
-            }
-            .label(" "),
-            hold: switch.held.label(),
-        };
+        let switcher = bindings
+            .primary(CommandId::Switch)
+            .and_then(|combo| combo.hold().map(|hold| combo.switcher_footer(hold)));
         Presentation {
             labels,
             digit_labels,
@@ -378,12 +455,14 @@ fn digit_range_label(held: Modifiers, separator: &str) -> String {
 pub(crate) struct Presentation {
     pub(crate) labels: std::collections::BTreeMap<&'static str, Labels>,
     pub(crate) digit_labels: Vec<String>,
-    pub(crate) switcher: SwitcherFooter,
+    pub(crate) switcher: Option<SwitcherFooter>,
 }
 
 impl Presentation {
     pub(crate) fn text(&self, id: CommandId) -> &str {
-        &self.labels[id.stable_id()].text
+        self.labels
+            .get(id.stable_id())
+            .map_or("", |labels| &labels.text)
     }
 }
 
@@ -392,9 +471,19 @@ pub(crate) struct Labels {
     pub(crate) text: String,
 }
 
+impl KeyCombo {
+    fn labels(self) -> Labels {
+        Labels {
+            chip: self.label(" "),
+            text: self.label("+"),
+        }
+    }
+}
+
 pub(crate) struct SwitcherFooter {
     pub(crate) next: String,
     pub(crate) previous: String,
+    pub(crate) alternate: Option<String>,
     pub(crate) hold: String,
 }
 
@@ -405,13 +494,11 @@ pub fn default_help_shortcuts() -> String {
     use CommandId::*;
 
     let bindings = Bindings::defaults();
-    let label = |id| bindings.primary(id).cli_label();
-    let (digit_modifiers, _) = bindings.tree_digits();
-    let (previous, next) = (
-        bindings.primary(PreviousSibling),
-        bindings.primary(NextSibling),
-    );
-    let switch_hold = bindings.primary(Switch).held.label();
+    let primary = |id| bindings.primary(id).expect("an exact default combination");
+    let label = |id| primary(id).label("+");
+    let [digit_modifiers, _] = CommandId::tree_digit_modifiers();
+    let (previous, next) = (primary(PreviousSibling), primary(NextSibling));
+    let switch_hold = primary(Switch).hold().unwrap().label();
     let switch_description =
         format!("Next waiting page, else the last read one; hold {switch_hold} to pick");
     let rows = [
@@ -439,7 +526,7 @@ pub fn default_help_shortcuts() -> String {
         (label(Back), "Back to the parent page"),
         (label(Forward), "Forward to the last opened child"),
         (
-            format!("{}/{}", previous.cli_label(), next.cli_key_name()),
+            format!("{}/{}", previous.label("+"), next.key_name()),
             "Previous or next sibling",
         ),
         (label(Reload), "Reload the page"),
@@ -450,11 +537,21 @@ pub fn default_help_shortcuts() -> String {
             label(PastePlain),
             "Paste as plain text, even where the page blocks pasting",
         ),
+        (label(ForestHistory), ForestHistory.command().name),
+        (label(MoveTreeLeft), MoveTreeLeft.command().name),
+        (label(MoveTreeRight), MoveTreeRight.command().name),
+        (label(Find), Find.command().name),
+        (label(FindNext), FindNext.command().name),
+        (label(FindPrevious), FindPrevious.command().name),
+        (label(Increase), Increase.command().name),
+        (label(Decrease), Decrease.command().name),
+        (label(ResetSize), ResetSize.command().name),
+        (label(Escape), Escape.command().name),
         (label(Quit), "Quit"),
     ];
     let mut help = String::new();
     for (key, description) in rows {
-        writeln!(help, "{key:16}{description}").unwrap();
+        writeln!(help, "{key:23}{description}").unwrap();
     }
     help
 }
@@ -718,12 +815,12 @@ mod tests {
     }
 
     #[test]
-    fn shortcut_label_styles_match_legacy() {
+    fn shortcut_labels_have_chip_and_running_text_styles() {
         let keys = ShortcutSettings::defaults().presentation();
         let label = |id: CommandId| &keys.labels[id.stable_id()];
         for (id, chip, text) in [
             (CommandId::Find, "Ctrl F", "Ctrl+F"),
-            (CommandId::Back, "Alt Left", "Alt+Left"),
+            (CommandId::Back, "Alt ←", "Alt+←"),
             (CommandId::Increase, "Ctrl +", "Ctrl++"),
             (CommandId::Decrease, "Ctrl −", "Ctrl+−"),
             (CommandId::Escape, "Esc", "Esc"),
@@ -740,9 +837,36 @@ mod tests {
         }
         assert_eq!(keys.digit_labels.first().unwrap(), "Ctrl+1");
         assert_eq!(keys.digit_labels.last().unwrap(), "Ctrl+9");
-        assert_eq!(keys.switcher.next, "Tab");
-        assert_eq!(keys.switcher.previous, "Shift Tab");
-        assert_eq!(keys.switcher.hold, "Ctrl");
+        let footer = keys.switcher.unwrap();
+        assert_eq!(footer.next, "Tab");
+        assert_eq!(footer.previous, "Shift Tab");
+        assert_eq!(footer.hold, "Ctrl");
+    }
+
+    #[test]
+    fn switcher_hold_uses_the_opener_and_leaves_shift_free() {
+        assert!(KeyCombo::new(Modifiers::NONE, key::F8).hold().is_none());
+        assert!(KeyCombo::new(Modifiers::SHIFT, key::F8).hold().is_none());
+        let opener = KeyCombo::new(
+            Modifiers(M::MOD1_MASK | M::SHIFT_MASK | M::SUPER_MASK),
+            key::j,
+        );
+        let hold = opener.hold().unwrap();
+        assert!(!hold.released_by(key::Shift_L));
+        assert!(!hold.released_by(key::Control_L));
+        assert!(hold.released_by(key::Alt_R));
+        assert!(hold.released_by(key::Super_L));
+        assert_eq!(
+            KeyCombo::new(hold, key::Tab).held_tab_direction(hold),
+            Some(false)
+        );
+        assert_eq!(
+            KeyCombo::new(opener.held, key::ISO_Left_Tab).held_tab_direction(hold),
+            Some(true)
+        );
+        let footer = opener.switcher_footer(hold);
+        assert_eq!(footer.alternate.as_deref(), Some("Shift J"));
+        assert_eq!(footer.hold, "Alt or Super");
     }
 
     #[test]

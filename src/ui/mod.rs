@@ -25,7 +25,7 @@ use crate::{
     forest::ForestProjection,
     logins::{Login, LoginProvider, SavedLogin},
     pages::{DownloadEvent, FindAction, FindTarget, Go, PageEvent, Pages},
-    shortcuts::{KeyCombo, Shortcut, ShortcutSettings},
+    shortcuts::{is_modifier_key, KeyCombo, Shortcut, ShortcutSettings},
 };
 
 pub struct Ui {
@@ -84,7 +84,7 @@ impl Ui {
         window.add(&scroller);
         let pages = Pages::mount(&fixed, browser, data_dir)?;
         let mail_origin = crate::mail::Origin::configured();
-        let shortcuts = ShortcutSettings::defaults();
+        let (shortcuts, shortcuts_problem) = ShortcutSettings::load(data_dir);
         let chrome =
             HtmlChrome::mount_with_mail(&fixed, &pages, mail_origin.clone(), data_dir, &shortcuts)?;
         pages.set_chrome(&chrome.native());
@@ -240,11 +240,8 @@ impl Ui {
         });
         let weak = Rc::downgrade(&ui);
         ui.window.connect_key_release_event(move |_, event| {
-            use gdk::keys::constants as key;
             if let Some(ui) = weak.upgrade() {
-                if matches!(event.keyval(), key::Control_L | key::Control_R) {
-                    ui.chrome.finish_switcher(true);
-                }
+                ui.chrome.release_switcher_modifier(event.keyval());
             }
             // Page scale also listens for Control's release on this window.
             glib::Propagation::Proceed
@@ -275,6 +272,9 @@ impl Ui {
         ui.show_password_settings();
         ui.refresh();
         if let Some(problem) = logins_problem {
+            ui.report_error(&problem);
+        }
+        if let Some(problem) = shortcuts_problem {
             ui.report_error(&problem);
         }
         Ok(ui)
@@ -530,27 +530,29 @@ impl Ui {
         if self.pages.is_fullscreen() {
             return glib::Propagation::Proceed;
         }
-        let combo = KeyCombo::from_event(event);
+        let keymap = gdk::Keymap::for_display(&self.window.display());
+        let combo = KeyCombo::from_event(event, keymap.as_ref());
         let shortcut = self
             .shortcuts
-            .bindings
+            .bindings()
             .resolve(combo)
             .filter(|key| *key != Shortcut::PastePlainText || self.pages.has_focus());
         if self.chrome.switcher_active() {
             use gdk::keys::constants as key;
             let value = event.keyval();
-            let stepped = match (shortcut, value) {
-                (Some(Shortcut::Switch), _) => self.chrome.step_switcher(false, true),
-                (Some(Shortcut::PreviousTree), _) => self.chrome.step_switcher(true, true),
-                (_, key::Left) => self.chrome.step_switcher(true, false),
-                (_, key::Right) => self.chrome.step_switcher(false, false),
-                (_, key::Delete) => self.chrome.dismiss_switcher_selection(),
+            let stepped = match (self.chrome.switcher_tab(combo), shortcut, value) {
+                (Some(back), _, _) => self.chrome.step_switcher(back, true),
+                (_, Some(Shortcut::Switch), _) => self.chrome.step_switcher(false, true),
+                (_, Some(Shortcut::PreviousTree), _) => self.chrome.step_switcher(true, true),
+                (_, _, key::Left) => self.chrome.step_switcher(true, false),
+                (_, _, key::Right) => self.chrome.step_switcher(false, false),
+                (_, _, key::Delete) => self.chrome.dismiss_switcher_selection(),
                 _ => false,
             };
             if stepped {
                 return glib::Propagation::Stop;
             }
-            if !is_modifier_key(&value) {
+            if !is_modifier_key(value) {
                 self.chrome.finish_switcher(false);
                 if value == key::Escape {
                     return glib::Propagation::Stop;
@@ -594,11 +596,9 @@ impl Ui {
                 Ok(None) => {}
                 Err(error) => self.report(Err(error)),
             },
-            Shortcut::Switch => self.report(self.chrome.arm_switcher(
-                &self.pages,
-                &self.window,
-                combo.modifiers(),
-            )),
+            Shortcut::Switch => {
+                self.report(self.chrome.arm_switcher(&self.pages, &self.window, combo))
+            }
             Shortcut::PageScale(action) => self.report(self.pages.page_scale(action)),
             Shortcut::Reload => {
                 self.chrome.uncover();
@@ -635,29 +635,6 @@ impl Ui {
         }
         glib::Propagation::Stop
     }
-}
-
-/// Modifier keys on their own. `EventKey::is_modifier` is not set on every backend.
-fn is_modifier_key(keyval: &gdk::keys::Key) -> bool {
-    use gdk::keys::constants as key;
-    [
-        key::Shift_L,
-        key::Shift_R,
-        key::Control_L,
-        key::Control_R,
-        key::Alt_L,
-        key::Alt_R,
-        key::Meta_L,
-        key::Meta_R,
-        key::Super_L,
-        key::Super_R,
-        key::Hyper_L,
-        key::Hyper_R,
-        key::ISO_Level3_Shift,
-        key::Caps_Lock,
-        key::Num_Lock,
-    ]
-    .contains(keyval)
 }
 
 impl ChromeHost for Ui {

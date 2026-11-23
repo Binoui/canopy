@@ -1053,6 +1053,10 @@ function showSwitcher(data) {
   $('switcher').hidden = false;
   $('switcher-row').scrollLeft = 0;
   $('switcher-more').textContent = `${data.moreWaiting} more waiting`;
+  for (const el of document.querySelectorAll('[data-switcher-key]')) {
+    el.textContent = data.keys[el.dataset.switcherKey] ?? '';
+    el.hidden = !el.textContent;
+  }
   layoutSwitcher(data.layout);
   selectSwitcher(data.selected);
   syncLayer();
@@ -2571,9 +2575,6 @@ window.canopy = {
     for (const el of document.querySelectorAll('[data-shortcut-chip]')) {
       el.textContent = shortcut(el.dataset.shortcutChip, 'chip');
       el.hidden = !el.textContent;
-    }
-    for (const el of document.querySelectorAll('[data-switcher-key]')) {
-      el.textContent = value.switcher[el.dataset.switcherKey];
     }
     for (const el of document.querySelectorAll('[data-shortcut-text]')) {
       el.textContent = shortcut(el.dataset.shortcutText);

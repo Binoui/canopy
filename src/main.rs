@@ -43,7 +43,7 @@ computer.
 const HELP_PROFILE: &str = "Your profile and browsing are kept in XDG_DATA_HOME/canopy.";
 
 fn help() -> String {
-    format!("{HELP_INTRO}\n{}\n{HELP_PROFILE}", default_help_shortcuts())
+    format!("{HELP_INTRO}\n{}\nChange keyboard shortcuts in Settings → Keyboard shortcuts.\n\n{HELP_PROFILE}", default_help_shortcuts())
 }
 
 fn main() {
@@ -399,22 +399,18 @@ mod tests {
         let columns: Vec<_> = default_help_shortcuts()
             .lines()
             .map(|line| {
-                line.chars().position(|c| c == ' ').unwrap()
-                    + line
-                        .chars()
-                        .skip_while(|c| *c != ' ')
-                        .take_while(|c| *c == ' ')
-                        .count()
+                let (label, rest) = line.split_once("  ").unwrap();
+                label.chars().count() + 2 + rest.len() - rest.trim_start().len()
             })
             .collect();
         assert!(
-            !columns.is_empty() && columns.iter().all(|column| *column == 16),
+            !columns.is_empty() && columns.iter().all(|column| *column == 23),
             "shortcut description columns: {columns:?}"
         );
     }
 
     #[test]
-    fn help_matches_legacy_output() {
+    fn help_lists_default_shortcuts_and_mentions_settings() {
         assert_eq!(
             format!("{}\n", help()),
             include_str!("../tests/fixtures/shortcut-help.txt")
