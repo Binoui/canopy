@@ -25,7 +25,7 @@ use crate::{
     forest::ForestProjection,
     logins::{Login, LoginProvider, SavedLogin},
     pages::{DownloadEvent, FindAction, FindTarget, Go, PageEvent, Pages},
-    shortcuts::{is_modifier_key, KeyCombo, Shortcut, ShortcutSettings},
+    shortcuts::{is_modifier_key, EditorKey, EditorUpdate, KeyCombo, Shortcut, ShortcutSettings},
 };
 
 pub struct Ui {
@@ -38,7 +38,8 @@ pub struct Ui {
     canopy_layout: canopy_layout::Setting,
     mail_popup: mail_popup::Setting,
     refresh_scheduled: Cell<bool>,
-    shortcuts: ShortcutSettings,
+    shortcuts: RefCell<ShortcutSettings>,
+    shortcut_clicks: gtk::GestureMultiPress,
     /// The pending target the chrome last drew, so a load that starts or ends redraws it.
     shown_pending: RefCell<Option<crate::browser::PendingTarget>>,
     me: Weak<Ui>,
@@ -85,6 +86,9 @@ impl Ui {
         let pages = Pages::mount(&fixed, browser, data_dir)?;
         let mail_origin = crate::mail::Origin::configured();
         let (shortcuts, shortcuts_problem) = ShortcutSettings::load(data_dir);
+        let shortcut_clicks = gtk::GestureMultiPress::new(&window);
+        shortcut_clicks.set_button(0);
+        shortcut_clicks.set_propagation_phase(gtk::PropagationPhase::Capture);
         let chrome =
             HtmlChrome::mount_with_mail(&fixed, &pages, mail_origin.clone(), data_dir, &shortcuts)?;
         pages.set_chrome(&chrome.native());
@@ -135,7 +139,8 @@ impl Ui {
                 pages,
                 chrome,
                 refresh_scheduled: Cell::new(false),
-                shortcuts,
+                shortcuts: RefCell::new(shortcuts),
+                shortcut_clicks,
                 shown_pending: RefCell::new(None),
                 me: me.clone(),
                 inbox,
@@ -183,7 +188,12 @@ impl Ui {
             let Some(ui) = weak.upgrade() else { return };
             ui.chrome.raise();
             match event {
-                PageEvent::FormReturn(open) => ui.chrome.form_return(open),
+                PageEvent::FormReturn(open) => {
+                    if open.is_some() {
+                        ui.dismiss_shortcut_editor();
+                    }
+                    ui.chrome.form_return(open);
+                }
                 PageEvent::PageScale(value) => ui.chrome.page_scale(value),
                 PageEvent::Selected => ui.refresh(),
                 PageEvent::BranchMoved => {
@@ -230,7 +240,19 @@ impl Ui {
                         .open_palette(PaletteScope::From(visit), PaletteSeed::Empty);
                 }
                 PageEvent::Find(update) => ui.chrome.find(update),
-                PageEvent::Fullscreen(on) => ui.chrome.set_fullscreen(on),
+                PageEvent::Fullscreen(on) => {
+                    if on {
+                        ui.dismiss_shortcut_editor();
+                    }
+                    ui.chrome.set_fullscreen(on);
+                }
+            }
+        });
+        let weak = Rc::downgrade(&ui);
+        ui.shortcut_clicks.connect_pressed(move |_, _, _, _| {
+            if let Some(ui) = weak.upgrade() {
+                let update = ui.shortcuts.borrow_mut().editor_pointer_press();
+                ui.update_shortcut_editor(Ok(update));
             }
         });
         let weak = Rc::downgrade(&ui);
@@ -241,6 +263,9 @@ impl Ui {
         let weak = Rc::downgrade(&ui);
         ui.window.connect_key_release_event(move |_, event| {
             if let Some(ui) = weak.upgrade() {
+                ui.shortcuts
+                    .borrow_mut()
+                    .editor_key_release(event.hardware_keycode());
                 ui.chrome.release_switcher_modifier(event.keyval());
             }
             // Page scale also listens for Control's release on this window.
@@ -249,6 +274,8 @@ impl Ui {
         let weak = Rc::downgrade(&ui);
         ui.window.connect_focus_out_event(move |_, _| {
             if let Some(ui) = weak.upgrade() {
+                let update = ui.shortcuts.borrow_mut().editor_focus_out();
+                ui.update_shortcut_editor(Ok(update));
                 ui.chrome.finish_switcher(false);
             }
             glib::Propagation::Proceed
@@ -506,6 +533,21 @@ impl Ui {
         self.chrome.toast(Toast::Error(message.to_owned()));
     }
 
+    fn dismiss_shortcut_editor(&self) {
+        let update = self.shortcuts.borrow_mut().close_editor(false);
+        self.update_shortcut_editor(Ok(update));
+    }
+
+    fn update_shortcut_editor(&self, outcome: Result<EditorUpdate>) {
+        match outcome {
+            Ok(EditorUpdate::Unchanged) => {}
+            Ok(update) => self
+                .chrome
+                .present_shortcuts(self.shortcuts.borrow().presentation(), update),
+            Err(error) => self.report_error(&error.to_string()),
+        }
+    }
+
     fn open_palette(&self, seed: PaletteSeed) {
         self.pages.answer_form_return(false);
         let current = self.snapshot().ok().and_then(|s| s.current);
@@ -532,8 +574,18 @@ impl Ui {
         }
         let keymap = gdk::Keymap::for_display(&self.window.display());
         let combo = KeyCombo::from_event(event, keymap.as_ref());
+        let editor = self.shortcuts.borrow_mut().editor_key(event, combo);
+        match editor {
+            EditorKey::Dispatch => {}
+            EditorKey::Chrome => return glib::Propagation::Proceed,
+            EditorKey::Take(update) => {
+                self.update_shortcut_editor(update);
+                return glib::Propagation::Stop;
+            }
+        }
         let shortcut = self
             .shortcuts
+            .borrow()
             .bindings()
             .resolve(combo)
             .filter(|key| *key != Shortcut::PastePlainText || self.pages.has_focus());
@@ -668,6 +720,13 @@ impl ChromeHost for Ui {
     fn dispatch(&self, intent: ChromeIntent) {
         let Some(ui) = self.me.upgrade() else { return };
         match intent {
+            ChromeIntent::Shortcuts(intent) => {
+                if !self.pages.is_fullscreen() && !self.pages.has_form_return() {
+                    let update = self.shortcuts.borrow_mut().editor_input(intent);
+                    self.update_shortcut_editor(update);
+                }
+                return;
+            }
             ChromeIntent::Mail(ask) => {
                 self.mail.ask(ask);
                 return;
@@ -727,7 +786,8 @@ impl ChromeHost for Ui {
             self.schedule_refresh();
         }
         let result = match intent {
-            ChromeIntent::AnswerFormReturn { .. }
+            ChromeIntent::Shortcuts(_)
+            | ChromeIntent::AnswerFormReturn { .. }
             | ChromeIntent::Mail(_)
             | ChromeIntent::MailOpened
             | ChromeIntent::SetMailGrouping(_) => unreachable!(),

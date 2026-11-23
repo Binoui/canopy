@@ -448,6 +448,49 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .reader-close { position: absolute; right: 12px; top: 12px; }
 .reader-list { overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
 
+/* ---------- keyboard shortcuts ---------- */
+#shortcut-editor { position: absolute; inset: 0; z-index: 36; }
+.shortcut-editor-box { max-height: calc(var(--window-height, 800px) - 32px); gap: 11px; }
+.shortcut-editor-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.shortcut-editor-head h2 { margin: 0; font-size: 17px; font-weight: 600; }
+#shortcut-editor-search { margin: 0; width: 100%; flex: none; background: var(--tile); min-height: 32px; }
+#shortcut-editor-search:focus-visible { outline: none; }
+.shortcut-editor-scroll { flex: 1; min-height: 0; overflow: auto; padding: 0 4px; scrollbar-width: thin; }
+#shortcut-editor-empty { margin: 5px 0; }
+.shortcut-editor-group + .shortcut-editor-group { margin-top: 10px; border-top: 1px solid var(--border); }
+.shortcut-editor-group h3 { margin: 0; }
+.shortcut-editor-row {
+  display: grid; grid-template-columns: minmax(160px, 4fr) minmax(0, 5fr); align-items: center; gap: 5px 12px;
+  padding: 6px 8px; border-radius: 8px;
+}
+.shortcut-editor-row:is(:focus-within, [data-pending]) { background: var(--hover); }
+.shortcut-editor-row:focus-visible { outline-offset: -2px; }
+.shortcut-editor-keys { display: flex; justify-content: flex-end; align-items: center; gap: 5px; flex-wrap: wrap; }
+.shortcut-editor-row .action { min-height: 24px; }
+.shortcut-editor-keys kbd, .shortcut-editor-key {
+  font: 11px "Inter", sans-serif; background: var(--tile); border: 1px solid var(--tile-border);
+  border-radius: 5px; padding: 4px 7px; min-height: 24px; white-space: nowrap;
+}
+.shortcut-editor-key kbd { font: inherit; background: none; border: 0; padding: 0; min-height: 0; }
+.shortcut-editor-key:hover { border-color: var(--faint); }
+.shortcut-editor-keys [data-capturing] { border-color: var(--muted); background: var(--tile); }
+.shortcut-editor-keys [data-capturing] kbd, .shortcut-editor-status .action { color: var(--text); }
+.shortcut-editor-note, .shortcut-editor-status { color: var(--muted); font-size: 11.5px; }
+.shortcut-editor-status {
+  grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 22px;
+}
+.shortcut-editor-status span, .shortcut-editor-footer span { flex: 1; }
+.shortcut-editor-footer {
+  display: flex; justify-content: flex-end; align-items: center; flex-wrap: wrap; gap: 7px;
+  border-top: 1px solid var(--border); padding-top: 10px; min-height: 35px;
+}
+.shortcut-editor-footer .action { min-height: 26px; }
+@media (max-width: 480px) {
+  .shortcut-editor-box { max-width: calc(100% - 20px); padding: 12px; }
+  .shortcut-editor-row { grid-template-columns: minmax(0, 1fr); }
+  .shortcut-editor-keys { justify-content: flex-start; }
+}
+
 /* ---------- toast ---------- */
 #toast, #error-toast {
   position: absolute; left: 50%; top: calc(var(--header) + 9px); transform: translateX(-50%); width: max-content; max-width: min(560px, calc(100% - 40px));

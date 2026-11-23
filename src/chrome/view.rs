@@ -49,6 +49,8 @@ pub(crate) fn shortcuts(presentation: Presentation) -> Value {
         "digitLabels": presentation.digit_labels,
         "help": help,
         "bookmarkHint": bookmark_hint,
+        "editor": presentation.editor,
+        "revision": presentation.revision,
     })
 }
 

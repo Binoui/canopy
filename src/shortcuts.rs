@@ -1,6 +1,7 @@
 mod bindings;
+mod editor;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::{
     chrome::{ForestView, PaletteSeed},
@@ -10,6 +11,9 @@ use gdk::keys::{constants as key, Key};
 use gdk::ModifierType as M;
 
 use bindings::Bindings;
+use editor::Editor;
+pub use editor::EditorIntent;
+pub(crate) use editor::{EditorKey, EditorUpdate};
 
 const TREE_DIGITS: std::ops::RangeInclusive<u32> = 1..=9;
 
@@ -204,10 +208,6 @@ struct Command {
     id: CommandId,
     stable_id: &'static str,
     name: &'static str,
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Command group for the shortcut editor")
-    )]
     group: Group,
     defaults: Defaults,
 }
@@ -227,7 +227,6 @@ enum Group {
 }
 
 impl Group {
-    #[cfg(test)]
     fn label(&self) -> &'static str {
         match self {
             Self::Navigation => "Navigation",
@@ -393,19 +392,31 @@ impl CommandId {
 }
 
 pub(crate) struct ShortcutSettings {
+    path: PathBuf,
     bindings: Bindings,
+    editor: Editor,
 }
 
 impl ShortcutSettings {
     pub(crate) fn defaults() -> Self {
         Self {
+            path: PathBuf::new(),
             bindings: Bindings::defaults(),
+            editor: Editor::default(),
         }
     }
 
     pub(crate) fn load(data_dir: &Path) -> (Self, Option<String>) {
-        let (bindings, problem) = Bindings::load(&data_dir.join("shortcuts"));
-        (Self { bindings }, problem)
+        let path = data_dir.join("shortcuts");
+        let (bindings, problem) = Bindings::load(&path);
+        (
+            Self {
+                path,
+                bindings,
+                editor: Editor::default(),
+            },
+            problem,
+        )
     }
 
     pub(crate) fn bindings(&self) -> &Bindings {
@@ -439,6 +450,8 @@ impl ShortcutSettings {
             labels,
             digit_labels,
             switcher,
+            editor: self.editor.presentation(bindings),
+            revision: self.editor.revision,
         }
     }
 }
@@ -456,6 +469,8 @@ pub(crate) struct Presentation {
     pub(crate) labels: std::collections::BTreeMap<&'static str, Labels>,
     pub(crate) digit_labels: Vec<String>,
     pub(crate) switcher: Option<SwitcherFooter>,
+    pub(crate) editor: Option<serde_json::Value>,
+    pub(crate) revision: u64,
 }
 
 impl Presentation {

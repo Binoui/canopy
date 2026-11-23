@@ -130,6 +130,21 @@
   <div class="scrim"></div>
   <div class="reader-box" id="reader-box"></div>
 </div>
+<div id="shortcut-editor" role="dialog" aria-modal="true" aria-labelledby="shortcut-editor-title" hidden>
+  <div class="scrim"></div>
+  <div class="reader-box shortcut-editor-box">
+    <header class="shortcut-editor-head">
+      <h2 id="shortcut-editor-title">Keyboard shortcuts</h2>
+      <button id="shortcut-editor-close" class="icon-button" data-shortcut-action="close" aria-label="Close keyboard shortcuts"></button>
+    </header>
+    <input id="shortcut-editor-search" class="menu-input" type="search" aria-label="Search shortcuts" placeholder="Search by name or key" spellcheck="false" autocomplete="off">
+    <div class="shortcut-editor-scroll">
+      <div id="shortcut-editor-rows"></div>
+      <p id="shortcut-editor-empty" class="hint-line" role="status" hidden>No matching shortcuts</p>
+    </div>
+    <div id="shortcut-editor-footer" class="shortcut-editor-footer"></div>
+  </div>
+</div>
 
 <div id="toast" hidden></div>
 <div id="toast-status" class="live-region" role="status" aria-atomic="true"></div>

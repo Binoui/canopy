@@ -4,29 +4,43 @@ use std::{
     path::Path,
 };
 
+use anyhow::Context;
+
 use super::{key, Command, CommandId, Defaults, Key, KeyCombo, Modifiers, Shortcut, COMMANDS};
 
 pub(crate) struct Bindings {
     active: Vec<Vec<KeyCombo>>,
+    explicit: Overrides,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct EditableId(CommandId);
+pub(super) struct EditableId(CommandId);
 
 impl EditableId {
-    fn named(name: &str) -> Option<Self> {
+    pub(super) fn named(name: &str) -> Option<Self> {
         COMMANDS
             .iter()
             .find(|row| row.stable_id == name && row.editable())
             .map(|row| Self(row.id))
     }
+
+    pub(super) fn id(self) -> CommandId {
+        self.0
+    }
+
+    fn defaults(self) -> &'static [KeyCombo] {
+        let Defaults::Exact { combos, .. } = self.0.command().defaults else {
+            unreachable!("an editable command has exact defaults");
+        };
+        combos
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct EditableCombo(KeyCombo);
+pub(super) struct EditableCombo(KeyCombo);
 
-#[derive(Debug, Eq, PartialEq)]
-enum Refusal {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Refusal {
     Typing,
     TextEditing,
     Fixed,
@@ -36,7 +50,7 @@ enum Refusal {
 }
 
 impl EditableCombo {
-    fn new(combo: KeyCombo) -> Result<Self, Refusal> {
+    pub(super) fn new(combo: KeyCombo) -> Result<Self, Refusal> {
         let key = combo.key;
         let held = combo.held;
         if !Modifiers::EDITABLE.contains(held.0) {
@@ -135,19 +149,52 @@ impl EditableCombo {
         };
         Self::new(KeyCombo::new(held, key))
     }
+
+    fn file_name(self) -> String {
+        let combo = self.0;
+        let name = combo.key.name().expect("an editable key has a GDK name");
+        combo.with_key_name(&name, "+")
+    }
+
+    pub(super) fn combo(self) -> KeyCombo {
+        self.0
+    }
 }
 
 type Overrides = BTreeMap<EditableId, Vec<EditableCombo>>;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Slot {
+    Add,
+    Replace(usize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Target {
+    pub(super) command: EditableId,
+    pub(super) slot: Slot,
+}
+
+pub(super) enum Edit {
+    Assign {
+        target: Target,
+        combo: EditableCombo,
+        from: Option<EditableId>,
+    },
+    Remove(EditableId, usize),
+    Reset(EditableId),
+    ResetAll,
+}
+
 impl Bindings {
     pub(super) fn defaults() -> Self {
-        Self::compose(COMMANDS, &Overrides::new())
+        Self::compose(COMMANDS, Overrides::new())
     }
 
-    fn compose(commands: &[Command], overrides: &Overrides) -> Self {
-        let mut assigned: HashSet<_> = overrides.values().flatten().copied().collect();
+    fn compose(commands: &[Command], overrides: Overrides) -> Self {
+        let mut assigned: HashSet<_> = overrides.values().flatten().map(|combo| combo.0).collect();
         if let Defaults::Exact { combos, .. } = CommandId::Escape.command().defaults {
-            assigned.extend(combos.iter().copied().map(EditableCombo));
+            assigned.extend(combos.iter().copied());
         }
         let active = commands
             .iter()
@@ -163,12 +210,15 @@ impl Bindings {
                     None => combos
                         .iter()
                         .copied()
-                        .filter(|&combo| assigned.insert(EditableCombo(combo)))
+                        .filter(|&combo| assigned.insert(combo))
                         .collect(),
                 }
             })
             .collect();
-        Self { active }
+        Self {
+            active,
+            explicit: overrides,
+        }
     }
 
     pub(crate) fn resolve(&self, combo: KeyCombo) -> Option<Shortcut> {
@@ -181,7 +231,22 @@ impl Bindings {
     }
 
     pub(super) fn primary(&self, id: CommandId) -> Option<KeyCombo> {
-        self.active[id as usize].first().copied()
+        self.keys(id).first().copied()
+    }
+
+    pub(super) fn keys(&self, id: CommandId) -> &[KeyCombo] {
+        &self.active[id as usize]
+    }
+
+    pub(super) fn owner(&self, combo: EditableCombo) -> Option<EditableId> {
+        COMMANDS
+            .iter()
+            .find(|row| self.keys(row.id).contains(&combo.0))
+            .map(|row| EditableId(row.id))
+    }
+
+    pub(super) fn any_changed(&self) -> bool {
+        !self.explicit.is_empty()
     }
 
     pub(super) fn load(path: &Path) -> (Self, Option<String>) {
@@ -189,9 +254,13 @@ impl Bindings {
             Ok(bytes) => {
                 let (overrides, skipped) = parse_overrides(&bytes);
                 let problem = skipped.map(|(first, count)| {
-                    format!("Skipped {count} invalid shortcut entries in shortcuts (first on line {first}).")
+                    if count == 1 {
+                        format!("Skipped an invalid shortcut entry on line {first} of shortcuts.")
+                    } else {
+                        format!("Skipped {count} invalid shortcut entries in shortcuts (first on line {first}).")
+                    }
                 });
-                (Self::compose(COMMANDS, &overrides), problem)
+                (Self::compose(COMMANDS, overrides), problem)
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => (Self::defaults(), None),
             Err(error) => (
@@ -200,6 +269,109 @@ impl Bindings {
             ),
         }
     }
+
+    pub(super) fn commit(&mut self, path: &Path, edit: Edit) -> anyhow::Result<()> {
+        let explicit = self.edit(edit);
+        if explicit != self.explicit {
+            crate::atomic_file::write(path, encode_overrides(&explicit))
+                .context("Could not save keyboard shortcuts")?;
+            *self = Self::compose(COMMANDS, explicit);
+        }
+        Ok(())
+    }
+
+    fn edit(&self, edit: Edit) -> Overrides {
+        let mut explicit = self.explicit.clone();
+        let effective = |id: EditableId| {
+            self.keys(id.0)
+                .iter()
+                .copied()
+                .map(EditableCombo)
+                .collect::<Vec<_>>()
+        };
+        match edit {
+            Edit::Assign {
+                target,
+                combo,
+                from,
+            } => {
+                if let Some(from) = from {
+                    let mut keys = effective(from);
+                    keys.retain(|&key| key != combo);
+                    set_override(&mut explicit, from, keys);
+                }
+                let mut keys = effective(target.command);
+                match target.slot {
+                    Slot::Add if !keys.contains(&combo) => keys.push(combo),
+                    Slot::Replace(index) if keys[index] != combo => {
+                        keys[index] = combo;
+                        if let Some(other) =
+                            (0..keys.len()).find(|&other| index != other && keys[other] == combo)
+                        {
+                            keys.remove(other);
+                        }
+                    }
+                    _ => return explicit,
+                }
+                set_override(&mut explicit, target.command, keys);
+            }
+            Edit::Remove(id, index) => {
+                let mut keys = effective(id);
+                keys.remove(index);
+                set_override(&mut explicit, id, keys);
+            }
+            Edit::Reset(id) => {
+                let defaults = id.defaults();
+                for row in COMMANDS
+                    .iter()
+                    .filter(|row| row.id != id.0 && row.editable())
+                {
+                    let other = EditableId(row.id);
+                    let mut keys = effective(other);
+                    let count = keys.len();
+                    keys.retain(|combo| !defaults.contains(&combo.0));
+                    if keys.len() != count {
+                        set_override(&mut explicit, other, keys);
+                    }
+                }
+                explicit.remove(&id);
+            }
+            Edit::ResetAll => explicit.clear(),
+        }
+        explicit
+    }
+}
+
+fn set_override(explicit: &mut Overrides, id: EditableId, combos: Vec<EditableCombo>) {
+    if combos
+        .iter()
+        .map(|combo| combo.0)
+        .eq(id.defaults().iter().copied())
+    {
+        explicit.remove(&id);
+    } else {
+        explicit.insert(id, combos);
+    }
+}
+
+fn encode_overrides(explicit: &Overrides) -> String {
+    use std::fmt::Write;
+    let mut output = String::new();
+    for (id, combos) in explicit {
+        let keys = combos
+            .iter()
+            .map(|combo| combo.file_name())
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(
+            output,
+            "{} ={space}{keys}",
+            id.0.stable_id(),
+            space = if keys.is_empty() { "" } else { " " }
+        )
+        .unwrap();
+    }
+    output
 }
 
 fn parse_overrides(bytes: &[u8]) -> (Overrides, Option<(usize, usize)>) {
@@ -216,19 +388,7 @@ fn parse_overrides(bytes: &[u8]) -> (Overrides, Option<(usize, usize)>) {
             if !seen.contains(&id.0) && combos.iter().all(|combo| !assigned.contains(combo)) {
                 seen.insert(id.0);
                 assigned.extend(combos.iter().copied());
-                let Defaults::Exact {
-                    combos: defaults, ..
-                } = id.0.command().defaults
-                else {
-                    unreachable!("an editable command has exact defaults");
-                };
-                if !combos
-                    .iter()
-                    .map(|combo| combo.0)
-                    .eq(defaults.iter().copied())
-                {
-                    overrides.insert(id, combos);
-                }
+                set_override(&mut overrides, id, combos);
                 continue;
             }
         }
@@ -316,7 +476,7 @@ mod tests {
                 },
             ],
         };
-        let bindings = Bindings::compose(&catalog, &overrides);
+        let bindings = Bindings::compose(&catalog, overrides);
         assert_eq!(bindings.resolve(combo("Ctrl+j")), Some(Shortcut::Find));
         assert_eq!(bindings.primary(CommandId::Reload), Some(combo("F5")));
     }
@@ -412,5 +572,123 @@ mod tests {
         ] {
             assert_eq!(combo(file).labels().chip, chip);
         }
+    }
+
+    #[test]
+    fn file_round_trip_keeps_only_explicit_differences() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("shortcuts");
+        fs::write(
+            &path,
+            "search = Ctrl+k\nreload = Ctrl+e\nfind = Ctrl+U+1F600, Ctrl+comma\n",
+        )
+        .unwrap();
+        let (mut bindings, issue) = Bindings::load(&path);
+        assert_eq!(issue, None);
+        assert_eq!(bindings.primary(CommandId::Forest), None);
+        bindings
+            .commit(&path, Edit::Remove(EditableId(CommandId::Bookmark), 0))
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "reload = Ctrl+e\nbookmark =\nfind = Ctrl+U+1F600, Ctrl+comma\n"
+        );
+        let (mut bindings, issue) = Bindings::load(&path);
+        assert_eq!(issue, None);
+        assert_eq!(
+            bindings.resolve(combo("Ctrl+U+1F600")),
+            Some(Shortcut::Find)
+        );
+        assert_eq!(bindings.resolve(combo("Ctrl+comma")), Some(Shortcut::Find));
+        bindings
+            .commit(&path, Edit::Remove(EditableId(CommandId::Reload), 0))
+            .unwrap();
+        assert_eq!(bindings.primary(CommandId::Forest), Some(combo("Ctrl+e")));
+    }
+
+    #[test]
+    fn failed_atomic_write_keeps_dispatch_and_the_existing_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("shortcuts");
+        fs::write(&path, "reload = F8\n").unwrap();
+        fs::create_dir(path.with_extension("tmp")).unwrap();
+        let (mut bindings, _) = Bindings::load(&path);
+        assert!(bindings.commit(&path, Edit::ResetAll).is_err());
+        assert_eq!(bindings.resolve(combo("F8")), Some(Shortcut::Reload));
+        assert_eq!(bindings.resolve(combo("F5")), None);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "reload = F8\n");
+    }
+
+    #[test]
+    fn reset_reclaims_defaults_and_leaves_the_other_row_changed() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("shortcuts");
+        fs::write(&path, "forest = Ctrl+r, F5, F8\n").unwrap();
+        let (mut bindings, _) = Bindings::load(&path);
+        assert_eq!(bindings.keys(CommandId::Reload), &[combo("Ctrl+Shift+r")]);
+        bindings
+            .commit(&path, Edit::Reset(EditableId(CommandId::Reload)))
+            .unwrap();
+        assert_eq!(
+            bindings.keys(CommandId::Reload),
+            &[combo("Ctrl+r"), combo("Ctrl+Shift+r"), combo("F5")]
+        );
+        assert_eq!(bindings.keys(CommandId::Forest), &[combo("F8")]);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "forest = F8\n");
+    }
+
+    #[test]
+    fn moving_a_default_removes_it_from_the_prior_owner_until_reset() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("shortcuts");
+        let mut bindings = Bindings::defaults();
+        bindings
+            .commit(
+                &path,
+                Edit::Assign {
+                    target: Target {
+                        command: EditableId(CommandId::Find),
+                        slot: Slot::Replace(0),
+                    },
+                    combo: EditableCombo::parse("F6").unwrap(),
+                    from: Some(EditableId(CommandId::ToggleFocus)),
+                },
+            )
+            .unwrap();
+        assert_eq!(bindings.resolve(combo("F6")), Some(Shortcut::Find));
+        bindings
+            .commit(&path, Edit::Remove(EditableId(CommandId::Find), 0))
+            .unwrap();
+        let (mut bindings, _) = Bindings::load(&path);
+        assert_eq!(bindings.resolve(combo("F6")), None);
+        bindings.commit(&path, Edit::ResetAll).unwrap();
+        assert_eq!(bindings.resolve(combo("F6")), Some(Shortcut::ToggleFocus));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "");
+    }
+
+    #[test]
+    fn recording_an_existing_chord_in_the_same_row_keeps_one_copy() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("shortcuts");
+        let mut bindings = Bindings::defaults();
+        let edit = |slot| Edit::Assign {
+            target: Target {
+                command: EditableId(CommandId::Reload),
+                slot,
+            },
+            combo: EditableCombo::parse("F5").unwrap(),
+            from: None,
+        };
+        bindings.commit(&path, edit(Slot::Add)).unwrap();
+        assert!(!path.exists());
+        bindings.commit(&path, edit(Slot::Replace(0))).unwrap();
+        assert_eq!(
+            bindings.keys(CommandId::Reload),
+            &[combo("F5"), combo("Ctrl+Shift+r")]
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "reload = F5, Ctrl+Shift+r\n"
+        );
     }
 }
