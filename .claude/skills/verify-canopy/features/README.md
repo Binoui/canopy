@@ -29,4 +29,4 @@ Each feature file opens with an H1 and one paragraph of user-visible behavior, t
 - [Back and forward](./back-and-forward.md) covers parent and child navigation by keyboard and mouse, cold restores, and closing overlays.
 - [Find in page](./find-in-page.md) covers the find bar: counting matches, stepping, closing, and closing when the page changes.
 - [Loading and Stop](./loading.md) covers foreground progress, Escape, and the current page's Stop action.
-- [Window shortcuts](./shortcuts.md) covers default combinations and their labels.
+- [Window shortcuts](./shortcuts.md) covers recording, labels, reset, and restart persistence.

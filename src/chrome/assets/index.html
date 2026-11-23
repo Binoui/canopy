@@ -100,7 +100,7 @@
   <div id="switcher-row" role="listbox" aria-label="Pages in this tree" tabindex="-1"><div id="switcher-run" role="presentation"></div></div>
   <div id="switcher-more" hidden></div>
   <div id="switcher-keys">
-    <span><kbd data-switcher-key="next"></kbd> <kbd>→</kbd> next</span>
+    <span><kbd data-switcher-key="next"></kbd> <kbd data-switcher-key="alternate" hidden></kbd> <kbd>→</kbd> next</span>
     <span><kbd data-switcher-key="previous"></kbd> <kbd>←</kbd> back</span>
     <span>Release <kbd data-switcher-key="hold"></kbd> or click to open</span>
     <span><kbd>Delete</kbd> dismiss</span>
@@ -129,6 +129,21 @@
 <div id="reader" role="dialog" aria-modal="true" aria-label="Saved text" hidden>
   <div class="scrim"></div>
   <div class="reader-box" id="reader-box"></div>
+</div>
+<div id="shortcut-editor" role="dialog" aria-modal="true" aria-labelledby="shortcut-editor-title" hidden>
+  <div class="scrim"></div>
+  <div class="reader-box shortcut-editor-box">
+    <header class="shortcut-editor-head">
+      <h2 id="shortcut-editor-title">Keyboard shortcuts</h2>
+      <button id="shortcut-editor-close" class="icon-button" data-shortcut-action="close" aria-label="Close keyboard shortcuts"></button>
+    </header>
+    <input id="shortcut-editor-search" class="menu-input" type="search" aria-label="Search shortcuts" placeholder="Search by name or key" spellcheck="false" autocomplete="off">
+    <div class="shortcut-editor-scroll">
+      <div id="shortcut-editor-rows"></div>
+      <p id="shortcut-editor-empty" class="hint-line" role="status" hidden>No matching shortcuts</p>
+    </div>
+    <div id="shortcut-editor-footer" class="shortcut-editor-footer"></div>
+  </div>
 </div>
 
 <div id="toast" hidden></div>

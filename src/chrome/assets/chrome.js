@@ -199,11 +199,11 @@ function setLayer(layer) {
 /// Tells Rust which layer the chrome can close and how far down its view must reach.
 /// Below the view, the page gets the pointer.
 function syncLayer() {
-  const surfaces = { formReturn: !!S.formReturn, reader: !!S.reader, palette: !!S.palette, popover: !!S.popover, list: !!S.list,
+  const surfaces = { formReturn: !!S.formReturn, shortcuts: !!S.keyboard?.editor, reader: !!S.reader, palette: !!S.palette, popover: !!S.popover, list: !!S.list,
     treeFilters: S.overlay === 'tree' && !!(S.frame.treeView.query || S.frame.treeView.waitingOnly),
     overlay: !!S.overlay, start: S.surface !== 'reading' && !!current() };
   let height = HEADER + REST;
-  if (S.formReturn || S.palette || S.reader || S.overlay || S.switcher || S.surface !== 'reading') {
+  if (surfaces.shortcuts || S.formReturn || S.palette || S.reader || S.overlay || S.switcher || S.surface !== 'reading') {
     height = null;
   } else {
     for (const el of [S.list && $('strip-list'), S.popover && $('popover')]) {
@@ -1053,6 +1053,10 @@ function showSwitcher(data) {
   $('switcher').hidden = false;
   $('switcher-row').scrollLeft = 0;
   $('switcher-more').textContent = `${data.moreWaiting} more waiting`;
+  for (const el of document.querySelectorAll('[data-switcher-key]')) {
+    el.textContent = data.keys[el.dataset.switcherKey] ?? '';
+    el.hidden = !el.textContent;
+  }
   layoutSwitcher(data.layout);
   selectSwitcher(data.selected);
   syncLayer();
@@ -1770,6 +1774,7 @@ function renderPopover() {
       + '<div class="menu-heading" data-key="theme-title">Theme</div><div class="segmented" id="theme-mode" data-key="theme">'
       + ['dark', 'light', 'system'].map((mode) => `<button data-mode="${mode}" aria-pressed="${mode === theme}">${mode[0].toUpperCase()}${mode.slice(1)}</button>`).join('')
       + '</div><div class="menu-separator" data-key="capture-separator"></div>'
+      + '<button class="menu-row" role="menuitem" id="menu-shortcuts" data-key="shortcuts" aria-haspopup="dialog"><span class="grow">Keyboard shortcuts</span></button>'
       + `<button class="menu-row" role="menuitem" id="menu-passwords" data-key="passwords" aria-haspopup="dialog"${S.passwordSettings ? '' : ' disabled'}><span class="grow">Passwords</span><span class="menu-detail">${esc(S.passwordSettings?.active ?? 'Unavailable')}</span></button>`
       + captureRow()
       + switchRow('blocking', blocking)
@@ -1777,6 +1782,7 @@ function renderPopover() {
       + '<div class="menu-separator" data-key="quit-separator"></div>'
       + item('menu-quit', 'Quit', 'quit'));
     const act = (id, fn) => { $(id).onclick = fn; };
+    act('menu-shortcuts', () => shortcutEditorAct('open'));
     act('menu-passwords', () => openPopover('passwords', $('menu-passwords')));
     act('menu-find', () => { closePopover(false); intent('find-open'); });
     act('menu-bookmark', () => { closePopover(false); intent('toggle-bookmark'); });
@@ -2359,6 +2365,178 @@ function closeReader(restoreFocus = true) {
 }
 $('reader').querySelector('.scrim').addEventListener('mousedown', closeReader);
 
+// ---------- keyboard shortcuts ----------
+
+function shortcutEditorAct(action, detail = {}) {
+  if (!S.keyboard) return;
+  intent('shortcuts', { action, session: S.keyboard.editor?.session ?? null, revision: S.keyboard.revision, ...detail });
+}
+
+function shortcutQuery(text) {
+  return text.toLowerCase().replace(/\bcontrol\b/g, 'ctrl').replace(/\+(?!\s*$)/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function shortcutRow(row, phase) {
+  const target = phase.command === row.id ? phase : null;
+  const recording = target?.kind === 'recording';
+  const label = (slot, fallback) => recording && target.slot === slot ? 'Press keys' : fallback;
+  const recordName = (slot, fallback) => recording && target.slot === slot ? `Press keys for ${row.name}` : fallback;
+  const keys = row.keys.map((key, index) => row.editable
+    ? `<button class="shortcut-editor-key" data-key="key-${index}" data-shortcut-action="record" data-slot="${index}"${recording && target.slot === index ? ' data-capturing' : ''}
+        aria-label="${esc(recordName(index, `Change ${key.text} for ${row.name}`))}">${kbd(label(index, key.chip))}</button>`
+    : kbd(key.chip)).join('');
+  const add = row.editable
+    ? `<button class="action" data-key="add" data-shortcut-action="record"${recording && target.slot === null ? ' data-capturing' : ''} aria-label="${esc(recordName(null, `Add shortcut for ${row.name}`))}">${label(null, 'Add')}</button>`
+    : '';
+  const reset = row.changed
+    ? `<button class="action" data-key="reset" data-shortcut-action="reset" aria-label="${esc(`Reset shortcuts for ${row.name}`)}">Reset</button>`
+    : '';
+  const status = recording
+    ? `<div class="shortcut-editor-status" data-key="status" role="status">${esc(target.explanation ?? `${shortcut('escape', 'chip')} cancels.`)}</div>`
+    : target?.kind === 'conflict'
+      ? `<div class="shortcut-editor-status" data-key="status" role="group" aria-label="Shortcut conflict">
+          <span data-key="message" role="status">${esc(`${target.key} is used by ${target.owner}.`)}</span>
+          <button class="action" data-key="move" data-shortcut-action="move-here">Move it here</button>
+          <button class="action" data-key="cancel" data-shortcut-action="cancel">Cancel</button>
+        </div>`
+      : '';
+  const name = row.editable ? row.name : `${row.name}, ${row.keys[0].text}. Cannot be changed.`;
+  return `<div class="shortcut-editor-row" role="group" aria-label="${esc(name)}" data-key="${row.id}" data-shortcut-row="${row.id}"${target ? ' data-pending' : ''}${row.editable ? '' : ' tabindex="0"'}>
+    <span data-key="name">${esc(row.name)}</span>
+    <div class="shortcut-editor-keys" data-key="keys">${keys || '<span class="shortcut-editor-note" data-key="note">Unassigned</span>'}${row.editable ? '' : '<span class="shortcut-editor-note" data-key="note">Cannot be changed</span>'}${add}${reset}</div>${status}
+  </div>`;
+}
+
+function paintShortcutEditor(editor, before, restoreFocus) {
+  const dialog = $('shortcut-editor');
+  if (!editor) {
+    if (dialog.hidden) return;
+    dialog.hidden = true;
+    if (restoreFocus) returnFocus('shortcuts');
+    else focusReturns.delete('shortcuts');
+    syncLayer();
+    return;
+  }
+  const search = $('shortcut-editor-search');
+  const opening = dialog.hidden;
+  if (opening) {
+    rememberFocus('shortcuts', $('settings-button'));
+    closePopover(false);
+    closePalette(false);
+    closeReader(false);
+    hideList();
+    search.value = '';
+    dialog.hidden = false;
+    dialog.querySelector('.shortcut-editor-scroll').scrollTop = 0;
+  }
+  const focused = document.activeElement;
+  const lastRow = focused?.closest('[data-shortcut-row]');
+  const footer = $('shortcut-editor-footer');
+  const wasInFooter = footer.contains(focused);
+  const query = shortcutQuery(search.value);
+  const html = editor.groups.map(group => {
+    const rows = group.rows.filter(row => editor.phase.command === row.id
+      || row.terms.some(term => shortcutQuery(term).includes(query)));
+    return rows.length ? `<section class="shortcut-editor-group" data-key="${esc(group.name)}">
+      <h3 class="menu-heading" data-key="name">${esc(group.name)}</h3>
+      ${rows.map(row => shortcutRow(row, editor.phase)).join('')}
+    </section>` : '';
+  }).join('');
+  patchChildren($('shortcut-editor-rows'), html);
+  $('shortcut-editor-empty').hidden = !!html;
+  const confirming = editor.phase.kind === 'confirm-reset-all';
+  patchChildren(footer, confirming
+    ? `<span role="status" data-key="question">Reset every shortcut to its default?</span>
+       <button class="action" data-key="confirm" data-shortcut-action="confirm-reset-all">Reset all</button>
+       <button class="action" data-key="cancel" data-shortcut-action="cancel">Cancel</button>`
+    : `<button class="action" data-key="ask" data-shortcut-action="ask-reset-all"${editor.anyChanged ? '' : ' disabled'}>Reset all</button>`);
+  for (const el of [search, $('shortcut-editor-close'), dialog.querySelector('.shortcut-editor-scroll')]) el.inert = confirming;
+
+  let next;
+  if (opening) next = search;
+  else if (confirming && before?.phase.kind !== editor.phase.kind) next = footer.querySelector('[data-key="cancel"]');
+  else if (editor.phase.kind === 'conflict' && before?.phase.kind !== editor.phase.kind) next = dialog.querySelector('[data-key="move"]');
+  else if (before?.phase.kind === 'conflict' && editor.phase.kind === 'idle') {
+    const slot = before.phase.slot;
+    next = lastRow?.querySelector(slot === null ? '[data-key="add"]' : `[data-key="key-${slot}"]`);
+  } else if (before?.phase.kind === 'recording' && editor.phase.kind === 'idle' && focused?.dataset.key === 'add') {
+    const oldRow = before.groups.flatMap(group => group.rows).find(row => row.id === before.phase.command);
+    next = lastRow?.querySelector(`[data-key="key-${oldRow.keys.length}"]`);
+  }
+  if (!next && (!dialog.contains(document.activeElement) || document.activeElement.disabled)) {
+    if (lastRow?.isConnected) {
+      const chips = lastRow.querySelectorAll('[data-slot]');
+      next = (focused.dataset.key === 'reset' ? chips[0] : [...chips].at(-1)) ?? lastRow.querySelector('[data-key="add"]');
+    } else if (wasInFooter && editor.anyChanged) next = footer.querySelector('[data-key="ask"]');
+    else next = search;
+  }
+  if (next) (next.isConnected ? next : search).focus();
+  if (opening) syncLayer();
+}
+
+const shortcutEditor = $('shortcut-editor');
+$('shortcut-editor-close').innerHTML = icon('close');
+$('shortcut-editor-search').addEventListener('input', () => {
+  const editor = S.keyboard.editor;
+  paintShortcutEditor(editor, editor, false);
+});
+shortcutEditor.querySelector('.scrim').addEventListener('mousedown', event => {
+  if (event.button === 0) shortcutEditorAct('scrim');
+});
+shortcutEditor.addEventListener('click', event => {
+  const button = event.target.closest('button[data-shortcut-action]');
+  if (!button) return;
+  button.focus({ preventScroll: true });
+  const command = button.closest('[data-shortcut-row]')?.dataset.shortcutRow;
+  const slot = button.hasAttribute('data-slot') ? Number(button.dataset.slot) : null;
+  shortcutEditorAct(button.dataset.shortcutAction, { command, slot });
+});
+shortcutEditor.addEventListener('keydown', event => {
+  const editor = S.keyboard.editor;
+  const footer = $('shortcut-editor-footer');
+  if (tabKey(event)) {
+    const controls = controlsIn(editor.phase.kind === 'confirm-reset-all' ? footer : shortcutEditor);
+    const index = controls.indexOf(document.activeElement);
+    const next = index < 0 ? (event.shiftKey ? controls.length - 1 : 0) : (index + (event.shiftKey ? controls.length - 1 : 1)) % controls.length;
+    controls[next]?.focus();
+    event.preventDefault();
+    return;
+  }
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+  const target = event.target;
+  const row = target.closest('[data-shortcut-row]');
+  if (['Delete', 'Backspace'].includes(event.key) && target.hasAttribute('data-slot')) {
+    event.preventDefault();
+    if (!event.repeat) shortcutEditorAct('remove', { command: row.dataset.shortcutRow, index: Number(target.dataset.slot) });
+    return;
+  }
+  if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(event.key) || editor.phase.kind === 'confirm-reset-all') return;
+  const rows = [...shortcutEditor.querySelectorAll('[data-shortcut-row]')];
+  const rowControls = el => el.tabIndex === 0 ? [el] : controlsIn(el);
+  let next;
+  if (target === $('shortcut-editor-search')) {
+    if (event.key === 'ArrowDown' && rows.length) next = rowControls(rows[0])[0];
+  } else if (row) {
+    const controls = rowControls(row);
+    const column = controls.indexOf(target);
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      next = controls[column + (event.key === 'ArrowLeft' ? -1 : 1)];
+    } else {
+      const other = rows[rows.indexOf(row) + (event.key === 'ArrowUp' ? -1 : 1)];
+      if (other) {
+        const choices = rowControls(other);
+        next = choices[Math.min(column, choices.length - 1)];
+      } else next = event.key === 'ArrowUp' ? $('shortcut-editor-search') : controlsIn(footer)[0];
+    }
+  } else if (event.key === 'ArrowUp' && footer.contains(target) && rows.length) {
+    next = rowControls(rows.at(-1))[0];
+  } else if (event.key === 'ArrowDown' && target === $('shortcut-editor-close')) next = $('shortcut-editor-search');
+  if (next) {
+    event.preventDefault();
+    next.focus();
+  }
+});
+
 const when = (at) => new Date(at).toLocaleString(undefined, { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 
 // ---------- find bar ----------
@@ -2563,7 +2741,10 @@ window.canopy = {
   },
   openPalette(options) { openPalette(options); },
   shortcuts(value) {
+    const before = S.keyboard;
+    if (before?.revision > value.revision) return;
     S.keyboard = value;
+    paintShortcutEditor(value.editor, before?.editor, value.returnFocus);
     for (const el of document.querySelectorAll('[data-shortcut-title]')) {
       el.dataset.baseTitle ??= el.title;
       setTooltip(el, shortcutTitle(el.dataset.baseTitle, el.dataset.shortcutTitle));
@@ -2571,9 +2752,6 @@ window.canopy = {
     for (const el of document.querySelectorAll('[data-shortcut-chip]')) {
       el.textContent = shortcut(el.dataset.shortcutChip, 'chip');
       el.hidden = !el.textContent;
-    }
-    for (const el of document.querySelectorAll('[data-switcher-key]')) {
-      el.textContent = value.switcher[el.dataset.switcherKey];
     }
     for (const el of document.querySelectorAll('[data-shortcut-text]')) {
       el.textContent = shortcut(el.dataset.shortcutText);

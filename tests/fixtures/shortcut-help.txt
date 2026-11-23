@@ -22,26 +22,38 @@ NAME is a password manager's helper, a program called canopy-login-NAME next to
 Canopy or on your PATH, or the path of one. "vault" goes back to the vault on this
 computer.
 
-Ctrl+K          Search your forest or go to an address
-Ctrl+L          Same, starting from the current address
-Ctrl+E          Forest view
-Ctrl+Shift+E    Current-tree workbench
-Ctrl+T          New tree
-Ctrl+W          Settle the tree, or close the open overlay
-Ctrl+Shift+T    Reopen the most recently settled tree or branch
-Ctrl+1…9        Switch to a tree
-Ctrl+Shift+Tab  Switch to the previously shown open tree
-Ctrl+Tab        Next waiting page, else the last read one; hold Ctrl to pick
-F1              How trees work
-F6              Move between the page and the tree strip
-Alt+←           Back to the parent page
-Alt+→           Forward to the last opened child
-Alt+↑/↓         Previous or next sibling
-Ctrl+R          Reload the page
-Ctrl+D          Toggle the page bookmark
-Ctrl+S          Remember the selection
-Ctrl+Shift+L    Fill the saved login for the page
-Ctrl+Shift+V    Paste as plain text, even where the page blocks pasting
-Ctrl+Q          Quit
+Ctrl+K                 Search your forest or go to an address
+Ctrl+L                 Same, starting from the current address
+Ctrl+E                 Forest view
+Ctrl+Shift+E           Current-tree workbench
+Ctrl+T                 New tree
+Ctrl+W                 Settle the tree, or close the open overlay
+Ctrl+Shift+T           Reopen the most recently settled tree or branch
+Ctrl+1…9               Switch to a tree
+Ctrl+Shift+Tab         Switch to the previously shown open tree
+Ctrl+Tab               Next waiting page, else the last read one; hold Ctrl to pick
+F1                     How trees work
+F6                     Move between the page and the tree strip
+Alt+←                  Back to the parent page
+Alt+→                  Forward to the last opened child
+Alt+↑/↓                Previous or next sibling
+Ctrl+R                 Reload the page
+Ctrl+D                 Toggle the page bookmark
+Ctrl+S                 Remember the selection
+Ctrl+Shift+L           Fill the saved login for the page
+Ctrl+Shift+V           Paste as plain text, even where the page blocks pasting
+Ctrl+H                 Forest history
+Ctrl+Shift+Page Up     Move tree left
+Ctrl+Shift+Page Down   Move tree right
+Ctrl+F                 Find in page
+Ctrl+G                 Find next match
+Ctrl+Shift+G           Find previous match
+Ctrl++                 Increase page size
+Ctrl+−                 Decrease page size
+Ctrl+0                 Reset page size
+Esc                    Close or stop
+Ctrl+Q                 Quit
+
+Change keyboard shortcuts in Settings → Keyboard shortcuts.
 
 Your profile and browsing are kept in XDG_DATA_HOME/canopy.

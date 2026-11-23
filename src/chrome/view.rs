@@ -33,10 +33,12 @@ pub(crate) struct Surfaces {
 
 pub(crate) fn shortcuts(presentation: Presentation) -> Value {
     let help = start::help(&presentation);
-    let bookmark_hint = format!(
-        "{} bookmarks the page you are on.",
-        presentation.text(CommandId::Bookmark)
-    );
+    let bookmark = presentation.text(CommandId::Bookmark);
+    let bookmark_hint = if bookmark.is_empty() {
+        "Bookmark the page you are on from Settings.".to_owned()
+    } else {
+        format!("{bookmark} bookmarks the page you are on.")
+    };
     let labels: serde_json::Map<_, _> = presentation
         .labels
         .into_iter()
@@ -45,13 +47,10 @@ pub(crate) fn shortcuts(presentation: Presentation) -> Value {
     json!({
         "labels": labels,
         "digitLabels": presentation.digit_labels,
-        "switcher": {
-            "next": presentation.switcher.next,
-            "previous": presentation.switcher.previous,
-            "hold": presentation.switcher.hold
-        },
         "help": help,
         "bookmarkHint": bookmark_hint,
+        "editor": presentation.editor,
+        "revision": presentation.revision,
     })
 }
 

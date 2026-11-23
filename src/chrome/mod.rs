@@ -179,6 +179,7 @@ pub enum ChromeIntent {
     SetTheme(ThemeMode),
     SetCanopyLayout(CanopyLayout),
     ShowTreesHelp(bool),
+    Shortcuts(crate::shortcuts::EditorIntent),
     /// Bookmark the page on screen, or remove that bookmark.
     ToggleBookmark,
     /// Open find on the page on screen.
@@ -272,8 +273,9 @@ pub struct HtmlChrome {
     inner: Rc<Inner>,
 }
 
-const ESCAPE_SURFACES: [&str; 8] = [
+const ESCAPE_SURFACES: [&str; 9] = [
     "formReturn",
+    "shortcuts",
     "reader",
     "palette",
     "popover",
@@ -457,6 +459,24 @@ impl HtmlChrome {
     /// Connects the browser the chrome sends its intents and queries to.
     pub fn attach(&self, host: Weak<dyn ChromeHost>) {
         *self.inner.host.borrow_mut() = Some(host);
+    }
+
+    pub(crate) fn present_shortcuts(
+        &self,
+        presentation: crate::shortcuts::Presentation,
+        update: crate::shortcuts::EditorUpdate,
+    ) {
+        use crate::shortcuts::EditorUpdate;
+        let inner = &self.inner;
+        if update == EditorUpdate::Open {
+            inner.finish_switcher(false);
+            inner.cover.set(None);
+            inner.apply_bounds();
+            let _ = inner.view.focus();
+        }
+        let mut value = view::shortcuts(presentation);
+        value["returnFocus"] = json!(matches!(update, EditorUpdate::Close { return_focus: true }));
+        inner.call("shortcuts", &[value]);
     }
 
     pub fn present(&self, mut frame: ChromeFrame) {
@@ -718,7 +738,12 @@ impl HtmlChrome {
     pub fn escape(&self) -> bool {
         use gtk::prelude::WidgetExt;
         use wry::WebViewExtUnix;
-        if let Some(surface) = self.inner.escape_surface.get() {
+        if let Some(surface) = self
+            .inner
+            .escape_surface
+            .get()
+            .filter(|&kind| kind != "shortcuts")
+        {
             if surface == "overlay" {
                 if let Some(frame) = self.inner.frame.borrow().as_ref() {
                     let reply = self
@@ -1433,6 +1458,7 @@ impl Inner {
                 _ => ThemeMode::System,
             }),
             "trees-help" => ChromeIntent::ShowTreesHelp(message["show"].as_bool()?),
+            "shortcuts" => ChromeIntent::Shortcuts(crate::shortcuts::EditorIntent::parse(message)?),
             "toggle-bookmark" => ChromeIntent::ToggleBookmark,
             "find-open" => ChromeIntent::OpenFind,
             "quit" => ChromeIntent::Quit,
