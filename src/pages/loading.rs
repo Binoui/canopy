@@ -164,7 +164,7 @@ impl Pages {
         self.commands
             .borrow()
             .iter()
-            .any(|c| matches!(c, Command::Go(..) | Command::Reload))
+            .any(|c| matches!(c, Command::Go(..) | Command::Reload(_)))
     }
 
     fn loading_readout(&self) -> LoadingReadout {
@@ -203,7 +203,7 @@ impl Pages {
         }
         self.commands
             .borrow_mut()
-            .retain(|c| !matches!(c, Command::Go(..) | Command::Reload));
+            .retain(|c| !matches!(c, Command::Go(..) | Command::Reload(_)));
         if let Some(page) = &page {
             page.cancel_foreground();
         }

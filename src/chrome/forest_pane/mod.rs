@@ -347,6 +347,7 @@ mod tests {
             live: Default::default(),
             playing: Default::default(),
             capture_enabled: true,
+            blocking: Default::default(),
             trees_help: true,
             theme: crate::browser::ThemeMode::Dark,
             declined: Default::default(),

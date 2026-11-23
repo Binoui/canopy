@@ -128,6 +128,7 @@ fn main() -> Result<()> {
             forward: None,
             pending: None,
             capture_enabled: false,
+            blocking: Default::default(),
             trees_help: true,
             theme: ThemeMode::Light,
         };

@@ -82,7 +82,7 @@ impl Ui {
         let fixed = crate::pages::stack::Stack::fixed();
         scroller.add(&fixed);
         window.add(&scroller);
-        let pages = Pages::mount(&fixed, browser, &data_dir.join("profile"))?;
+        let pages = Pages::mount(&fixed, browser, data_dir)?;
         let mail_origin = crate::mail::Origin::configured();
         let chrome = HtmlChrome::mount_with_mail(&fixed, &pages, mail_origin.clone(), data_dir)?;
         pages.set_chrome(&chrome.native());
@@ -189,7 +189,7 @@ impl Ui {
                     ui.schedule_refresh();
                 }
                 PageEvent::Changed | PageEvent::Loading(false) => ui.schedule_refresh(),
-                PageEvent::Loading(true) => {}
+                PageEvent::Loading(true) | PageEvent::BlockingStoreReady => {}
                 PageEvent::LoadState(value) => {
                     if ui.pages.pending_target() != *ui.shown_pending.borrow() {
                         ui.schedule_refresh();
@@ -214,7 +214,9 @@ impl Ui {
                     ui.schedule_refresh();
                 }
                 PageEvent::Settled(message) => ui.chrome.settled(&message),
-                PageEvent::Error(message) => ui.chrome.toast(Toast::Error(message)),
+                PageEvent::Error(message) | PageEvent::BlockingError(message) => {
+                    ui.chrome.toast(Toast::Error(message));
+                }
                 PageEvent::Remembered(_) => ui
                     .chrome
                     .toast(Toast::Info("Selection remembered on this computer.".into())),
@@ -419,6 +421,7 @@ impl Ui {
                 playing: self.pages.playing_visits(),
                 forest,
                 capture_enabled: browser.capture_enabled()?,
+                blocking: self.pages.blocking_view(),
                 trees_help: browser.trees_help()?,
                 theme: browser.theme_mode()?,
                 declined: browser.declined()?,
@@ -1073,6 +1076,12 @@ impl ChromeHost for Ui {
             ChromeIntent::ReadCapture(id) => ui.read_capture(id),
             ChromeIntent::ReadCaptures(visit) => ui.read_captures(visit),
             ChromeIntent::OpenSaved(id) => self.pages.go(Go::Saved(id)),
+            ChromeIntent::SetBlocking(on) => self.pages.set_blocking(on),
+            ChromeIntent::SetSiteBlocking { document, on } => {
+                let result = self.pages.set_site_blocking(document, on);
+                self.schedule_refresh();
+                result
+            }
             ChromeIntent::SetCaptureEnabled(enabled) => {
                 let result = self.pages.set_capture_enabled(enabled);
                 self.schedule_refresh();

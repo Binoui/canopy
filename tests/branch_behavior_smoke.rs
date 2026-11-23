@@ -236,11 +236,7 @@ impl Fixture {
         let window = gtk::Window::new(gtk::WindowType::Toplevel);
         window.set_default_size(1000, 800);
         window.add(&fixed);
-        let pages = Pages::mount(
-            &fixed,
-            Browser::open(&dir.join("forest.sqlite3"))?,
-            &dir.join("profile"),
-        )?;
+        let pages = Pages::mount(&fixed, Browser::open(&dir.join("forest.sqlite3"))?, dir)?;
         window.show_all();
         pages.resize(1000., 800.);
         wait("initial page", || {

@@ -8,6 +8,12 @@ use canopy::{
 use gtk::prelude::*;
 use url::Url;
 
+const DEFAULT_BLOCKLISTS: [&str; 3] = [
+    "https://easylist.to/easylist/easylist.txt",
+    "https://easylist.to/easylist/easyprivacy.txt",
+    "https://easylist-downloads.adblockplus.org/liste_fr.txt",
+];
+
 const HELP: &str = "Canopy
 
 Usage: canopy [--data-dir PATH] [ADDRESS...]
@@ -205,6 +211,9 @@ fn run() -> Result<()> {
         Launch::Primary(instance) => instance,
         Launch::Forwarded => return Ok(()),
     };
+    if std::env::var_os("CANOPY_BLOCKLISTS").is_none() {
+        std::env::set_var("CANOPY_BLOCKLISTS", DEFAULT_BLOCKLISTS.join(" "));
+    }
     canopy::init_desktop()?;
     let ui = canopy::ui::Ui::new(&data_dir)?;
     ui.window.connect_delete_event(|_, _| {

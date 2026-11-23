@@ -1628,6 +1628,8 @@ function renderPopover() {
   } else if (kind === 'settings') {
     const theme = S.frame?.theme ?? 'dark';
     const page = current();
+    const blocking = S.frame?.blocking;
+    const site = pageShows() ? blocking?.site : null;
     const onPage = !!(page && visit(page));
     const bookmarked = !!S.frame?.bookmarked;
     const percent = S.pageScale?.page === page ? S.pageScale.percent : 100;
@@ -1644,6 +1646,7 @@ function renderPopover() {
       + item('menu-copy', 'Copy address', '', onPage)
       + item('menu-reload', 'Reload', 'Ctrl R', onPage)
       + `<div class="menu-row menu-zoom" data-key="zoom"><span class="grow">Page size</span><span class="zoom-steps">${zoomButton('menu-zoom-out', '−', 'Smaller', 'Smaller · Ctrl+−')}${zoomButton('menu-zoom-reset', `${percent}%`, 'Reset page size', 'Reset page size · Ctrl+0')}${zoomButton('menu-zoom-in', '+', 'Larger', 'Larger · Ctrl++')}</span></div>`
+      + switchRow('site-blocking', site)
       + '<div class="menu-separator" data-key="trees-separator"></div><div class="menu-heading" data-key="trees-title">Trees</div>'
       + item('menu-back', back ? `Back to ${back.label}` : 'Back', 'Alt Left', !!back)
       + item('menu-forward', forward ? `Forward to ${forward.label}` : 'Forward', 'Alt Right', !!forward)
@@ -1656,6 +1659,7 @@ function renderPopover() {
       + '</div><div class="menu-separator" data-key="capture-separator"></div>'
       + `<button class="menu-row" role="menuitem" id="menu-passwords" data-key="passwords" aria-haspopup="dialog"${S.passwordSettings ? '' : ' disabled'}><span class="grow">Passwords</span><span class="menu-detail">${esc(S.passwordSettings?.active ?? 'Unavailable')}</span></button>`
       + captureRow()
+      + switchRow('blocking', blocking)
       + `<button class="menu-row" role="menuitem" id="recent-errors" data-key="errors"><span class="grow">Recent errors</span>${S.errors.unread ? '<i class="error-dot"></i>' : ''}</button>`
       + '<div class="menu-separator" data-key="quit-separator"></div>'
       + item('menu-quit', 'Quit', 'Ctrl Q'));
@@ -1676,6 +1680,10 @@ function renderPopover() {
     $('recent-errors').onclick = () => { closePopover(false); openPopover('errors', $('settings-button')); post({ t: 'errors', action: 'read' }); };
     $('show-trees-help').onclick = () => { closePopover(false); intent('trees-help', { show: true }); };
     wireCaptureRow();
+    if (blocking) act('blocking', () => intent('blocking', { on: !blocking.on }));
+    if (site) act('site-blocking', () => intent('block-site', {
+      on: !site.on, origin: site.origin, document: site.document,
+    }));
     popover.querySelectorAll('[data-mode]').forEach((button) => button.onclick = () => {
       S.frame.theme = button.dataset.mode;
       applyTheme();
@@ -1683,6 +1691,11 @@ function renderPopover() {
       refreshPopover();
     });
   }
+}
+
+function switchRow(id, row) {
+  if (!row) return '';
+  return `<button class="menu-row" role="switch" aria-checked="${row.on}" id="${id}" data-key="${id}"><span class="grow">${esc(row.label)}</span>${row.detail ? `<span class="menu-detail">${esc(row.detail)}</span>` : ''}<span class="switch" aria-hidden="true"></span></button>`;
 }
 
 function captureRow() {

@@ -30,6 +30,13 @@ pub struct Document {
     pub epoch: u64,
 }
 
+#[cfg(feature = "desktop")]
+impl Document {
+    pub(crate) fn identity(&self) -> String {
+        format!("{}:{}", self.view.0, self.epoch)
+    }
+}
+
 /// Where the load in flight is headed, so the chrome can show it before it commits.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PendingTarget {

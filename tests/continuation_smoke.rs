@@ -253,7 +253,7 @@ fn main() -> Result<()> {
         let fixed = gtk::Fixed::new();
         window.add(&fixed);
         let browser = Browser::open(&directory.path().join("forest.sqlite3"))?;
-        let pages = Pages::mount(&fixed, browser, &directory.path().join("profile"))?;
+        let pages = Pages::mount(&fixed, browser, directory.path())?;
         window.show_all();
         let observed = Rc::new(Cell::new(false));
         let seen = observed.clone();
@@ -299,7 +299,7 @@ fn main() -> Result<()> {
         let fixed = gtk::Fixed::new();
         window.add(&fixed);
         let browser = Browser::open(&directory.path().join("forest.sqlite3"))?;
-        let pages = Pages::mount(&fixed, browser, &directory.path().join("profile"))?;
+        let pages = Pages::mount(&fixed, browser, directory.path())?;
         let native = pages.selected_page().native.downgrade();
         let holder = Rc::new(RefCell::new(Some(pages.clone())));
         let weak = Rc::downgrade(&holder);

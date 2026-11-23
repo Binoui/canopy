@@ -256,7 +256,7 @@ impl SenderLogos {
 async fn fetch(pages: &Pages, origin: &Origin, host: &str) -> Answer {
     Answer::from_fetch(
         pages
-            .fetch_without_cookies(&origin.sender_logo_url(host))
+            .fetch_without_cookies(&origin.sender_logo_url(host), 256 * 1024)
             .await,
     )
 }

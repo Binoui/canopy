@@ -33,6 +33,14 @@ Run them all before merging a change to the chrome or the store, and compare any
 
 `open_url_smoke` starts the `canopy` binary on temporary data folders and launches it again with addresses, so it checks the hand-off between real processes. It needs no session bus.
 
+`CANOPY_BLOCKLISTS` accepts whitespace-separated HTTP or HTTPS list URLs.
+The library uses an empty list set when the variable is unset or empty. The
+`canopy` binary supplies EasyList, EasyPrivacy, and Liste FR when it is unset.
+Tests that launch the binary and the full check pass an empty value.
+`canopy-verify` passes an exported override through and otherwise starts with no
+lists. Export a loopback list URL to exercise blocking without contacting the
+publishers. `blocking_smoke` supplies its own loopback server.
+
 The download test points `HOME`, `XDG_CONFIG_HOME` and `XDG_DATA_HOME` at a temporary folder, so it never writes to your real download folder and opens files with a stand-in app instead of yours. Set `CANOPY_DOWNLOAD_SHOTS` to a folder to keep screenshots of the leaves and their list.
 
 `newtree_smoke` checks pinned cards, the tab menu, new-tree typing and focus, the empty strip placeholder, and scrolling at 900 by 600. Set `CANOPY_NEWTREE_SHOTS=1` to save dark and light captures in `.cache/shots/`.
