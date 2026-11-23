@@ -4,6 +4,8 @@ use crate::{
 };
 use gdk::keys::{constants as key, Key};
 
+const TREE_DIGITS: std::ops::RangeInclusive<u32> = 1..=9;
+
 /// Window-level keys, handled before the focused web view sees them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Shortcut {
@@ -88,7 +90,9 @@ impl KeyCombo {
         }
         // GDK maps the number row, keypad and Unicode keyvals to the same digit.
         let digit = self.key.to_unicode()?.to_digit(10)?;
-        (1..=9).contains(&digit).then(|| digit as usize - 1)
+        TREE_DIGITS
+            .contains(&digit)
+            .then(|| (digit - TREE_DIGITS.start()) as usize)
     }
 }
 
@@ -101,14 +105,18 @@ enum Defaults {
     TreeDigits([Modifiers; 2]),
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Names and groups are catalog metadata")
-)]
 struct Command {
     id: CommandId,
     stable_id: &'static str,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Command name for the shortcut editor")
+    )]
     name: &'static str,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Command group for the shortcut editor")
+    )]
     group: Group,
     defaults: Defaults,
 }
@@ -135,6 +143,7 @@ impl Group {
 macro_rules! commands {
     ($($id:ident, $stable_id:literal, $name:literal, $group:ident, $kind:ident $args:tt;)*) => {
         #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+        #[repr(usize)]
         pub(crate) enum CommandId { $($id),* }
 
         const COMMANDS: &[Command] = &[$(Command {
@@ -210,6 +219,240 @@ impl Bindings {
             Defaults::TreeDigits(held) => combo.tree_digit(held).map(Shortcut::Tree),
         })
     }
+}
+
+impl Modifiers {
+    fn names(self) -> impl Iterator<Item = &'static str> {
+        [
+            (Self::CONTROL, "Ctrl"),
+            (Self::SHIFT, "Shift"),
+            (Self::ALT, "Alt"),
+        ]
+        .into_iter()
+        .filter_map(move |(mask, name)| self.0.contains(mask.0).then_some(name))
+    }
+
+    fn label(self) -> String {
+        self.names().collect::<Vec<_>>().join(" ")
+    }
+}
+
+impl KeyCombo {
+    fn label(self, separator: &str) -> String {
+        self.with_key_name(&self.key_name(), separator)
+    }
+
+    fn with_key_name(self, name: &str, separator: &str) -> String {
+        let modifiers = self.held.names().collect::<Vec<_>>().join(separator);
+        if modifiers.is_empty() {
+            name.into()
+        } else {
+            format!("{modifiers}{separator}{name}")
+        }
+    }
+
+    fn key_name(self) -> String {
+        match self.key {
+            key::Escape => "Esc".into(),
+            key::minus => "−".into(),
+            key::Page_Up => "Page Up".into(),
+            key::Page_Down => "Page Down".into(),
+            key => match key.to_unicode().filter(|c| !c.is_control()) {
+                Some(c) => c.to_uppercase().collect(),
+                None => key.name().map_or_else(String::new, |name| name.to_string()),
+            },
+        }
+    }
+
+    fn cli_key_name(self) -> String {
+        match self.key {
+            key::Left => "←".into(),
+            key::Right => "→".into(),
+            key::Up => "↑".into(),
+            key::Down => "↓".into(),
+            _ => self.key_name(),
+        }
+    }
+
+    fn cli_label(self) -> String {
+        self.with_key_name(&self.cli_key_name(), "+")
+    }
+}
+
+impl CommandId {
+    pub(crate) fn stable_id(self) -> &'static str {
+        COMMANDS[self as usize].stable_id
+    }
+}
+
+impl Bindings {
+    fn row(&self, id: CommandId) -> &Command {
+        self.rows
+            .iter()
+            .find(|row| row.id == id)
+            .expect("each command has a default row")
+    }
+
+    fn primary(&self, id: CommandId) -> KeyCombo {
+        match self.row(id).defaults {
+            Defaults::Exact { combos, .. } => combos[0],
+            Defaults::TreeDigits(_) => unreachable!("tree digits are a family of combinations"),
+        }
+    }
+
+    fn tree_digits(&self) -> (Modifiers, std::ops::RangeInclusive<u32>) {
+        let Defaults::TreeDigits(held) = self.row(CommandId::TreeDigit).defaults else {
+            unreachable!("tree digits have a fixed row");
+        };
+        (held[0], TREE_DIGITS)
+    }
+}
+
+pub(crate) struct ShortcutSettings {
+    pub(crate) bindings: Bindings,
+}
+
+impl ShortcutSettings {
+    pub(crate) fn defaults() -> Self {
+        Self {
+            bindings: Bindings::defaults(),
+        }
+    }
+
+    pub(crate) fn presentation(&self) -> Presentation {
+        let bindings = &self.bindings;
+        let labels = bindings
+            .rows
+            .iter()
+            .map(|row| {
+                let labels = match row.defaults {
+                    Defaults::Exact { combos, .. } => Labels {
+                        chip: combos[0].label(" "),
+                        text: combos[0].label("+"),
+                    },
+                    Defaults::TreeDigits([primary, _]) => Labels {
+                        chip: digit_range_label(primary, " "),
+                        text: digit_range_label(primary, "+"),
+                    },
+                };
+                (row.stable_id, labels)
+            })
+            .collect();
+        let (held, digits) = bindings.tree_digits();
+        let digit_labels = digits
+            .map(|digit| format!("{}+{digit}", held.label()))
+            .collect();
+
+        let switch = bindings.primary(CommandId::Switch);
+        let backwards = bindings.primary(CommandId::PreviousTree);
+        let switcher = SwitcherFooter {
+            next: switch.key_name(),
+            previous: KeyCombo {
+                held: Modifiers(backwards.held.0 & !switch.held.0),
+                key: backwards.key,
+            }
+            .label(" "),
+            hold: switch.held.label(),
+        };
+        Presentation {
+            labels,
+            digit_labels,
+            switcher,
+        }
+    }
+}
+
+fn digit_range_label(held: Modifiers, separator: &str) -> String {
+    format!(
+        "{}{separator}{}…{}",
+        held.label(),
+        TREE_DIGITS.start(),
+        TREE_DIGITS.end()
+    )
+}
+
+pub(crate) struct Presentation {
+    pub(crate) labels: std::collections::BTreeMap<&'static str, Labels>,
+    pub(crate) digit_labels: Vec<String>,
+    pub(crate) switcher: SwitcherFooter,
+}
+
+impl Presentation {
+    pub(crate) fn text(&self, id: CommandId) -> &str {
+        &self.labels[id.stable_id()].text
+    }
+}
+
+pub(crate) struct Labels {
+    pub(crate) chip: String,
+    pub(crate) text: String,
+}
+
+pub(crate) struct SwitcherFooter {
+    pub(crate) next: String,
+    pub(crate) previous: String,
+    pub(crate) hold: String,
+}
+
+/// The shortcut block printed by `canopy --help`.
+pub fn default_help_shortcuts() -> String {
+    use std::fmt::Write;
+
+    use CommandId::*;
+
+    let bindings = Bindings::defaults();
+    let label = |id| bindings.primary(id).cli_label();
+    let (digit_modifiers, _) = bindings.tree_digits();
+    let (previous, next) = (
+        bindings.primary(PreviousSibling),
+        bindings.primary(NextSibling),
+    );
+    let switch_hold = bindings.primary(Switch).held.label();
+    let switch_description =
+        format!("Next waiting page, else the last read one; hold {switch_hold} to pick");
+    let rows = [
+        (label(Search), "Search your forest or go to an address"),
+        (label(Address), "Same, starting from the current address"),
+        (label(Forest), "Forest view"),
+        (label(TreeWorkbench), "Current-tree workbench"),
+        (label(NewTree), "New tree"),
+        (label(Settle), "Settle the tree, or close the open overlay"),
+        (
+            label(UndoSettle),
+            "Reopen the most recently settled tree or branch",
+        ),
+        (digit_range_label(digit_modifiers, "+"), "Switch to a tree"),
+        (
+            label(PreviousTree),
+            "Switch to the previously shown open tree",
+        ),
+        (label(Switch), &switch_description),
+        (label(Help), "How trees work"),
+        (
+            label(ToggleFocus),
+            "Move between the page and the tree strip",
+        ),
+        (label(Back), "Back to the parent page"),
+        (label(Forward), "Forward to the last opened child"),
+        (
+            format!("{}/{}", previous.cli_label(), next.cli_key_name()),
+            "Previous or next sibling",
+        ),
+        (label(Reload), "Reload the page"),
+        (label(Bookmark), "Toggle the page bookmark"),
+        (label(Remember), "Remember the selection"),
+        (label(FillLogin), "Fill the saved login for the page"),
+        (
+            label(PastePlain),
+            "Paste as plain text, even where the page blocks pasting",
+        ),
+        (label(Quit), "Quit"),
+    ];
+    let mut help = String::new();
+    for (key, description) in rows {
+        writeln!(help, "{key:16}{description}").unwrap();
+    }
+    help
 }
 
 #[cfg(test)]
@@ -468,6 +711,34 @@ mod tests {
         ] {
             assert_eq!(resolve(Modifiers::CONTROL, key), None);
         }
+    }
+
+    #[test]
+    fn shortcut_label_styles_match_legacy() {
+        let keys = ShortcutSettings::defaults().presentation();
+        let label = |id: CommandId| &keys.labels[id.stable_id()];
+        for (id, chip, text) in [
+            (CommandId::Find, "Ctrl F", "Ctrl+F"),
+            (CommandId::Back, "Alt Left", "Alt+Left"),
+            (CommandId::Increase, "Ctrl +", "Ctrl++"),
+            (CommandId::Decrease, "Ctrl −", "Ctrl+−"),
+            (CommandId::Escape, "Esc", "Esc"),
+            (
+                CommandId::MoveTreeLeft,
+                "Ctrl Shift Page Up",
+                "Ctrl+Shift+Page Up",
+            ),
+            (CommandId::PreviousTree, "Ctrl Shift Tab", "Ctrl+Shift+Tab"),
+            (CommandId::TreeDigit, "Ctrl 1…9", "Ctrl+1…9"),
+        ] {
+            assert_eq!(label(id).chip, chip);
+            assert_eq!(label(id).text, text);
+        }
+        assert_eq!(keys.digit_labels.first().unwrap(), "Ctrl+1");
+        assert_eq!(keys.digit_labels.last().unwrap(), "Ctrl+9");
+        assert_eq!(keys.switcher.next, "Tab");
+        assert_eq!(keys.switcher.previous, "Shift Tab");
+        assert_eq!(keys.switcher.hold, "Ctrl");
     }
 
     #[test]

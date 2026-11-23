@@ -1,0 +1,47 @@
+Canopy
+
+Usage: canopy [--data-dir PATH] [ADDRESS...]
+       canopy [--data-dir PATH] --import-chrome [PROFILE]
+       canopy [--data-dir PATH] --login-helper NAME
+       canopy [--data-dir PATH] session [--json] [--text]
+
+Each ADDRESS opens as a new tree, and the last one is shown. When Canopy is already
+open on the same data directory, the addresses open in that window instead.
+
+--import-chrome reads a Chrome profile's history, bookmarks, cookies and passwords,
+then exits. PROFILE defaults to ~/.config/google-chrome/Default. Running it again
+refreshes pages and adds cookies and encrypted passwords. Pages are not loaded.
+The system keyring protects the password vault.
+
+session prints what the running Canopy shows: the shown page, each open tree with its
+pages, and the trees saved for later. --json prints it as JSON. --text adds the shown
+page's visible text. It never starts Canopy.
+
+--login-helper chooses where saved logins are kept, from the next start of Canopy.
+NAME is a password manager's helper, a program called canopy-login-NAME next to
+Canopy or on your PATH, or the path of one. "vault" goes back to the vault on this
+computer.
+
+Ctrl+K          Search your forest or go to an address
+Ctrl+L          Same, starting from the current address
+Ctrl+E          Forest view
+Ctrl+Shift+E    Current-tree workbench
+Ctrl+T          New tree
+Ctrl+W          Settle the tree, or close the open overlay
+Ctrl+Shift+T    Reopen the most recently settled tree or branch
+Ctrl+1…9        Switch to a tree
+Ctrl+Shift+Tab  Switch to the previously shown open tree
+Ctrl+Tab        Next waiting page, else the last read one; hold Ctrl to pick
+F1              How trees work
+F6              Move between the page and the tree strip
+Alt+←           Back to the parent page
+Alt+→           Forward to the last opened child
+Alt+↑/↓         Previous or next sibling
+Ctrl+R          Reload the page
+Ctrl+D          Toggle the page bookmark
+Ctrl+S          Remember the selection
+Ctrl+Shift+L    Fill the saved login for the page
+Ctrl+Shift+V    Paste as plain text, even where the page blocks pasting
+Ctrl+Q          Quit
+
+Your profile and browsing are kept in XDG_DATA_HOME/canopy.

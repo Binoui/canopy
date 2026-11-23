@@ -12,13 +12,14 @@ use super::{
     days::{Calendar, Civil, LocalCalendar},
     graph::{self, EdgeKind, StripItem},
     palette::{Group, PaletteItem},
-    pins, tree_view,
+    pins, start, tree_view,
     waiting::{WaitState, Waiting},
     ChromeFrame, PageFile,
 };
 use crate::{
     browser::{Capture, CaptureKind, ThemeMode, Visit, VisitId, VisitPreview, VisitState},
     forest::ForestProjection,
+    shortcuts::{CommandId, Presentation},
 };
 
 /// Room at the end of the current-page pill for the Saved text dot.
@@ -28,6 +29,30 @@ const ACCESSORY: f64 = 22.;
 pub(crate) struct Surfaces {
     pub start: bool,
     pub palette: Option<VisitId>,
+}
+
+pub(crate) fn shortcuts(presentation: Presentation) -> Value {
+    let help = start::help(&presentation);
+    let bookmark_hint = format!(
+        "{} bookmarks the page you are on.",
+        presentation.text(CommandId::Bookmark)
+    );
+    let labels: serde_json::Map<_, _> = presentation
+        .labels
+        .into_iter()
+        .map(|(id, label)| (id.into(), json!({"chip": label.chip, "text": label.text})))
+        .collect();
+    json!({
+        "labels": labels,
+        "digitLabels": presentation.digit_labels,
+        "switcher": {
+            "next": presentation.switcher.next,
+            "previous": presentation.switcher.previous,
+            "hold": presentation.switcher.hold
+        },
+        "help": help,
+        "bookmarkHint": bookmark_hint,
+    })
 }
 
 pub(crate) fn frame(
@@ -382,7 +407,10 @@ pub(crate) fn strip(frame: &ChromeFrame, width: f64, waiting: &Waiting<'_>) -> V
             "named": named, "divider": divider,
             "kind": kind, "name": name, "label": label, "title": title, "meta": meta, "heading": heading, "more": more, "rows": rows,
             "badge": (kind != "pill" && node.branches.read > 0).then_some(node.branches.read),
-            "read": read, "tip": (kind == "tab" && index == layout.trail.len()).then(|| format!("Next waiting page: {title} · Ctrl+Tab")),
+            "read": read, "tip": (kind == "tab" && index == layout.trail.len()).then(|| json!({
+                "text": format!("Next waiting page: {title}"),
+                "command": CommandId::Switch.stable_id(),
+            })),
             "x": node.rect.x, "y": node.rect.y, "w": node.rect.w, "s": node.rect.s,
         })
     }).collect();
@@ -1088,7 +1116,10 @@ mod tests {
         let tab = nodes.iter().find(|n| n["kind"] == "tab").unwrap();
         assert_eq!(tab["id"], ids[2].to_string());
         assert_eq!(tab["actions"][0]["kind"], "open");
-        assert_eq!(tab["tip"], "Next waiting page: Page 2 · Ctrl+Tab");
+        assert_eq!(
+            tab["tip"],
+            json!({"text": "Next waiting page: Page 2", "command": "switch-page"})
+        );
         assert!(nodes.iter().all(|n| n["kind"] != "after"));
         assert_eq!(nonzero_parts(&[(1, "page"), (0, "waiting")]), "1 page");
         assert_eq!(nonzero_parts(&[(0, "pages"), (2, "waiting")]), "2 waiting");
@@ -1303,7 +1334,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             expected
         );
-        assert_eq!(tabs[0]["tip"], "Next waiting page: Page 4 · Ctrl+Tab");
+        assert_eq!(
+            tabs[0]["tip"],
+            json!({"text": "Next waiting page: Page 4", "command": "switch-page"})
+        );
         assert_eq!(tabs[1]["name"], "Page 2, waiting");
         assert_eq!(
             tabs[2]["name"],

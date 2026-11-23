@@ -25,7 +25,7 @@ use crate::{
     forest::ForestProjection,
     logins::{Login, LoginProvider, SavedLogin},
     pages::{DownloadEvent, FindAction, FindTarget, Go, PageEvent, Pages},
-    shortcuts::{Bindings, KeyCombo, Shortcut},
+    shortcuts::{KeyCombo, Shortcut, ShortcutSettings},
 };
 
 pub struct Ui {
@@ -38,7 +38,7 @@ pub struct Ui {
     canopy_layout: canopy_layout::Setting,
     mail_popup: mail_popup::Setting,
     refresh_scheduled: Cell<bool>,
-    bindings: Bindings,
+    shortcuts: ShortcutSettings,
     /// The Ctrl+Tab list is open and opens its selected page when Ctrl is released.
     switching: Cell<bool>,
     /// The pending target the chrome last drew, so a load that starts or ends redraws it.
@@ -86,7 +86,9 @@ impl Ui {
         window.add(&scroller);
         let pages = Pages::mount(&fixed, browser, data_dir)?;
         let mail_origin = crate::mail::Origin::configured();
-        let chrome = HtmlChrome::mount_with_mail(&fixed, &pages, mail_origin.clone(), data_dir)?;
+        let shortcuts = ShortcutSettings::defaults();
+        let chrome =
+            HtmlChrome::mount_with_mail(&fixed, &pages, mail_origin.clone(), data_dir, &shortcuts)?;
         pages.set_chrome(&chrome.native());
         {
             use webkit2gtk::{WebContextExt, WebViewExt};
@@ -135,7 +137,7 @@ impl Ui {
                 pages,
                 chrome,
                 refresh_scheduled: Cell::new(false),
-                bindings: Bindings::defaults(),
+                shortcuts,
                 switching: Cell::new(false),
                 shown_pending: RefCell::new(None),
                 me: me.clone(),
@@ -545,6 +547,7 @@ impl Ui {
             return glib::Propagation::Proceed;
         }
         let shortcut = self
+            .shortcuts
             .bindings
             .resolve(KeyCombo::from_event(event))
             .filter(|key| *key != Shortcut::PastePlainText || self.pages.has_focus());

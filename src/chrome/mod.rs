@@ -36,6 +36,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
+
 use url::Url;
 use wry::{
     dpi::{LogicalPosition, LogicalSize},
@@ -53,6 +54,7 @@ use crate::{
         ThemeMode, TreeId, Visit, VisitId, VisitPreview,
     },
     forest::ForestProjection,
+    shortcuts::ShortcutSettings,
 };
 
 /// The tab row and the resting strip.
@@ -319,7 +321,7 @@ struct Inner {
 impl HtmlChrome {
     /// Adds the chrome view to `container`, above the page already in it.
     pub fn mount(container: &gtk::Fixed, favicons: Rc<Favicons>) -> Result<Self> {
-        Self::mount_inner(container, favicons, None)
+        Self::mount_inner(container, favicons, None, &ShortcutSettings::defaults())
     }
 
     pub(crate) fn mount_with_mail(
@@ -327,15 +329,17 @@ impl HtmlChrome {
         pages: &Rc<crate::pages::Pages>,
         origin: Option<crate::mail::Origin>,
         data: &std::path::Path,
+        shortcuts: &ShortcutSettings,
     ) -> Result<Self> {
         let logos = origin.map(|origin| SenderLogos::new(origin, pages, data));
-        Self::mount_inner(container, pages.favicons(), logos)
+        Self::mount_inner(container, pages.favicons(), logos, shortcuts)
     }
 
     fn mount_inner(
         container: &gtk::Fixed,
         favicons: Rc<Favicons>,
         logos: Option<Rc<SenderLogos>>,
+        shortcuts: &ShortcutSettings,
     ) -> Result<Self> {
         use wry::WebViewBuilderExtUnix;
 
@@ -422,6 +426,7 @@ impl HtmlChrome {
                     false
                 });
         }
+        inner.call("shortcuts", &[view::shortcuts(shortcuts.presentation())]);
         pinch::connect(&inner);
         *slot.borrow_mut() = Rc::downgrade(&inner);
         let weak = Rc::downgrade(&inner);
@@ -1003,7 +1008,6 @@ impl Inner {
         match message["t"].as_str().unwrap_or_default() {
             "ready" => {
                 self.ready.set(true);
-                self.call("help", &[start::help()]);
                 let queued = std::mem::take(&mut *self.queue.borrow_mut());
                 for script in queued {
                     self.view.evaluate_script(&script)?;
@@ -1619,12 +1623,61 @@ fn rect(x: f64, y: f64, width: f64, height: f64) -> Rect {
 mod forest_asset_tests {
     #[test]
     fn chrome_markup_calls_the_map_canopy() {
-        assert!(INDEX.contains("title=\"Canopy · Ctrl+E\""));
+        assert!(INDEX.contains("title=\"Canopy\" data-shortcut-title=\"forest\""));
         assert!(INDEX.contains("aria-label=\"Canopy\""));
         assert!(INDEX.contains("data-view=\"canopy\">Canopy"));
         assert!(!INDEX.contains("forest-trees"));
         assert!(!INDEX.contains(">Forest<"));
         assert!(!SCRIPT.contains("<span>Forest</span>"));
+    }
+
+    #[test]
+    fn chrome_assets_use_generated_window_shortcut_labels() {
+        for (file, source, panel_local) in [
+            (
+                "index.html",
+                INDEX,
+                &["Previous match · Shift+Enter", "Alt+Enter in a new tree"][..],
+            ),
+            (
+                "chrome.js",
+                SCRIPT,
+                &[
+                    "['Tab', 'ISO_Left_Tab'].includes(event.key)",
+                    "event.code === 'Tab'",
+                    "event.key === 'Escape'",
+                    "event.key === 'F10'",
+                ][..],
+            ),
+        ] {
+            for (index, line) in source.lines().enumerate() {
+                let text = panel_local
+                    .iter()
+                    .fold(line.to_owned(), |text, local| text.replace(local, ""));
+                let literal = text
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .find(|word| {
+                        matches!(
+                            *word,
+                            "Ctrl"
+                                | "Control"
+                                | "Alt"
+                                | "Shift"
+                                | "Super"
+                                | "Esc"
+                                | "Escape"
+                                | "Tab"
+                        ) || word
+                            .strip_prefix('F')
+                            .is_some_and(|digits| digits.parse::<u8>().is_ok())
+                    });
+                assert!(
+                    literal.is_none(),
+                    "{file}:{} spells a shortcut: {line}",
+                    index + 1
+                );
+            }
+        }
     }
 
     use super::*;

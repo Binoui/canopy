@@ -308,14 +308,19 @@ pub(super) fn keep(s: &crate::suggest::Suggestion) -> super::ChromeIntent {
     }
 }
 
-pub(super) fn help() -> Value {
+pub(super) fn help(keys: &crate::shortcuts::Presentation) -> Value {
+    use crate::shortcuts::CommandId;
+
+    let switch = keys.text(CommandId::Switch);
+    let hold = &keys.switcher.hold;
+    let undo = keys.text(CommandId::UndoSettle);
     json!({
         "title": "How trees work",
         "lines": [
             {"mark": "tree", "text": "Every link you follow grows the tree in the strip above. Back goes to the parent page."},
-            {"mark": "waiting", "text": "Middle-click a link and it waits as a tab after the current page. Ctrl+Tab opens the first waiting tab. Hold Ctrl to pick a waiting or read page."},
+            {"mark": "waiting", "text": format!("Middle-click a link and it waits as a tab after the current page. {switch} opens the first waiting tab. Hold {hold} to pick a waiting or read page.")},
             {"mark": "branches", "text": "Rest on a strip page to see its branches. Right-click a page for more: settle a branch, move it to its own tree, dismiss a waiting page."},
-            {"mark": "settle", "text": "Done with a tree? Settle it with the cross on its tab. Nothing is deleted; Ctrl+Shift+T brings it back."}
+            {"mark": "settle", "text": format!("Done with a tree? Settle it with the cross on its tab. Nothing is deleted; {undo} brings it back.")}
         ],
         "legend": [
             [{"mark": "waiting", "text": "waiting"}],
