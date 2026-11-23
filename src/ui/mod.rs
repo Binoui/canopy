@@ -240,12 +240,12 @@ impl Ui {
                         .open_palette(PaletteScope::From(visit), PaletteSeed::Empty);
                 }
                 PageEvent::Find(update) => ui.chrome.find(update),
-                PageEvent::Fullscreen(on) => {
-                    if on {
-                        ui.dismiss_shortcut_editor();
-                    }
-                    ui.chrome.set_fullscreen(on);
+                PageEvent::Fullscreen(true) => {
+                    ui.dismiss_shortcut_editor();
+                    ui.chrome.set_fullscreen(true);
+                    ui.pages.focus();
                 }
+                PageEvent::Fullscreen(false) => ui.chrome.set_fullscreen(false),
             }
         });
         let weak = Rc::downgrade(&ui);

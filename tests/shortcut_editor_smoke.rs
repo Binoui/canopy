@@ -60,7 +60,7 @@ fn main() -> Result<()> {
                 continue;
             }
             let body = r#"<!doctype html><title>Shortcut editor fixture</title>
-              <button id="fill" onclick="document.body.requestFullscreen()">Fullscreen</button>
+              <button id="fill" onclick="setTimeout(() => document.body.requestFullscreen(), 2200)">Fullscreen</button>
               <script>window.keys = []; document.addEventListener('keydown', e => keys.push([e.key, e.ctrlKey]));</script>"#;
             let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
         }
@@ -388,6 +388,8 @@ fn changes(ui: &Ui, profile: &Path) -> Result<()> {
 fn fullscreen(ui: &Ui) -> Result<()> {
     let (x, y) = element_point(ui, "fill")?;
     click_at(x, y)?;
+    open_editor(ui)?;
+    begin(ui, "[data-shortcut-row=search] [data-slot='0']")?;
     wait("page fullscreen", || ui.pages.is_fullscreen())?;
     key("ctrl+j")?;
     wait("fullscreen page receives rebound chord", || {
@@ -395,8 +397,8 @@ fn fullscreen(ui: &Ui) -> Result<()> {
     })?;
     eval(ui, "document.exitFullscreen(); JSON.stringify(true)")?;
     wait("page leaves fullscreen", || !ui.pages.is_fullscreen())?;
-    assert!(!visible(ui, "#forest"));
-    println!("PASS the fullscreen page receives the rebound shortcut.");
+    assert!(!visible(ui, EDITOR) && !visible(ui, "#forest"));
+    println!("PASS fullscreen dismisses active recording and receives the rebound shortcut.");
     Ok(())
 }
 
