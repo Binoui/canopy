@@ -93,7 +93,20 @@
 <div id="page-drag-warning" role="status" hidden></div>
 <div id="strip-list" hidden></div>
 <div id="popover" tabindex="-1" role="dialog" aria-label="Actions" hidden></div>
-<div id="switcher" role="listbox" aria-label="Pages in this tree" hidden></div>
+<div id="switcher" hidden>
+  <div id="switcher-backdrop"></div>
+  <div id="switcher-stage" class="switcher-picture" aria-hidden="true"></div>
+  <div id="switcher-caption"></div>
+  <div id="switcher-row" role="listbox" aria-label="Pages in this tree" tabindex="-1"><div id="switcher-run" role="presentation"></div></div>
+  <div id="switcher-more" hidden></div>
+  <div id="switcher-keys">
+    <span><kbd data-switcher-key="next"></kbd> <kbd>→</kbd> next</span>
+    <span><kbd data-switcher-key="previous"></kbd> <kbd>←</kbd> back</span>
+    <span>Release <kbd data-switcher-key="hold"></kbd> or click to open</span>
+    <span><kbd>Delete</kbd> dismiss</span>
+    <span><kbd data-shortcut-chip="escape"></kbd> cancel</span>
+  </div>
+</div>
 
 <div id="palette" role="dialog" aria-modal="true" aria-label="Search" hidden>
   <div class="scrim"></div>

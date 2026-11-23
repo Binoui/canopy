@@ -582,25 +582,6 @@ pub(super) fn visit_value(
     })
 }
 
-/// Waiting pages the Ctrl+Tab list shows before the read ones; the rest are counted.
-const SWITCHER_WAITING: usize = 5;
-/// Read pages the Ctrl+Tab list shows.
-pub(crate) const SWITCHER_READ: usize = 8;
-
-/// The Ctrl+Tab list: the current tree's next waiting pages, then `recent`, its read pages
-/// most recently shown first. A quick Ctrl+Tab opens the first row.
-pub(crate) fn switcher_value(frame: &ChromeFrame, recent: &[VisitId]) -> Value {
-    let forest = &frame.forest;
-    let waiting = Waiting::of(forest);
-    let row =
-        |visit: &Visit| visit_value(forest, visit, &frame.loaded, &frame.live, &frame.playing);
-    json!({
-        "waiting": waiting.pages().iter().take(SWITCHER_WAITING).map(|v| row(v)).collect::<Vec<_>>(),
-        "moreWaiting": waiting.len().saturating_sub(SWITCHER_WAITING),
-        "read": recent.iter().filter_map(|id| forest.visit(*id)).take(SWITCHER_READ).map(row).collect::<Vec<_>>(),
-    })
-}
-
 fn node_menu(forest: &ForestProjection, visit: &Visit) -> Vec<Value> {
     let row = |kind: &str, label: String| json!({ "kind": kind, "label": label });
     let mut rows = vec![
@@ -1301,18 +1282,19 @@ mod tests {
             pending: None,
             files: vec![],
         };
-        let value = super::switcher_value(&frame, &[ids[0]]);
-        let listed = |key: &str| {
-            value[key]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|row| row["id"].as_str().unwrap().to_owned())
-                .collect::<Vec<_>>()
-        };
+        let choices = super::super::switcher::SwitchChoices::of(&frame.forest, &[ids[0]]);
+        assert_eq!(choices.first(), Some(ids[4]));
+        assert_eq!(choices.here, frame.forest.current());
         let id = |i: usize| ids[i].to_string();
         let expected = [id(4), id(2), id(7), id(6), id(5), id(3)];
-        assert_eq!(listed("waiting"), expected[..5]);
+        let choices_rows = choices.rows().collect::<Vec<_>>();
+        assert_eq!(
+            choices_rows
+                .iter()
+                .map(|r| r.id.to_string())
+                .collect::<Vec<_>>(),
+            [vec![id(1)], expected[..5].to_vec(), vec![id(0)]].concat()
+        );
         let rendered = super::frame(
             &frame,
             &[],
@@ -1355,9 +1337,8 @@ mod tests {
         assert_eq!(waiting_edges[0]["to"], id(4));
         assert_eq!(waiting_edges[0]["from"], id(1));
         assert_eq!(rendered["strip"]["pins"][0]["kind"], "zoom");
-        assert_eq!(value["moreWaiting"], 1);
-        assert_eq!(listed("read"), [id(0)]);
-        assert_eq!(value["read"][0]["live"], true);
+        assert_eq!(choices.more_waiting, 1);
+        assert_eq!(choices_rows.last().unwrap().value(&frame)["live"], true);
     }
 
     #[test]

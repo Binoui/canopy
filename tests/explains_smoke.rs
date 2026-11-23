@@ -20,7 +20,9 @@ fn main() -> Result<()> {
         ui.dispatch(ChromeIntent::SetTheme(mode));
         pump(200);
         assert!(text(&ui, "#trees-help").contains("waits as a tab after the current page"));
-        assert!(text(&ui, "#trees-help").contains("Ctrl+Tab"));
+        let help = text(&ui, "#trees-help");
+        assert!(help.contains("Ctrl+Tab"));
+        assert!(help.contains("filmstrip of waiting and read pages"));
         assert!(text(&ui, "#trees-help").contains("Ctrl+Shift+T"));
         assert!(text(&ui, "#trees-help").contains("still open"));
         assert_eq!(

@@ -21,6 +21,7 @@ mod pinch;
 mod pins;
 mod sender_logos;
 mod start;
+mod switcher;
 mod tabs;
 mod tree_card;
 mod tree_view;
@@ -305,6 +306,7 @@ struct Inner {
     /// The find session the bar shows. Escape closes it even before the view reports.
     find: Cell<Option<crate::pages::FindId>>,
     frame: RefCell<Option<ChromeFrame>>,
+    switcher: RefCell<switcher::Switcher>,
     tab_room: Cell<f64>,
     suggested: RefCell<Vec<crate::suggest::Suggestion>>,
     start: Cell<bool>,
@@ -350,10 +352,15 @@ impl HtmlChrome {
         )));
         let slot: Rc<RefCell<Weak<Inner>>> = Rc::default();
         let messages = slot.clone();
+        let pictures = Mutex::new(glib::thread_guard::ThreadGuard::new(slot.clone()));
         let view = WebViewBuilder::new()
             .with_transparent(true)
             .with_bounds(rect(0., 0., 1., CHROME_HEIGHT))
             .with_custom_protocol("canopy".into(), move |_, request| {
+                if request.uri().path().starts_with("/switcher-image/") {
+                    let inner = pictures.lock().unwrap().get_ref().borrow().upgrade();
+                    return switcher::picture_response(&request, inner.as_deref());
+                }
                 let (favicons, logos) = icons.lock().unwrap().get_ref().clone();
                 serve(&request, &favicons, logos.as_ref())
             })
@@ -398,6 +405,7 @@ impl HtmlChrome {
             escape_surface: Cell::new(None),
             find: Cell::new(None),
             frame: RefCell::new(None),
+            switcher: RefCell::default(),
             tab_room: Cell::new(0.),
             suggested: RefCell::new(Vec::new()),
             start: Cell::new(false),
@@ -478,6 +486,7 @@ impl HtmlChrome {
         let reply = inner.forest.borrow_mut().present(&frame);
         inner.call("present", &[value]);
         inner.forest_reply(reply);
+        inner.switcher_frame_changed(&frame);
         *inner.frame.borrow_mut() = Some(frame);
         inner.present_error();
     }
@@ -488,6 +497,7 @@ impl HtmlChrome {
         let previous = inner.size.replace((width, height));
         inner.apply_bounds();
         inner.call("viewport", &[json!(height)]);
+        inner.relayout_switcher();
         inner.present_error();
         if previous.0 != width {
             if let Some(frame) = inner.frame.borrow().as_ref() {
@@ -593,37 +603,6 @@ impl HtmlChrome {
     pub fn new_tree(&self) {
         self.inner.call("newTree", &[]);
         let _ = self.inner.view.focus();
-    }
-
-    /// Opens the Ctrl+Tab list. `recent` reads the current tree's read pages, most
-    /// recently shown first, from the forest the chrome shows.
-    pub fn open_switcher(
-        &self,
-        recent: impl FnOnce(&ForestProjection, usize) -> Result<Vec<VisitId>>,
-    ) -> Result<()> {
-        let rows = {
-            let frame = self.inner.frame.borrow();
-            let Some(frame) = frame.as_ref() else {
-                return Ok(());
-            };
-            view::switcher_value(frame, &recent(&frame.forest, view::SWITCHER_READ)?)
-        };
-        self.inner.call("switcher", &[json!("open"), rows]);
-        Ok(())
-    }
-
-    /// Moves the Ctrl+Tab selection one row down, or up with `back`, wrapping at the ends.
-    pub fn step_switcher(&self, back: bool) {
-        self.inner.call(
-            "switcher",
-            &[json!("step"), json!(if back { -1 } else { 1 })],
-        );
-    }
-
-    /// Closes the Ctrl+Tab list, opening the selected page when `open` is set.
-    pub fn end_switcher(&self, open: bool) {
-        self.inner
-            .call("switcher", &[json!(if open { "commit" } else { "cancel" })]);
     }
 
     pub fn toggle_tree(&self) {
@@ -808,6 +787,9 @@ impl HtmlChrome {
         let inner = &self.inner;
         if inner.fullscreen.replace(on) == on {
             return;
+        }
+        if on {
+            inner.finish_switcher(false);
         }
         inner.view.webview().set_visible(!on);
         if on {
@@ -1138,6 +1120,7 @@ impl Inner {
                     let _ = self.view.focus();
                 }
             }
+            "switcher" => self.switcher_pointer(&message),
             "layer" => {
                 self.escape_surface.set(
                     ESCAPE_SURFACES

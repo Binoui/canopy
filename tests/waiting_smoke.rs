@@ -18,6 +18,9 @@ use common::*;
 fn main() -> Result<()> {
     let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
+    let xdg = tempfile::tempdir()?;
+    std::env::set_var("XDG_DATA_HOME", xdg.path().join("data"));
+    std::env::set_var("XDG_CACHE_HOME", xdg.path().join("cache"));
     start(directory.path())?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let base = format!("http://{}", listener.local_addr()?);
@@ -25,10 +28,13 @@ fn main() -> Result<()> {
         gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, true, 8, 16, 16).unwrap();
     icon.fill(0x2050ffff);
     let favicon = icon.save_to_bufferv("png", &[])?;
+    let changed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let server_changed = changed.clone();
     thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { break };
             let favicon = favicon.clone();
+            let changed = server_changed.clone();
             thread::spawn(move || -> std::io::Result<()> {
                 let mut request = [0; 4096];
                 let size = stream.read(&mut request)?;
@@ -37,6 +43,45 @@ fn main() -> Result<()> {
                 if path == "/favicon.ico" {
                     write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", favicon.len())?;
                     stream.write_all(&favicon)?;
+                    return Ok(());
+                }
+                use std::sync::atomic::Ordering;
+                if path == "/film-change" || path == "/film-mutated" {
+                    if path == "/film-mutated" {
+                        FILM_MUTATED.store(true, Ordering::Relaxed);
+                    }
+                    let response = if changed.load(Ordering::Relaxed) {
+                        "yes"
+                    } else {
+                        "no"
+                    };
+                    write!(stream, "HTTP/1.1 200 OK\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len())?;
+                    return Ok(());
+                }
+                if let Some(index) = path
+                    .strip_prefix("/colour/")
+                    .and_then(|i| i.parse::<usize>().ok())
+                {
+                    let [r, g, b] = FILM_COLOURS[index];
+                    let script = if index == 11 {
+                        r#"<script>const timer=setInterval(async()=>{if(await (await fetch('/film-change')).text()==='yes'){document.body.style.background='rgb(220,96,141)';clearInterval(timer);fetch('/film-mutated')}},150)</script>"#
+                    } else {
+                        ""
+                    };
+                    let body = format!("<!doctype html><title>Filmstrip colour {index}</title><body style='margin:0;background:rgb({r},{g},{b})'>{script}");
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())?;
+                    return Ok(());
+                }
+                if path == "/film" {
+                    let links: String = (0..FILM_COLOURS.len())
+                        .map(|i| {
+                            format!(
+                                "<p><a id='film{i}' href='/colour/{i}'>Filmstrip page {i}</a></p>"
+                            )
+                        })
+                        .collect();
+                    let body = format!("<!doctype html><title>Filmstrip source</title>{links}<p><a id='film-slow' href='/slow-film'>Slow fixture</a>");
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())?;
                     return Ok(());
                 }
                 if path.starts_with("/slow") {
@@ -49,6 +94,8 @@ fn main() -> Result<()> {
             });
         }
     });
+    let picture_directory = tempfile::tempdir()?;
+    prove_filmstrip(picture_directory.path(), &base, &changed)?;
     let ui = Ui::new(directory.path())?;
     ui.window.show_all();
     ready(&ui)?;
@@ -440,26 +487,42 @@ fn switch_read_pages(ui: &Ui, read: &[String]) -> Result<()> {
     xdo(&["key", "Tab"])?;
     wait("list shown", || visible(ui, "#switcher"))?;
     let listed = rows(ui)?;
-    assert_eq!(listed.first(), Some(previous), "most recently read first");
-    assert!(!listed.contains(last), "the current page is not listed");
-    selected(ui, &listed[1], "second Tab selects the second row")?;
-    shots(ui, "switcher")?;
+    assert_eq!(listed.first(), Some(last), "the current page is first");
+    assert_eq!(
+        listed.get(1),
+        Some(previous),
+        "most recently read follows Here"
+    );
+    selected(ui, &listed[2], "second Tab selects the second read page")?;
+    shots(ui, "filmstrip")?;
     xdo(&["key", "shift+Tab"])?;
-    selected(ui, &listed[0], "Shift+Tab steps back")?;
+    selected(ui, &listed[1], "Shift+Tab steps back")?;
+    xdo(&["key", "Left"])?;
+    selected(ui, &listed[0], "Left steps to Here")?;
+    xdo(&["keyup", "ctrl"])?;
+    pump(200);
+    assert_eq!(
+        ui.snapshot()?.current.map(|id| id.to_string()).as_ref(),
+        Some(last)
+    );
+    xdo(&["keydown", "ctrl"])?;
+    xdo(&["key", "Tab"])?;
+    wait("filmstrip shown after a single Tab", || {
+        visible(ui, "#switcher")
+    })?;
+    selected(ui, &listed[1], "the hold starts on the first read page")?;
     xdo(&["key", "shift+Tab"])?;
-    selected(
-        ui,
-        listed.last().unwrap(),
-        "Shift+Tab wraps to the last row",
-    )?;
+    selected(ui, &listed[0], "Shift+Tab steps to Here")?;
+    xdo(&["key", "shift+Tab"])?;
+    selected(ui, listed.last().unwrap(), "Shift+Tab wraps")?;
+    xdo(&["key", "Right"])?;
+    selected(ui, &listed[0], "Right wraps to the first card")?;
     xdo(&["key", "Tab"])?;
-    selected(ui, &listed[0], "Tab wraps to the first row")?;
-    xdo(&["key", "Tab"])?;
-    selected(ui, &listed[1], "Tab steps down")?;
+    selected(ui, &listed[1], "Tab steps to the first read page")?;
     xdo(&["keyup", "ctrl"])?;
     activated(ui, &listed[1])?;
-    assert!(!visible(ui, "#switcher"));
-    println!("PASS held Ctrl+Tab lists read pages newest first, Tab and Shift+Tab step and wrap, release opens the row.");
+    wait("release closes filmstrip", || !visible(ui, "#switcher"))?;
+    println!("PASS held Ctrl+Tab lists Here then read pages newest first, arrows and Tab step and wrap, release opens the card.");
     let here = ui.snapshot()?.current;
     xdo(&["keydown", "ctrl"])?;
     xdo(&["key", "Tab"])?;
@@ -479,10 +542,10 @@ fn switch_read_pages(ui: &Ui, read: &[String]) -> Result<()> {
     queue(ui, "link5")?;
     let queued = waiting(ui)?;
     assert_eq!(queued.len(), 1);
-    let column = |kind: &str| -> Result<Vec<String>> {
+    let cards = |kind: &str| -> Result<Vec<String>> {
         Ok(serde_json::from_value(chrome(
             ui,
-            &format!("[...document.querySelectorAll('#switcher .switcher-col[data-kind=\"{kind}\"] [data-id]')].map((row) => row.dataset.id)"),
+            &format!("[...document.querySelectorAll('#switcher .switcher-option[data-kind=\"{kind}\"]')].map((row) => row.dataset.id)"),
         )?)?)
     };
     focus_window()?;
@@ -491,16 +554,15 @@ fn switch_read_pages(ui: &Ui, read: &[String]) -> Result<()> {
     pump(60);
     xdo(&["key", "Tab"])?;
     wait("list with a waiting page", || visible(ui, "#switcher"))?;
+    assert_eq!(cards("waiting")?, queued, "waiting pages follow Here");
+    let read = cards("read")?;
+    assert!(read.len() >= 2, "read pages follow waiting");
     assert_eq!(
-        column("waiting")?,
-        queued,
-        "waiting pages fill the left column"
+        rows(ui)?,
+        [cards("here")?, queued.clone(), read.clone()].concat()
     );
-    let read = column("read")?;
-    assert!(read.len() >= 2, "read pages fill the right column");
-    assert_eq!(rows(ui)?, [queued.clone(), read.clone()].concat());
-    selected(ui, &read[0], "the second Tab crosses to the read column")?;
-    shots(ui, "switcher-columns")?;
+    selected(ui, &read[0], "the second Tab crosses to the read cards")?;
+    shots(ui, "filmstrip-waiting-and-read")?;
     click_chrome(ui, &format!("#switcher [data-id=\"{}\"]", read[1]))?;
     activated(ui, &read[1])?;
     assert!(!visible(ui, "#switcher"));
@@ -511,7 +573,7 @@ fn switch_read_pages(ui: &Ui, read: &[String]) -> Result<()> {
         Some(&read[1]),
         "releasing Ctrl after a click opens nothing more"
     );
-    println!("PASS the list shows waiting pages left and read pages right, Tab crosses columns, a click opens a row.");
+    println!("PASS the filmstrip shows waiting before read pages, Tab crosses the divider, a click opens a card.");
     key("ctrl+Tab")?;
     activated(ui, &queued[0])?;
     println!("PASS a quick Ctrl+Tab still opens the waiting page first.");
@@ -872,4 +934,483 @@ fn composed_waiting_toast(ui: &Ui) -> Result<()> {
     key("Escape")?;
     println!("PASS waiting feedback paints in the composed window with the palette open.");
     Ok(())
+}
+
+fn prove_filmstrip(
+    directory: &std::path::Path,
+    base: &str,
+    changed: &std::sync::atomic::AtomicBool,
+) -> Result<()> {
+    use std::{cell::Cell, rc::Rc, sync::atomic::Ordering, time::Instant};
+
+    let ui = Ui::new(directory)?;
+    ui.window.show_all();
+    ready(&ui)?;
+    ui.pages
+        .selected_page()
+        .navigate(web_url(&format!("{base}/film"))?, NavigationTarget::Root)?;
+    loaded(&ui, "/film")?;
+    let here = ui.snapshot()?.current.unwrap();
+    let film_choices = || -> Result<Vec<String>> {
+        Ok(serde_json::from_value(chrome(
+            &ui,
+            "[...$('switcher-row').querySelectorAll('[role=option]')].map(e => e.dataset.id)",
+        )?)?)
+    };
+    let selection = || -> Result<String> {
+        Ok(serde_json::from_value(chrome(
+            &ui,
+            "S.switcher?.selected ?? ''",
+        )?)?)
+    };
+    let expect_selection = |id: &str| {
+        wait("selected filmstrip card", || {
+            selection().is_ok_and(|s| s == id)
+        })
+    };
+    let held = || -> Result<()> {
+        focus_window()?;
+        xdo(&["keydown", "ctrl"])?;
+        xdo(&["key", "Tab"])?;
+        wait("timed filmstrip reveal", || visible(&ui, "#switcher"))
+    };
+    let cancel = || -> Result<()> {
+        xdo(&["key", "Escape"])?;
+        xdo(&["keyup", "ctrl"])?;
+        wait("filmstrip closes on Escape", || !visible(&ui, "#switcher"))
+    };
+    let mut recent = Vec::new();
+    for i in 0..7 {
+        ui.pages.inject_recent_memory_sample(0);
+        queue(&ui, &format!("film{i}"))?;
+        let id = ui
+            .snapshot()?
+            .visits
+            .into_iter()
+            .find(|v| v.url.path() == format!("/colour/{i}"))
+            .unwrap()
+            .id;
+        wait("read fixture loaded while waiting", || {
+            ui.pages.loaded_visits().contains(&id)
+        })?;
+        let before = ui.chrome.switcher_snapshot_count();
+        key("ctrl+Tab")?;
+        activated(&ui, &id.to_string())?;
+        assert!(!visible(&ui, "#switcher"));
+        assert_eq!(ui.chrome.switcher_snapshot_count(), before);
+        recent.insert(0, id.to_string());
+        key("alt+Left")?;
+        activated(&ui, &here.to_string())?;
+    }
+    for i in 7..12 {
+        ui.pages.inject_recent_memory_sample(0);
+        queue(&ui, &format!("film{i}"))?;
+    }
+    wait(
+        "five committed background pages and eight retained read pages",
+        || ui.pages.loaded_visits().len() == 5 && ui.pages.live_visits().len() == 8,
+    )?;
+    let queued = waiting(&ui)?;
+    let order = [vec![here.to_string()], queued.clone(), recent.clone()].concat();
+    assert_eq!(order.len(), 13);
+    wait("page hold has ended", || {
+        !ui.pages.selected_page().native.is_loading()
+    })?;
+    pump(1500);
+    let mut roots = vec![directory.to_path_buf()];
+    roots.extend(
+        ["XDG_DATA_HOME", "XDG_CACHE_HOME"]
+            .into_iter()
+            .filter_map(std::env::var_os)
+            .map(std::path::PathBuf::from),
+    );
+    for view in [ui.chrome.native(), ui.pages.selected_page().native.clone()] {
+        use webkit2gtk::{WebContextExt, WebsiteDataManagerExt};
+        let manager = view.context().unwrap().website_data_manager().unwrap();
+        roots.extend(
+            [
+                manager.base_cache_directory(),
+                manager.base_data_directory(),
+            ]
+            .into_iter()
+            .flatten()
+            .map(|path| std::path::PathBuf::from(path.as_str())),
+        );
+    }
+    let files = film_inventory(&roots)?;
+    let control = directory.join("inventory-control");
+    std::fs::write(&control, "visible to the inventory")?;
+    assert!(film_inventory(&roots)?.contains(&control));
+    std::fs::remove_file(&control)?;
+
+    let mut samples = Vec::new();
+    for _ in 0..5 {
+        let previous = Rc::new(Cell::new(Instant::now()));
+        let longest = Rc::new(Cell::new(Duration::ZERO));
+        let tick = glib::timeout_add_local(Duration::from_millis(2), {
+            let longest = longest.clone();
+            move || {
+                let gap = previous.replace(Instant::now()).elapsed();
+                longest.set(gap.max(longest.get()));
+                glib::ControlFlow::Continue
+            }
+        });
+        held()?;
+        let mut painted_ms = 0.;
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while Instant::now() < deadline {
+            if let Some(ms) = chrome(&ui, "S.switcher?.picturesPainted ?? null")?.as_f64() {
+                painted_ms = ms;
+                break;
+            }
+            pump(4);
+        }
+        tick.remove();
+        assert!(painted_ms > 0., "ready pictures: {}", chrome(&ui,
+            "[...S.switcher.rows.values()].map(r => [r.v.pictureStatus, r.el.dataset.picture, r.v.label])")?);
+        samples.push((painted_ms, longest.get().as_secs_f64() * 1000.));
+        assert_eq!(film_choices()?, order);
+        expect_selection(&queued[0])?;
+        let v = ui
+            .snapshot()?
+            .visits
+            .into_iter()
+            .find(|v| v.id.to_string() == queued[0])
+            .unwrap();
+        assert!(v.opened_at.is_none());
+        film_pixel(&ui, FILM_COLOURS[11])?;
+        assert_eq!(chrome(&ui, "document.activeElement.id")?, "switcher-row");
+        assert_eq!(chrome(&ui, "$('switcher-row').getAttribute('aria-activedescendant') === $('switcher-row').querySelector('[aria-selected=true]').id")?, true);
+        cancel()?;
+    }
+    println!("FILMSTRIP 1240x800, 13 retained, five openings: (cards to pictures ms, largest GTK 2 ms timer gap ms) {samples:?}");
+    assert!(
+        samples.iter().all(|(elapsed, _)| *elapsed <= 300.),
+        "{samples:?}"
+    );
+    assert_eq!(
+        film_inventory(&roots)?,
+        files,
+        "filmstrip must create no files"
+    );
+    assert_eq!(ui.snapshot()?.current, Some(here));
+    println!("PASS filmstrip paints 13 retained pages within 300 ms and creates no files in the private data and cache folders.");
+
+    held()?;
+    wait("large snapshot visible", || {
+        visible(&ui, "#switcher-stage > img")
+    })?;
+    let (stage_x, stage_y, stage_w, stage_h) = rect(&ui, "#switcher-stage")?;
+    let dimensions = chrome(&ui, "[$('switcher-stage').firstChild.naturalWidth, $('switcher-stage').firstChild.naturalHeight]")?;
+    assert_eq!(
+        dimensions,
+        serde_json::json!([stage_w as i32, stage_h as i32])
+    );
+    assert!(stage_x > 0. && stage_y > 94.);
+    assert!(text(&ui, "#switcher-caption").contains("Waiting, from Filmstrip source"));
+    ui.window.resize(720, 800);
+    wait("filmstrip at 720 px", || {
+        rect(&ui, "#switcher-row").is_ok_and(|(_, _, w, _)| w < 710.)
+    })?;
+    assert_eq!(chrome(&ui, "[$('switcher-stage').firstChild.naturalWidth, $('switcher-stage').firstChild.naturalHeight]")?, dimensions);
+    xdo(&["key", "Left"])?;
+    xdo(&["key", "Left"])?;
+    expect_selection(order.last().unwrap())?;
+    assert!(chrome(&ui, "(() => { const row=$('switcher-row'), card=document.getElementById(row.getAttribute('aria-activedescendant')).getBoundingClientRect(), frame=row.getBoundingClientRect(); return row.scrollLeft > 0 && card.left >= frame.left && card.right <= frame.right; })()")? == true);
+    ui.window.resize(1240, 300);
+    wait("short filmstrip", || !visible(&ui, "#switcher-stage"))?;
+    assert!(visible(&ui, "#switcher-row"));
+    assert!(visible(&ui, "#switcher-keys"));
+    cancel()?;
+    ui.window.resize(1240, 800);
+    pump(100);
+    println!("PASS the filmstrip scrolls its selected card into view at 720 px, preserves picture pixels on resize and retains the row in a short window.");
+
+    changed.store(true, Ordering::Relaxed);
+    wait(
+        "hidden page's own script applied the updated colour",
+        || FILM_MUTATED.load(Ordering::Relaxed),
+    )?;
+    pump(200);
+    held()?;
+    wait("updated hidden picture delivered", || {
+        chrome(
+            &ui,
+            "S.switcher?.rows.get(S.switcher.selected).el.dataset.picture",
+        )
+        .is_ok_and(|v| v == "ready")
+    })?;
+    film_pixel(&ui, FILM_CHANGED)?;
+    for _ in 0..5 {
+        xdo(&["key", "Right"])?;
+    }
+    expect_selection(&recent[0])?;
+    wait("large picture has been mounted", || {
+        visible(&ui, "#switcher-stage > img")
+    })?;
+    film_pixel(&ui, FILM_COLOURS[6])?;
+    let started = Instant::now();
+    xdo(&["keyup", "ctrl"])?;
+    wait("retained read page paints after Ctrl-up", || {
+        let Some(window) = ui.window.window() else {
+            return false;
+        };
+        let Some(pixel) = window.pixbuf(1200, 500, 1, 1) else {
+            return false;
+        };
+        pixel.read_pixel_bytes()[..3] == FILM_COLOURS[6]
+            && ui
+                .snapshot()
+                .is_ok_and(|s| s.current.is_some_and(|id| id.to_string() == recent[0]))
+    })?;
+    println!(
+        "FILMSTRIP Ctrl-up to selected page painted: {:.1} ms, including xdotool and polling",
+        started.elapsed().as_secs_f64() * 1000.
+    );
+    activated(&ui, &recent[0])?;
+    key("alt+Left")?;
+    activated(&ui, &here.to_string())?;
+
+    ui.pages.inject_recent_memory_sample(0);
+    queue(&ui, "film12")?;
+    let extra = waiting(&ui)?[0].parse()?;
+    wait("eighth read fixture preloaded", || {
+        ui.pages.loaded_visits().contains(&extra)
+    })?;
+    key("ctrl+Tab")?;
+    activated(&ui, &extra.to_string())?;
+    key("alt+Left")?;
+    activated(&ui, &here.to_string())?;
+    held()?;
+    wait("all fourteen cards and large images fill", || {
+        chrome(&ui, "S.switcher?.picturesPainted >= 0").is_ok_and(|v| v == true)
+    })?;
+    assert_eq!(film_choices()?.len(), 14);
+    let old_url = chrome(&ui, "$('switcher-stage').firstChild.src")?;
+    cancel()?;
+    chrome(&ui, &format!("(() => {{ const img = new Image(); img.onload = () => window.oldFilmstripImage = 'loaded'; img.onerror = () => window.oldFilmstripImage = 'expired'; img.src = {old_url}; return true; }})()"))?;
+    wait("the closed opening no longer serves its picture", || {
+        chrome(&ui, "window.oldFilmstripImage ?? ''").is_ok_and(|v| v == "expired")
+    })?;
+    println!("PASS the maximum fourteen-page opening fills and its picture URL expires on close.");
+
+    queue(&ui, "film-slow")?;
+    let slow = waiting(&ui)?[0].clone();
+    held()?;
+    expect_selection(&slow)?;
+    assert_eq!(
+        text(&ui, "#switcher-stage .switcher-fallback > span:last-child"),
+        "Not loaded"
+    );
+    assert_eq!(
+        chrome(
+            &ui,
+            "$('switcher-stage').querySelector('img')?.closest('.fav') !== null"
+        )?,
+        true
+    );
+    xdo(&["keyup", "ctrl"])?;
+    activated(&ui, &slow)?;
+    key("alt+Left")?;
+    activated(&ui, &here.to_string())?;
+    println!("PASS composed colours match a never-shown waiting page, its scripted update, and a retained read page. An uncommitted page shows a card.");
+    let new_waiting = waiting(&ui)?;
+    held()?;
+    let read = recent[0].clone();
+    let (x, y, w, h) = rect(
+        &ui,
+        &format!(".switcher-option[data-id='{}']", new_waiting[1]),
+    )?;
+    let (x, y) = screen_point(
+        &ui,
+        &ui.chrome.native(),
+        (x + w / 2.) as i32,
+        (y + h / 2.) as i32,
+    )?;
+    move_to(x, y)?;
+    expect_selection(&new_waiting[1])?;
+    click_chrome(&ui, "#switcher-stage")?;
+    activated(&ui, &new_waiting[1])?;
+    xdo(&["keyup", "ctrl"])?;
+    assert_eq!(ui.snapshot()?.current.unwrap().to_string(), new_waiting[1]);
+    key("alt+Left")?;
+    activated(&ui, &here.to_string())?;
+    println!("PASS moving onto a thumbnail selects it and clicking the large preview opens it.");
+
+    let pending = waiting(&ui)?;
+    let head = pending[0].parse::<canopy::browser::VisitId>()?;
+    let mut browser = canopy::browser::Browser::open(&directory.join("forest.sqlite3"))?;
+    let parent_url = browser.visit(here)?.url;
+    let children: Vec<_> = (0..3)
+        .map(|i| {
+            browser
+                .queue_link(
+                    here,
+                    web_url(&format!("{base}/descendant/{i}")).unwrap(),
+                    canopy::browser::SourceContext {
+                        page_url: parent_url.clone(),
+                        link_text: format!("Descendant {i}"),
+                        citation_url: None,
+                        excerpt: String::new(),
+                    },
+                )
+                .unwrap()
+        })
+        .collect();
+    drop(browser);
+    let db = rusqlite::Connection::open(directory.join("forest.sqlite3"))?;
+    for child in &children {
+        db.execute(
+            "UPDATE visits SET parent_id=?1 WHERE id=?2",
+            [head.to_string(), child.to_string()],
+        )?;
+    }
+    drop(db);
+    queue(&ui, "film-slow")?;
+    let before_delete = waiting(&ui)?;
+    held()?;
+    let shown = film_choices()?;
+    assert_eq!(shown.len(), 14);
+    assert_eq!(
+        text(&ui, "#switcher-more"),
+        format!("{} more waiting", before_delete.len() - 5)
+    );
+    let index = shown.iter().position(|id| id == &head.to_string()).unwrap();
+    for _ in 1..index {
+        xdo(&["key", "Right"])?;
+    }
+    expect_selection(&head.to_string())?;
+    xdo(&["key", "Delete"])?;
+    wait("waiting branch disappears from the filmstrip", || {
+        film_choices().is_ok_and(|ids| !ids.contains(&head.to_string()))
+    })?;
+    let after_delete = film_choices()?;
+    for id in &children {
+        assert!(!after_delete.contains(&id.to_string()));
+    }
+    let successor = shown[index..]
+        .iter()
+        .chain(&shown[..index])
+        .find(|id| after_delete.contains(id))
+        .unwrap();
+    expect_selection(successor)?;
+    let state = ui.snapshot()?;
+    for id in std::iter::once(&head).chain(&children) {
+        assert!(state
+            .visits
+            .iter()
+            .any(|v| v.id == *id && v.dismissed_at.is_some()));
+    }
+    assert_eq!(
+        chrome(
+            &ui,
+            "S.switcher.rows.get(S.switcher.selected).el.getAttribute('aria-selected')"
+        )?,
+        "true"
+    );
+    cancel()?;
+    held()?;
+    xdo(&["key", "Left"])?;
+    expect_selection(&here.to_string())?;
+    xdo(&["key", "Delete"])?;
+    expect_selection(&here.to_string())?;
+    wait("current card remains after Delete", || {
+        film_choices().is_ok_and(|ids| ids.first() == Some(&here.to_string()))
+    })?;
+    for _ in 0..10 {
+        if selection()? == read {
+            break;
+        }
+        xdo(&["key", "Right"])?;
+    }
+    expect_selection(&read)?;
+    xdo(&["key", "Delete"])?;
+    expect_selection(&read)?;
+    cancel()?;
+    println!("PASS Delete dismisses a waiting branch and its descendants, selects a survivor and leaves current and read cards alone.");
+    ui.window.close();
+    Ok(())
+}
+
+const FILM_COLOURS: [[u8; 3]; 13] = [
+    [192, 50, 38],
+    [41, 144, 185],
+    [149, 70, 160],
+    [172, 143, 77],
+    [216, 115, 14],
+    [52, 69, 197],
+    [160, 55, 71],
+    [107, 71, 51],
+    [156, 117, 187],
+    [166, 208, 81],
+    [180, 111, 100],
+    [26, 142, 72],
+    [65, 141, 181],
+];
+const FILM_CHANGED: [u8; 3] = [220, 96, 141];
+static FILM_MUTATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn film_pixel(ui: &Ui, expected: [u8; 3]) -> Result<()> {
+    let (x, y, w, h) = rect(ui, "#switcher-stage")?;
+    let (sx, sy) = screen_point(
+        ui,
+        &ui.chrome.native(),
+        (x + w / 2.).round() as i32,
+        (y + h / 2.).round() as i32,
+    )?;
+    let (_, ox, oy) = ui.window.window().unwrap().origin();
+    let sample = || -> Result<()> {
+        let pixbuf = ui
+            .window
+            .window()
+            .unwrap()
+            .pixbuf(sx - ox - 2, sy - oy - 2, 5, 5)
+            .unwrap();
+        let bytes = pixbuf.read_pixel_bytes();
+        for y in 0..5 {
+            for x in 0..5 {
+                let offset = (y * pixbuf.rowstride() + x * pixbuf.n_channels()) as usize;
+                assert!(
+                    expected
+                        .iter()
+                        .zip(&bytes[offset..offset + 3])
+                        .all(|(a, b)| a.abs_diff(*b) <= 4),
+                    "expected {expected:?}, got {:?}",
+                    &bytes[offset..offset + 3]
+                );
+            }
+        }
+        Ok(())
+    };
+    pump(34);
+    sample()
+}
+
+fn film_inventory(
+    roots: &[std::path::PathBuf],
+) -> Result<std::collections::BTreeSet<std::path::PathBuf>> {
+    fn walk(
+        root: &std::path::Path,
+        files: &mut std::collections::BTreeSet<std::path::PathBuf>,
+    ) -> Result<()> {
+        if !root.is_dir() {
+            return Ok(());
+        }
+        for entry in std::fs::read_dir(root)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                walk(&entry.path(), files)?;
+            }
+            if kind.is_file() {
+                files.insert(entry.path());
+            }
+        }
+        Ok(())
+    }
+    let mut files = std::collections::BTreeSet::new();
+    for root in roots {
+        walk(root, &mut files)?;
+    }
+    Ok(files)
 }
