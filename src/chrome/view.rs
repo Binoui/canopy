@@ -582,22 +582,29 @@ pub(super) fn visit_value(
     })
 }
 
-/// Waiting pages the Ctrl+Tab list shows before the read ones; the rest are counted.
-const SWITCHER_WAITING: usize = 5;
-/// Read pages the Ctrl+Tab list shows.
-pub(crate) const SWITCHER_READ: usize = 8;
-
-/// The Ctrl+Tab list: the current tree's next waiting pages, then `recent`, its read pages
-/// most recently shown first. A quick Ctrl+Tab opens the first row.
-pub(crate) fn switcher_value(frame: &ChromeFrame, recent: &[VisitId]) -> Value {
-    let forest = &frame.forest;
-    let waiting = Waiting::of(forest);
-    let row =
-        |visit: &Visit| visit_value(forest, visit, &frame.loaded, &frame.live, &frame.playing);
+pub(super) fn switcher_value(
+    frame: &ChromeFrame,
+    choices: &super::switcher::SwitchChoices,
+) -> Value {
+    let row = |id| {
+        let visit = frame
+            .forest
+            .visit(id)
+            .expect("switch choice belongs to the frame");
+        visit_value(
+            &frame.forest,
+            visit,
+            &frame.loaded,
+            &frame.live,
+            &frame.playing,
+        )
+    };
     json!({
-        "waiting": waiting.pages().iter().take(SWITCHER_WAITING).map(|v| row(v)).collect::<Vec<_>>(),
-        "moreWaiting": waiting.len().saturating_sub(SWITCHER_WAITING),
-        "read": recent.iter().filter_map(|id| forest.visit(*id)).take(SWITCHER_READ).map(row).collect::<Vec<_>>(),
+        "first": choices.first().map(|id| id.to_string()),
+        "here": choices.here.map(|id| id.to_string()),
+        "waiting": choices.waiting.iter().copied().map(row).collect::<Vec<_>>(),
+        "moreWaiting": choices.more_waiting,
+        "read": choices.read.iter().copied().map(row).collect::<Vec<_>>(),
     })
 }
 
@@ -1301,7 +1308,10 @@ mod tests {
             pending: None,
             files: vec![],
         };
-        let value = super::switcher_value(&frame, &[ids[0]]);
+        let choices = super::super::switcher::SwitchChoices::of(&frame.forest, &[ids[0]]);
+        assert_eq!(choices.first(), Some(ids[4]));
+        assert_eq!(choices.here, frame.forest.current());
+        let value = super::switcher_value(&frame, &choices);
         let listed = |key: &str| {
             value[key]
                 .as_array()

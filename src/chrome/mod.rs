@@ -21,6 +21,7 @@ mod pinch;
 mod pins;
 mod sender_logos;
 mod start;
+mod switcher;
 mod tabs;
 mod tree_card;
 mod tree_view;
@@ -606,7 +607,9 @@ impl HtmlChrome {
             let Some(frame) = frame.as_ref() else {
                 return Ok(());
             };
-            view::switcher_value(frame, &recent(&frame.forest, view::SWITCHER_READ)?)
+            let recent = recent(&frame.forest, switcher::READ_LIMIT)?;
+            let choices = switcher::SwitchChoices::of(&frame.forest, &recent);
+            view::switcher_value(frame, &choices)
         };
         self.inner.call("switcher", &[json!("open"), rows]);
         Ok(())
