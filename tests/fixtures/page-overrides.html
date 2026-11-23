@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Page overrides</title>
+<style>
+  body { margin: 24px; }
+  input, textarea, [contenteditable] { display: block; width: 260px; margin-bottom: 12px; }
+  [contenteditable], .target { border: 1px solid; padding: 8px; }
+  iframe { display: block; width: 480px; height: 340px; }
+</style>
+<body oncontextmenu="return false">
+<input id="field" value="ab">
+<textarea id="lines"></textarea>
+<div id="editable" contenteditable></div>
+<p id="menu" class="target">Context menu target</p>
+<button id="fullscreen" onclick="document.body.requestFullscreen()">Fullscreen</button>
+<a id="waiting" href="/waiting">Open later</a>
+<script>
+  const events = [];
+  let menus = 0;
+  let blockPasteKey = true;
+  window.addEventListener('keydown', event => {
+    if (event.ctrlKey && event.key.toLowerCase() === 'v') {
+      events.push(['keydown', event.shiftKey]);
+      if (blockPasteKey) event.preventDefault();
+    }
+  }, true);
+  document.addEventListener('paste', event => {
+    events.push(['paste']);
+    event.preventDefault();
+  }, true);
+  for (const type of ['beforeinput', 'input']) {
+    document.addEventListener(type, event => {
+      events.push([type, event.target.value ?? event.target.textContent]);
+    });
+  }
+  document.addEventListener('contextmenu', event => {
+    menus++;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+  if (location.pathname !== '/frame') {
+    const frame = document.createElement('iframe');
+    frame.id = 'frame';
+    frame.src = '/frame';
+    document.body.append(frame);
+  }
+</script>

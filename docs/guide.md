@@ -49,6 +49,7 @@ Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not aff
 - **Ctrl+R**, **F5**, and **Ctrl+Shift+R** reload the current page. Canopy has no hard reload, so all three perform a plain reload.
 - **Escape** closes the open chrome surface first. Next it closes the find bar, then dismisses an error while the chrome has focus, then stops the current load. Each press does one thing. A thin line along the bottom of the strip shows loading progress, including a page loading off-screen before it replaces the one you are reading. The current page's attached list shows **Stop** while loading and **Reload** afterwards. Stopping keeps the last committed page usable.
 - **Ctrl+Shift+L** fills the saved login for the page.
+- **Ctrl+Shift+V** pastes plain text into a page field, even where the page blocks pasting.
 - **Ctrl+F** opens a find bar at the right of the tab row. Matches are highlighted as you type, and the bar shows which one is selected, such as **3 of 12**, or **No matches**. Matching ignores case. **Enter** and **Shift+Enter** in the bar, or **Ctrl+G**, **Ctrl+Shift+G**, **F3** and **Shift+F3** anywhere, go to the next or previous match and wrap at either end. A click in the page does not move the count: the next match follows the one counted. If the page changes and the number of matches with it, the count starts again at the first match. **F6** gives the keyboard back to the page and leaves the bar open. **Ctrl+F** again selects the text in the bar. **Escape** closes the bar and clears the highlights. Find belongs to the page it was opened on: switching pages or loading another document closes it. An address change inside the same document, such as a fragment, keeps it open.
 - **Ctrl+Q** quits Canopy.
 
@@ -63,6 +64,8 @@ A percentage button appears in the top row when the size is not 100%. Click it, 
 Canopy remembers the size for each site, including after a restart. Pages on the same scheme, host and port share it across trees and waiting pages. Different paths share a size; a different scheme or port has its own. The tabs, strip and forest keep their usual size.
 
 ## Act on a page or branch
+
+Hold **Shift** and right-click in the page to open the browser's context menu when the site hides it.
 
 Press **Menu** or **Shift+F10** on a focused page in the strip, an attached list, the zoomed tree or the waiting list. A right-click opens the same menu. The keys also open menus on saved cards and bookmarks. Its heading shows the page icon and short name. Up and Down move between menu rows, Home and End select the first and last rows, Enter runs the focused row, and Escape returns to the trigger. The same menu offers **Open**, **Open in a new tree**, **New branch here**, and **Copy address**. The remaining rows appear when they apply.
 
