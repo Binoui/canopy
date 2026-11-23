@@ -55,6 +55,10 @@ fn question(ui: &Ui) -> Result<()> {
 fn main() -> Result<()> {
     let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
+    std::fs::write(
+        directory.path().join("shortcuts"),
+        "back = Alt+Left, Ctrl+j\n",
+    )?;
     start(directory.path())?;
     let server = Server::start()?;
     let ui = Ui::new(directory.path())?;
@@ -77,8 +81,21 @@ fn main() -> Result<()> {
     let can_back = ui.pages.selected_page().native.can_go_back();
     let displayed = chrome(&ui, "[document.getElementById('search-pill').innerText, current(), document.querySelector('.node.pill')?.dataset.id]")?;
     let window_title = ui.window.title();
+    open_settings(&ui)?;
+    click_chrome(&ui, "#menu-shortcuts")?;
+    wait("shortcut editor open", || visible(&ui, "#shortcut-editor"))?;
+    click_chrome(&ui, "[data-shortcut-row=search] [data-slot]")?;
+    wait("recording armed", || visible(&ui, "[data-capturing]"))?;
     ui.pages.go(Go::Parent)?;
     question(&ui)?;
+    assert!(!visible(&ui, "#shortcut-editor"));
+    let first_question = chrome(&ui, "S.formReturn")?;
+    key("ctrl+j")?;
+    wait("rebound Back asks again without resending", || {
+        chrome(&ui, "S.formReturn").is_ok_and(|v| v.is_number() && v != first_question)
+    })?;
+    assert_eq!(server.hits("POST /post"), posts);
+    println!("PASS the form question takes focus from recording. Rebound Back still requires an answer before resending.");
     pump(200);
     if std::env::var_os("RESEND_SHOTS").is_some() {
         save_window(

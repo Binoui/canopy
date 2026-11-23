@@ -141,10 +141,25 @@ The tabs, the tree strip, the palette, the attached lists, the menus, the "New t
 
 Window shortcuts are declared in `src/shortcuts.rs`. Each command has a stable ID,
 a name, a group, and an ordered list of default combinations or a fixed digit
-rule. The window resolves key presses against that list before dispatching the
-action. The first combination supplies the labels. The chrome receives a
-separate shortcut message at startup, and frequent frames refer to commands
-by ID when they need a label. The CLI formats its help from the defaults.
+rule. `ShortcutSettings` loads `shortcuts` beside the database. The active
+bindings reserve fixed keys first, then explicit assignments, then available
+defaults. Retaining explicit assignments lets an inherited default return when
+the entry displacing it is removed. An edit atomically replaces the file before
+the window uses the resulting bindings.
+
+The window checks the editor session before dispatching a shortcut. Rust owns
+the recording, conflict, and reset confirmation. It checks the session and
+revision on each editor action. The window remembers which hardware keys are
+down so Enter can activate a chip without recording itself. A GTK
+capture-phase pointer press cancels recording before WebKit handles the click.
+Fullscreen and form questions can dismiss the editor and take the keyboard.
+The filmstrip owns its separate hold and uses the modifiers of the combination
+that opened it.
+
+The first active combination supplies each command's primary label. The chrome
+receives a separate shortcut projection at startup and after an edit. Frequent
+frames refer to commands by ID when they need a label. The CLI formats its help
+from the defaults.
 
 Chrome frames carry the current tree, open-tab summaries, waiting pages and the
 open palette's scope page. The start page requests its saved and suggested miniature data when shown. The
@@ -161,7 +176,7 @@ A 250 ms rest or keyboard focus opens one list below the item, joined by a conti
 
 `Waiting` orders descendants of the projected current page first, then other waiting pages in its tree, newest first in each group. It feeds the strip, the waiting list, and Ctrl+Tab. The trail folds against the space left by one waiting icon and, when needed, the overflow button. `fit_shelf` tries all names, then three, two, one and icon-only tabs using the 60 px parent and 196 px pill floors. When icon tabs alone exceed the room, it keeps a prefix and adds **+N**. The selected size returns spare room to the parent and pill. Past the three-name step, it names further tabs only while the parent and pill keep their full widths. The waiting list shows all waiting pages and marks its first row with Ctrl Tab. A tab shares its page key with the current pill, so opening it preserves the element and moves the remaining tabs.
 
-The view grows to the bottom of the attached list or menu and covers the whole window for the palette, the reader, full-page surfaces, and bottom settle feedback. Below that region, the page gets clicks.
+The view grows to the bottom of the attached list or menu and covers the whole window for the palette, the reader, the shortcut editor, full-page surfaces, and bottom settle feedback. Below that region, the page gets clicks.
 
 Node menus name their target with its favicon and short name. Settled pages and their descendants omit Settle branch. Repeating the settle command preserves the existing Undo. Settle feedback counts undismissed waiting links kept anywhere inside the branch, including branches put away earlier. The bottom toast extends the chrome view to the window height; its input region includes only Undo alongside the usual chrome area, so page clicks still pass through.
 

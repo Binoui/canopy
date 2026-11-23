@@ -55,6 +55,31 @@ Window shortcuts require the listed modifiers. Caps Lock and Num Lock do not aff
 
 Drag a tab in the bar to reorder it. A drop among pinned tabs pins it, a drop among other tabs unpins it, and a drop on their border keeps its pin. **Ctrl+Shift+PageUp** and **Ctrl+Shift+PageDown** move the active tab within its pinned or unpinned group. The order survives a restart.
 
+## Change keyboard shortcuts
+
+Open **Settings → Keyboard shortcuts**. Search by command name or key, such as
+**reload** or **Ctrl E**. Select a key chip to replace it, or select **Add** and
+press the new combination. You can tab or use the arrow keys to reach the
+controls. Press **Enter** to start recording and **Delete** or **Backspace** to
+remove a focused chip.
+
+If another command uses the combination, **Move it here** transfers it.
+Select **Reset** on a row to reclaim all of its default keys. **Reset all**
+restores the full set after you confirm. **Escape** and the area outside the
+panel back out of the current step, then close the editor. Escape and the
+Ctrl+1 to Ctrl+9 tree keys are fixed.
+
+New keys work as soon as you close the editor. A rebound page switcher stays
+open while you hold its Ctrl, Alt, or Super modifiers. Release any required
+modifier to open the selected page. When the combination has none of those
+modifiers, it opens the next page directly.
+
+Canopy stores changed rows in `shortcuts` beside `forest.sqlite3` in your data
+folder. To edit it by hand, quit Canopy and use one line per command, such as
+`forest = Ctrl+j, F8`. Use an empty right side to clear a command and `#` to
+start a comment. Canopy reads the file at startup and shows a summary of
+skipped lines in **Settings → Recent errors**.
+
 ## Change page size
 
 Press **Ctrl+=** or **Ctrl+plus** to make the page larger, and **Ctrl+-** to make it smaller. Shifted plus works too. The keypad's Add and Subtract keys do the same. Hold **Ctrl** and turn the wheel over the page to change its size one step at a time, from 25% to 500%.

@@ -445,6 +445,114 @@ fn main() -> Result<()> {
     println!("PASS counter hides and only the zoom pin reserves room at zero; empty shortcut shows toast.");
     small_tree_shots(&ui, &base)?;
     ui.window.close();
+    rebound_filmstrip(&base)?;
+    Ok(())
+}
+
+fn rebound_filmstrip(base: &str) -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    std::fs::write(
+        directory.path().join("shortcuts"),
+        "switch-page = Alt+j, F8, Ctrl+Shift+F9, Ctrl+Alt+m, Super+F10\nprevious-tree = Alt+Tab, Alt+k\n",
+    )?;
+    let ui = Ui::new(directory.path())?;
+    ui.window.show_all();
+    ready(&ui)?;
+    ui.pages
+        .selected_page()
+        .navigate(web_url(&format!("{base}/rebound"))?, NavigationTarget::Root)?;
+    loaded(&ui, "/rebound")?;
+    let root = ui.snapshot()?.current;
+    for link in ["link0", "link1", "link2", "link3", "link4"] {
+        queue(&ui, link)?;
+    }
+    let choices = waiting(&ui)?;
+    let selected = |id: &str| {
+        wait("rebound filmstrip selection", || {
+            chrome(
+                &ui,
+                "document.querySelector('#switcher-run [aria-selected=true]')?.dataset.id",
+            )
+            .is_ok_and(|v| v == id)
+        })
+    };
+    let hold_alt = || xdo(&["keydown", "alt", "key", "j"]);
+    let go_back = || -> Result<()> {
+        key("alt+Left")?;
+        loaded(&ui, "/rebound")
+    };
+    key("ctrl+Tab")?;
+    assert_eq!(ui.snapshot()?.current, root);
+    assert!(!visible(&ui, "#switcher"));
+    hold_alt()?;
+    selected(&choices[0])?;
+    assert_eq!(text(&ui, "[data-switcher-key=alternate]"), "J");
+    assert_eq!(text(&ui, "[data-switcher-key=hold]"), "Alt");
+    for (pressed, next) in [
+        ("Tab", &choices[1]),
+        ("shift+Tab", &choices[0]),
+        ("Right", &choices[1]),
+        ("Left", &choices[0]),
+        ("j", &choices[1]),
+        ("k", &choices[0]),
+    ] {
+        xdo(&["key", pressed])?;
+        selected(next)?;
+    }
+    xdo(&["key", "Delete"])?;
+    selected(&choices[1])?;
+    assert!(!waiting(&ui)?.contains(&choices[0]));
+    xdo(&["keyup", "alt"])?;
+    activated(&ui, &choices[1])?;
+    go_back()?;
+
+    hold_alt()?;
+    selected(&choices[2])?;
+    click_chrome(&ui, &format!("#switcher-choice-{}", choices[3]))?;
+    activated(&ui, &choices[3])?;
+    xdo(&["keyup", "alt"])?;
+    go_back()?;
+    hold_alt()?;
+    selected(&choices[2])?;
+    xdo(&["key", "Escape", "keyup", "alt"])?;
+    wait("Escape closes rebound filmstrip", || {
+        !visible(&ui, "#switcher")
+    })?;
+    assert_eq!(ui.snapshot()?.current, root);
+    println!("PASS Alt+J holds the filmstrip. Local Tab wins over a rebound action, and Shift+Tab, arrows, rebound actions, Delete, Alt release, click, and Escape work.");
+
+    xdo(&["keydown", "ctrl", "keydown", "shift", "key", "F9"])?;
+    selected(&choices[2])?;
+    assert_eq!(text(&ui, "[data-switcher-key=alternate]"), "Shift F9");
+    assert_eq!(text(&ui, "[data-switcher-key=hold]"), "Ctrl");
+    xdo(&["keyup", "shift"])?;
+    assert!(visible(&ui, "#switcher"));
+    xdo(&["keyup", "ctrl"])?;
+    activated(&ui, &choices[2])?;
+    go_back()?;
+
+    xdo(&["keydown", "ctrl", "keydown", "alt", "key", "m"])?;
+    selected(&choices[4])?;
+    assert_eq!(text(&ui, "[data-switcher-key=hold]"), "Ctrl or Alt");
+    xdo(&["keyup", "alt"])?;
+    activated(&ui, &choices[4])?;
+    xdo(&["keyup", "ctrl"])?;
+    go_back()?;
+
+    queue(&ui, "link5")?;
+    queue(&ui, "link6")?;
+    let choices = waiting(&ui)?;
+    xdo(&["keydown", "Super_L", "key", "F10"])?;
+    selected(&choices[0])?;
+    assert_eq!(text(&ui, "[data-switcher-key=hold]"), "Super");
+    xdo(&["keyup", "Super_L"])?;
+    activated(&ui, &choices[0])?;
+    go_back()?;
+    key("F8")?;
+    activated(&ui, &choices[1])?;
+    assert!(!visible(&ui, "#switcher"));
+    println!("PASS the opening alternate controls the footer and required release. Shift frees before Ctrl, Alt releases a Ctrl+Alt hold, Super releases its hold, and lone F8 opens directly.");
+    ui.window.close();
     Ok(())
 }
 
