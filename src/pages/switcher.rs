@@ -3,7 +3,7 @@ use std::rc::{Rc, Weak};
 use gtk::prelude::*;
 use webkit2gtk::{SnapshotOptions, SnapshotRegion, WebViewExt};
 
-use crate::browser::{Document, VisitId};
+use crate::browser::VisitId;
 
 use super::{LivePage, Pages};
 
@@ -11,7 +11,8 @@ use super::{LivePage, Pages};
 pub(crate) struct SwitcherSource {
     owner: Weak<Pages>,
     page: Weak<LivePage>,
-    document: Document,
+    visit: VisitId,
+    epoch: u64,
     sequence: u64,
 }
 
@@ -35,7 +36,8 @@ impl Pages {
         Some(SwitcherSource {
             owner: self.me.clone(),
             page: Rc::downgrade(&page),
-            document,
+            visit: document.visit,
+            epoch: document.epoch,
             sequence,
         })
     }
@@ -44,12 +46,13 @@ impl Pages {
 impl SwitcherSource {
     fn page(&self) -> Option<Rc<LivePage>> {
         let page = self.page.upgrade()?;
-        let retained = self.owner.upgrade()?.switcher_page(self.document.visit)?;
+        let retained = self.owner.upgrade()?.switcher_page(self.visit)?;
         if !Rc::ptr_eq(&page, &retained) {
             return None;
         }
         let (document, sequence) = page.capture_document()?;
-        (document == self.document && sequence == self.sequence).then_some(page)
+        (document.visit == self.visit && document.epoch == self.epoch && sequence == self.sequence)
+            .then_some(page)
     }
 
     pub(crate) fn retained(&self) -> bool {

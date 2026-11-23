@@ -1096,6 +1096,36 @@ fn prove_filmstrip(
     assert_eq!(ui.snapshot()?.current, Some(here));
     println!("PASS filmstrip paints 13 retained pages within 300 ms and creates no files in the private data and cache folders.");
 
+    held()?;
+    wait("large snapshot visible", || {
+        visible(&ui, "#switcher-stage > img")
+    })?;
+    let (stage_x, stage_y, stage_w, stage_h) = rect(&ui, "#switcher-stage")?;
+    let dimensions = chrome(&ui, "[$('switcher-stage').firstChild.naturalWidth, $('switcher-stage').firstChild.naturalHeight]")?;
+    assert_eq!(
+        dimensions,
+        serde_json::json!([stage_w as i32, stage_h as i32])
+    );
+    assert!(stage_x > 0. && stage_y > 94.);
+    assert!(text(&ui, "#switcher-caption").contains("Waiting, from Filmstrip source"));
+    ui.window.resize(720, 800);
+    wait("filmstrip at 720 px", || {
+        rect(&ui, "#switcher-row").is_ok_and(|(_, _, w, _)| w < 710.)
+    })?;
+    assert_eq!(chrome(&ui, "[$('switcher-stage').firstChild.naturalWidth, $('switcher-stage').firstChild.naturalHeight]")?, dimensions);
+    xdo(&["key", "Left"])?;
+    xdo(&["key", "Left"])?;
+    expect_selection(order.last().unwrap())?;
+    assert!(chrome(&ui, "(() => { const row=$('switcher-row'), card=document.getElementById(row.getAttribute('aria-activedescendant')).getBoundingClientRect(), frame=row.getBoundingClientRect(); return row.scrollLeft > 0 && card.left >= frame.left && card.right <= frame.right; })()")? == true);
+    ui.window.resize(1240, 300);
+    wait("short filmstrip", || !visible(&ui, "#switcher-stage"))?;
+    assert!(visible(&ui, "#switcher-row"));
+    assert!(visible(&ui, "#switcher-keys"));
+    cancel()?;
+    ui.window.resize(1240, 800);
+    pump(100);
+    println!("PASS the filmstrip scrolls its selected card into view at 720 px, preserves picture pixels on resize and retains the row in a short window.");
+
     changed.store(true, Ordering::Relaxed);
     wait(
         "hidden page's own script applied the updated colour",
@@ -1116,17 +1146,25 @@ fn prove_filmstrip(
     }
     expect_selection(&recent[0])?;
     wait("large picture has been mounted", || {
-        visible(&ui, "#switcher-stage img")
+        visible(&ui, "#switcher-stage > img")
     })?;
     film_pixel(&ui, FILM_COLOURS[6])?;
     let started = Instant::now();
     xdo(&["keyup", "ctrl"])?;
-    wait("read page opens on release", || {
-        ui.snapshot()
-            .is_ok_and(|s| s.current.is_some_and(|id| id.to_string() == recent[0]))
+    wait("retained read page paints after Ctrl-up", || {
+        let Some(window) = ui.window.window() else {
+            return false;
+        };
+        let Some(pixel) = window.pixbuf(1200, 500, 1, 1) else {
+            return false;
+        };
+        pixel.read_pixel_bytes()[..3] == FILM_COLOURS[6]
+            && ui
+                .snapshot()
+                .is_ok_and(|s| s.current.is_some_and(|id| id.to_string() == recent[0]))
     })?;
     println!(
-        "FILMSTRIP Ctrl-up to selected document commit: {:.1} ms, including xdotool and polling",
+        "FILMSTRIP Ctrl-up to selected page painted: {:.1} ms, including xdotool and polling",
         started.elapsed().as_secs_f64() * 1000.
     );
     activated(&ui, &recent[0])?;
@@ -1161,7 +1199,7 @@ fn prove_filmstrip(
     held()?;
     expect_selection(&slow)?;
     assert_eq!(
-        text(&ui, "#switcher-stage .switcher-fallback span"),
+        text(&ui, "#switcher-stage .switcher-fallback > span:last-child"),
         "Not loaded"
     );
     assert_eq!(
@@ -1171,8 +1209,125 @@ fn prove_filmstrip(
         )?,
         true
     );
-    cancel()?;
+    xdo(&["keyup", "ctrl"])?;
+    activated(&ui, &slow)?;
+    key("alt+Left")?;
+    activated(&ui, &here.to_string())?;
     println!("PASS composed colours match a never-shown waiting page, its scripted update, and a retained read page. An uncommitted page shows a card.");
+    let new_waiting = waiting(&ui)?;
+    held()?;
+    let read = recent[0].clone();
+    let (x, y, w, h) = rect(
+        &ui,
+        &format!(".switcher-option[data-id='{}']", new_waiting[1]),
+    )?;
+    let (x, y) = screen_point(
+        &ui,
+        &ui.chrome.native(),
+        (x + w / 2.) as i32,
+        (y + h / 2.) as i32,
+    )?;
+    move_to(x, y)?;
+    expect_selection(&new_waiting[1])?;
+    click_chrome(&ui, "#switcher-stage")?;
+    activated(&ui, &new_waiting[1])?;
+    xdo(&["keyup", "ctrl"])?;
+    assert_eq!(ui.snapshot()?.current.unwrap().to_string(), new_waiting[1]);
+    key("alt+Left")?;
+    activated(&ui, &here.to_string())?;
+    println!("PASS moving onto a thumbnail selects it and clicking the large preview opens it.");
+
+    let pending = waiting(&ui)?;
+    let head = pending[0].parse::<canopy::browser::VisitId>()?;
+    let mut browser = canopy::browser::Browser::open(&directory.join("forest.sqlite3"))?;
+    let parent_url = browser.visit(here)?.url;
+    let children: Vec<_> = (0..3)
+        .map(|i| {
+            browser
+                .queue_link(
+                    here,
+                    web_url(&format!("{base}/descendant/{i}")).unwrap(),
+                    canopy::browser::SourceContext {
+                        page_url: parent_url.clone(),
+                        link_text: format!("Descendant {i}"),
+                        citation_url: None,
+                        excerpt: String::new(),
+                    },
+                )
+                .unwrap()
+        })
+        .collect();
+    drop(browser);
+    let db = rusqlite::Connection::open(directory.join("forest.sqlite3"))?;
+    for child in &children {
+        db.execute(
+            "UPDATE visits SET parent_id=?1 WHERE id=?2",
+            [head.to_string(), child.to_string()],
+        )?;
+    }
+    drop(db);
+    queue(&ui, "film-slow")?;
+    let before_delete = waiting(&ui)?;
+    held()?;
+    let shown = film_choices()?;
+    assert_eq!(shown.len(), 14);
+    assert_eq!(
+        text(&ui, "#switcher-more"),
+        format!("{} more waiting", before_delete.len() - 5)
+    );
+    let index = shown.iter().position(|id| id == &head.to_string()).unwrap();
+    for _ in 1..index {
+        xdo(&["key", "Right"])?;
+    }
+    expect_selection(&head.to_string())?;
+    xdo(&["key", "Delete"])?;
+    wait("waiting branch disappears from the filmstrip", || {
+        film_choices().is_ok_and(|ids| !ids.contains(&head.to_string()))
+    })?;
+    let after_delete = film_choices()?;
+    for id in &children {
+        assert!(!after_delete.contains(&id.to_string()));
+    }
+    let successor = shown[index..]
+        .iter()
+        .chain(&shown[..index])
+        .find(|id| after_delete.contains(id))
+        .unwrap();
+    expect_selection(successor)?;
+    let state = ui.snapshot()?;
+    for id in std::iter::once(&head).chain(&children) {
+        assert!(state
+            .visits
+            .iter()
+            .any(|v| v.id == *id && v.dismissed_at.is_some()));
+    }
+    assert_eq!(
+        chrome(
+            &ui,
+            "S.switcher.rows.get(S.switcher.selected).el.getAttribute('aria-selected')"
+        )?,
+        "true"
+    );
+    cancel()?;
+    held()?;
+    xdo(&["key", "Left"])?;
+    expect_selection(&here.to_string())?;
+    xdo(&["key", "Delete"])?;
+    expect_selection(&here.to_string())?;
+    wait("current card remains after Delete", || {
+        film_choices().is_ok_and(|ids| ids.first() == Some(&here.to_string()))
+    })?;
+    for _ in 0..10 {
+        if selection()? == read {
+            break;
+        }
+        xdo(&["key", "Right"])?;
+    }
+    expect_selection(&read)?;
+    xdo(&["key", "Delete"])?;
+    expect_selection(&read)?;
+    cancel()?;
+    println!("PASS Delete dismisses a waiting branch and its descendants, selects a survivor and leaves current and read cards alone.");
     ui.window.close();
     Ok(())
 }

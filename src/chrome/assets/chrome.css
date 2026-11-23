@@ -254,21 +254,22 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 #switcher-backdrop { position: absolute; background: var(--bg); pointer-events: auto; }
 #switcher-stage, #switcher-caption, #switcher-row, #switcher-run, #switcher-more,
 #switcher-keys, .switcher-option, .switcher-divider { position: absolute; }
-#switcher-stage { pointer-events: auto; cursor: pointer; border-radius: 10px; box-shadow: 0 18px 46px -18px var(--shadow); }
+#switcher-stage { pointer-events: auto; cursor: pointer; border-radius: 10px; box-shadow: 0 0 0 1px var(--line), 0 18px 46px -18px var(--shadow); }
 .switcher-picture { position: relative; height: var(--picture-height); overflow: hidden; border-radius: 7px; background: var(--tile);
   box-shadow: 0 0 0 1px var(--tile-border); }
 .switcher-picture > img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .switcher-fallback { height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 3px; padding: 4px 6px; color: var(--muted); font-size: 10px; }
-.switcher-fallback b, .switcher-label span:last-child, #switcher-caption b, #switcher-caption > span:last-child {
+.switcher-fallback b, .switcher-label span:last-child, #switcher-caption b, #switcher-caption > div > span:last-child {
   min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .switcher-fallback b { color: var(--text); font-weight: 550; }
 #switcher-stage .switcher-fallback { gap: 8px; font-size: 13px; }
 #switcher-stage .switcher-fallback b { font-size: 17px; }
-#switcher-caption, .switcher-label { display: flex; align-items: center; gap: 8px; }
+#switcher-caption, #switcher-caption > div, .switcher-label { display: flex; align-items: center; gap: 8px; }
 #switcher-caption { justify-content: center; color: var(--muted); }
+#switcher-caption > div { max-width: 100%; padding: 3px 10px; border-radius: 20px; background: var(--tile); box-shadow: 0 0 0 1px var(--tile-border); }
 #switcher-caption b { color: var(--text); font-weight: 560; flex: 0 1 auto; }
-#switcher-caption > span:last-child { flex: 0 1 auto; }
+#switcher-caption > div > span:last-child { flex: 0 1 auto; }
 #switcher-row { overflow: auto hidden; outline: none; pointer-events: auto; scrollbar-width: thin; }
 .switcher-option { cursor: pointer; }
 .switcher-option[aria-selected="true"] .switcher-picture {
@@ -278,7 +279,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 .switcher-option[aria-selected="true"] .switcher-label { color: var(--green-ink); }
 .switcher-divider { background: var(--border); }
 #switcher-more, #switcher-keys { display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 11px; }
-#switcher-keys { gap: 4px 14px; flex-wrap: wrap; align-content: center; }
+#switcher-keys { gap: 4px 8px; flex-wrap: wrap; align-content: center; }
 #switcher-keys span { white-space: nowrap; }
 #switcher-keys kbd { border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; }
 

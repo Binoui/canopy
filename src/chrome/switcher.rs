@@ -1,13 +1,26 @@
 mod pictures;
 pub(super) use pictures::response as picture_response;
 
-use std::{collections::HashMap, rc::Weak};
+use std::{
+    collections::HashMap,
+    rc::{Rc, Weak},
+    time::Duration,
+};
 
 use pictures::{Picture, Pixels, Sizes};
 
 use crate::{browser::VisitId, forest::ForestProjection};
 
 use super::waiting::Waiting;
+
+use anyhow::Result;
+use gtk::prelude::*;
+use serde_json::{json, Value};
+use wry::WebViewExtUnix;
+
+use crate::pages::{DismissCompletion, Pages};
+
+use super::{view, ChromeFrame, ChromeIntent, HtmlChrome, Inner, CHROME_HEIGHT};
 
 const WAITING_LIMIT: usize = 5;
 pub(super) const READ_LIMIT: usize = 8;
@@ -45,17 +58,6 @@ impl SwitchChoices {
     }
 }
 
-use std::time::Duration;
-
-use anyhow::Result;
-use gtk::prelude::*;
-use serde_json::{json, Value};
-use wry::WebViewExtUnix;
-
-use crate::pages::Pages;
-
-use super::{view, ChromeFrame, ChromeIntent, HtmlChrome, Inner, CHROME_HEIGHT};
-
 #[derive(Default)]
 pub(super) struct Switcher {
     next: u64,
@@ -71,7 +73,8 @@ enum Phase {
     #[default]
     Closed,
     Armed(Armed),
-    Showing(Opening),
+    Showing(Box<Opening>),
+    Released(Released),
 }
 
 struct Armed {
@@ -112,6 +115,30 @@ struct Opening {
     pictures: HashMap<VisitId, Picture>,
     capture_layout: FilmLayout,
     painted: bool,
+    dismiss: Option<Dismiss>,
+}
+
+struct Released {
+    opening: u64,
+    here: Option<VisitId>,
+    selected: VisitId,
+    rows: Vec<Row>,
+    dismiss: Dismiss,
+}
+
+enum Dismiss {
+    Unclaimed(VisitId),
+    Pending,
+}
+
+impl Dismiss {
+    fn claim(&mut self, head: VisitId) -> bool {
+        if !matches!(self, Self::Unclaimed(id) if *id == head) {
+            return false;
+        }
+        *self = Self::Pending;
+        true
+    }
 }
 
 impl SwitchChoices {
@@ -146,7 +173,7 @@ fn modifiers_held(window: &gtk::Window, modifiers: gdk::ModifierType) -> bool {
 impl HtmlChrome {
     pub(crate) fn arm_switcher(
         &self,
-        pages: &std::rc::Rc<Pages>,
+        pages: &Rc<Pages>,
         window: &gtk::Window,
         modifiers: gdk::ModifierType,
     ) -> Result<()> {
@@ -201,7 +228,7 @@ impl HtmlChrome {
         inner.switcher.borrow_mut().phase = Phase::Armed(Armed {
             id,
             choices,
-            pages: std::rc::Rc::downgrade(pages),
+            pages: Rc::downgrade(pages),
             timer: Some(timer),
         });
         Ok(())
@@ -225,11 +252,92 @@ impl HtmlChrome {
     }
 
     pub(crate) fn switcher_active(&self) -> bool {
-        !matches!(self.inner.switcher.borrow().phase, Phase::Closed)
+        matches!(
+            self.inner.switcher.borrow().phase,
+            Phase::Armed(_) | Phase::Showing(_)
+        )
+    }
+
+    pub(crate) fn dismiss_switcher_selection(&self) -> bool {
+        let inner = &self.inner;
+        let mut switcher = inner.switcher.borrow_mut();
+        let Phase::Showing(opening) = &mut switcher.phase else {
+            return false;
+        };
+        let head = opening.selected;
+        if opening.dismiss.is_none()
+            && opening
+                .rows
+                .iter()
+                .any(|row| row.id == head && row.kind == Kind::Waiting)
+        {
+            opening.dismiss = Some(Dismiss::Unclaimed(head));
+            drop(switcher);
+            if let Some(host) = inner.host() {
+                host.dispatch(ChromeIntent::Dismiss(head));
+            }
+        }
+        true
+    }
+
+    pub(crate) fn dismiss_completion(&self, head: VisitId) -> Option<DismissCompletion> {
+        let mut switcher = self.inner.switcher.borrow_mut();
+        let (id, request) = match &mut switcher.phase {
+            Phase::Showing(opening) => (opening.id, opening.dismiss.as_mut()?),
+            Phase::Released(released) => (released.opening, &mut released.dismiss),
+            _ => return None,
+        };
+        if !request.claim(head) {
+            return None;
+        }
+        let weak = self.inner.me.clone();
+        Some(Box::new(move |result| {
+            if let Some(inner) = weak.upgrade() {
+                inner.switcher_dismissed(id, result);
+            }
+        }))
     }
 
     pub(crate) fn finish_switcher(&self, open: bool) {
         self.inner.finish_switcher(open);
+    }
+}
+
+fn survives(row: &Row, forest: &ForestProjection) -> bool {
+    match row.kind {
+        Kind::Waiting => forest.is_waiting(row.id),
+        _ => forest.visit(row.id).is_some(),
+    }
+}
+
+fn survivor(rows: &[Row], selected: VisitId, forest: &ForestProjection) -> Option<VisitId> {
+    let index = rows.iter().position(|row| row.id == selected)?;
+    rows.iter()
+        .cycle()
+        .skip(index)
+        .take(rows.len())
+        .find(|row| survives(row, forest))
+        .map(|row| row.id)
+}
+
+impl Opening {
+    fn prune(&mut self, forest: &ForestProjection) {
+        if let Some(next) = survivor(&self.rows, self.selected, forest) {
+            self.selected = next;
+        }
+        self.rows.retain(|row| {
+            if survives(row, forest) {
+                return true;
+            }
+            self.pictures.remove(&row.id);
+            false
+        });
+        let shown = self
+            .rows
+            .iter()
+            .filter(|row| row.kind == Kind::Waiting)
+            .count();
+        self.more_waiting = Waiting::of(forest).len().saturating_sub(shown);
     }
 }
 
@@ -257,6 +365,7 @@ impl Inner {
             rows,
             capture_layout,
             painted: false,
+            dismiss: None,
             pictures,
             more_waiting: armed.choices.more_waiting,
             focus_was_in_chrome: self.view.webview().has_focus(),
@@ -292,7 +401,7 @@ impl Inner {
                 "moreWaiting": opening.more_waiting,
             })
         };
-        self.switcher.borrow_mut().phase = Phase::Showing(opening);
+        self.switcher.borrow_mut().phase = Phase::Showing(Box::new(opening));
         self.cover.set(None);
         self.apply_bounds();
         self.call("switcher", &[json!("show"), message]);
@@ -303,6 +412,12 @@ impl Inner {
         let phase = std::mem::take(&mut self.switcher.borrow_mut().phase);
         let choice = match phase {
             Phase::Closed => return,
+            Phase::Released(released) => {
+                if open {
+                    self.switcher.borrow_mut().phase = Phase::Released(released);
+                }
+                return;
+            }
             Phase::Armed(armed) => armed.choices.first().filter(|_| open),
             Phase::Showing(opening) => {
                 let choice = Some(opening.selected).filter(|&id| open && Some(id) != opening.here);
@@ -320,6 +435,16 @@ impl Inner {
                     if let Some(host) = self.host() {
                         host.focus_page();
                     }
+                }
+                if let Some(dismiss) = opening.dismiss.filter(|_| choice.is_some()) {
+                    self.switcher.borrow_mut().phase = Phase::Released(Released {
+                        opening: opening.id,
+                        here: opening.here,
+                        selected: opening.selected,
+                        rows: opening.rows,
+                        dismiss,
+                    });
+                    return;
                 }
                 choice
             }
@@ -352,18 +477,73 @@ impl Inner {
         }
     }
 
-    pub(super) fn switcher_frame_changed(&self, current: Option<VisitId>) {
-        let here = match &self.switcher.borrow().phase {
+    pub(super) fn switcher_frame_changed(&self, frame: &ChromeFrame) {
+        let mut switcher = self.switcher.borrow_mut();
+        let here = match &switcher.phase {
             Phase::Closed => return,
             Phase::Armed(armed) => armed.choices.here,
             Phase::Showing(opening) => opening.here,
+            Phase::Released(released) => released.here,
         };
-        if here != current {
+        if here != frame.forest.current() {
+            drop(switcher);
             self.finish_switcher(false);
+            return;
+        }
+        if let Phase::Showing(opening) = &mut switcher.phase {
+            if opening.dismiss.is_none() {
+                opening.prune(&frame.forest);
+            }
+            self.paint_switcher_rows(opening, frame);
         }
     }
 
-    pub(super) fn switcher_pointer(self: &std::rc::Rc<Self>, message: &Value) {
+    fn switcher_dismissed(&self, id: u64, mut result: Result<ForestProjection>) {
+        let mut switcher = self.switcher.borrow_mut();
+        let mut choice = None;
+        match &mut switcher.phase {
+            Phase::Showing(opening) if opening.id == id => {
+                opening.dismiss = None;
+                if let Ok(forest) = &mut result {
+                    if let Some(here) = opening.here {
+                        forest.show_current(here);
+                    }
+                    opening.prune(forest);
+                    if let Some(frame) = self.frame.borrow().as_ref() {
+                        self.paint_switcher_rows(opening, frame);
+                    }
+                }
+            }
+            Phase::Released(released) if released.opening == id => {
+                if let Ok(forest) = &result {
+                    choice = survivor(&released.rows, released.selected, forest)
+                        .filter(|&visit| Some(visit) != released.here);
+                }
+                switcher.phase = Phase::Closed;
+            }
+            _ => {}
+        }
+        drop(switcher);
+        if let Err(error) = result {
+            self.report(error);
+        }
+        if let Some(choice) = choice {
+            self.open_switch_choice(choice);
+        }
+    }
+
+    fn paint_switcher_rows(&self, opening: &Opening, frame: &ChromeFrame) {
+        let rows: Vec<_> = opening.rows.iter().map(|&row| row.value(frame)).collect();
+        self.call("switcher", &[json!("patch"), json!({
+            "opening": opening.id.to_string(),
+            "selected": opening.selected.to_string(),
+            "rows": rows,
+            "layout": FilmLayout::of(self.size.get(), &opening.rows, opening.more_waiting).value(),
+            "moreWaiting": opening.more_waiting,
+        })]);
+    }
+
+    pub(super) fn switcher_pointer(self: &Rc<Self>, message: &Value) {
         let Some(id) = message["opening"].as_str().and_then(|id| id.parse().ok()) else {
             return;
         };
@@ -441,6 +621,7 @@ impl Row {
             Kind::Here => format!("{name}, current page"),
             Kind::Read => format!("{name}, read"),
         });
+        value["site"] = json!(view::short_host(&visit.url));
         value["caption"] = json!(caption);
         value["kind"] = json!(match self.kind {
             Kind::Here => "here",
@@ -460,7 +641,7 @@ struct FilmLayout {
     caption: BoxPx,
     row: BoxPx,
     run: BoxPx,
-    cards: Vec<BoxPx>,
+    cards: Vec<(VisitId, BoxPx)>,
     divider: Option<BoxPx>,
     more: Option<BoxPx>,
     footer: BoxPx,
@@ -506,7 +687,7 @@ impl FilmLayout {
                 }
                 let bounds = BoxPx(x, 6, CARD_WIDTH, picture_height + 22);
                 x += CARD_WIDTH + CARD_GAP;
-                bounds
+                (row.id, bounds)
             })
             .collect();
         let run_w = x - CARD_GAP + ROW_INSET;
@@ -540,59 +721,12 @@ impl FilmLayout {
             "caption": self.caption.value(),
             "row": self.row.value(),
             "run": self.run.value(),
-            "cards": self.cards.iter().copied().map(BoxPx::value).collect::<Vec<_>>(),
+            "cards": self.cards.iter().map(|(id, bounds)| (id.to_string(), bounds.value())).collect::<HashMap<_, _>>(),
             "divider": self.divider.map(BoxPx::value),
             "more": self.more.map(BoxPx::value),
             "footer": self.footer.value(),
             "picture_height": self.picture_height,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn full_roster_fits_page_area_and_scrolls_at_narrow_widths() {
-        let here = ulid::Ulid::new().to_string().parse().unwrap();
-        let mut rows = vec![Row {
-            id: here,
-            kind: Kind::Here,
-        }];
-        rows.extend((0..5).map(|_| Row {
-            id: ulid::Ulid::new().to_string().parse().unwrap(),
-            kind: Kind::Waiting,
-        }));
-        rows.extend((0..8).map(|_| Row {
-            id: ulid::Ulid::new().to_string().parse().unwrap(),
-            kind: Kind::Read,
-        }));
-        for (w, h) in [(720, 800), (1240, 800), (1920, 800), (1240, 300)] {
-            let layout = FilmLayout::of((w.into(), h.into()), &rows, 3);
-            let BoxPx(_, row_top, row_width, row_height) = layout.row;
-            let BoxPx(_, caption_y, _, caption_h) = layout.caption;
-            assert!(caption_y + caption_h <= row_top);
-            assert!(row_top + row_height <= layout.footer.1);
-            assert!(layout.footer.1 + layout.footer.3 <= h);
-            assert_eq!(layout.cards.len(), 14);
-            assert!(layout
-                .cards
-                .iter()
-                .all(|card| card.2 >= 112 && layout.picture_height >= 56));
-            assert_eq!(layout.run.2 > row_width, w < 1920);
-            let divider = layout.divider.unwrap();
-            assert!(layout.cards[5].0 + layout.cards[5].2 < divider.0);
-            assert!(divider.0 + divider.2 < layout.cards[6].0);
-            if h == 300 {
-                assert!(layout.stage.is_none());
-            } else {
-                let BoxPx(x, y, sw, sh) = layout.stage.unwrap();
-                let ratio = f64::from(w) / (f64::from(h) - CHROME_HEIGHT);
-                assert!((f64::from(sw) / f64::from(sh) - ratio).abs() < 0.01);
-                assert!(x >= 0 && x + sw <= w && y + sh <= caption_y);
-            }
-        }
     }
 }
 
@@ -635,7 +769,7 @@ impl Opening {
 }
 
 impl Inner {
-    fn fill_pictures(self: &std::rc::Rc<Self>, id: u64) {
+    fn fill_pictures(self: &Rc<Self>, id: u64) {
         loop {
             let (visit, source, sizes, bytes, cancel) = {
                 let mut switcher = self.switcher.borrow_mut();
@@ -656,7 +790,10 @@ impl Inner {
                     return;
                 }
                 let sizes = Sizes {
-                    large: opening.capture_layout.stage,
+                    large: opening
+                        .capture_layout
+                        .stage
+                        .or(Some(opening.capture_layout.backdrop)),
                     thumb: (CARD_WIDTH, opening.capture_layout.picture_height),
                     scale,
                 };
@@ -718,7 +855,7 @@ impl Inner {
     }
 
     fn picture_finished(
-        self: &std::rc::Rc<Self>,
+        self: &Rc<Self>,
         id: u64,
         visit: VisitId,
         bytes: u64,
@@ -765,5 +902,62 @@ impl Inner {
 impl HtmlChrome {
     pub fn switcher_snapshot_count(&self) -> u64 {
         self.inner.switcher.borrow().snapshots
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_dismiss_request_can_only_be_claimed_once() {
+        let head = ulid::Ulid::new().to_string().parse().unwrap();
+        let other = ulid::Ulid::new().to_string().parse().unwrap();
+        let mut dismiss = Dismiss::Unclaimed(head);
+        assert!(!dismiss.claim(other));
+        assert!(dismiss.claim(head));
+        assert!(!dismiss.claim(head));
+    }
+
+    #[test]
+    fn full_roster_fits_page_area_and_scrolls_at_narrow_widths() {
+        let here = ulid::Ulid::new().to_string().parse().unwrap();
+        let mut rows = vec![Row {
+            id: here,
+            kind: Kind::Here,
+        }];
+        rows.extend((0..5).map(|_| Row {
+            id: ulid::Ulid::new().to_string().parse().unwrap(),
+            kind: Kind::Waiting,
+        }));
+        rows.extend((0..8).map(|_| Row {
+            id: ulid::Ulid::new().to_string().parse().unwrap(),
+            kind: Kind::Read,
+        }));
+        for (w, h) in [(720, 800), (1240, 800), (1920, 800), (1240, 300)] {
+            let layout = FilmLayout::of((w.into(), h.into()), &rows, 3);
+            let BoxPx(_, row_top, row_width, row_height) = layout.row;
+            let BoxPx(_, caption_y, _, caption_h) = layout.caption;
+            assert!(caption_y + caption_h <= row_top);
+            assert!(row_top + row_height <= layout.footer.1);
+            assert!(layout.footer.1 + layout.footer.3 <= h);
+            assert_eq!(layout.cards.len(), 14);
+            assert!(layout
+                .cards
+                .iter()
+                .all(|card| card.1 .2 >= 112 && layout.picture_height >= 56));
+            assert_eq!(layout.run.2 > row_width, w < 1920);
+            let divider = layout.divider.unwrap();
+            assert!(layout.cards[5].1 .0 + layout.cards[5].1 .2 < divider.0);
+            assert!(divider.0 + divider.2 < layout.cards[6].1 .0);
+            if h == 300 {
+                assert!(layout.stage.is_none());
+            } else {
+                let BoxPx(x, y, sw, sh) = layout.stage.unwrap();
+                let ratio = f64::from(w) / (f64::from(h) - CHROME_HEIGHT);
+                assert!((f64::from(sw) / f64::from(sh) - ratio).abs() < 0.01);
+                assert!(x >= 0 && x + sw <= w && y + sh <= caption_y);
+            }
+        }
     }
 }

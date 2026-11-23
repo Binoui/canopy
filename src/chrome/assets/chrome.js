@@ -1014,7 +1014,7 @@ function layoutSwitcher(layout) {
     run: layout.run, more: layout.more, keys: layout.footer,
   })) switcherBox($(`switcher-${name}`), box);
   deck.style.setProperty('--picture-height', `${layout.picture_height}px`);
-  [...S.switcher.rows.values()].forEach(({ el }, index) => switcherBox(el, layout.cards[index]));
+  for (const [id, { el }] of S.switcher.rows) switcherBox(el, layout.cards[id]);
   switcherBox(S.switcher.divider, layout.divider);
   scrollSwitcherSelection();
 }
@@ -1075,6 +1075,29 @@ function scrollSwitcherSelection() {
   else if (card.right + 6 > bounds.right) row.scrollLeft += card.right + 6 - bounds.right;
 }
 
+function patchSwitcher(data) {
+  const sw = S.switcher;
+  if (sw?.opening !== data.opening) return;
+  const kept = new Set(data.rows.map(v => v.id));
+  for (const [id, row] of sw.rows) {
+    if (kept.has(id)) continue;
+    row.images?.forEach(img => img.removeAttribute('src'));
+    row.el.remove();
+    sw.rows.delete(id);
+  }
+  for (const v of data.rows) {
+    const row = sw.rows.get(v.id);
+    if (!row || row.v.name === v.name && row.v.shortName === v.shortName && row.v.caption === v.caption) continue;
+    row.v = { ...v, pictureStatus: row.v.pictureStatus };
+    row.el.setAttribute('aria-label', v.name);
+    row.el.title = v.kind === 'here' ? `${v.label} · You are here` : v.label;
+    row.el.lastElementChild.innerHTML = `${markedFav(v, 14, false)}<span>${esc(v.kind === 'here' ? 'You are here' : v.shortName)}</span>`;
+  }
+  $('switcher-more').textContent = `${data.moreWaiting} more waiting`;
+  selectSwitcher(sw.rows.has(sw.selected) ? sw.selected : data.selected);
+  layoutSwitcher(data.layout);
+}
+
 function selectSwitcher(id) {
   const sw = S.switcher;
   const chosen = sw.rows.get(id);
@@ -1085,7 +1108,7 @@ function selectSwitcher(id) {
   $('switcher-row').setAttribute('aria-activedescendant', el.id);
   paintSwitcherStage(chosen);
   $('switcher-caption').title = `${v.label} · ${v.site} · ${v.caption}`;
-  $('switcher-caption').innerHTML = `${markedFav(v, 16, false)}<b>${esc(v.label)}</b><span>${esc(v.site)} · ${esc(v.caption)}</span>`;
+  $('switcher-caption').innerHTML = `<div>${markedFav(v, 16, false)}<b>${esc(v.label)}</b><span>${esc(v.site)} · ${esc(v.caption)}</span></div>`;
   scrollSwitcherSelection();
 }
 
@@ -1099,16 +1122,16 @@ async function fillSwitcherPicture({ id, large, thumb }) {
   const sw = S.switcher;
   const row = sw.rows.get(id);
   if (!row) return;
-  const decode = async (url) => {
-    const image = new Image();
-    image.alt = '';
-    image.src = url;
-    await image.decode();
-    return image;
-  };
   try {
     if (!thumb) throw new Error('Snapshot unavailable');
-    const [tile, stage] = await Promise.all([decode(thumb), large ? decode(large) : null]);
+    row.images = [thumb, large].filter(Boolean).map(url => {
+      const image = new Image();
+      image.alt = '';
+      image.src = url;
+      return image;
+    });
+    await Promise.all(row.images.map(img => img.decode()));
+    const [tile, stage] = row.images;
     if (S.switcher !== sw || !sw.rows.has(id)) return;
     row.large = stage;
     row.el.firstElementChild.replaceChildren(tile);
@@ -1128,6 +1151,7 @@ async function fillSwitcherPicture({ id, large, thumb }) {
 }
 
 function closeSwitcher(restoreFocus) {
+  for (const row of S.switcher.rows.values()) row.images?.forEach(img => img.removeAttribute('src'));
   S.switcher = null;
   $('switcher').hidden = true;
   $('switcher-run').replaceChildren();
@@ -2532,6 +2556,7 @@ window.canopy = {
     if (action === 'show') { showSwitcher(value); return; }
     if (S.switcher?.opening !== value.opening) return;
     if (action === 'select') selectSwitcher(value.selected);
+    else if (action === 'patch') rebuild('switcher', patchSwitcher, [value]);
     else if (action === 'layout') layoutSwitcher(value.layout);
     else if (action === 'picture') fillSwitcherPicture(value);
     else if (action === 'close') closeSwitcher(value.restoreFocus);

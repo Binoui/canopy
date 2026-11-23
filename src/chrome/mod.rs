@@ -486,7 +486,7 @@ impl HtmlChrome {
         let reply = inner.forest.borrow_mut().present(&frame);
         inner.call("present", &[value]);
         inner.forest_reply(reply);
-        inner.switcher_frame_changed(frame.forest.current());
+        inner.switcher_frame_changed(&frame);
         *inner.frame.borrow_mut() = Some(frame);
         inner.present_error();
     }

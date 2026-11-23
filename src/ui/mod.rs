@@ -544,6 +544,7 @@ impl Ui {
                 (Some(Shortcut::PreviousTree), _) => self.chrome.step_switcher(true, true),
                 (_, key::Left) => self.chrome.step_switcher(true, false),
                 (_, key::Right) => self.chrome.step_switcher(false, false),
+                (_, key::Delete) => self.chrome.dismiss_switcher_selection(),
                 _ => false,
             };
             if stepped {
@@ -826,7 +827,9 @@ impl ChromeHost for Ui {
                 }
                 Ok(())
             }
-            ChromeIntent::Dismiss(head) => self.pages.dismiss(head),
+            ChromeIntent::Dismiss(head) => self
+                .pages
+                .dismiss_with(head, self.chrome.dismiss_completion(head)),
             ChromeIntent::SettleBranch(head) => self.pages.settle_branch(head),
             ChromeIntent::MoveBranch { head, to } => self.pages.move_branch(head, to),
             ChromeIntent::UndoSettle => self.pages.undo_settle(),

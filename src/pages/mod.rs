@@ -199,10 +199,12 @@ type Observer = Rc<dyn Fn(PageEvent)>;
 #[cfg(feature = "gui-smoke")]
 type PlacementObserver = Rc<dyn Fn(&webkit2gtk::WebView)>;
 
+pub(crate) type DismissCompletion = Box<dyn FnOnce(Result<ForestProjection>)>;
+
 enum Command {
     Go(Box<Go>, Option<Continuation>, bool),
     Settle(SettleTarget),
-    Dismiss(VisitId),
+    Dismiss(VisitId, Option<DismissCompletion>),
     MoveBranch { head: VisitId, to: MoveTo },
     Reload(Option<Document>),
 }
@@ -1134,7 +1136,7 @@ impl Pages {
                     result
                 }
                 Command::Settle(target) => self.settle(target),
-                Command::Dismiss(head) => self.dismiss(head),
+                Command::Dismiss(head, done) => self.dismiss_with(head, done),
                 Command::MoveBranch { head, to } => self.move_branch(head, to),
                 Command::Reload(document) => self.reload_for(document),
             };
@@ -2090,7 +2092,8 @@ impl Pages {
                 .queued
                 .borrow_mut()
                 .retain(|(_, v)| !record.holds(*v));
-            self.commands.borrow_mut().retain(|c| match c {
+            let mut canceled = Vec::new();
+            self.commands.borrow_mut().retain_mut(|c| match c {
                 Command::Go(go, _, _) => match &**go {
                     Go::Visit(v) | Go::Citation(v) => !record.holds(*v),
                     Go::Address {
@@ -2101,7 +2104,10 @@ impl Pages {
                     _ => true,
                 },
                 Command::Settle(t) => !record.holds(t.head()),
-                Command::Dismiss(v) => !record.holds(*v),
+                Command::Dismiss(v, done) if record.holds(*v) => {
+                    canceled.extend(done.take());
+                    false
+                }
                 Command::MoveBranch { head, to } => {
                     !record.holds(*head)
                         && match to {
@@ -2114,6 +2120,11 @@ impl Pages {
                 }
                 _ => true,
             });
+            for done in canceled {
+                done(Err(anyhow::anyhow!(
+                    "The page was deleted before it could be dismissed."
+                )));
+            }
             let mut removed = vec![];
             if self
                 .hold
@@ -2267,11 +2278,31 @@ impl Pages {
     }
 
     pub fn dismiss(&self, head: VisitId) -> Result<()> {
+        self.dismiss_with(head, None)
+    }
+
+    pub(crate) fn dismiss_with(
+        &self,
+        head: VisitId,
+        done: Option<DismissCompletion>,
+    ) -> Result<()> {
         if self.busy() {
-            self.commands.borrow_mut().push_back(Command::Dismiss(head));
+            self.commands
+                .borrow_mut()
+                .push_back(Command::Dismiss(head, done));
             self.end_hold();
             return Ok(());
         }
+        let result = self.apply_dismiss(head);
+        if let Some(done) = done {
+            done(result);
+            Ok(())
+        } else {
+            result.map(|_| ())
+        }
+    }
+
+    fn apply_dismiss(&self, head: VisitId) -> Result<ForestProjection> {
         self.browser.borrow_mut().dismiss(head)?;
         let forest =
             self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
@@ -2295,7 +2326,7 @@ impl Pages {
             self.drop_background(view);
         }
         self.receive(PageEvent::Changed);
-        Ok(())
+        Ok(forest)
     }
 
     pub fn move_branch(&self, head: VisitId, to: MoveTo) -> Result<()> {
