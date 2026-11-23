@@ -538,7 +538,8 @@ impl Ui {
         if self.pages.is_fullscreen() {
             return glib::Propagation::Proceed;
         }
-        let shortcut = Shortcut::of(event);
+        let shortcut = Shortcut::of(event)
+            .filter(|key| *key != Shortcut::PastePlainText || self.pages.has_focus());
         if self.switching.get() {
             match shortcut {
                 Some(Shortcut::Switch) => {
@@ -615,6 +616,7 @@ impl Ui {
             }
             Shortcut::RememberSelection => self.report(self.pages.remember_selection()),
             Shortcut::FillLogin => self.chrome.fill_login(),
+            Shortcut::PastePlainText => self.pages.paste_plain_text(),
             Shortcut::Quit => self.window.close(),
             Shortcut::Tree(index) => {
                 let tree = self.chrome.tab(index);
@@ -688,6 +690,7 @@ enum Shortcut {
     Reload,
     RememberSelection,
     FillLogin,
+    PastePlainText,
     Quit,
     Tree(usize),
     Back,
@@ -851,6 +854,7 @@ impl Shortcut {
             (Modifiers::NONE, key::F5, Self::Reload),
             (Modifiers::CONTROL, key::s, Self::RememberSelection),
             (Modifiers::CONTROL_SHIFT, key::l, Self::FillLogin),
+            (Modifiers::CONTROL_SHIFT, key::v, Self::PastePlainText),
             (Modifiers::CONTROL, key::q, Self::Quit),
             (Modifiers::ALT, key::Left, Self::Back),
             (Modifiers::ALT, key::Right, Self::Forward),
@@ -1308,6 +1312,7 @@ mod shortcut_tests {
             (key::F5, Modifiers::NONE, Shortcut::Reload),
             (key::s, Modifiers::CONTROL, Shortcut::RememberSelection),
             (key::l, Modifiers::CONTROL_SHIFT, Shortcut::FillLogin),
+            (key::v, Modifiers::CONTROL_SHIFT, Shortcut::PastePlainText),
             (key::q, Modifiers::CONTROL, Shortcut::Quit),
             (key::Left, Modifiers::ALT, Shortcut::Back),
             (key::Right, Modifiers::ALT, Shortcut::Forward),

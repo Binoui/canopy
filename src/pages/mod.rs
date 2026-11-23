@@ -2633,6 +2633,35 @@ impl Pages {
             page.focus();
         }
     }
+
+    pub(crate) fn has_focus(&self) -> bool {
+        self.branches
+            .live
+            .borrow()
+            .as_ref()
+            .is_some_and(|page| page.native.has_focus())
+    }
+
+    pub(crate) fn paste_plain_text(&self) {
+        let Some(view) = self
+            .branches
+            .live
+            .borrow()
+            .as_ref()
+            .map(|p| p.native.downgrade())
+        else {
+            return;
+        };
+        gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).request_text(move |_, text| {
+            let (Some(view), Some(text)) = (view.upgrade(), text) else {
+                return;
+            };
+            if view.has_focus() && !text.is_empty() {
+                view.execute_editing_command_with_argument("InsertText", text);
+            }
+        });
+    }
+
     fn fullscreen_view(&self) -> Option<webkit2gtk::WebView> {
         self.fullscreen.borrow().as_ref().and_then(|w| w.upgrade())
     }

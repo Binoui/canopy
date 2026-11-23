@@ -299,3 +299,8 @@ required-features = ["gui-smoke"]
 name = "tree_places_smoke"
 harness = false
 required-features = ["gui-smoke"]
+
+[[test]]
+name = "page_overrides_smoke"
+harness = false
+required-features = ["gui-smoke"]

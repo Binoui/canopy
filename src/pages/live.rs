@@ -43,6 +43,11 @@ const WORLD: &str = "canopy-reading-memory";
 const ROUTE_AFTER_PRESS: std::time::Duration = std::time::Duration::from_secs(4);
 const ROUTE_SETTLED: Duration = Duration::from_secs(3);
 const HELPER: &str = include_str!("../capture.js");
+const CONTEXT_MENU_OVERRIDE: &str = "
+window.addEventListener('contextmenu', event => {
+    if (event.shiftKey) event.stopImmediatePropagation();
+}, true);
+";
 /// Script message the helper posts, debounced, when the page scrolls.
 const SCROLLED: &str = "canopyScrolled";
 use super::{LoginEvent, PageEvent, Pages};
@@ -492,9 +497,26 @@ impl LivePage {
         initial: InitialPage,
     ) -> Result<Self> {
         use webkit2gtk::{InputMethodContextExt, SettingsExt};
+        let manager = webkit2gtk::UserContentManager::new();
+        manager.add_script(&UserScript::for_world(
+            HELPER,
+            UserContentInjectedFrames::TopFrame,
+            UserScriptInjectionTime::Start,
+            WORLD,
+            &[],
+            &[],
+        ));
+        manager.add_script(&UserScript::for_world(
+            CONTEXT_MENU_OVERRIDE,
+            UserContentInjectedFrames::AllFrames,
+            UserScriptInjectionTime::Start,
+            WORLD,
+            &[],
+            &[],
+        ));
         let native = webkit2gtk::WebView::builder()
             .web_context(&context.native)
-            .user_content_manager(&webkit2gtk::UserContentManager::new())
+            .user_content_manager(&manager)
             .is_controlled_by_automation(false)
             .website_policies(
                 &webkit2gtk::WebsitePolicies::builder()
@@ -532,17 +554,6 @@ impl LivePage {
             native.show_all();
             native.grab_focus();
         }
-        let manager = native
-            .user_content_manager()
-            .context("The JavaScript context is unavailable.")?;
-        manager.add_script(&UserScript::for_world(
-            HELPER,
-            UserContentInjectedFrames::TopFrame,
-            UserScriptInjectionTime::Start,
-            WORLD,
-            &[],
-            &[],
-        ));
         let state = Rc::new(NativeState {
             native: native.clone(),
             lifecycle: Cell::new(Lifecycle::Live),

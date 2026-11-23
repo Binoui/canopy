@@ -51,6 +51,7 @@ Ctrl+R          Reload the page
 Ctrl+D          Toggle the page bookmark
 Ctrl+S          Remember the selection
 Ctrl+Shift+L    Fill the saved login for the page
+Ctrl+Shift+V    Paste as plain text, even where the page blocks pasting
 Ctrl+Q          Quit
 
 Your profile and browsing are kept in XDG_DATA_HOME/canopy.";
