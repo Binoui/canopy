@@ -39,8 +39,6 @@ pub struct Ui {
     mail_popup: mail_popup::Setting,
     refresh_scheduled: Cell<bool>,
     shortcuts: ShortcutSettings,
-    /// The Ctrl+Tab list is open and opens its selected page when Ctrl is released.
-    switching: Cell<bool>,
     /// The pending target the chrome last drew, so a load that starts or ends redraws it.
     shown_pending: RefCell<Option<crate::browser::PendingTarget>>,
     me: Weak<Ui>,
@@ -138,7 +136,6 @@ impl Ui {
                 chrome,
                 refresh_scheduled: Cell::new(false),
                 shortcuts,
-                switching: Cell::new(false),
                 shown_pending: RefCell::new(None),
                 me: me.clone(),
                 inbox,
@@ -245,8 +242,8 @@ impl Ui {
         ui.window.connect_key_release_event(move |_, event| {
             use gdk::keys::constants as key;
             if let Some(ui) = weak.upgrade() {
-                if ui.switching.get() && matches!(event.keyval(), key::Control_L | key::Control_R) {
-                    ui.end_switcher(true);
+                if matches!(event.keyval(), key::Control_L | key::Control_R) {
+                    ui.chrome.finish_switcher(true);
                 }
             }
             // Page scale also listens for Control's release on this window.
@@ -255,9 +252,7 @@ impl Ui {
         let weak = Rc::downgrade(&ui);
         ui.window.connect_focus_out_event(move |_, _| {
             if let Some(ui) = weak.upgrade() {
-                if ui.switching.get() {
-                    ui.end_switcher(false);
-                }
+                ui.chrome.finish_switcher(false);
             }
             glib::Propagation::Proceed
         });
@@ -501,17 +496,6 @@ impl Ui {
         self.schedule_refresh();
     }
 
-    fn control_held(&self) -> bool {
-        gdk::Keymap::for_display(&self.window.display()).is_some_and(|keymap| {
-            keymap.modifier_state() & gdk::ModifierType::CONTROL_MASK.bits() != 0
-        })
-    }
-
-    fn end_switcher(&self, open: bool) {
-        self.switching.set(false);
-        self.chrome.end_switcher(open);
-    }
-
     fn report(&self, result: Result<()>) {
         if let Err(error) = result {
             self.report_error(&error.to_string());
@@ -546,28 +530,30 @@ impl Ui {
         if self.pages.is_fullscreen() {
             return glib::Propagation::Proceed;
         }
+        let combo = KeyCombo::from_event(event);
         let shortcut = self
             .shortcuts
             .bindings
-            .resolve(KeyCombo::from_event(event))
+            .resolve(combo)
             .filter(|key| *key != Shortcut::PastePlainText || self.pages.has_focus());
-        if self.switching.get() {
-            match shortcut {
-                Some(Shortcut::Switch) => {
-                    self.chrome.step_switcher(false);
+        if self.chrome.switcher_active() {
+            use gdk::keys::constants as key;
+            let value = event.keyval();
+            let stepped = match (shortcut, value) {
+                (Some(Shortcut::Switch), _) => self.chrome.step_switcher(false, true),
+                (Some(Shortcut::PreviousTree), _) => self.chrome.step_switcher(true, true),
+                (_, key::Left) => self.chrome.step_switcher(true, false),
+                (_, key::Right) => self.chrome.step_switcher(false, false),
+                _ => false,
+            };
+            if stepped {
+                return glib::Propagation::Stop;
+            }
+            if !is_modifier_key(&value) {
+                self.chrome.finish_switcher(false);
+                if value == key::Escape {
                     return glib::Propagation::Stop;
                 }
-                Some(Shortcut::PreviousTree) => {
-                    self.chrome.step_switcher(true);
-                    return glib::Propagation::Stop;
-                }
-                Some(Shortcut::Escape) => {
-                    self.end_switcher(false);
-                    return glib::Propagation::Stop;
-                }
-                // Any other key, apart from the modifiers themselves, drops the list.
-                None if is_modifier_key(&event.keyval()) => return glib::Propagation::Proceed,
-                _ => self.end_switcher(false),
             }
         }
         let Some(shortcut) = shortcut else {
@@ -607,19 +593,11 @@ impl Ui {
                 Ok(None) => {}
                 Err(error) => self.report(Err(error)),
             },
-            Shortcut::Switch => {
-                let opened = self.chrome.open_switcher(|forest, limit| {
-                    self.pages
-                        .read(|browser| browser.recent_pages(forest, limit))
-                });
-                match opened {
-                    // A shortcut replayed after the form question can arrive with Control
-                    // already up; it then acts as a quick press.
-                    Ok(()) if self.control_held() => self.switching.set(true),
-                    Ok(()) => self.chrome.end_switcher(true),
-                    Err(error) => self.report(Err(error)),
-                }
-            }
+            Shortcut::Switch => self.report(self.chrome.arm_switcher(
+                &self.pages,
+                &self.window,
+                combo.modifiers(),
+            )),
             Shortcut::PageScale(action) => self.report(self.pages.page_scale(action)),
             Shortcut::Reload => {
                 self.chrome.uncover();

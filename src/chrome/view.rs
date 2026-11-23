@@ -582,32 +582,6 @@ pub(super) fn visit_value(
     })
 }
 
-pub(super) fn switcher_value(
-    frame: &ChromeFrame,
-    choices: &super::switcher::SwitchChoices,
-) -> Value {
-    let row = |id| {
-        let visit = frame
-            .forest
-            .visit(id)
-            .expect("switch choice belongs to the frame");
-        visit_value(
-            &frame.forest,
-            visit,
-            &frame.loaded,
-            &frame.live,
-            &frame.playing,
-        )
-    };
-    json!({
-        "first": choices.first().map(|id| id.to_string()),
-        "here": choices.here.map(|id| id.to_string()),
-        "waiting": choices.waiting.iter().copied().map(row).collect::<Vec<_>>(),
-        "moreWaiting": choices.more_waiting,
-        "read": choices.read.iter().copied().map(row).collect::<Vec<_>>(),
-    })
-}
-
 fn node_menu(forest: &ForestProjection, visit: &Visit) -> Vec<Value> {
     let row = |kind: &str, label: String| json!({ "kind": kind, "label": label });
     let mut rows = vec![
@@ -1311,18 +1285,16 @@ mod tests {
         let choices = super::super::switcher::SwitchChoices::of(&frame.forest, &[ids[0]]);
         assert_eq!(choices.first(), Some(ids[4]));
         assert_eq!(choices.here, frame.forest.current());
-        let value = super::switcher_value(&frame, &choices);
-        let listed = |key: &str| {
-            value[key]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|row| row["id"].as_str().unwrap().to_owned())
-                .collect::<Vec<_>>()
-        };
         let id = |i: usize| ids[i].to_string();
         let expected = [id(4), id(2), id(7), id(6), id(5), id(3)];
-        assert_eq!(listed("waiting"), expected[..5]);
+        let choices_rows = choices.rows().collect::<Vec<_>>();
+        assert_eq!(
+            choices_rows
+                .iter()
+                .map(|r| r.id.to_string())
+                .collect::<Vec<_>>(),
+            [vec![id(1)], expected[..5].to_vec(), vec![id(0)]].concat()
+        );
         let rendered = super::frame(
             &frame,
             &[],
@@ -1365,9 +1337,8 @@ mod tests {
         assert_eq!(waiting_edges[0]["to"], id(4));
         assert_eq!(waiting_edges[0]["from"], id(1));
         assert_eq!(rendered["strip"]["pins"][0]["kind"], "zoom");
-        assert_eq!(value["moreWaiting"], 1);
-        assert_eq!(listed("read"), [id(0)]);
-        assert_eq!(value["read"][0]["live"], true);
+        assert_eq!(choices.more_waiting, 1);
+        assert_eq!(choices_rows.last().unwrap().value(&frame)["live"], true);
     }
 
     #[test]

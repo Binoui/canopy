@@ -440,26 +440,42 @@ fn switch_read_pages(ui: &Ui, read: &[String]) -> Result<()> {
     xdo(&["key", "Tab"])?;
     wait("list shown", || visible(ui, "#switcher"))?;
     let listed = rows(ui)?;
-    assert_eq!(listed.first(), Some(previous), "most recently read first");
-    assert!(!listed.contains(last), "the current page is not listed");
-    selected(ui, &listed[1], "second Tab selects the second row")?;
-    shots(ui, "switcher")?;
+    assert_eq!(listed.first(), Some(last), "the current page is first");
+    assert_eq!(
+        listed.get(1),
+        Some(previous),
+        "most recently read follows Here"
+    );
+    selected(ui, &listed[2], "second Tab selects the second read page")?;
+    shots(ui, "filmstrip")?;
     xdo(&["key", "shift+Tab"])?;
-    selected(ui, &listed[0], "Shift+Tab steps back")?;
+    selected(ui, &listed[1], "Shift+Tab steps back")?;
+    xdo(&["key", "Left"])?;
+    selected(ui, &listed[0], "Left steps to Here")?;
+    xdo(&["keyup", "ctrl"])?;
+    pump(200);
+    assert_eq!(
+        ui.snapshot()?.current.map(|id| id.to_string()).as_ref(),
+        Some(last)
+    );
+    xdo(&["keydown", "ctrl"])?;
+    xdo(&["key", "Tab"])?;
+    wait("filmstrip shown after a single Tab", || {
+        visible(ui, "#switcher")
+    })?;
+    selected(ui, &listed[1], "the hold starts on the first read page")?;
     xdo(&["key", "shift+Tab"])?;
-    selected(
-        ui,
-        listed.last().unwrap(),
-        "Shift+Tab wraps to the last row",
-    )?;
+    selected(ui, &listed[0], "Shift+Tab steps to Here")?;
+    xdo(&["key", "shift+Tab"])?;
+    selected(ui, listed.last().unwrap(), "Shift+Tab wraps")?;
+    xdo(&["key", "Right"])?;
+    selected(ui, &listed[0], "Right wraps to the first card")?;
     xdo(&["key", "Tab"])?;
-    selected(ui, &listed[0], "Tab wraps to the first row")?;
-    xdo(&["key", "Tab"])?;
-    selected(ui, &listed[1], "Tab steps down")?;
+    selected(ui, &listed[1], "Tab steps to the first read page")?;
     xdo(&["keyup", "ctrl"])?;
     activated(ui, &listed[1])?;
-    assert!(!visible(ui, "#switcher"));
-    println!("PASS held Ctrl+Tab lists read pages newest first, Tab and Shift+Tab step and wrap, release opens the row.");
+    wait("release closes filmstrip", || !visible(ui, "#switcher"))?;
+    println!("PASS held Ctrl+Tab lists Here then read pages newest first, arrows and Tab step and wrap, release opens the card.");
     let here = ui.snapshot()?.current;
     xdo(&["keydown", "ctrl"])?;
     xdo(&["key", "Tab"])?;
@@ -479,10 +495,10 @@ fn switch_read_pages(ui: &Ui, read: &[String]) -> Result<()> {
     queue(ui, "link5")?;
     let queued = waiting(ui)?;
     assert_eq!(queued.len(), 1);
-    let column = |kind: &str| -> Result<Vec<String>> {
+    let cards = |kind: &str| -> Result<Vec<String>> {
         Ok(serde_json::from_value(chrome(
             ui,
-            &format!("[...document.querySelectorAll('#switcher .switcher-col[data-kind=\"{kind}\"] [data-id]')].map((row) => row.dataset.id)"),
+            &format!("[...document.querySelectorAll('#switcher .switcher-option[data-kind=\"{kind}\"]')].map((row) => row.dataset.id)"),
         )?)?)
     };
     focus_window()?;
@@ -491,16 +507,15 @@ fn switch_read_pages(ui: &Ui, read: &[String]) -> Result<()> {
     pump(60);
     xdo(&["key", "Tab"])?;
     wait("list with a waiting page", || visible(ui, "#switcher"))?;
+    assert_eq!(cards("waiting")?, queued, "waiting pages follow Here");
+    let read = cards("read")?;
+    assert!(read.len() >= 2, "read pages follow waiting");
     assert_eq!(
-        column("waiting")?,
-        queued,
-        "waiting pages fill the left column"
+        rows(ui)?,
+        [cards("here")?, queued.clone(), read.clone()].concat()
     );
-    let read = column("read")?;
-    assert!(read.len() >= 2, "read pages fill the right column");
-    assert_eq!(rows(ui)?, [queued.clone(), read.clone()].concat());
-    selected(ui, &read[0], "the second Tab crosses to the read column")?;
-    shots(ui, "switcher-columns")?;
+    selected(ui, &read[0], "the second Tab crosses to the read cards")?;
+    shots(ui, "filmstrip-waiting-and-read")?;
     click_chrome(ui, &format!("#switcher [data-id=\"{}\"]", read[1]))?;
     activated(ui, &read[1])?;
     assert!(!visible(ui, "#switcher"));
@@ -511,7 +526,7 @@ fn switch_read_pages(ui: &Ui, read: &[String]) -> Result<()> {
         Some(&read[1]),
         "releasing Ctrl after a click opens nothing more"
     );
-    println!("PASS the list shows waiting pages left and read pages right, Tab crosses columns, a click opens a row.");
+    println!("PASS the filmstrip shows waiting before read pages, Tab crosses the divider, a click opens a card.");
     key("ctrl+Tab")?;
     activated(ui, &queued[0])?;
     println!("PASS a quick Ctrl+Tab still opens the waiting page first.");

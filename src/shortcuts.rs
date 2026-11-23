@@ -77,6 +77,10 @@ impl KeyCombo {
         Self::new(Modifiers::held(event.state()), event.keyval())
     }
 
+    pub(crate) fn modifiers(self) -> gdk::ModifierType {
+        self.held.0
+    }
+
     fn new(held: Modifiers, key: Key) -> Self {
         Self {
             held,

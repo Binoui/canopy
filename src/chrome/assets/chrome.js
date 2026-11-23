@@ -203,10 +203,10 @@ function syncLayer() {
     treeFilters: S.overlay === 'tree' && !!(S.frame.treeView.query || S.frame.treeView.waitingOnly),
     overlay: !!S.overlay, start: S.surface !== 'reading' && !!current() };
   let height = HEADER + REST;
-  if (S.formReturn || S.palette || S.reader || S.overlay || S.surface !== 'reading') {
+  if (S.formReturn || S.palette || S.reader || S.overlay || S.switcher || S.surface !== 'reading') {
     height = null;
   } else {
-    for (const el of [S.list && $('strip-list'), S.popover && $('popover'), S.switcher?.shown && $('switcher')]) {
+    for (const el of [S.list && $('strip-list'), S.popover && $('popover')]) {
       if (!el) continue;
       const bottom = el.hidden ? HEADER + REST + 420 : el.getBoundingClientRect().bottom;
       height = Math.max(height, bottom + 30);
@@ -999,87 +999,117 @@ function renderPlayingPin() {
   setTooltip(pin, first ? `${label} · a click goes to ${first.label}` : '');
 }
 
-// ---------- held page list ----------
+// ---------- held page filmstrip ----------
 
-const switcherRows = (sw) => [...sw.rows.waiting, ...sw.rows.read];
-
-function openSwitcher(rows) {
-  closeSwitcher();
-  const sw = { rows, index: 0, shown: false };
-  if (!switcherRows(sw).length) { canopy.toast('info', 'No other pages in this tree'); return; }
-  S.switcher = sw;
-  schedule('switcherShow', 160, showSwitcher);
+function switcherBox(el, box) {
+  el.hidden = !box;
+  if (!box) return;
+  [el.style.left, el.style.top, el.style.width, el.style.height] = box.map(n => `${n}px`);
 }
 
-function stepSwitcher(by) {
-  const sw = S.switcher;
-  if (!sw) return;
-  const count = switcherRows(sw).length;
-  sw.index = (sw.index + by + count) % count;
-  if (sw.shown) renderSwitcher();
-  else showSwitcher();
+function layoutSwitcher(layout) {
+  const deck = $('switcher');
+  for (const [name, box] of Object.entries({
+    backdrop: layout.backdrop, stage: layout.stage, caption: layout.caption, row: layout.row,
+    run: layout.run, more: layout.more, keys: layout.footer,
+  })) switcherBox($(`switcher-${name}`), box);
+  deck.style.setProperty('--picture-height', `${layout.picture_height}px`);
+  [...S.switcher.rows.values()].forEach(({ el }, index) => switcherBox(el, layout.cards[index]));
+  switcherBox(S.switcher.divider, layout.divider);
+  scrollSwitcherSelection();
 }
 
-function showSwitcher() {
-  cancel('switcherShow');
-  if (!S.switcher) return;
+function switcherCard(v) {
+  return `<div class="switcher-fallback">${visitFav(v, 20)}<b>${esc(v.label)}</b><span>${v.live || v.loaded || v.kind === 'here' ? 'Preview unavailable' : 'Not loaded'}</span></div>`;
+}
+
+function showSwitcher(data) {
+  rememberFocus('switcher');
   closeReader(false);
   closePalette(false);
   closePopover(false);
   hideList();
-  S.switcher.shown = true;
-  // The view is only as tall as the strip until this list makes it reach further down.
-  $('switcher').style.maxHeight = `${Math.max(120, Math.min(520, (S.windowHeight ?? window.innerHeight) - 130))}px`;
+  const run = $('switcher-run');
+  const divider = document.createElement('div');
+  divider.className = 'switcher-divider';
+  divider.setAttribute('aria-hidden', 'true');
+  run.append(divider);
+  const rows = new Map();
+  for (const v of data.rows) {
+    const el = document.createElement('div');
+    el.id = `switcher-choice-${v.id}`;
+    el.className = 'switcher-option';
+    el.dataset.id = v.id;
+    el.dataset.kind = v.kind;
+    el.setAttribute('role', 'option');
+    el.setAttribute('aria-label', v.name);
+    el.title = v.kind === 'here' ? `${v.label} · You are here` : v.label;
+    el.innerHTML = `<div class="switcher-picture">${switcherCard(v)}</div>
+      <div class="switcher-label">${markedFav(v, 14, false)}<span>${esc(v.kind === 'here' ? 'You are here' : v.shortName)}</span></div>`;
+    run.append(el);
+    rows.set(v.id, { el, v });
+  }
+  S.switcher = { opening: data.opening, rows, divider, selected: data.selected };
   $('switcher').hidden = false;
-  renderSwitcher();
+  $('switcher-row').scrollLeft = 0;
+  $('switcher-more').textContent = `${data.moreWaiting} more waiting`;
+  layoutSwitcher(data.layout);
+  selectSwitcher(data.selected);
   syncLayer();
+  $('switcher-row').focus({ preventScroll: true });
 }
 
-function switcherFooter() {
-  const keys = S.keyboard?.switcher;
-  return keys ? `<div class="switcher-keys">${kbd(keys.next)} next · ${kbd(keys.previous)} back · release ${kbd(keys.hold)} or click to open</div>` : '';
+function scrollSwitcherSelection() {
+  const selected = S.switcher.rows.get(S.switcher.selected)?.el;
+  if (!selected) return;
+  const row = $('switcher-row');
+  const bounds = row.getBoundingClientRect();
+  const card = selected.getBoundingClientRect();
+  if (card.left - 6 < bounds.left) row.scrollLeft += card.left - 6 - bounds.left;
+  else if (card.right + 6 > bounds.right) row.scrollLeft += card.right + 6 - bounds.right;
 }
 
-function renderSwitcher() {
-  const { rows, index } = S.switcher;
-  let i = 0;
-  const row = (v, detail) => {
-    const selected = i === index;
-    return `<div class="menu-row switcher-row" role="option" id="switcher-${i++}" data-id="${v.id}" aria-selected="${selected}" aria-label="${esc(v.name)}">`
-      + `${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(detail)}</span></div>`;
-  };
-  // The selection walks down the waiting column first.
-  const column = (kind, heading, pages, detail, empty, after = '') => `<div class="switcher-col" data-kind="${kind}"><div class="menu-heading">${heading}</div>`
-    + (pages.length ? pages.map((v) => row(v, detail(v) === v.label ? '' : detail(v))).join('') : `<div class="menu-hint">${empty}</div>`) + `${after}</div>`;
-  const waiting = rows.waiting.length + rows.moreWaiting;
-  $('switcher').innerHTML = '<div class="switcher-cols">'
-    + column('waiting', waiting ? `Waiting · ${waiting}` : 'Waiting', rows.waiting, (v) => v.detail, 'Nothing waiting',
-      rows.moreWaiting ? `<div class="menu-hint">${rows.moreWaiting} more waiting</div>` : '')
-    + column('read', 'Read', rows.read, (v) => v.site, 'No other read pages')
-    + '</div>' + switcherFooter();
-  const chosen = $('switcher').querySelector('[aria-selected="true"]');
-  $('switcher').setAttribute('aria-activedescendant', chosen?.id ?? '');
-  chosen?.scrollIntoView({ block: 'nearest' });
-  $('switcher').querySelectorAll('[data-id]').forEach((el) => el.addEventListener('click', () => {
-    closeSwitcher();
-    activate(el.dataset.id);
-  }));
+function selectSwitcher(id) {
+  const sw = S.switcher;
+  const chosen = sw.rows.get(id);
+  if (!chosen) return;
+  sw.selected = id;
+  const { el, v } = chosen;
+  for (const row of sw.rows.values()) row.el.setAttribute('aria-selected', String(row === chosen));
+  $('switcher-row').setAttribute('aria-activedescendant', el.id);
+  $('switcher-stage').innerHTML = switcherCard(v);
+  $('switcher-caption').title = `${v.label} · ${v.site} · ${v.caption}`;
+  $('switcher-caption').innerHTML = `${markedFav(v, 16, false)}<b>${esc(v.label)}</b><span>${esc(v.site)} · ${esc(v.caption)}</span>`;
+  scrollSwitcherSelection();
 }
 
-function closeSwitcher() {
-  cancel('switcherShow');
-  if (!S.switcher) return;
+function closeSwitcher(restoreFocus) {
   S.switcher = null;
   $('switcher').hidden = true;
-  $('switcher').innerHTML = '';
+  $('switcher-run').replaceChildren();
+  $('switcher-stage').replaceChildren();
+  $('switcher-caption').replaceChildren();
+  $('switcher-row').removeAttribute('aria-activedescendant');
   syncLayer();
+  if (restoreFocus) returnFocus('switcher');
+  else focusReturns.delete('switcher');
 }
 
-function commitSwitcher() {
-  const sw = S.switcher;
-  closeSwitcher();
-  if (sw) activate(switcherRows(sw)[sw.index].id);
+function switcherPointer(action, id) {
+  if (id && S.switcher) post({ t: 'switcher', opening: S.switcher.opening, action, id });
 }
+
+let switcherPointerPosition;
+document.addEventListener('pointermove', (event) => {
+  const p = `${event.screenX},${event.screenY}`;
+  if (p === switcherPointerPosition) return;
+  switcherPointerPosition = p;
+  if (!event.buttons) switcherPointer('hover', event.target.closest('.switcher-option')?.dataset.id);
+}, true);
+$('switcher-row').addEventListener('click', event => {
+  switcherPointer('open', event.target.closest('.switcher-option')?.dataset.id);
+});
+$('switcher-stage').addEventListener('click', () => switcherPointer('open', S.switcher?.selected));
 
 function enterQueue(el) {
   cancel('waitingClose');
@@ -2455,10 +2485,11 @@ window.canopy = {
   },
   fillLogin() { fillLogin(); },
   switcher(action, value) {
-    if (action === 'open') openSwitcher(value);
-    else if (action === 'step') stepSwitcher(value);
-    else if (action === 'commit') commitSwitcher();
-    else closeSwitcher();
+    if (action === 'show') { showSwitcher(value); return; }
+    if (S.switcher?.opening !== value.opening) return;
+    if (action === 'select') selectSwitcher(value.selected);
+    else if (action === 'layout') layoutSwitcher(value.layout);
+    else if (action === 'close') closeSwitcher(value.restoreFocus);
   },
   openPalette(options) { openPalette(options); },
   shortcuts(value) {
@@ -2470,6 +2501,9 @@ window.canopy = {
     for (const el of document.querySelectorAll('[data-shortcut-chip]')) {
       el.textContent = shortcut(el.dataset.shortcutChip, 'chip');
       el.hidden = !el.textContent;
+    }
+    for (const el of document.querySelectorAll('[data-switcher-key]')) {
+      el.textContent = value.switcher[el.dataset.switcherKey];
     }
     for (const el of document.querySelectorAll('[data-shortcut-text]')) {
       el.textContent = shortcut(el.dataset.shortcutText);
@@ -2485,7 +2519,6 @@ window.canopy = {
     }
     if (S.list) renderList();
     if (['settings', 'waiting', 'memory'].includes(S.popover?.kind)) refreshPopover();
-    if (S.switcher?.shown) renderSwitcher();
     const bookmarkHint = $('start-content').querySelector('.bookmark-hint');
     if (bookmarkHint) bookmarkHint.textContent = value.bookmarkHint;
     const toast = $('toast');
