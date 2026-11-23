@@ -47,6 +47,7 @@ const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 
 const S = {
   frame: null,
+  keyboard: null,
   pageScale: null,
   loading: null,
   logins: null,
@@ -78,6 +79,17 @@ const S = {
   reported: '',
 };
 
+const shortcut = (id, style = 'text') => S.keyboard?.labels[id]?.[style] ?? '';
+const keyTitle = (text, key) => key ? `${text} · ${key}` : text;
+const shortcutTitle = (text, id) => keyTitle(text, shortcut(id));
+const kbd = (key) => key ? `<kbd>${esc(key)}</kbd>` : '';
+const shortcutChip = (id, style = 'chip') => kbd(shortcut(id, style));
+const stripTip = (tip) => tip ? shortcutTitle(tip.text, tip.command) : null;
+const undoShortcut = () => {
+  const label = shortcut('undo-settle');
+  return label ? ` (${label})` : '';
+};
+
 let inputOrigin = 'keyboard';
 document.addEventListener('mousedown', () => {
   inputOrigin = 'pointer';
@@ -103,7 +115,7 @@ function returnFocus(kind) {
   } else if (pageShows()) post({ t: 'focus', target: 'page' });
   else if (S.surface === 'start') focusStart();
 }
-// WebKitGTK reports reverse Tab as Unidentified on X11.
+// WebKitGTK reports the reverse tab key as Unidentified on X11.
 const tabKey = (event) => ['Tab', 'ISO_Left_Tab'].includes(event.key) || event.code === 'Tab' || event.keyCode === 9;
 const controlsIn = (root) => [...root.querySelectorAll('button:not(:disabled), input, [tabindex="0"]')].filter((el) => el.tabIndex >= 0 && el.getClientRects().length);
 
@@ -184,8 +196,8 @@ function setLayer(layer) {
   syncLayer();
 }
 
-/// Tells Rust how far down the view must reach (null for the whole window), and whether
-/// Escape is ours. Below that, the page gets the pointer.
+/// Tells Rust which layer the chrome can close and how far down its view must reach.
+/// Below the view, the page gets the pointer.
 function syncLayer() {
   const surfaces = { formReturn: !!S.formReturn, reader: !!S.reader, palette: !!S.palette, popover: !!S.popover, list: !!S.list,
     treeFilters: S.overlay === 'tree' && !!(S.frame.treeView.query || S.frame.treeView.waitingOnly),
@@ -278,13 +290,13 @@ function renderTabs() {
     const pending = tree.pending ? `, ${tree.pending} waiting` : '';
     const pinned = tree.pinned ? ', pinned' : '';
     const playing = tree.playing ? ', playing sound' : '';
-    const key = index < 9 ? ` · Ctrl+${index + 1}` : '';
-    const html = `<button class="tab${tree.pinned ? ' pinned' : ''}${tree.playing ? ' playing' : ''}" draggable="true" role="tab" tabindex="${active ? 0 : -1}" aria-selected="${active}" data-id="${tree.id}" title="${esc(`${tree.title}${sub ? ` · ${sub}` : ''} · ${pages}${pending}${pinned}${playing}${key}`)}" aria-label="${esc((sub ? `${tree.name}, on ${sub}` : tree.name) + pending + playing)}">`
+    const key = S.keyboard?.digitLabels[index];
+    const html = `<button class="tab${tree.pinned ? ' pinned' : ''}${tree.playing ? ' playing' : ''}" draggable="true" role="tab" tabindex="${active ? 0 : -1}" aria-selected="${active}" data-id="${tree.id}" title="${esc(keyTitle(`${tree.title}${sub ? ` · ${sub}` : ''} · ${pages}${pending}${pinned}${playing}`, key))}" aria-label="${esc((sub ? `${tree.name}, on ${sub}` : tree.name) + pending + playing)}">`
       + (root ? `<span class="mk">${visitFav(root, 14)}${playingMark(tree.playing)}</span>` : '')
       + `<span class="tab-title${sub ? ' two-line' : ''}"><span class="tab-name">${esc(tree.title)}</span>${sub ? `<span class="tab-sub">${esc(sub)}</span>` : ''}</span>`
       + (tree.pinned ? `<span class="tab-pinned-mark" aria-hidden="true">${icon('pinned')}</span>` : '')
       + (tree.pending ? '<i class="unread-dot" aria-hidden="true"></i>' : '')
-      + `<span class="tab-settle" data-settle="${tree.id}" title="Settle${active ? ' · Ctrl+W' : ''}" aria-hidden="true">${icon('close')}</span>`
+      + `<span class="tab-settle" data-settle="${tree.id}" title="${esc(active ? shortcutTitle('Settle', 'settle-tree') : 'Settle')}" aria-hidden="true">${icon('close')}</span>`
       + '</button>';
     const template = document.createElement('template');
     template.innerHTML = html;
@@ -553,7 +565,7 @@ function buildStrip(layout) {
       ? S.popover?.anchor === el || S.popover?.parent?.anchor === el
       : S.list?.key === n.id;
     el.setAttribute('aria-expanded', String(expanded));
-    setTooltip(el, n.tip ?? null);
+    setTooltip(el, stripTip(n.tip));
     const html = n.kind === 'tab'
       ? markedFav(v, 16) + (n.named ? `<span class="item-label">${esc(n.label)}</span><span class="x" data-act="dismiss" aria-hidden="true">${icon('close')}</span>` : '')
         + (v.live ? `<i class="live-dot${filesOf(n.page).length ? ' above-leaves' : ''}"></i>` : '')
@@ -852,7 +864,7 @@ function renderList() {
       const leaf = files.length ? `<button class="leaves" aria-haspopup="menu" aria-expanded="false" data-files="${row.id}" aria-label="${esc(`Files from ${v.label}`)}"><i class="leaf${files.every((f) => f.missing) ? ' missing' : ''}"></i></button>` : '';
       return [`row-${row.id}`, v ? `<div class="list-entry"><button class="menu-row${markClass(v)}" data-id="${row.id}" title="${esc(v.label)}" aria-current="${row.id === current() ? 'page' : 'false'}" aria-label="${esc(row.name)}">${markedFav(v, 16)}<span class="grow">${esc(row.label)}</span><span class="menu-detail">${esc(row.detail)}</span></button>${leaf}</div>` : ''];
     }),
-    ['more', item.more ? `<button class="menu-row more" data-act="more">${icon('expand')}<span class="grow">${esc(item.more)}</span><kbd>Ctrl Shift E</kbd></button>` : ''],
+    ['more', item.more ? `<button class="menu-row more" data-act="more">${icon('expand')}<span class="grow">${esc(item.more)}</span>${shortcutChip('tree-workbench')}</button>` : ''],
     ...item.actions.map((action) => {
       const stop = action.kind === 'reload' && item.page === current() && currentLoading();
       return [`action-${action.kind}`, `<button class="action bl-action" data-act="${stop ? 'stop' : action.kind}">${esc(stop ? 'Stop' : action.label)}</button>`];
@@ -943,16 +955,16 @@ function applyStrip(layouts) {
   renderNav();
 }
 
-/// Back and Forward name the page they open, as Alt+Left and Alt+Right would.
+/// Back and Forward name the page they open.
 function renderNav() {
   $('nav').hidden = !S.strip?.left;
   $('strip-placeholder').style.left = `${(S.strip?.left ?? 0) + 12}px`;
-  for (const [kind, label, key] of [['back', 'Back', 'Alt+Left'], ['forward', 'Forward', 'Alt+Right']]) {
+  for (const [kind, label] of [['back', 'Back'], ['forward', 'Forward']]) {
     const button = $(`nav-${kind}`);
     const target = S.strip?.[kind];
     button.disabled = !target;
     button.setAttribute('aria-label', target ? `${label} to ${target.label}` : label);
-    button.title = target ? `${label} to ${target.label} · ${key}` : `${label} · ${key}`;
+    button.title = shortcutTitle(target ? `${label} to ${target.label}` : label, kind);
   }
 }
 
@@ -987,9 +999,7 @@ function renderPlayingPin() {
   setTooltip(pin, first ? `${label} · a click goes to ${first.label}` : '');
 }
 
-// ---------- Ctrl+Tab page list ----------
-// Rust owns the keys: Ctrl+Tab opens the list, each further Tab or Shift+Tab steps it, and
-// releasing Ctrl opens the selected row (Escape drops it). A quick tap never shows the list.
+// ---------- held page list ----------
 
 const switcherRows = (sw) => [...sw.rows.waiting, ...sw.rows.read];
 
@@ -1025,6 +1035,11 @@ function showSwitcher() {
   syncLayer();
 }
 
+function switcherFooter() {
+  const keys = S.keyboard?.switcher;
+  return keys ? `<div class="switcher-keys">${kbd(keys.next)} next · ${kbd(keys.previous)} back · release ${kbd(keys.hold)} or click to open</div>` : '';
+}
+
 function renderSwitcher() {
   const { rows, index } = S.switcher;
   let i = 0;
@@ -1033,7 +1048,7 @@ function renderSwitcher() {
     return `<div class="menu-row switcher-row" role="option" id="switcher-${i++}" data-id="${v.id}" aria-selected="${selected}" aria-label="${esc(v.name)}">`
       + `${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(detail)}</span></div>`;
   };
-  // Waiting pages on the left, read pages on the right. Tab walks down the left column first.
+  // The selection walks down the waiting column first.
   const column = (kind, heading, pages, detail, empty, after = '') => `<div class="switcher-col" data-kind="${kind}"><div class="menu-heading">${heading}</div>`
     + (pages.length ? pages.map((v) => row(v, detail(v) === v.label ? '' : detail(v))).join('') : `<div class="menu-hint">${empty}</div>`) + `${after}</div>`;
   const waiting = rows.waiting.length + rows.moreWaiting;
@@ -1041,7 +1056,7 @@ function renderSwitcher() {
     + column('waiting', waiting ? `Waiting · ${waiting}` : 'Waiting', rows.waiting, (v) => v.detail, 'Nothing waiting',
       rows.moreWaiting ? `<div class="menu-hint">${rows.moreWaiting} more waiting</div>` : '')
     + column('read', 'Read', rows.read, (v) => v.site, 'No other read pages')
-    + '</div><div class="switcher-keys"><kbd>Tab</kbd> next · <kbd>Shift Tab</kbd> back · release <kbd>Ctrl</kbd> or click to open</div>';
+    + '</div>' + switcherFooter();
   const chosen = $('switcher').querySelector('[aria-selected="true"]');
   $('switcher').setAttribute('aria-activedescendant', chosen?.id ?? '');
   chosen?.scrollIntoView({ block: 'nearest' });
@@ -1186,11 +1201,11 @@ function renderLoginChip() {
     setTooltip(chip, `${S.save.update ? 'Update the saved password' : 'Save the login'} for ${loginLabel(S.save.username)} on ${S.save.site} in ${S.save.keeper}`);
   } else if (S.locked && !names.length) {
     chip.innerHTML = `${icon('key')}<span>${esc(`Unlock ${S.locked}`)}</span>`;
-    setTooltip(chip, `Unlock ${S.locked} to fill a saved login · Ctrl+Shift+L`);
+    setTooltip(chip, shortcutTitle(`Unlock ${S.locked} to fill a saved login`, 'fill-login'));
   } else if (names.length) {
     const one = names.length === 1;
     chip.innerHTML = `${icon('key')}<span>${esc(one ? loginLabel(names[0]) : `${names.length} logins`)}</span>`;
-    setTooltip(chip, `${one ? `Fill the saved login for ${loginLabel(names[0])}` : 'Choose a saved login to fill'} · Ctrl+Shift+L`);
+    setTooltip(chip, shortcutTitle(one ? `Fill the saved login for ${loginLabel(names[0])}` : 'Choose a saved login to fill', 'fill-login'));
   }
   if (S.popover?.kind === 'save-login' && !S.save) closePopover(false);
   if (S.popover?.kind === 'logins') {
@@ -1509,7 +1524,7 @@ function renderPopover() {
     patchChildren(popover, `<div data-key="heading" class="pop-head"><span class="menu-heading grow">Waiting in this tree · ${ids.length}</span><span class="menu-detail">${esc(order)}</span></div>`
       + ids.map((id, i) => {
         const v = visit(id);
-        return `<button class="menu-row${i === 0 ? ' next' : ''}" data-id="${id}" aria-current="${id === current() ? 'page' : 'false'}" aria-label="${esc(v.name)}">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.detail)}</span>${i === 0 ? '<kbd>Ctrl Tab</kbd>' : ''}</button>`;
+        return `<button class="menu-row${i === 0 ? ' next' : ''}" data-id="${id}" aria-current="${id === current() ? 'page' : 'false'}" aria-label="${esc(v.name)}">${markedFav(v, 16)}<span class="grow">${esc(v.label)}</span><span class="menu-detail">${esc(v.detail)}</span>${i === 0 ? shortcutChip('switch-page') : ''}</button>`;
       }).join(''));
     popover.querySelectorAll('[data-id]').forEach(row => { row.onclick = () => activate(row.dataset.id); });
   } else if (kind === 'save-login') {
@@ -1601,7 +1616,7 @@ function renderPopover() {
   } else if (kind === 'memory') {
     popover.innerHTML = '<div class="menu-heading">Saved text</div>'
       + captureRow()
-      + '<button class="menu-row" id="remember-selection"><span class="grow">Remember selection</span><kbd>Ctrl+S</kbd></button>'
+      + `<button class="menu-row" id="remember-selection"><span class="grow">Remember selection</span>${shortcutChip('remember-selection', 'text')}</button>`
       + `<button class="menu-row" id="read-captures"${current() ? '' : ' disabled'}><span class="grow">Read saved text</span></button>`;
     wireCaptureRow();
     $('remember-selection').addEventListener('click', () => { closePopover(); intent('remember'); });
@@ -1635,24 +1650,24 @@ function renderPopover() {
     const percent = S.pageScale?.page === page ? S.pageScale.percent : 100;
     const back = S.strip?.back;
     const forward = S.strip?.forward;
-    const item = (id, label, shortcut, enabled = true) =>
-      `<button class="menu-row" role="menuitem" id="${id}" data-key="${id}"${enabled ? '' : ' disabled'}><span class="grow">${esc(label)}</span>${shortcut ? `<kbd>${esc(shortcut)}</kbd>` : ''}</button>`;
-    const zoomButton = (id, text, name, title) =>
-      `<button id="${id}" aria-label="${esc(name)}" title="${esc(title)}"${onPage ? '' : ' disabled'}>${text}</button>`;
+    const item = (id, label, command, enabled = true) =>
+      `<button class="menu-row" role="menuitem" id="${id}" data-key="${id}"${enabled ? '' : ' disabled'}><span class="grow">${esc(label)}</span>${shortcutChip(command)}</button>`;
+    const zoomButton = (id, text, name, command) =>
+      `<button id="${id}" aria-label="${esc(name)}" title="${esc(shortcutTitle(name, command))}"${onPage ? '' : ' disabled'}>${text}</button>`;
     popover.setAttribute('aria-label', 'Menu');
     patchChildren(popover, '<div class="menu-heading" data-key="page-title">This page</div>'
-      + item('menu-find', 'Find in page', 'Ctrl F', onPage)
-      + item('menu-bookmark', bookmarked ? 'Remove bookmark' : 'Bookmark this page', 'Ctrl D', onPage)
+      + item('menu-find', 'Find in page', 'find', onPage)
+      + item('menu-bookmark', bookmarked ? 'Remove bookmark' : 'Bookmark this page', 'bookmark', onPage)
       + item('menu-copy', 'Copy address', '', onPage)
-      + item('menu-reload', 'Reload', 'Ctrl R', onPage)
-      + `<div class="menu-row menu-zoom" data-key="zoom"><span class="grow">Page size</span><span class="zoom-steps">${zoomButton('menu-zoom-out', '−', 'Smaller', 'Smaller · Ctrl+−')}${zoomButton('menu-zoom-reset', `${percent}%`, 'Reset page size', 'Reset page size · Ctrl+0')}${zoomButton('menu-zoom-in', '+', 'Larger', 'Larger · Ctrl++')}</span></div>`
+      + item('menu-reload', 'Reload', 'reload', onPage)
+      + `<div class="menu-row menu-zoom" data-key="zoom"><span class="grow">Page size</span><span class="zoom-steps">${zoomButton('menu-zoom-out', '−', 'Smaller', 'page-size-decrease')}${zoomButton('menu-zoom-reset', `${percent}%`, 'Reset page size', 'page-size-reset')}${zoomButton('menu-zoom-in', '+', 'Larger', 'page-size-increase')}</span></div>`
       + switchRow('site-blocking', site)
       + '<div class="menu-separator" data-key="trees-separator"></div><div class="menu-heading" data-key="trees-title">Trees</div>'
-      + item('menu-back', back ? `Back to ${back.label}` : 'Back', 'Alt Left', !!back)
-      + item('menu-forward', forward ? `Forward to ${forward.label}` : 'Forward', 'Alt Right', !!forward)
-      + item('menu-new-tree', 'New tree', 'Ctrl T')
-      + item('menu-forest', 'Forest', 'Ctrl E')
-      + item('show-trees-help', 'How trees work', 'F1')
+      + item('menu-back', back ? `Back to ${back.label}` : 'Back', 'back', !!back)
+      + item('menu-forward', forward ? `Forward to ${forward.label}` : 'Forward', 'forward', !!forward)
+      + item('menu-new-tree', 'New tree', 'new-tree')
+      + item('menu-forest', 'Forest', 'forest')
+      + item('show-trees-help', 'How trees work', 'trees-help')
       + '<div class="menu-separator" data-key="settings-separator"></div><div class="menu-heading" data-key="title">Settings</div>'
       + '<div class="menu-heading" data-key="theme-title">Theme</div><div class="segmented" id="theme-mode" data-key="theme">'
       + ['dark', 'light', 'system'].map((mode) => `<button data-mode="${mode}" aria-pressed="${mode === theme}">${mode[0].toUpperCase()}${mode.slice(1)}</button>`).join('')
@@ -1662,7 +1677,7 @@ function renderPopover() {
       + switchRow('blocking', blocking)
       + `<button class="menu-row" role="menuitem" id="recent-errors" data-key="errors"><span class="grow">Recent errors</span>${S.errors.unread ? '<i class="error-dot"></i>' : ''}</button>`
       + '<div class="menu-separator" data-key="quit-separator"></div>'
-      + item('menu-quit', 'Quit', 'Ctrl Q'));
+      + item('menu-quit', 'Quit', 'quit'));
     const act = (id, fn) => { $(id).onclick = fn; };
     act('menu-passwords', () => openPopover('passwords', $('menu-passwords')));
     act('menu-find', () => { closePopover(false); intent('find-open'); });
@@ -2144,7 +2159,7 @@ function bookmarksBand(start) {
   const tiles = b.tiles.map((r) => `<button class="start-tile" data-start="bookmark" data-id="${r.id}" title="${esc(r.label + '\n' + r.url)}"><span class="glyph">${fav(r.url, true, 24)}</span><span class="label">${esc(r.label)}</span></button>`).join('');
   const more = b.more ? `<button class="start-tile" data-start="more"><span class="glyph">${icon('chevron')}</span><span class="label">${esc(b.more.label)}</span></button>` : '';
   return '<section><div class="band-head"><span class="grow">Bookmarks</span>' + chips + '</div>'
-    + (b.empty ? '<div class="hint-line">Ctrl+D bookmarks the page you are on.</div>' : `<div class="start-tiles">${tiles}${more}</div>`) + '</section>';
+    + (b.empty ? `<div class="hint-line bookmark-hint">${esc(S.keyboard?.bookmarkHint)}</div>` : `<div class="start-tiles">${tiles}${more}</div>`) + '</section>';
 }
 
 function togglePopover(kind, anchor, data) {
@@ -2183,9 +2198,16 @@ function helpDrawing(kind) {
 function renderHelp() {
   const box = $('trees-help');
   box.hidden = !S.frame?.treesHelp;
-  const help = S.help;
-  if (!help || box.__paint === help.title) return;
-  box.__paint = help.title;
+  const help = S.keyboard?.help;
+  if (!help || box.__paint === help) return;
+  if (box.__paint) {
+    box.querySelectorAll('li > span:last-child').forEach((el, index) => {
+      el.textContent = help.lines[index].text;
+    });
+    box.__paint = help;
+    return;
+  }
+  box.__paint = help;
   box.innerHTML = `<div class="help-head"><h2 id="trees-help-title">${esc(help.title)}</h2><button id="trees-help-dismiss" class="action">Got it</button></div>`
     + '<ol>' + help.lines.map((line) => `<li><span class="help-drawing" aria-hidden="true">${helpDrawing(line.mark)}</span><span>${esc(line.text)}</span></li>`).join('') + '</ol>'
     + '<div class="help-legend" aria-label="Page marks">' + help.legend.map((group) => `<span class="help-legend-group">${group.map((item) => `<span class="help-legend-mark"><i aria-hidden="true">${helpDrawing(item.mark)}</i>${esc(item.text)}</span>`).join('')}</span>`).join('') + '</div>';
@@ -2439,7 +2461,39 @@ window.canopy = {
     else closeSwitcher();
   },
   openPalette(options) { openPalette(options); },
-  help(value) { S.help = value; renderHelp(); },
+  shortcuts(value) {
+    S.keyboard = value;
+    for (const el of document.querySelectorAll('[data-shortcut-title]')) {
+      el.dataset.baseTitle ??= el.title;
+      setTooltip(el, shortcutTitle(el.dataset.baseTitle, el.dataset.shortcutTitle));
+    }
+    for (const el of document.querySelectorAll('[data-shortcut-chip]')) {
+      el.textContent = shortcut(el.dataset.shortcutChip, 'chip');
+      el.hidden = !el.textContent;
+    }
+    for (const el of document.querySelectorAll('[data-shortcut-text]')) {
+      el.textContent = shortcut(el.dataset.shortcutText);
+    }
+    renderHelp();
+    if (!S.frame) return;
+    renderTabs();
+    renderNav();
+    renderLoginChip();
+    for (const node of strip.target?.nodes ?? []) {
+      const el = strip.elements.get(node.id);
+      if (el && node.tip) setTooltip(el, stripTip(node.tip));
+    }
+    if (S.list) renderList();
+    if (['settings', 'waiting', 'memory'].includes(S.popover?.kind)) refreshPopover();
+    if (S.switcher?.shown) renderSwitcher();
+    const bookmarkHint = $('start-content').querySelector('.bookmark-hint');
+    if (bookmarkHint) bookmarkHint.textContent = value.bookmarkHint;
+    const toast = $('toast');
+    if (!toast.hidden && toast.classList.contains('settled')) {
+      toast.lastChild.textContent = undoShortcut();
+      $('toast-status').textContent = toast.textContent;
+    }
+  },
   openErrors() { openPopover('errors', $('settings-button')); },
   showTreesHelp() { closeReader(false); closePopover(false); hideList(); this.newTree(); renderHelp(); },
   newTree() {
@@ -2478,7 +2532,7 @@ window.canopy = {
   },
   toast(kind, text, deleteId) {
     const toast = $('toast');
-    $('toast-status').textContent = text + (kind === 'settled' ? ' · Undo (Ctrl+Shift+T)' : kind === 'deleted' ? ' · Undo' : '');
+    $('toast-status').textContent = text + (kind === 'settled' ? ` · Undo${undoShortcut()}` : kind === 'deleted' ? ' · Undo' : '');
     toast.textContent = text;
     if (kind === 'settled' || kind === 'deleted') {
       const button = document.createElement('button');
@@ -2489,7 +2543,7 @@ window.canopy = {
         if (kind === 'settled') intent('undo-settle'); else intent('undo-delete', { id: deleteId });
       };
       toast.appendChild(button);
-      if (kind === 'settled') toast.appendChild(document.createTextNode(' (Ctrl+Shift+T)'));
+      if (kind === 'settled') toast.appendChild(document.createTextNode(undoShortcut()));
     }
     toast.className = kind;
     toast.hidden = false;
@@ -2514,7 +2568,7 @@ window.canopy = {
     post({ t: 'focus', target: 'chrome' });
     el.focus();
   },
-  /// Closes the topmost thing Escape owns.
+  /// Closes the topmost chrome layer.
   formReturn(open) {
     if (open && !S.formReturn) rememberFocus('formReturn');
     S.formReturn = open;

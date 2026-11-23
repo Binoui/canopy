@@ -19,6 +19,8 @@ pub mod login_helper;
 #[cfg(feature = "desktop")]
 pub mod pages;
 #[cfg(feature = "desktop")]
+pub mod shortcuts;
+#[cfg(feature = "desktop")]
 pub mod ui;
 
 pub mod cookies;

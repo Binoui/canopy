@@ -11,26 +11,26 @@
 </head>
 <body>
 <header id="tabs">
-  <button id="forest-button" class="label-button" title="Canopy · Ctrl+E" aria-pressed="false"></button>
+  <button id="forest-button" class="label-button" title="Canopy" data-shortcut-title="forest" aria-pressed="false"></button>
   <div class="tabs-divider"></div>
   <div id="tab-row" role="tablist" aria-label="Open trees"></div>
   <button id="tab-overflow" aria-haspopup="menu" aria-expanded="false" class="icon-button" title="More trees" aria-label="More trees" hidden></button>
-  <div id="new-tree-tab" class="tab" role="tab" tabindex="0" aria-selected="false" aria-label="New tree" title="New tree · Ctrl+T" hidden>
+  <div id="new-tree-tab" class="tab" role="tab" tabindex="0" aria-selected="false" aria-label="New tree" title="New tree" data-shortcut-title="new-tree" hidden>
     <span class="mk"></span><span class="tab-title">New tree</span>
-    <button id="new-tree-close" class="tab-settle" title="Close · Ctrl+W" aria-label="Close new tree" hidden></button>
+    <button id="new-tree-close" class="tab-settle" title="Close" data-shortcut-title="settle-tree" aria-label="Close new tree" hidden></button>
   </div>
-  <button id="new-tree" class="icon-button" title="New tree · Ctrl+T" aria-label="New tree"></button>
+  <button id="new-tree" class="icon-button" title="New tree" data-shortcut-title="new-tree" aria-label="New tree"></button>
   <div class="spacer"></div>
-  <button id="page-scale" class="label-button" title="Reset page size · Ctrl+0" aria-label="Reset page size" hidden></button>
+  <button id="page-scale" class="label-button" title="Reset page size" data-shortcut-title="page-size-reset" aria-label="Reset page size" hidden></button>
   <button id="login-chip" class="label-button" hidden></button>
-  <button id="search-pill" title="Search your forest or go to an address · Ctrl+K"><span>Search or go…</span><kbd>Ctrl K</kbd></button>
+  <button id="search-pill" title="Search your forest or go to an address" data-shortcut-title="search"><span>Search or go…</span><kbd data-shortcut-chip="search"></kbd></button>
   <div id="find-bar" role="search" aria-label="Find in page" hidden>
     <input id="find-input" aria-label="Find in page" placeholder="Find in page" spellcheck="false" autocomplete="off">
     <span id="find-count" aria-live="polite"></span>
     <i class="find-divider"></i>
     <button id="find-previous" class="find-button" title="Previous match · Shift+Enter" aria-label="Previous match"></button>
     <button id="find-next" class="find-button" title="Next match · Enter" aria-label="Next match"></button>
-    <button id="find-close" class="find-button" title="Close · Esc" aria-label="Close find"></button>
+    <button id="find-close" class="find-button" title="Close" data-shortcut-title="escape" aria-label="Close find"></button>
   </div>
   <button id="settings-button" aria-haspopup="menu" aria-expanded="false" class="icon-button" title="Settings" aria-label="Settings"></button>
 </header>
@@ -60,11 +60,11 @@
     <div id="tree-list" role="tree" aria-label="Pages" class="sheet-body" hidden></div>
   </div>
 </div>
-<div id="pins"><button id="playing-pin" class="pin" data-pin="playing" aria-label="Nothing playing" hidden></button><button id="mail-pin" class="pin" data-pin="mail" aria-haspopup="dialog" aria-expanded="false" aria-label="Unread mail" hidden></button><button id="zoom-pin" class="pin icon-pin" data-pin="zoom" aria-pressed="false" title="Zoom into this tree · Ctrl+Shift+E" aria-label="Zoom into this tree" hidden></button></div>
+<div id="pins"><button id="playing-pin" class="pin" data-pin="playing" aria-label="Nothing playing" hidden></button><button id="mail-pin" class="pin" data-pin="mail" aria-haspopup="dialog" aria-expanded="false" aria-label="Unread mail" hidden></button><button id="zoom-pin" class="pin icon-pin" data-pin="zoom" aria-pressed="false" title="Zoom into this tree" data-shortcut-title="tree-workbench" aria-label="Zoom into this tree" hidden></button></div>
 
 <div id="start" class="surface dapple" hidden>
   <div id="start-column">
-    <button id="start-search"> <i class="caret"></i><span>An address, a search, or anything on this page</span><kbd>Ctrl K</kbd></button>
+    <button id="start-search"> <i class="caret"></i><span>An address, a search, or anything on this page</span><kbd data-shortcut-chip="search"></kbd></button>
     <section id="trees-help" aria-labelledby="trees-help-title" hidden></section>
     <div id="start-content"></div>
   </div>
@@ -101,7 +101,7 @@
     <div class="palette-context" id="palette-context"></div>
     <div class="palette-field"><span id="palette-icon"></span><input id="palette-input" role="combobox" aria-label="Search your forest or type an address" aria-expanded="true" aria-autocomplete="list" aria-controls="palette-results" spellcheck="false" autocomplete="off" placeholder="Search your forest or type an address"></div>
     <div id="palette-results" role="listbox" aria-label="Results"></div>
-    <div class="palette-foot">↑↓ choose · Enter open · Alt+Enter in a new tree · Esc close</div>
+    <div class="palette-foot">↑↓ choose · Enter open · Alt+Enter in a new tree · <span data-shortcut-text="escape"></span> close</div>
   </div>
 </div>
 

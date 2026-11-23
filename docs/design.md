@@ -139,6 +139,13 @@ A site switch also queues one reload for the document that owned the menu row.
 
 The tabs, the tree strip, the palette, the attached lists, the menus, the "New tree" page, the forest view and the reader are drawn in HTML. A second, transparent webview, served by the `canopy://` scheme, sits above the page. Rust keeps the state and every decision: the layouts, the palette results and the intents. The view receives JSON and sends clicks and keys back over IPC.
 
+Window shortcuts are declared in `src/shortcuts.rs`. Each command has a stable ID,
+a name, a group, and an ordered list of default combinations or a fixed digit
+rule. The window resolves key presses against that list before dispatching the
+action. The first combination supplies the labels. The chrome receives a
+separate shortcut message at startup, and frequent frames refer to commands
+by ID when they need a label. The CLI formats its help from the defaults.
+
 Chrome frames carry the current tree, open-tab summaries, waiting pages and the
 open palette's scope page. The start page requests its saved and suggested miniature data when shown. The
 forest requests its independent value after allocation. `ForestPane` owns Closed or Open and either Canopy or History. History owns Find, its selection anchor and loaded reach. A fresh `Index` derives sites and dated history from the in-memory projection, without a cache. Closing discards pane state. Unchanged strip items

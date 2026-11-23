@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 use canopy::{
     address::Destination,
     instance::{self, Launch, Question, Request},
+    shortcuts::default_help_shortcuts,
 };
 use gtk::prelude::*;
 use url::Url;
@@ -14,7 +15,7 @@ const DEFAULT_BLOCKLISTS: [&str; 3] = [
     "https://easylist-downloads.adblockplus.org/liste_fr.txt",
 ];
 
-const HELP: &str = "Canopy
+const HELP_INTRO: &str = "Canopy
 
 Usage: canopy [--data-dir PATH] [ADDRESS...]
        canopy [--data-dir PATH] --import-chrome [PROFILE]
@@ -37,30 +38,13 @@ page's visible text. It never starts Canopy.
 NAME is a password manager's helper, a program called canopy-login-NAME next to
 Canopy or on your PATH, or the path of one. \"vault\" goes back to the vault on this
 computer.
+";
 
-Ctrl+K          Search your forest or go to an address
-Ctrl+L          Same, starting from the current address
-Ctrl+E          Forest view
-Ctrl+Shift+E    Current-tree workbench
-Ctrl+T          New tree
-Ctrl+W          Settle the tree, or close the open overlay
-Ctrl+Shift+T    Reopen the most recently settled tree or branch
-Ctrl+1…9        Switch to a tree
-Ctrl+Shift+Tab  Switch to the previously shown open tree
-Ctrl+Tab        Next waiting page, else the last read one; hold Ctrl to pick
-F1              How trees work
-F6              Move between the page and the tree strip
-Alt+←           Back to the parent page
-Alt+→           Forward to the last opened child
-Alt+↑/↓         Previous or next sibling
-Ctrl+R          Reload the page
-Ctrl+D          Toggle the page bookmark
-Ctrl+S          Remember the selection
-Ctrl+Shift+L    Fill the saved login for the page
-Ctrl+Shift+V    Paste as plain text, even where the page blocks pasting
-Ctrl+Q          Quit
+const HELP_PROFILE: &str = "Your profile and browsing are kept in XDG_DATA_HOME/canopy.";
 
-Your profile and browsing are kept in XDG_DATA_HOME/canopy.";
+fn help() -> String {
+    format!("{HELP_INTRO}\n{}\n{HELP_PROFILE}", default_help_shortcuts())
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -168,7 +152,7 @@ fn run() -> Result<()> {
     let Invocation { data_dir, command } = parse_args(std::env::args_os().skip(1))?;
     let urls = match command {
         Command::Help => {
-            println!("{HELP}");
+            println!("{}", help());
             return Ok(());
         }
         Command::ImportChrome(profile) => {
@@ -412,14 +396,8 @@ mod tests {
 
     #[test]
     fn shortcut_help_descriptions_align() {
-        let columns: Vec<_> = HELP
+        let columns: Vec<_> = default_help_shortcuts()
             .lines()
-            .filter(|line| {
-                line.starts_with("Ctrl+")
-                    || line.starts_with("Alt+")
-                    || line.starts_with("F6 ")
-                    || line.starts_with("F1 ")
-            })
             .map(|line| {
                 line.chars().position(|c| c == ' ').unwrap()
                     + line
@@ -430,8 +408,16 @@ mod tests {
             })
             .collect();
         assert!(
-            columns.iter().all(|column| *column == 16),
+            !columns.is_empty() && columns.iter().all(|column| *column == 16),
             "shortcut description columns: {columns:?}"
+        );
+    }
+
+    #[test]
+    fn help_matches_legacy_output() {
+        assert_eq!(
+            format!("{}\n", help()),
+            include_str!("../tests/fixtures/shortcut-help.txt")
         );
     }
 
