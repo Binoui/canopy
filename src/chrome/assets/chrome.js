@@ -1020,7 +1020,7 @@ function layoutSwitcher(layout) {
 }
 
 function switcherCard(v) {
-  return `<div class="switcher-fallback">${visitFav(v, 20)}<b>${esc(v.label)}</b><span>${v.live || v.loaded || v.kind === 'here' ? 'Preview unavailable' : 'Not loaded'}</span></div>`;
+  return `<div class="switcher-fallback">${visitFav(v, 20)}<b>${esc(v.label)}</b><span>${esc(v.pictureStatus)}</span></div>`;
 }
 
 function showSwitcher(data) {
@@ -1057,6 +1057,12 @@ function showSwitcher(data) {
   selectSwitcher(data.selected);
   syncLayer();
   $('switcher-row').focus({ preventScroll: true });
+  const opening = S.switcher;
+  requestAnimationFrame(() => {
+    if (S.switcher !== opening) return;
+    if (data.timing) opening.revealed = performance.now();
+    post({ t: 'switcher', opening: opening.opening, action: 'painted' });
+  });
 }
 
 function scrollSwitcherSelection() {
@@ -1077,10 +1083,48 @@ function selectSwitcher(id) {
   const { el, v } = chosen;
   for (const row of sw.rows.values()) row.el.setAttribute('aria-selected', String(row === chosen));
   $('switcher-row').setAttribute('aria-activedescendant', el.id);
-  $('switcher-stage').innerHTML = switcherCard(v);
+  paintSwitcherStage(chosen);
   $('switcher-caption').title = `${v.label} · ${v.site} · ${v.caption}`;
   $('switcher-caption').innerHTML = `${markedFav(v, 16, false)}<b>${esc(v.label)}</b><span>${esc(v.site)} · ${esc(v.caption)}</span>`;
   scrollSwitcherSelection();
+}
+
+function paintSwitcherStage(row) {
+  const stage = $('switcher-stage');
+  if (row.large) stage.replaceChildren(row.large);
+  else stage.innerHTML = switcherCard(row.v);
+}
+
+async function fillSwitcherPicture({ id, large, thumb }) {
+  const sw = S.switcher;
+  const row = sw.rows.get(id);
+  if (!row) return;
+  const decode = async (url) => {
+    const image = new Image();
+    image.alt = '';
+    image.src = url;
+    await image.decode();
+    return image;
+  };
+  try {
+    if (!thumb) throw new Error('Snapshot unavailable');
+    const [tile, stage] = await Promise.all([decode(thumb), large ? decode(large) : null]);
+    if (S.switcher !== sw || !sw.rows.has(id)) return;
+    row.large = stage;
+    row.el.firstElementChild.replaceChildren(tile);
+    if (sw.selected === id) paintSwitcherStage(row);
+    row.el.dataset.picture = 'ready';
+    if (sw.revealed !== undefined && [...sw.rows.values()].every(({ el }) => el.dataset.picture === 'ready')) {
+      requestAnimationFrame(() => {
+        if (S.switcher === sw) sw.picturesPainted = performance.now() - sw.revealed;
+      });
+    }
+  } catch {
+    if (S.switcher !== sw || !sw.rows.has(id)) return;
+    row.v.pictureStatus = 'Preview unavailable';
+    row.el.firstElementChild.innerHTML = switcherCard(row.v);
+    if (sw.selected === id) paintSwitcherStage(row);
+  }
 }
 
 function closeSwitcher(restoreFocus) {
@@ -2489,6 +2533,7 @@ window.canopy = {
     if (S.switcher?.opening !== value.opening) return;
     if (action === 'select') selectSwitcher(value.selected);
     else if (action === 'layout') layoutSwitcher(value.layout);
+    else if (action === 'picture') fillSwitcherPicture(value);
     else if (action === 'close') closeSwitcher(value.restoreFocus);
   },
   openPalette(options) { openPalette(options); },

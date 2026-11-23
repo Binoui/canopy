@@ -352,10 +352,15 @@ impl HtmlChrome {
         )));
         let slot: Rc<RefCell<Weak<Inner>>> = Rc::default();
         let messages = slot.clone();
+        let pictures = Mutex::new(glib::thread_guard::ThreadGuard::new(slot.clone()));
         let view = WebViewBuilder::new()
             .with_transparent(true)
             .with_bounds(rect(0., 0., 1., CHROME_HEIGHT))
             .with_custom_protocol("canopy".into(), move |_, request| {
+                if request.uri().path().starts_with("/switcher-image/") {
+                    let inner = pictures.lock().unwrap().get_ref().borrow().upgrade();
+                    return switcher::picture_response(&request, inner.as_deref());
+                }
                 let (favicons, logos) = icons.lock().unwrap().get_ref().clone();
                 serve(&request, &favicons, logos.as_ref())
             })

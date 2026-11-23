@@ -108,6 +108,10 @@ impl Default for Navigation {
 }
 
 impl Navigation {
+    pub(crate) fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
     pub(crate) fn view_id(&self) -> ViewId {
         self.view
     }

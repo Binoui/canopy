@@ -267,6 +267,10 @@ impl LivePage {
         self.state.ticket()
     }
 
+    pub(super) fn capture_document(&self) -> Option<(Document, u64)> {
+        Some((self.document()?, self.state.navigation.borrow().sequence()))
+    }
+
     pub(super) fn current_visit(&self) -> Option<VisitId> {
         self.state
             .navigation

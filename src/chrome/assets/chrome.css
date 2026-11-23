@@ -257,6 +257,7 @@ body[data-overlay="tree"] #pins .pin:not([aria-pressed="true"]) { visibility: hi
 #switcher-stage { pointer-events: auto; cursor: pointer; border-radius: 10px; box-shadow: 0 18px 46px -18px var(--shadow); }
 .switcher-picture { position: relative; height: var(--picture-height); overflow: hidden; border-radius: 7px; background: var(--tile);
   box-shadow: 0 0 0 1px var(--tile-border); }
+.switcher-picture > img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .switcher-fallback { height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 3px; padding: 4px 6px; color: var(--muted); font-size: 10px; }
 .switcher-fallback b, .switcher-label span:last-child, #switcher-caption b, #switcher-caption > span:last-child {
   min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

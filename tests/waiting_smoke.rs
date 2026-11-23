@@ -18,6 +18,9 @@ use common::*;
 fn main() -> Result<()> {
     let _runtime = common::private_runtime()?;
     let directory = tempfile::tempdir()?;
+    let xdg = tempfile::tempdir()?;
+    std::env::set_var("XDG_DATA_HOME", xdg.path().join("data"));
+    std::env::set_var("XDG_CACHE_HOME", xdg.path().join("cache"));
     start(directory.path())?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let base = format!("http://{}", listener.local_addr()?);
@@ -25,10 +28,13 @@ fn main() -> Result<()> {
         gtk::gdk_pixbuf::Pixbuf::new(gtk::gdk_pixbuf::Colorspace::Rgb, true, 8, 16, 16).unwrap();
     icon.fill(0x2050ffff);
     let favicon = icon.save_to_bufferv("png", &[])?;
+    let changed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let server_changed = changed.clone();
     thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { break };
             let favicon = favicon.clone();
+            let changed = server_changed.clone();
             thread::spawn(move || -> std::io::Result<()> {
                 let mut request = [0; 4096];
                 let size = stream.read(&mut request)?;
@@ -37,6 +43,45 @@ fn main() -> Result<()> {
                 if path == "/favicon.ico" {
                     write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", favicon.len())?;
                     stream.write_all(&favicon)?;
+                    return Ok(());
+                }
+                use std::sync::atomic::Ordering;
+                if path == "/film-change" || path == "/film-mutated" {
+                    if path == "/film-mutated" {
+                        FILM_MUTATED.store(true, Ordering::Relaxed);
+                    }
+                    let response = if changed.load(Ordering::Relaxed) {
+                        "yes"
+                    } else {
+                        "no"
+                    };
+                    write!(stream, "HTTP/1.1 200 OK\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len())?;
+                    return Ok(());
+                }
+                if let Some(index) = path
+                    .strip_prefix("/colour/")
+                    .and_then(|i| i.parse::<usize>().ok())
+                {
+                    let [r, g, b] = FILM_COLOURS[index];
+                    let script = if index == 11 {
+                        r#"<script>const timer=setInterval(async()=>{if(await (await fetch('/film-change')).text()==='yes'){document.body.style.background='rgb(220,96,141)';clearInterval(timer);fetch('/film-mutated')}},150)</script>"#
+                    } else {
+                        ""
+                    };
+                    let body = format!("<!doctype html><title>Filmstrip colour {index}</title><body style='margin:0;background:rgb({r},{g},{b})'>{script}");
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())?;
+                    return Ok(());
+                }
+                if path == "/film" {
+                    let links: String = (0..FILM_COLOURS.len())
+                        .map(|i| {
+                            format!(
+                                "<p><a id='film{i}' href='/colour/{i}'>Filmstrip page {i}</a></p>"
+                            )
+                        })
+                        .collect();
+                    let body = format!("<!doctype html><title>Filmstrip source</title>{links}<p><a id='film-slow' href='/slow-film'>Slow fixture</a>");
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())?;
                     return Ok(());
                 }
                 if path.starts_with("/slow") {
@@ -49,6 +94,8 @@ fn main() -> Result<()> {
             });
         }
     });
+    let picture_directory = tempfile::tempdir()?;
+    prove_filmstrip(picture_directory.path(), &base, &changed)?;
     let ui = Ui::new(directory.path())?;
     ui.window.show_all();
     ready(&ui)?;
@@ -887,4 +934,328 @@ fn composed_waiting_toast(ui: &Ui) -> Result<()> {
     key("Escape")?;
     println!("PASS waiting feedback paints in the composed window with the palette open.");
     Ok(())
+}
+
+fn prove_filmstrip(
+    directory: &std::path::Path,
+    base: &str,
+    changed: &std::sync::atomic::AtomicBool,
+) -> Result<()> {
+    use std::{cell::Cell, rc::Rc, sync::atomic::Ordering, time::Instant};
+
+    let ui = Ui::new(directory)?;
+    ui.window.show_all();
+    ready(&ui)?;
+    ui.pages
+        .selected_page()
+        .navigate(web_url(&format!("{base}/film"))?, NavigationTarget::Root)?;
+    loaded(&ui, "/film")?;
+    let here = ui.snapshot()?.current.unwrap();
+    let film_choices = || -> Result<Vec<String>> {
+        Ok(serde_json::from_value(chrome(
+            &ui,
+            "[...$('switcher-row').querySelectorAll('[role=option]')].map(e => e.dataset.id)",
+        )?)?)
+    };
+    let selection = || -> Result<String> {
+        Ok(serde_json::from_value(chrome(
+            &ui,
+            "S.switcher?.selected ?? ''",
+        )?)?)
+    };
+    let expect_selection = |id: &str| {
+        wait("selected filmstrip card", || {
+            selection().is_ok_and(|s| s == id)
+        })
+    };
+    let held = || -> Result<()> {
+        focus_window()?;
+        xdo(&["keydown", "ctrl"])?;
+        xdo(&["key", "Tab"])?;
+        wait("timed filmstrip reveal", || visible(&ui, "#switcher"))
+    };
+    let cancel = || -> Result<()> {
+        xdo(&["key", "Escape"])?;
+        xdo(&["keyup", "ctrl"])?;
+        wait("filmstrip closes on Escape", || !visible(&ui, "#switcher"))
+    };
+    let mut recent = Vec::new();
+    for i in 0..7 {
+        ui.pages.inject_recent_memory_sample(0);
+        queue(&ui, &format!("film{i}"))?;
+        let id = ui
+            .snapshot()?
+            .visits
+            .into_iter()
+            .find(|v| v.url.path() == format!("/colour/{i}"))
+            .unwrap()
+            .id;
+        wait("read fixture loaded while waiting", || {
+            ui.pages.loaded_visits().contains(&id)
+        })?;
+        let before = ui.chrome.switcher_snapshot_count();
+        key("ctrl+Tab")?;
+        activated(&ui, &id.to_string())?;
+        assert!(!visible(&ui, "#switcher"));
+        assert_eq!(ui.chrome.switcher_snapshot_count(), before);
+        recent.insert(0, id.to_string());
+        key("alt+Left")?;
+        activated(&ui, &here.to_string())?;
+    }
+    for i in 7..12 {
+        ui.pages.inject_recent_memory_sample(0);
+        queue(&ui, &format!("film{i}"))?;
+    }
+    wait(
+        "five committed background pages and eight retained read pages",
+        || ui.pages.loaded_visits().len() == 5 && ui.pages.live_visits().len() == 8,
+    )?;
+    let queued = waiting(&ui)?;
+    let order = [vec![here.to_string()], queued.clone(), recent.clone()].concat();
+    assert_eq!(order.len(), 13);
+    wait("page hold has ended", || {
+        !ui.pages.selected_page().native.is_loading()
+    })?;
+    pump(1500);
+    let mut roots = vec![directory.to_path_buf()];
+    roots.extend(
+        ["XDG_DATA_HOME", "XDG_CACHE_HOME"]
+            .into_iter()
+            .filter_map(std::env::var_os)
+            .map(std::path::PathBuf::from),
+    );
+    for view in [ui.chrome.native(), ui.pages.selected_page().native.clone()] {
+        use webkit2gtk::{WebContextExt, WebsiteDataManagerExt};
+        let manager = view.context().unwrap().website_data_manager().unwrap();
+        roots.extend(
+            [
+                manager.base_cache_directory(),
+                manager.base_data_directory(),
+            ]
+            .into_iter()
+            .flatten()
+            .map(|path| std::path::PathBuf::from(path.as_str())),
+        );
+    }
+    let files = film_inventory(&roots)?;
+    let control = directory.join("inventory-control");
+    std::fs::write(&control, "visible to the inventory")?;
+    assert!(film_inventory(&roots)?.contains(&control));
+    std::fs::remove_file(&control)?;
+
+    let mut samples = Vec::new();
+    for _ in 0..5 {
+        let previous = Rc::new(Cell::new(Instant::now()));
+        let longest = Rc::new(Cell::new(Duration::ZERO));
+        let tick = glib::timeout_add_local(Duration::from_millis(2), {
+            let longest = longest.clone();
+            move || {
+                let gap = previous.replace(Instant::now()).elapsed();
+                longest.set(gap.max(longest.get()));
+                glib::ControlFlow::Continue
+            }
+        });
+        held()?;
+        let mut painted_ms = 0.;
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while Instant::now() < deadline {
+            if let Some(ms) = chrome(&ui, "S.switcher?.picturesPainted ?? null")?.as_f64() {
+                painted_ms = ms;
+                break;
+            }
+            pump(4);
+        }
+        tick.remove();
+        assert!(painted_ms > 0., "ready pictures: {}", chrome(&ui,
+            "[...S.switcher.rows.values()].map(r => [r.v.pictureStatus, r.el.dataset.picture, r.v.label])")?);
+        samples.push((painted_ms, longest.get().as_secs_f64() * 1000.));
+        assert_eq!(film_choices()?, order);
+        expect_selection(&queued[0])?;
+        let v = ui
+            .snapshot()?
+            .visits
+            .into_iter()
+            .find(|v| v.id.to_string() == queued[0])
+            .unwrap();
+        assert!(v.opened_at.is_none());
+        film_pixel(&ui, FILM_COLOURS[11])?;
+        assert_eq!(chrome(&ui, "document.activeElement.id")?, "switcher-row");
+        assert_eq!(chrome(&ui, "$('switcher-row').getAttribute('aria-activedescendant') === $('switcher-row').querySelector('[aria-selected=true]').id")?, true);
+        cancel()?;
+    }
+    println!("FILMSTRIP 1240x800, 13 retained, five openings: (cards to pictures ms, largest GTK 2 ms timer gap ms) {samples:?}");
+    assert!(
+        samples.iter().all(|(elapsed, _)| *elapsed <= 300.),
+        "{samples:?}"
+    );
+    assert_eq!(
+        film_inventory(&roots)?,
+        files,
+        "filmstrip must create no files"
+    );
+    assert_eq!(ui.snapshot()?.current, Some(here));
+    println!("PASS filmstrip paints 13 retained pages within 300 ms and creates no files in the private data and cache folders.");
+
+    changed.store(true, Ordering::Relaxed);
+    wait(
+        "hidden page's own script applied the updated colour",
+        || FILM_MUTATED.load(Ordering::Relaxed),
+    )?;
+    pump(200);
+    held()?;
+    wait("updated hidden picture delivered", || {
+        chrome(
+            &ui,
+            "S.switcher?.rows.get(S.switcher.selected).el.dataset.picture",
+        )
+        .is_ok_and(|v| v == "ready")
+    })?;
+    film_pixel(&ui, FILM_CHANGED)?;
+    for _ in 0..5 {
+        xdo(&["key", "Right"])?;
+    }
+    expect_selection(&recent[0])?;
+    wait("large picture has been mounted", || {
+        visible(&ui, "#switcher-stage img")
+    })?;
+    film_pixel(&ui, FILM_COLOURS[6])?;
+    let started = Instant::now();
+    xdo(&["keyup", "ctrl"])?;
+    wait("read page opens on release", || {
+        ui.snapshot()
+            .is_ok_and(|s| s.current.is_some_and(|id| id.to_string() == recent[0]))
+    })?;
+    println!(
+        "FILMSTRIP Ctrl-up to selected document commit: {:.1} ms, including xdotool and polling",
+        started.elapsed().as_secs_f64() * 1000.
+    );
+    activated(&ui, &recent[0])?;
+    key("alt+Left")?;
+    activated(&ui, &here.to_string())?;
+
+    ui.pages.inject_recent_memory_sample(0);
+    queue(&ui, "film12")?;
+    let extra = waiting(&ui)?[0].parse()?;
+    wait("eighth read fixture preloaded", || {
+        ui.pages.loaded_visits().contains(&extra)
+    })?;
+    key("ctrl+Tab")?;
+    activated(&ui, &extra.to_string())?;
+    key("alt+Left")?;
+    activated(&ui, &here.to_string())?;
+    held()?;
+    wait("all fourteen cards and large images fill", || {
+        chrome(&ui, "S.switcher?.picturesPainted >= 0").is_ok_and(|v| v == true)
+    })?;
+    assert_eq!(film_choices()?.len(), 14);
+    let old_url = chrome(&ui, "$('switcher-stage').firstChild.src")?;
+    cancel()?;
+    chrome(&ui, &format!("(() => {{ const img = new Image(); img.onload = () => window.oldFilmstripImage = 'loaded'; img.onerror = () => window.oldFilmstripImage = 'expired'; img.src = {old_url}; return true; }})()"))?;
+    wait("the closed opening no longer serves its picture", || {
+        chrome(&ui, "window.oldFilmstripImage ?? ''").is_ok_and(|v| v == "expired")
+    })?;
+    println!("PASS the maximum fourteen-page opening fills and its picture URL expires on close.");
+
+    queue(&ui, "film-slow")?;
+    let slow = waiting(&ui)?[0].clone();
+    held()?;
+    expect_selection(&slow)?;
+    assert_eq!(
+        text(&ui, "#switcher-stage .switcher-fallback span"),
+        "Not loaded"
+    );
+    assert_eq!(
+        chrome(
+            &ui,
+            "$('switcher-stage').querySelector('img')?.closest('.fav') !== null"
+        )?,
+        true
+    );
+    cancel()?;
+    println!("PASS composed colours match a never-shown waiting page, its scripted update, and a retained read page. An uncommitted page shows a card.");
+    ui.window.close();
+    Ok(())
+}
+
+const FILM_COLOURS: [[u8; 3]; 13] = [
+    [192, 50, 38],
+    [41, 144, 185],
+    [149, 70, 160],
+    [172, 143, 77],
+    [216, 115, 14],
+    [52, 69, 197],
+    [160, 55, 71],
+    [107, 71, 51],
+    [156, 117, 187],
+    [166, 208, 81],
+    [180, 111, 100],
+    [26, 142, 72],
+    [65, 141, 181],
+];
+const FILM_CHANGED: [u8; 3] = [220, 96, 141];
+static FILM_MUTATED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn film_pixel(ui: &Ui, expected: [u8; 3]) -> Result<()> {
+    let (x, y, w, h) = rect(ui, "#switcher-stage")?;
+    let (sx, sy) = screen_point(
+        ui,
+        &ui.chrome.native(),
+        (x + w / 2.).round() as i32,
+        (y + h / 2.).round() as i32,
+    )?;
+    let (_, ox, oy) = ui.window.window().unwrap().origin();
+    let sample = || -> Result<()> {
+        let pixbuf = ui
+            .window
+            .window()
+            .unwrap()
+            .pixbuf(sx - ox - 2, sy - oy - 2, 5, 5)
+            .unwrap();
+        let bytes = pixbuf.read_pixel_bytes();
+        for y in 0..5 {
+            for x in 0..5 {
+                let offset = (y * pixbuf.rowstride() + x * pixbuf.n_channels()) as usize;
+                assert!(
+                    expected
+                        .iter()
+                        .zip(&bytes[offset..offset + 3])
+                        .all(|(a, b)| a.abs_diff(*b) <= 4),
+                    "expected {expected:?}, got {:?}",
+                    &bytes[offset..offset + 3]
+                );
+            }
+        }
+        Ok(())
+    };
+    pump(34);
+    sample()
+}
+
+fn film_inventory(
+    roots: &[std::path::PathBuf],
+) -> Result<std::collections::BTreeSet<std::path::PathBuf>> {
+    fn walk(
+        root: &std::path::Path,
+        files: &mut std::collections::BTreeSet<std::path::PathBuf>,
+    ) -> Result<()> {
+        if !root.is_dir() {
+            return Ok(());
+        }
+        for entry in std::fs::read_dir(root)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                walk(&entry.path(), files)?;
+            }
+            if kind.is_file() {
+                files.insert(entry.path());
+            }
+        }
+        Ok(())
+    }
+    let mut files = std::collections::BTreeSet::new();
+    for root in roots {
+        walk(root, &mut files)?;
+    }
+    Ok(files)
 }

@@ -1,3 +1,10 @@
+mod pictures;
+pub(super) use pictures::response as picture_response;
+
+use std::{collections::HashMap, rc::Weak};
+
+use pictures::{Picture, Pixels, Sizes};
+
 use crate::{browser::VisitId, forest::ForestProjection};
 
 use super::waiting::Waiting;
@@ -53,6 +60,10 @@ use super::{view, ChromeFrame, ChromeIntent, HtmlChrome, Inner, CHROME_HEIGHT};
 pub(super) struct Switcher {
     next: u64,
     phase: Phase,
+    captures: usize,
+    bytes: u64,
+    #[cfg(feature = "gui-smoke")]
+    snapshots: u64,
 }
 
 #[derive(Default)]
@@ -66,6 +77,7 @@ enum Phase {
 struct Armed {
     id: u64,
     choices: SwitchChoices,
+    pages: Weak<Pages>,
     timer: Option<glib::SourceId>,
 }
 
@@ -97,6 +109,9 @@ struct Opening {
     rows: Vec<Row>,
     more_waiting: usize,
     focus_was_in_chrome: bool,
+    pictures: HashMap<VisitId, Picture>,
+    capture_layout: FilmLayout,
+    painted: bool,
 }
 
 impl SwitchChoices {
@@ -131,7 +146,7 @@ fn modifiers_held(window: &gtk::Window, modifiers: gdk::ModifierType) -> bool {
 impl HtmlChrome {
     pub(crate) fn arm_switcher(
         &self,
-        pages: &Pages,
+        pages: &std::rc::Rc<Pages>,
         window: &gtk::Window,
         modifiers: gdk::ModifierType,
     ) -> Result<()> {
@@ -186,6 +201,7 @@ impl HtmlChrome {
         inner.switcher.borrow_mut().phase = Phase::Armed(Armed {
             id,
             choices,
+            pages: std::rc::Rc::downgrade(pages),
             timer: Some(timer),
         });
         Ok(())
@@ -222,11 +238,26 @@ impl Inner {
         let Phase::Armed(armed) = std::mem::take(&mut self.switcher.borrow_mut().phase) else {
             return;
         };
+        let rows: Vec<_> = armed.choices.rows().collect();
+        let capture_layout = FilmLayout::of(self.size.get(), &rows, armed.choices.more_waiting);
+        let pictures = armed.pages.upgrade().map_or_else(HashMap::new, |pages| {
+            rows.iter()
+                .map(|row| {
+                    let picture = pages
+                        .switcher_source(row.id)
+                        .map_or(Picture::Unavailable, Picture::Waiting);
+                    (row.id, picture)
+                })
+                .collect()
+        });
         let mut opening = Opening {
             id: armed.id,
             here: armed.choices.here,
             selected: armed.choices.first().unwrap(),
-            rows: armed.choices.rows().collect(),
+            rows,
+            capture_layout,
+            painted: false,
+            pictures,
             more_waiting: armed.choices.more_waiting,
             focus_was_in_chrome: self.view.webview().has_focus(),
         };
@@ -238,12 +269,26 @@ impl Inner {
             let Some(frame) = frame.as_ref() else {
                 return;
             };
-            let rows: Vec<_> = opening.rows.iter().map(|&row| row.value(frame)).collect();
+            let rows: Vec<_> = opening
+                .rows
+                .iter()
+                .map(|&row| {
+                    let mut value = row.value(frame);
+                    value["pictureStatus"] =
+                        if matches!(opening.pictures.get(&row.id), Some(Picture::Waiting(_))) {
+                            json!("Preparing preview")
+                        } else {
+                            json!("Not loaded")
+                        };
+                    value
+                })
+                .collect();
             json!({
                 "opening": opening.id.to_string(),
                 "selected": opening.selected.to_string(),
                 "rows": rows,
-                "layout": FilmLayout::of(self.size.get(), &opening).value(),
+                "layout": opening.capture_layout.value(),
+                "timing": cfg!(feature = "gui-smoke"),
                 "moreWaiting": opening.more_waiting,
             })
         };
@@ -288,6 +333,7 @@ impl Inner {
         self.call("navigated", &[]);
         if let Some(host) = self.host() {
             host.dispatch(ChromeIntent::Restore(id));
+            host.focus_page();
         }
     }
 
@@ -299,7 +345,7 @@ impl Inner {
                     json!("layout"),
                     json!({
                         "opening": opening.id.to_string(),
-                        "layout": FilmLayout::of(self.size.get(), opening).value(),
+                        "layout": FilmLayout::of(self.size.get(), &opening.rows, opening.more_waiting).value(),
                     }),
                 ],
             );
@@ -317,7 +363,19 @@ impl Inner {
         }
     }
 
-    pub(super) fn switcher_pointer(&self, message: &Value) {
+    pub(super) fn switcher_pointer(self: &std::rc::Rc<Self>, message: &Value) {
+        let Some(id) = message["opening"].as_str().and_then(|id| id.parse().ok()) else {
+            return;
+        };
+        if message["action"] == "painted" {
+            if let Phase::Showing(opening) = &mut self.switcher.borrow_mut().phase {
+                if opening.id == id {
+                    opening.painted = true;
+                }
+            }
+            self.fill_pictures(id);
+            return;
+        }
         let Some(target) = message["id"]
             .as_str()
             .and_then(|id| id.parse::<VisitId>().ok())
@@ -328,9 +386,7 @@ impl Inner {
         let Phase::Showing(opening) = &mut switcher.phase else {
             return;
         };
-        if message["opening"].as_str() != Some(opening.id.to_string().as_str())
-            || !opening.rows.iter().any(|row| row.id == target)
-        {
+        if opening.id != id || !opening.rows.iter().any(|row| row.id == target) {
             return;
         }
         match message["action"].as_str() {
@@ -416,7 +472,7 @@ const CARD_GAP: i32 = 10;
 const ROW_INSET: i32 = 6;
 
 impl FilmLayout {
-    fn of((width, height): (f64, f64), opening: &Opening) -> Self {
+    fn of((width, height): (f64, f64), rows: &[Row], more_waiting: usize) -> Self {
         let (w, h) = (width.round() as i32, height.round() as i32);
         let page_h = (h - CHROME_HEIGHT as i32).max(1);
         let picture_height = (f64::from(CARD_WIDTH * page_h) / f64::from(w.max(1)))
@@ -440,9 +496,8 @@ impl FilmLayout {
         });
         let mut x = ROW_INSET;
         let mut divider = None;
-        let has_waiting = opening.rows.iter().any(|row| row.kind == Kind::Waiting);
-        let cards: Vec<_> = opening
-            .rows
+        let has_waiting = rows.iter().any(|row| row.kind == Kind::Waiting);
+        let cards: Vec<_> = rows
             .iter()
             .map(|row| {
                 if row.kind == Kind::Read && has_waiting && divider.is_none() {
@@ -455,7 +510,7 @@ impl FilmLayout {
             })
             .collect();
         let run_w = x - CARD_GAP + ROW_INSET;
-        let more_w = if opening.more_waiting > 0 { 106 } else { 0 };
+        let more_w = if more_waiting > 0 { 106 } else { 0 };
         Self {
             backdrop: BoxPx(0, top, w, h - top),
             stage,
@@ -513,16 +568,8 @@ mod tests {
             id: ulid::Ulid::new().to_string().parse().unwrap(),
             kind: Kind::Read,
         }));
-        let opening = Opening {
-            id: 1,
-            here: Some(here),
-            selected: rows[1].id,
-            rows,
-            more_waiting: 3,
-            focus_was_in_chrome: false,
-        };
         for (w, h) in [(720, 800), (1240, 800), (1920, 800), (1240, 300)] {
-            let layout = FilmLayout::of((w.into(), h.into()), &opening);
+            let layout = FilmLayout::of((w.into(), h.into()), &rows, 3);
             let BoxPx(_, row_top, row_width, row_height) = layout.row;
             let BoxPx(_, caption_y, _, caption_h) = layout.caption;
             assert!(caption_y + caption_h <= row_top);
@@ -546,5 +593,177 @@ mod tests {
                 assert!(x >= 0 && x + sw <= w && y + sh <= caption_y);
             }
         }
+    }
+}
+
+impl Switcher {
+    fn showing(&self, id: u64) -> Option<&Opening> {
+        match &self.phase {
+            Phase::Showing(opening) if opening.id == id => Some(opening),
+            _ => None,
+        }
+    }
+}
+
+impl Opening {
+    fn next_picture(&self) -> Option<(VisitId, crate::pages::SwitcherSource)> {
+        let selected = self
+            .rows
+            .iter()
+            .position(|row| row.id == self.selected)
+            .unwrap();
+        let mut order = self.rows[selected..]
+            .iter()
+            .zip(0..)
+            .map(|(row, offset)| (offset, row))
+            .chain(
+                self.rows[..selected]
+                    .iter()
+                    .rev()
+                    .zip(1..)
+                    .map(|(row, offset)| (offset, row)),
+            )
+            .collect::<Vec<_>>();
+        order.sort_by_key(|(offset, _)| *offset);
+        order
+            .into_iter()
+            .find_map(|(_, row)| match self.pictures.get(&row.id)? {
+                Picture::Waiting(source) => Some((row.id, source.clone())),
+                _ => None,
+            })
+    }
+}
+
+impl Inner {
+    fn fill_pictures(self: &std::rc::Rc<Self>, id: u64) {
+        loop {
+            let (visit, source, sizes, bytes, cancel) = {
+                let mut switcher = self.switcher.borrow_mut();
+                if switcher.captures >= pictures::MAX_IN_FLIGHT {
+                    return;
+                }
+                let Some(opening) = switcher.showing(id).filter(|o| o.painted) else {
+                    return;
+                };
+                let Some((visit, source)) = opening.next_picture() else {
+                    return;
+                };
+                let allocation = source.allocation();
+                let (bytes, scale) = allocation.unwrap_or((0, 1));
+                if switcher.captures > 0
+                    && switcher.bytes.saturating_add(bytes) > pictures::RAW_BUDGET
+                {
+                    return;
+                }
+                let sizes = Sizes {
+                    large: opening.capture_layout.stage,
+                    thumb: (CARD_WIDTH, opening.capture_layout.picture_height),
+                    scale,
+                };
+                let Phase::Showing(opening) = &mut switcher.phase else {
+                    unreachable!();
+                };
+                if allocation.is_none() {
+                    opening.pictures.insert(visit, Picture::Unavailable);
+                    self.paint_picture(id, visit, None);
+                    continue;
+                }
+                let cancel = gio::Cancellable::new();
+                opening
+                    .pictures
+                    .insert(visit, Picture::InFlight(cancel.clone()));
+                switcher.captures += 1;
+                switcher.bytes += bytes;
+                #[cfg(feature = "gui-smoke")]
+                {
+                    switcher.snapshots += 1;
+                }
+                (visit, source, sizes, bytes, cancel)
+            };
+            let weak = self.me.clone();
+            let identity = source.clone();
+            source.snapshot(&cancel, move |surface| {
+                let Some(inner) = weak.upgrade() else {
+                    return;
+                };
+                let pixels = inner
+                    .picture_in_flight(id, visit)
+                    .then_some(surface)
+                    .flatten()
+                    .and_then(Pixels::copy);
+                let Some(pixels) = pixels else {
+                    inner.picture_finished(id, visit, bytes, None);
+                    return;
+                };
+                let worker = gio::spawn_blocking(move || pixels.encode(sizes));
+                glib::MainContext::default().spawn_local(async move {
+                    let pair = worker.await.ok().flatten();
+                    if let Some(inner) = weak.upgrade() {
+                        inner.picture_finished(
+                            id,
+                            visit,
+                            bytes,
+                            pair.filter(|_| identity.retained()),
+                        );
+                    }
+                });
+            });
+        }
+    }
+
+    fn picture_in_flight(&self, id: u64, visit: VisitId) -> bool {
+        self.switcher.borrow().showing(id).is_some_and(|opening| {
+            matches!(opening.pictures.get(&visit), Some(Picture::InFlight(_)))
+        })
+    }
+
+    fn picture_finished(
+        self: &std::rc::Rc<Self>,
+        id: u64,
+        visit: VisitId,
+        bytes: u64,
+        pair: Option<pictures::Pair>,
+    ) {
+        let mut switcher = self.switcher.borrow_mut();
+        switcher.captures -= 1;
+        switcher.bytes -= bytes;
+        let Some(opening) = (match &mut switcher.phase {
+            Phase::Showing(opening) => Some(opening),
+            _ => None,
+        }) else {
+            return;
+        };
+        let current = opening.id;
+        if id == current && matches!(opening.pictures.get(&visit), Some(Picture::InFlight(_))) {
+            self.paint_picture(id, visit, pair.as_ref());
+            opening
+                .pictures
+                .insert(visit, pair.map_or(Picture::Unavailable, Picture::Ready));
+        }
+        drop(switcher);
+        self.fill_pictures(current);
+    }
+
+    fn paint_picture(&self, opening: u64, visit: VisitId, pair: Option<&pictures::Pair>) {
+        let path = format!("canopy://localhost/switcher-image/{opening}/{visit}");
+        self.call(
+            "switcher",
+            &[
+                json!("picture"),
+                json!({
+                    "opening": opening.to_string(),
+                    "id": visit.to_string(),
+                    "thumb": pair.map(|_| format!("{path}/thumb")),
+                    "large": pair.filter(|pair| pair.has_large()).map(|_| format!("{path}/large")),
+                }),
+            ],
+        );
+    }
+}
+
+#[cfg(feature = "gui-smoke")]
+impl HtmlChrome {
+    pub fn switcher_snapshot_count(&self) -> u64 {
+        self.inner.switcher.borrow().snapshots
     }
 }

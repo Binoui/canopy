@@ -5,6 +5,8 @@ pub use blocking::BlockingView;
 pub use errand::{ErrandEnd, ErrandTicket};
 mod live;
 mod native;
+mod switcher;
+pub(crate) use switcher::SwitcherSource;
 pub(crate) mod stack;
 
 use crate::{
