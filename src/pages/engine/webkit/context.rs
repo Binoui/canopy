@@ -10,7 +10,7 @@ use crate::{
     chrome::{FaviconSource, Favicons},
     pages::engine::{
         CookieApplyError, DownloadEvent, DownloadPage, DownloadSink, Engine, EngineView, Fetched,
-        LocalFuture, ViewConfig,
+        LocalFuture, RuleStore, ViewConfig,
     },
 };
 use anyhow::{Context, Result};
@@ -88,12 +88,6 @@ impl WebKitEngine {
         });
         state.connect_downloads();
         Ok(state)
-    }
-
-    /// TEMPORARY: the WebKit context, for errand views, which still build WebKit views
-    /// themselves. Goes away once errands are made through the engine (engine layer PR 4).
-    pub(crate) fn temporary_web_context(&self) -> &webkit2gtk::WebContext {
-        &self.native
     }
 
     fn connect_downloads(self: &Rc<Self>) {
@@ -568,7 +562,7 @@ impl Engine for WebKitEngine {
         );
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+    fn open_rule_store(&self, directory: &Path) -> Rc<dyn RuleStore> {
+        super::rules::open_store(directory)
     }
 }

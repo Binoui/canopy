@@ -133,7 +133,7 @@ pub(super) fn progress_changed(weak: &Weak<NativeState>) {
 
 impl Pages {
     #[cfg(feature = "gui-smoke")]
-    pub fn foreground_loading_view(&self) -> Option<webkit2gtk::WebView> {
+    pub fn foreground_loading_view(&self) -> Option<crate::pages::engine::webkit::NativeView> {
         self.foreground_load()
             .map(|page| crate::pages::engine::webkit::webkit_view_for_tests(&*page.native).clone())
     }

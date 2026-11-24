@@ -532,6 +532,7 @@ impl LivePage {
                 world: WORLD,
             }],
             media: true,
+            media_elements: true,
             autoplay: true,
             page_cache: true,
             developer_extras: cfg!(debug_assertions),
@@ -558,9 +559,7 @@ impl LivePage {
             widget.show_all();
             widget.grab_focus();
         }
-        if let Some(signal) = context.blocking.follow(&*view) {
-            signals.push((widget.clone().upcast(), signal));
-        }
+        let on_blocking_load_changed = context.blocking.follow(&view);
         let state = Rc::new(NativeState {
             native: view.clone(),
             lifecycle: Cell::new(Lifecycle::Live),
@@ -1122,6 +1121,11 @@ impl LivePage {
                 };
                 match event {
                     ViewEvent::Load(event) => {
+                        // Blocking fits its rules to the new top site before anything else
+                        // hears the stage, as its own WebKit handler, connected first, did.
+                        if let Some(follow) = &on_blocking_load_changed {
+                            follow(event);
+                        }
                         on_load_changed(event);
                         let on_scale = scale_slot.borrow().clone();
                         if let (true, Some(on_scale)) = (attached(&weak), on_scale) {
@@ -1190,7 +1194,7 @@ impl LivePage {
                         false
                     }
                     ViewEvent::Authenticate(request) => on_authenticate(&*request),
-                    ViewEvent::Close => false,
+                    ViewEvent::Close | ViewEvent::Create | ViewEvent::ShowNotification => false,
                     ViewEvent::FoundText(count) => {
                         find::found_text(&weak, count);
                         false

@@ -843,6 +843,14 @@ impl HtmlChrome {
         self.inner.view.webview()
     }
 
+    /// Whether the chrome's own web content runs confined.
+    pub fn sandbox_enabled(&self) -> bool {
+        use webkit2gtk::{WebContextExt, WebViewExt};
+        self.native()
+            .context()
+            .is_some_and(|c| c.is_sandbox_enabled())
+    }
+
     /// The error toast lives in its own small native view. For tests.
     pub fn error_native(&self) -> Option<webkit2gtk::WebView> {
         use wry::WebViewExtUnix;

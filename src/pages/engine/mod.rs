@@ -3,7 +3,15 @@
 //! WebKitGTK is the only engine for now; it lives in `webkit`. No type from `webkit2gtk`,
 //! `javascriptcore` or `soup` appears in a signature here.
 
-use std::{any::Any, future::Future, path::PathBuf, pin::Pin, rc::Rc, rc::Weak};
+use std::{
+    any::Any,
+    future::Future,
+    path::{Path, PathBuf},
+    pin::Pin,
+    rc::Rc,
+    rc::Weak,
+    time::Duration,
+};
 
 use anyhow::Result;
 use url::Url;
@@ -24,8 +32,8 @@ pub trait DownloadSink {
 }
 
 /// The shared side of a web engine: one profile per Canopy window, made from the data folder.
-/// It owns cookies, side fetches, downloads, favicons and the sandbox flag, and it makes the
-/// views that show pages.
+/// It owns cookies, side fetches, downloads, favicons, the content rule store and the sandbox
+/// flag, and it makes the views that show pages.
 pub trait Engine {
     /// A new view showing nothing yet, set up as `config` says.
     fn create_view(&self, config: ViewConfig) -> Result<Rc<dyn EngineView>>;
@@ -65,8 +73,54 @@ pub trait Engine {
     /// Downloads started in `view` are cancelled.
     fn refuse_downloads(&self, view: &gtk::Widget);
 
-    /// For the temporary way back to the WebKit backend; see `PageContext::temporary_webkit`.
-    fn as_any(&self) -> &dyn Any;
+    /// The store of compiled content rules kept in `directory`.
+    fn open_rule_store(&self, directory: &Path) -> Rc<dyn RuleStore>;
+}
+
+/// Compiled content rules, kept on disk under an identifier each, for blocking requests and
+/// hiding page elements. Rules come as JSON in WebKit's content rule format, which `adblock`
+/// writes; an engine with another format converts them.
+pub trait RuleStore {
+    /// Opens the rule set stored as `identifier`.
+    fn load(&self, identifier: String) -> LocalFuture<Result<RuleSet>>;
+    /// Compiles `rules` and stores them as `identifier`. `call_time` learns how long the
+    /// engine's own call held the main thread.
+    fn compile(
+        &self,
+        identifier: String,
+        rules: glib::Bytes,
+        call_time: Box<dyn FnOnce(Duration)>,
+    ) -> LocalFuture<Result<RuleSet>>;
+    /// Every identifier the store holds, or `None` when it cannot list them.
+    fn identifiers(&self) -> LocalFuture<Option<Vec<String>>>;
+    /// Deletes the rule set stored as `identifier`. Failures are ignored.
+    fn remove(&self, identifier: String) -> LocalFuture<()>;
+}
+
+/// A compiled rule set, ready to apply to views. Only the engine that made it reads it.
+pub struct RuleSet(Box<dyn Any>);
+
+impl RuleSet {
+    pub fn new(native: impl Any) -> Self {
+        Self(Box::new(native))
+    }
+
+    pub fn native<T: Any>(&self) -> Option<&T> {
+        self.0.downcast_ref()
+    }
+}
+
+/// Applies rule sets to one view. It holds the view weakly and does nothing once the view is
+/// gone.
+pub trait ViewRules {
+    /// Whether the view still lives.
+    fn alive(&self) -> bool;
+    /// Whether this handle applies rules to `view`.
+    fn is_for(&self, view: &dyn EngineView) -> bool;
+    /// Starts applying `rules` to the view's next requests and pages.
+    fn add(&self, rules: &RuleSet);
+    /// Stops applying the rule set known as `identifier`.
+    fn remove(&self, identifier: &str);
 }
 
 pub type LocalFuture<T> = Pin<Box<dyn Future<Output = T>>>;
@@ -143,12 +197,15 @@ pub trait EngineView {
         done: Box<dyn FnOnce(std::result::Result<gtk::cairo::Surface, glib::Error>)>,
     );
 
+    /// A handle that applies content rule sets to this view.
+    fn rules(&self) -> Box<dyn ViewRules>;
+
     /// Where the view sends its events from now on, or `None` to stop sending them. Events
     /// arrive synchronously, while the engine is still inside the step they report, in the
     /// order the engine emits them.
     fn set_observer(&self, observer: Option<Observer>);
 
-    /// For test accessors and the temporary way back to the WebKit view.
+    /// For the engine's own code and test accessors.
     fn as_any(&self) -> &dyn Any;
 }
 
@@ -221,6 +278,10 @@ pub enum ViewEvent {
     Authenticate(Box<dyn Responder>),
     /// The page asks to close its window.
     Close,
+    /// The page asks for a new window. The engine opens none.
+    Create,
+    /// The page shows a notification. `true` keeps the engine from showing it.
+    ShowNotification,
     /// Find found `count` matches.
     FoundText(u32),
     /// Find found nothing.
@@ -470,6 +531,8 @@ pub struct ViewConfig {
     pub message_handlers: Vec<MessageHandler>,
     /// WebGL and Web Audio.
     pub media: bool,
+    /// Audio and video elements.
+    pub media_elements: bool,
     /// Media may play without a click.
     pub autoplay: bool,
     /// Pages left stay in memory for a quick return.
