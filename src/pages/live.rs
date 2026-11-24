@@ -28,6 +28,8 @@ mod login_fields;
 mod mouse;
 #[path = "page_scale.rs"]
 pub(super) mod page_scale;
+#[path = "popup.rs"]
+mod popup;
 
 use crate::{
     address::{same_resource, web_url},
@@ -1125,6 +1127,20 @@ impl LivePage {
                     }
                     Pages::enter_native(&weak).is_some_and(|state| state.decide(decision, kind))
                 }),
+            ));
+        }
+        {
+            let weak = Rc::downgrade(&state);
+            let as_page: popup::AsPage = Rc::new(move |url| {
+                if let Some(state) = Pages::enter_native(&weak) {
+                    if !state.is_background() {
+                        state.queue_child(url);
+                    }
+                }
+            });
+            signals.push((
+                native.clone().upcast(),
+                popup::follow(&native, Rc::downgrade(context), Some(as_page)),
             ));
         }
         {
@@ -2248,65 +2264,8 @@ impl NativeState {
             );
         if background && action.navigation_type() == NavigationType::LinkClicked {
             decision.ignore();
-            if !action.is_user_gesture() {
-                return true;
-            }
-            let Some(ticket) = self.ticket() else {
-                return true;
-            };
-            let source = SourceContext {
-                page_url: ticket.page_url.clone(),
-                citation_url: None,
-                link_text: String::new(),
-                excerpt: String::new(),
-            };
-            let result =
-                self.owner()
-                    .browser
-                    .borrow_mut()
-                    .queue_link(ticket.visit, url.clone(), source);
-            match result {
-                Ok(child) => {
-                    self.owner().queue_background(child);
-                    self.emit(PageEvent::Queued(child));
-                    let queued_url = url.clone();
-                    self.context(&url, move |state, context| {
-                        if !state.valid(&ticket) {
-                            return;
-                        }
-                        if let Some(source) =
-                            context.filter(|source| source.page_url == ticket.page_url)
-                        {
-                            let result = state.owner().browser.borrow_mut().source_for_document(
-                                &state.navigation.borrow(),
-                                &ticket,
-                                child,
-                                source.clone(),
-                            );
-                            match result {
-                                Ok(true) => {
-                                    state.emit(PageEvent::Changed);
-                                    state.emit(PageEvent::Waiting {
-                                        parent: ticket.visit,
-                                        label: if source.link_text.trim().is_empty() {
-                                            queued_url.to_string()
-                                        } else {
-                                            source.link_text
-                                        },
-                                    });
-                                }
-                                Ok(false) => {}
-                                Err(error) => state.emit(PageEvent::Error(error.to_string())),
-                            }
-                        } else {
-                            state.emit(PageEvent::Waiting {
-                                parent: ticket.visit,
-                                label: queued_url.to_string(),
-                            });
-                        }
-                    });
-                }
-                Err(error) => self.emit(PageEvent::Error(error.to_string())),
+            if action.is_user_gesture() {
+                self.queue_child(url);
             }
             return true;
         }
@@ -2416,6 +2375,68 @@ impl NativeState {
             self.accept_issue();
         }
         false
+    }
+
+    /// Queues `url` as a waiting child of this page's document, the way a middle-clicked link
+    /// is queued.
+    pub(super) fn queue_child(self: &Rc<Self>, url: Url) {
+        let Some(ticket) = self.ticket() else {
+            return;
+        };
+        let source = SourceContext {
+            page_url: ticket.page_url.clone(),
+            citation_url: None,
+            link_text: String::new(),
+            excerpt: String::new(),
+        };
+        let result =
+            self.owner()
+                .browser
+                .borrow_mut()
+                .queue_link(ticket.visit, url.clone(), source);
+        match result {
+            Ok(child) => {
+                self.owner().queue_background(child);
+                self.emit(PageEvent::Queued(child));
+                let queued_url = url.clone();
+                self.context(&url, move |state, context| {
+                    if !state.valid(&ticket) {
+                        return;
+                    }
+                    if let Some(source) =
+                        context.filter(|source| source.page_url == ticket.page_url)
+                    {
+                        let result = state.owner().browser.borrow_mut().source_for_document(
+                            &state.navigation.borrow(),
+                            &ticket,
+                            child,
+                            source.clone(),
+                        );
+                        match result {
+                            Ok(true) => {
+                                state.emit(PageEvent::Changed);
+                                state.emit(PageEvent::Waiting {
+                                    parent: ticket.visit,
+                                    label: if source.link_text.trim().is_empty() {
+                                        queued_url.to_string()
+                                    } else {
+                                        source.link_text
+                                    },
+                                });
+                            }
+                            Ok(false) => {}
+                            Err(error) => state.emit(PageEvent::Error(error.to_string())),
+                        }
+                    } else {
+                        state.emit(PageEvent::Waiting {
+                            parent: ticket.visit,
+                            label: queued_url.to_string(),
+                        });
+                    }
+                });
+            }
+            Err(error) => self.emit(PageEvent::Error(error.to_string())),
+        }
     }
 
     fn native_history_allowed(&self, visit: VisitId) -> bool {
