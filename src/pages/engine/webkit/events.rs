@@ -49,6 +49,13 @@ pub(super) fn connect(
         emit(&cell, ViewEvent::Close);
     }));
     let cell = observer.clone();
+    on_view(native.connect_create(move |_, _| {
+        emit(&cell, ViewEvent::Create);
+        None
+    }));
+    let cell = observer.clone();
+    on_view(native.connect_show_notification(move |_, _| emit(&cell, ViewEvent::ShowNotification)));
+    let cell = observer.clone();
     on_view(native.connect_script_dialog(move |_, dialog| {
         emit(
             &cell,

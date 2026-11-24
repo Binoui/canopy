@@ -16,10 +16,13 @@ use webkit2gtk::{
     WebViewSessionState,
 };
 
-use super::events::{self, ObserverCell};
+use super::{
+    events::{self, ObserverCell},
+    rules::ContentRules,
+};
 use crate::pages::engine::{
     EngineView, EntryId, Frames, History, HistoryItem, Observer, ScriptDone, ScriptTime,
-    ViewConfig, World,
+    ViewConfig, ViewRules, World,
 };
 
 pub(crate) struct WebKitView {
@@ -69,6 +72,7 @@ impl WebKitView {
         let settings = WebViewExt::settings(&native).context("Page settings are unavailable.")?;
         settings.set_enable_webgl(config.media);
         settings.set_enable_webaudio(config.media);
+        settings.set_enable_media(config.media_elements);
         settings.set_enable_back_forward_navigation_gestures(false);
         settings.set_enable_page_cache(config.page_cache);
         settings.set_user_agent(None);
@@ -154,24 +158,22 @@ pub(super) fn history_item(item: &BackForwardListItem) -> HistoryItem {
     }
 }
 
-/// TEMPORARY: the WebKit view behind `view`, for content blocking only, until engine layer
-/// PR 4 puts blocking behind the engine's rule store.
-pub(crate) fn temporary_webkit_view(view: &dyn EngineView) -> &webkit2gtk::WebView {
-    webkit_view(view)
-}
-
 /// The WebKit view behind `view`, for the GUI tests.
 #[cfg(feature = "gui-smoke")]
 pub(crate) fn webkit_view_for_tests(view: &dyn EngineView) -> &webkit2gtk::WebView {
-    webkit_view(view)
-}
-
-fn webkit_view(view: &dyn EngineView) -> &webkit2gtk::WebView {
     &view
         .as_any()
         .downcast_ref::<WebKitView>()
         .expect("WebKit is the only engine")
         .native
+}
+
+/// The user content manager of `view`, when it is a WebKit view.
+pub(super) fn content_manager(view: &dyn EngineView) -> Option<webkit2gtk::UserContentManager> {
+    view.as_any()
+        .downcast_ref::<WebKitView>()?
+        .native
+        .user_content_manager()
 }
 
 impl EngineView for WebKitView {
@@ -337,6 +339,10 @@ impl EngineView for WebKitView {
     ) {
         self.native
             .snapshot(SnapshotRegion::Visible, SnapshotOptions::NONE, cancel, done);
+    }
+
+    fn rules(&self) -> Box<dyn ViewRules> {
+        Box::new(ContentRules(self.manager.downgrade()))
     }
 
     fn set_observer(&self, observer: Option<Observer>) {

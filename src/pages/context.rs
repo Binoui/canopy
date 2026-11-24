@@ -30,8 +30,8 @@ impl PageContext {
     pub fn new(data_dir: &Path) -> Result<Rc<Self>> {
         let engine: Rc<dyn Engine> = WebKitEngine::new(data_dir)?;
         let state = Rc::new_cyclic(|weak: &Weak<Self>| Self {
+            blocking: Rc::new(Blocking::new(data_dir, weak.clone(), engine.clone())),
             engine,
-            blocking: Rc::new(Blocking::new(data_dir, weak.clone())),
             record: RefCell::new(None),
             observer: RefCell::new(None),
         });
@@ -42,15 +42,6 @@ impl PageContext {
 
     pub(super) fn engine(&self) -> &Rc<dyn Engine> {
         &self.engine
-    }
-
-    /// TEMPORARY: the WebKit backend itself, for errand views, which still create WebKit
-    /// views directly. Goes away once errands are made through the engine (engine layer PR 4).
-    pub(super) fn temporary_webkit(&self) -> &WebKitEngine {
-        self.engine
-            .as_any()
-            .downcast_ref()
-            .expect("WebKit is the only engine")
     }
 
     pub fn favicons(&self) -> Rc<Favicons> {

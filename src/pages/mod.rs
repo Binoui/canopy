@@ -198,7 +198,7 @@ enum StartPage {
 
 type Observer = Rc<dyn Fn(PageEvent)>;
 #[cfg(feature = "gui-smoke")]
-type PlacementObserver = Rc<dyn Fn(&webkit2gtk::WebView)>;
+type PlacementObserver = Rc<dyn Fn(&engine::webkit::NativeView)>;
 
 pub(crate) type DismissCompletion = Box<dyn FnOnce(Result<ForestProjection>)>;
 
@@ -1151,7 +1151,7 @@ impl Pages {
     }
 
     #[cfg(feature = "gui-smoke")]
-    pub fn background_view(&self, visit: VisitId) -> Option<webkit2gtk::WebView> {
+    pub fn background_view(&self, visit: VisitId) -> Option<engine::webkit::NativeView> {
         self.branches
             .background
             .borrow()
@@ -2836,7 +2836,7 @@ impl Pages {
         if view.is_mapped() {
             let observer = self.placement_observer.borrow().clone();
             if let (Some(observer), Some(view)) =
-                (observer, view.downcast_ref::<webkit2gtk::WebView>())
+                (observer, view.downcast_ref::<engine::webkit::NativeView>())
             {
                 observer(view);
             }
@@ -2910,7 +2910,7 @@ impl Pages {
     }
 
     #[cfg(feature = "gui-smoke")]
-    pub fn observe_page_placement(&self, observer: impl Fn(&webkit2gtk::WebView) + 'static) {
+    pub fn observe_page_placement(&self, observer: impl Fn(&engine::webkit::NativeView) + 'static) {
         *self.placement_observer.borrow_mut() = Some(Rc::new(observer));
     }
 
@@ -3159,7 +3159,7 @@ impl Pages {
 #[cfg(feature = "gui-smoke")]
 pub struct SelectedPage<'a> {
     pages: &'a Pages,
-    pub native: webkit2gtk::WebView,
+    pub native: engine::webkit::NativeView,
 }
 #[cfg(feature = "gui-smoke")]
 impl SelectedPage<'_> {

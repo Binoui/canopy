@@ -63,10 +63,13 @@ It uses a private runtime folder, keeps temporary build files in `.cache/tmp`, a
 
 ## Where things live
 
+Only `src/pages/engine/webkit/`, `src/chrome/` (the chrome's own WebKit view) and `src/lib.rs` (environment variables) may name the engine crates `webkit2gtk`, `javascriptcore` and `soup`. The rest of `src/` reaches the engine through `src/pages/engine/`, so another engine can sit beside WebKit. `tests/engine_boundary.rs`, part of `cargo test --locked`, fails when another file names one. Test-only accessors that hand the GUI suites the WebKit view use the backend's `NativeView` alias.
+
 | Path | What it holds |
 | --- | --- |
 | `src/browser.rs`, `src/browser/` | The forest: visits, trees, bookmarks, history and saved text, in SQLite. The only writer of the database. |
 | `src/pages/` | The web views that show pages, one per live branch, and what Canopy reads from them. |
+| `src/pages/engine/` | The web engine behind the pages, in engine-neutral types: the shared profile (`Engine`), each view (`EngineView`), its events (`ViewEvent`) and the content rule store. WebKitGTK lives in `src/pages/engine/webkit/`. |
 | `src/chrome/` | The chrome, drawn in HTML over the page: tabs, strip, palette, cards, new-tree page, forest view. |
 | `src/ui/` | The window, the keyboard shortcuts and the glue between pages and chrome. |
 | `src/suggest.rs`, `src/naming.rs` | Suggestions from your history, and automatic tree names. |

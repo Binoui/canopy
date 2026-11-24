@@ -6,12 +6,14 @@ use std::{
     time::Duration,
 };
 use url::Url;
-use webkit2gtk::{
-    AuthenticationRequestExt, FileChooserRequestExt, PermissionRequestExt, PolicyDecisionExt,
-    ResponsePolicyDecisionExt, SettingsExt, URIRequestExt, URIResponseExt, WebViewExt,
-};
 
-use super::context::PageContext;
+use super::{
+    context::PageContext,
+    engine::{
+        EngineView, LoadEvent, LoadFailureKind, Observer, PolicyDecisionType, ScriptDialogType,
+        ViewConfig, ViewEvent,
+    },
+};
 
 thread_local! {
     static BUSY: Cell<usize> = const { Cell::new(0) };
@@ -64,14 +66,13 @@ struct Queued {
 
 struct Running {
     id: u64,
-    view: webkit2gtk::WebView,
+    view: Rc<dyn EngineView>,
     origin: url::Origin,
     linger: Duration,
     stage: Cell<Stage>,
     /// The page replaced its own load. That load's end is not the document's.
     superseded: Cell<bool>,
     timer: RefCell<Option<glib::SourceId>>,
-    signals: Vec<glib::SignalHandlerId>,
     done: Option<Done>,
 }
 
@@ -84,14 +85,12 @@ enum Stage {
 
 impl Drop for Running {
     fn drop(&mut self) {
-        for signal in self.signals.drain(..) {
-            self.view.disconnect(signal);
-        }
+        self.view.set_observer(None);
         if let Some(timer) = self.timer.borrow_mut().take() {
             timer.remove();
         }
         self.view.stop_loading();
-        unsafe { self.view.destroy() };
+        unsafe { self.view.widget().destroy() };
     }
 }
 
@@ -141,145 +140,146 @@ impl Errands {
             return;
         };
         let url = queued.url.clone();
-        let running = self.open(queued);
-        let view = running.view.clone();
+        let view = match self.context.engine().create_view(ViewConfig {
+            scripts: Vec::new(),
+            message_handlers: Vec::new(),
+            media: false,
+            media_elements: false,
+            autoplay: false,
+            page_cache: false,
+            developer_extras: false,
+        }) {
+            Ok(view) => view,
+            Err(_) => {
+                // The engine could not make a view: the errand fails once this call returns.
+                eprintln!("Canopy: could not open an errand page.");
+                let weak = self.me.clone();
+                glib::idle_add_local_once(move || {
+                    (queued.done)(ErrandEnd::Failed);
+                    if let Some(owner) = weak.upgrade() {
+                        owner.pump();
+                    }
+                });
+                return;
+            }
+        };
+        let running = self.open(queued, view.clone());
         BUSY.with(|n| n.set(n.get() + 1));
         *self.running.borrow_mut() = Some(running);
         self.generation.set(self.generation.get() + 1);
         view.load_uri(url.as_str());
     }
 
-    fn open(&self, queued: Queued) -> Running {
+    fn open(&self, queued: Queued, view: Rc<dyn EngineView>) -> Running {
         let id = queued.id;
-        let settings = webkit2gtk::Settings::new();
-        settings.set_user_agent(None);
-        settings.set_enable_webgl(false);
-        settings.set_enable_webaudio(false);
-        settings.set_enable_media(false);
-        settings.set_enable_page_cache(false);
-        settings.set_enable_developer_extras(false);
-        let view = webkit2gtk::WebView::builder()
-            .web_context(self.context.temporary_webkit().temporary_web_context())
-            .user_content_manager(&webkit2gtk::UserContentManager::new())
-            .settings(&settings)
-            .is_controlled_by_automation(false)
-            .build();
-        view.set_is_muted(true);
-        self.context.engine().refuse_downloads(view.upcast_ref());
-        let mut signals = vec![
-            view.connect_create(|_, _| None),
-            view.connect_close(|_| {}),
-            view.connect_script_dialog(|_, dialog| {
+        view.set_muted(true);
+        self.context.engine().refuse_downloads(view.widget());
+        let weak = self.me.clone();
+        let page = Rc::downgrade(&view);
+        let observer: Observer = Rc::new(move |event| match event {
+            ViewEvent::ScriptDialog(dialog) => {
                 if matches!(
                     dialog.dialog_type(),
-                    webkit2gtk::ScriptDialogType::Confirm
-                        | webkit2gtk::ScriptDialogType::BeforeUnloadConfirm
+                    ScriptDialogType::Confirm | ScriptDialogType::BeforeUnloadConfirm
                 ) {
                     dialog.confirm_set_confirmed(false);
                 }
                 true
-            }),
-            view.connect_permission_request(|_, request| {
-                request.deny();
-                true
-            }),
-            view.connect_show_notification(|_, _| true),
-            view.connect_run_file_chooser(|_, request| {
-                request.cancel();
-                true
-            }),
-            view.connect_enter_fullscreen(|_| true),
-            view.connect_print(|_, _| true),
-        ];
-        let weak = self.me.clone();
-        signals.push(view.connect_decide_policy(move |_, decision, kind| {
-            if kind == webkit2gtk::PolicyDecisionType::NewWindowAction {
-                decision.ignore();
-                return true;
             }
-            let Some(response) = decision.downcast_ref::<webkit2gtk::ResponsePolicyDecision>()
-            else {
-                return false;
-            };
-            let Some(owner) = weak.upgrade() else {
-                decision.ignore();
-                return true;
-            };
-            let main = response.is_main_frame_main_resource();
-            let strayed = main
-                && !response
-                    .request()
-                    .and_then(|r| r.uri())
-                    .is_some_and(|uri| owner.stays(id, &uri));
-            let attachment = response
-                .response()
-                .and_then(|r| r.http_headers())
-                .and_then(|h| h.content_disposition())
-                .is_some_and(|(d, _)| d.eq_ignore_ascii_case("attachment"));
-            if strayed || !response.is_mime_type_supported() || attachment {
-                decision.ignore();
-                if main {
-                    owner.end(
-                        id,
-                        if strayed {
-                            ErrandEnd::Strayed
-                        } else {
-                            ErrandEnd::Failed
-                        },
-                    );
+            ViewEvent::PermissionRequest(request) | ViewEvent::FileChooser(request) => {
+                request.refuse();
+                true
+            }
+            ViewEvent::ShowNotification | ViewEvent::EnterFullscreen | ViewEvent::Print => true,
+            ViewEvent::Decide(decision, kind) => {
+                if kind == PolicyDecisionType::NewWindowAction {
+                    decision.ignore();
+                    return true;
                 }
-                return true;
+                let Some(response) = decision.response() else {
+                    return false;
+                };
+                let Some(owner) = weak.upgrade() else {
+                    decision.ignore();
+                    return true;
+                };
+                let main = response.is_main_frame_main_resource();
+                let strayed = main
+                    && !response
+                        .request()
+                        .and_then(|r| r.uri())
+                        .is_some_and(|uri| owner.stays(id, &uri));
+                let attachment = response
+                    .response()
+                    .and_then(|r| r.content_disposition())
+                    .is_some_and(|d| d.eq_ignore_ascii_case("attachment"));
+                if strayed || !response.is_mime_type_supported() || attachment {
+                    decision.ignore();
+                    if main {
+                        owner.end(
+                            id,
+                            if strayed {
+                                ErrandEnd::Strayed
+                            } else {
+                                ErrandEnd::Failed
+                            },
+                        );
+                    }
+                    return true;
+                }
+                false
             }
-            false
-        }));
-        let weak = self.me.clone();
-        signals.push(view.connect_load_changed(move |view, event| {
-            let Some(owner) = weak.upgrade() else { return };
-            if matches!(
-                event,
-                webkit2gtk::LoadEvent::Committed | webkit2gtk::LoadEvent::Finished
-            ) && !view.uri().is_some_and(|uri| owner.stays(id, &uri))
-            {
-                owner.end(id, ErrandEnd::Strayed);
-            } else if event == webkit2gtk::LoadEvent::Started {
-                owner.superseded(id, false);
-            } else if event == webkit2gtk::LoadEvent::Finished && !owner.superseded(id, false) {
-                owner.loaded(id);
+            ViewEvent::Load(event) => {
+                let Some(owner) = weak.upgrade() else {
+                    return false;
+                };
+                let uri = page.upgrade().and_then(|view| view.uri());
+                if matches!(event, LoadEvent::Committed | LoadEvent::Finished)
+                    && !uri.is_some_and(|uri| owner.stays(id, &uri))
+                {
+                    owner.end(id, ErrandEnd::Strayed);
+                } else if event == LoadEvent::Started {
+                    owner.superseded(id, false);
+                } else if event == LoadEvent::Finished && !owner.superseded(id, false) {
+                    owner.loaded(id);
+                }
+                false
             }
-        }));
-        let weak = self.me.clone();
-        signals.push(view.connect_load_failed(move |_, _, _, error| {
-            if let Some(owner) = weak.upgrade() {
-                // A page that navigates from script before its first load ends cancels that load.
-                if error.matches(webkit2gtk::NetworkError::Cancelled) {
-                    owner.superseded(id, true);
-                } else {
+            ViewEvent::LoadFailed(failure) => {
+                if let Some(owner) = weak.upgrade() {
+                    // A page that navigates from script before its first load ends cancels
+                    // that load.
+                    if failure.kind == LoadFailureKind::Cancelled {
+                        owner.superseded(id, true);
+                    } else {
+                        owner.load_failed(id);
+                    }
+                }
+                true
+            }
+            ViewEvent::LoadFailedWithTlsErrors => {
+                if let Some(owner) = weak.upgrade() {
                     owner.load_failed(id);
                 }
+                true
             }
-            true
-        }));
-        let weak = self.me.clone();
-        signals.push(view.connect_load_failed_with_tls_errors(move |_, _, _, _| {
-            if let Some(owner) = weak.upgrade() {
-                owner.load_failed(id);
+            ViewEvent::WebProcessTerminated => {
+                if let Some(owner) = weak.upgrade() {
+                    owner.end(id, ErrandEnd::Failed);
+                }
+                false
             }
-            true
-        }));
-        let weak = self.me.clone();
-        signals.push(view.connect_web_process_terminated(move |_, _| {
-            if let Some(owner) = weak.upgrade() {
-                owner.end(id, ErrandEnd::Failed);
+            ViewEvent::Authenticate(request) => {
+                request.refuse();
+                if let Some(owner) = weak.upgrade() {
+                    owner.end(id, ErrandEnd::Failed);
+                }
+                true
             }
-        }));
-        let weak = self.me.clone();
-        signals.push(view.connect_authenticate(move |_, request| {
-            request.cancel();
-            if let Some(owner) = weak.upgrade() {
-                owner.end(id, ErrandEnd::Failed);
-            }
-            true
-        }));
+            // New windows are refused: the engine opens none. The rest needs no answer.
+            _ => false,
+        });
+        view.set_observer(Some(observer));
         let weak = self.me.clone();
         let timer = glib::timeout_add_local_once(self.load_limit.get(), move || {
             if let Some(owner) = weak.upgrade() {
@@ -291,13 +291,12 @@ impl Errands {
         });
         Running {
             id,
-            view: view.clone(),
+            view,
             origin: queued.url.origin(),
             linger: queued.linger,
             stage: Cell::new(Stage::Loading),
             superseded: Cell::new(false),
             timer: RefCell::new(Some(timer)),
-            signals,
             done: Some(queued.done),
         }
     }

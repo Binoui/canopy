@@ -1,5 +1,4 @@
 mod lists;
-mod webkit;
 
 use std::{
     cell::{Cell, OnceCell, RefCell},
@@ -11,10 +10,8 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use glib::prelude::ObjectExt;
 use serde_json::{json, Value};
 use url::Url;
-use webkit2gtk::{LoadEvent, UserContentManager, WebView, WebViewExt};
 
 use crate::{
     address::{web_url, WebOrigin},
@@ -23,11 +20,10 @@ use crate::{
 
 use super::{
     context::PageContext,
-    engine::{webkit::temporary_webkit_view, EngineView},
+    engine::{Engine, EngineView, LoadEvent, RuleSet, RuleStore, ViewRules},
     PageEvent,
 };
 use lists::{Manifest, Record, Source};
-use webkit::{Filter, FilterStore};
 
 const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 const START_WAIT: Duration = Duration::from_secs(1);
@@ -35,11 +31,12 @@ const MAX_LIST_BYTES: usize = 16 * 1024 * 1024;
 
 pub(super) struct Blocking {
     context: Weak<PageContext>,
+    engine: Rc<dyn Engine>,
     folder: PathBuf,
     settings_file: PathBuf,
     settings: RefCell<Settings>,
     sources: Vec<Source>,
-    store: OnceCell<FilterStore>,
+    store: OnceCell<Rc<dyn RuleStore>>,
     activity: RefCell<Activity>,
     start_gate: RefCell<Option<glib::SourceId>>,
     compiled: RefCell<BTreeMap<String, Installed>>,
@@ -116,11 +113,11 @@ enum Activity {
 
 struct Installed {
     record: Record,
-    filter: Filter,
+    rules: RuleSet,
 }
 
 struct Followed {
-    manager: glib::WeakRef<UserContentManager>,
+    rules: Box<dyn ViewRules>,
     top: TopSite,
     holds: Vec<String>,
 }
@@ -168,10 +165,11 @@ impl TopSite {
 }
 
 impl Blocking {
-    pub(super) fn new(data_dir: &Path, context: Weak<PageContext>) -> Self {
+    pub(super) fn new(data_dir: &Path, context: Weak<PageContext>, engine: Rc<dyn Engine>) -> Self {
         let settings_file = data_dir.join("content-blocking");
         Self {
             context,
+            engine,
             folder: data_dir.join("blocklists"),
             settings: RefCell::new(Settings::load(&settings_file)),
             settings_file,
@@ -203,7 +201,7 @@ impl Blocking {
         }
         let store = self
             .store
-            .get_or_init(|| FilterStore::new(&self.folder.join("compiled")))
+            .get_or_init(|| self.engine.open_rule_store(&self.folder.join("compiled")))
             .clone();
         let manifest = Manifest::load(&self.folder);
         let records: Vec<_> = self
@@ -228,8 +226,8 @@ impl Blocking {
             let mut loaded = BTreeMap::new();
             for (id, record) in records {
                 match store.load(record.identifier.clone()).await {
-                    Ok(filter) => {
-                        loaded.insert(id, Installed { record, filter });
+                    Ok(rules) => {
+                        loaded.insert(id, Installed { record, rules });
                     }
                     Err(error) => eprintln!("Canopy: could not open stored list {id}: {error}"),
                 }
@@ -366,28 +364,29 @@ impl Blocking {
         }
     }
 
-    /// Fits blocking to `view`'s top site as it loads. The returned handler, connected on
-    /// the view's widget, keeps doing that until it is disconnected.
-    pub(super) fn follow(self: &Rc<Self>, view: &dyn EngineView) -> Option<glib::SignalHandlerId> {
+    /// Fits blocking to `view`'s top site as it loads. The returned hook must hear every load
+    /// stage of the view before anything else hears it, and keeps fitting while it does.
+    pub(super) fn follow(
+        self: &Rc<Self>,
+        view: &Rc<dyn EngineView>,
+    ) -> Option<impl Fn(LoadEvent) + 'static> {
         if self.sources.is_empty() {
             return None;
         }
-        // Still WebKit's own signal and filter list, until engine layer PR 4.
-        let view = temporary_webkit_view(view);
-        let manager = &view.user_content_manager()?;
         let mut page = Followed {
-            manager: manager.downgrade(),
+            rules: view.rules(),
             top: TopSite::default(),
             holds: Vec::new(),
         };
-        self.fit(&mut page, manager);
+        self.fit(&mut page);
         let mut pages = self.pages.borrow_mut();
-        pages.retain(|page| page.manager.upgrade().is_some());
+        pages.retain(|page| page.rules.alive());
         pages.push(page);
         drop(pages);
         let weak = Rc::downgrade(self);
-        Some(view.connect_load_changed(move |view, event| {
-            let Some(blocking) = weak.upgrade() else {
+        let view = Rc::downgrade(view);
+        Some(move |event| {
+            let (Some(blocking), Some(view)) = (weak.upgrade(), view.upgrade()) else {
                 return;
             };
             let report = match event {
@@ -402,53 +401,49 @@ impl Blocking {
                     view.uri().and_then(|uri| web_url(&uri).ok()).as_ref(),
                 )),
                 LoadEvent::Finished => Top::Ended,
-                _ => return,
             };
-            blocking.report_top(view, report);
-        }))
+            blocking.report_top(&*view, report);
+        })
     }
 
     pub(super) fn loading(&self, view: &dyn EngineView, url: Option<&Url>) {
         if !self.sources.is_empty() {
-            self.report_top(temporary_webkit_view(view), Top::Loading(Site::of(url)));
+            self.report_top(view, Top::Loading(Site::of(url)));
         }
     }
 
     pub(super) fn hold_navigation(&self, view: &dyn EngineView) {
-        self.report_top(temporary_webkit_view(view), Top::Ended);
+        self.report_top(view, Top::Ended);
     }
 
-    fn report_top(&self, view: &WebView, top: Top) {
-        let Some(manager) = view.user_content_manager() else {
-            return;
-        };
+    fn report_top(&self, view: &dyn EngineView, top: Top) {
         if let Some(page) = self
             .pages
             .borrow_mut()
             .iter_mut()
-            .find(|page| page.manager.upgrade().as_ref() == Some(&manager))
+            .find(|page| page.rules.is_for(view))
         {
             page.top.report(top);
-            self.fit(page, &manager);
+            self.fit(page);
         }
     }
 
-    fn fit(&self, page: &mut Followed, manager: &UserContentManager) {
+    fn fit(&self, page: &mut Followed) {
         let compiled = self.compiled.borrow();
         let enabled = wanted(
             &self.settings.borrow(),
             !compiled.is_empty(),
             page.top.effective(),
         );
-        refit_page(enabled.then_some(&*compiled), page, manager);
+        refit_page(enabled.then_some(&*compiled), page);
     }
 
     fn refit(&self) {
         self.pages.borrow_mut().retain_mut(|page| {
-            let Some(manager) = page.manager.upgrade() else {
+            if !page.rules.alive() {
                 return false;
-            };
-            self.fit(page, &manager);
+            }
+            self.fit(page);
             true
         });
     }
@@ -603,11 +598,7 @@ fn wanted(settings: &Settings, available: bool, site: &Site) -> bool {
         && !matches!(site, Site::Web(origin) if settings.unblocked.contains(origin))
 }
 
-fn refit_page(
-    compiled: Option<&BTreeMap<String, Installed>>,
-    page: &mut Followed,
-    manager: &UserContentManager,
-) {
+fn refit_page(compiled: Option<&BTreeMap<String, Installed>>, page: &mut Followed) {
     let filters = compiled.into_iter().flat_map(BTreeMap::values);
     let wanted = filters.clone().map(|item| &item.record.identifier);
     if page.holds.iter().eq(wanted.clone()) {
@@ -615,12 +606,12 @@ fn refit_page(
     }
     for item in filters {
         if !page.holds.contains(&item.record.identifier) {
-            item.filter.attach(manager);
+            page.rules.add(&item.rules);
         }
     }
     for identifier in &page.holds {
         if !wanted.clone().any(|next| next == identifier) {
-            webkit::detach(manager, identifier);
+            page.rules.remove(identifier);
         }
     }
     page.holds = wanted.cloned().collect();
@@ -649,7 +640,7 @@ struct Report {
 async fn refresh(
     context: &Weak<PageContext>,
     folder: &Path,
-    store: &FilterStore,
+    store: &Rc<dyn RuleStore>,
     source: &Source,
     pauses: &PauseMeter,
 ) -> Result<Refreshed> {
@@ -697,21 +688,21 @@ async fn refresh(
     .context("Could not prepare the list")?;
     let compile_started = Instant::now();
     let sampled = pauses.sample.clone();
-    let filter = store
-        .save(
+    let rules = store
+        .compile(
             identifier.clone(),
             glib::Bytes::from_owned(converted.json),
-            move |call| {
+            Box::new(move |call| {
                 sampled.compile_call.set(call);
                 sampled.excluded.set(sampled.excluded.get() + call);
-            },
+            }),
         )
         .await
         .context("Could not compile the list")?;
     Ok(Refreshed {
         installed: Installed {
             record: Record::new(identifier, SystemTime::now()),
-            filter,
+            rules,
         },
         source_file,
         report: Report {
