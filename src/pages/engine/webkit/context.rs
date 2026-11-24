@@ -1,37 +1,50 @@
 use std::{
     cell::{OnceCell, RefCell},
     path::{Path, PathBuf},
-    rc::Rc,
+    rc::{Rc, Weak},
 };
 
-use crate::{address::web_url, browser::VisitId, chrome::Favicons};
+use crate::{
+    address::web_url,
+    browser::VisitId,
+    chrome::{FaviconSource, Favicons},
+    pages::engine::{
+        CookieApplyError, DownloadEvent, DownloadPage, DownloadSink, Engine, Fetched, LocalFuture,
+    },
+};
 use anyhow::{Context, Result};
 use gtk::prelude::*;
 use url::Url;
-use webkit2gtk::{DownloadExt, URIRequestExt, WebContextExt, WebViewExt};
-
-use super::{blocking::Blocking, PageEvent};
-type Observer = RefCell<Option<Rc<dyn Fn(PageEvent)>>>;
-type RecordDownload = dyn Fn(VisitId, &Path, u64, Option<&Url>) -> Result<()>;
-type PageLookup = Box<dyn Fn(Option<&Url>) -> Result<Option<VisitId>>>;
+use webkit2gtk::{DownloadExt, FaviconDatabaseExt, URIRequestExt, WebContextExt, WebViewExt};
 
 struct DownloadSource {
-    view: glib::WeakRef<webkit2gtk::WebView>,
-    page: PageLookup,
+    view: glib::WeakRef<gtk::Widget>,
+    page: DownloadPage,
 }
 
-pub struct PageContext {
-    pub(crate) native: webkit2gtk::WebContext,
-    pub favicons: Rc<Favicons>,
-    pub(super) blocking: Rc<Blocking>,
-    record: RefCell<Option<Rc<RecordDownload>>>,
-    observer: Observer,
+/// The WebKitGTK profile: one `WebContext` with its website data in `<data>/profile`.
+pub(crate) struct WebKitEngine {
+    native: webkit2gtk::WebContext,
+    favicons: Rc<Favicons>,
+    sink: RefCell<Option<Weak<dyn DownloadSink>>>,
     sources: RefCell<Vec<DownloadSource>>,
     session: OnceCell<soup::Session>,
 }
 
-impl PageContext {
-    pub fn new(data_dir: &Path) -> Result<Rc<Self>> {
+/// WebKit's favicon database, read for `Favicons`.
+struct FaviconDatabase(webkit2gtk::FaviconDatabase);
+
+impl FaviconSource for FaviconDatabase {
+    fn load(&self, url: &str, done: Box<dyn FnOnce(Option<gtk::cairo::Surface>)>) {
+        self.0
+            .favicon(url, None::<&gio::Cancellable>, move |result| {
+                done(result.ok())
+            });
+    }
+}
+
+impl WebKitEngine {
+    pub(crate) fn new(data_dir: &Path) -> Result<Rc<Self>> {
         let profile = data_dir.join("profile");
         std::fs::create_dir_all(&profile)?;
         use webkit2gtk::{
@@ -58,17 +71,29 @@ impl PageContext {
         let database = context
             .favicon_database()
             .context("The favicon database is unavailable.")?;
-        let state = Rc::new_cyclic(|weak| Self {
+        let favicons = Favicons::new(Box::new(FaviconDatabase(database.clone())));
+        let weak = Rc::downgrade(&favicons);
+        database.connect_favicon_changed(move |_, uri, _| {
+            if let Some(favicons) = weak.upgrade() {
+                favicons.changed(uri);
+            }
+        });
+        let state = Rc::new(Self {
             native: context,
-            blocking: Rc::new(Blocking::new(data_dir, weak.clone())),
-            favicons: Favicons::new(&database),
-            record: RefCell::new(None),
-            observer: RefCell::new(None),
+            favicons,
+            sink: RefCell::new(None),
             sources: RefCell::new(Vec::new()),
             session: OnceCell::new(),
         });
         state.connect_downloads();
         Ok(state)
+    }
+
+    /// TEMPORARY: the WebKit context, for code that still builds WebKit views itself. Goes
+    /// away once views are made through the engine (engine layer PR 2 for pages, PR 4 for
+    /// errands).
+    pub(crate) fn temporary_web_context(&self) -> &webkit2gtk::WebContext {
+        &self.native
     }
 
     fn connect_downloads(self: &Rc<Self>) {
@@ -77,11 +102,14 @@ impl PageContext {
             let Some(context) = weak.upgrade() else {
                 return;
             };
+            let Some(sink) = context.sink.borrow().as_ref().and_then(Weak::upgrade) else {
+                return;
+            };
             let source = download
                 .request()
                 .and_then(|r| r.uri())
                 .and_then(|uri| web_url(&uri).ok());
-            let view = download.web_view();
+            let view = download.web_view().map(|view| view.upcast::<gtk::Widget>());
             let page = context
                 .sources
                 .borrow()
@@ -94,81 +122,20 @@ impl PageContext {
                 })
                 .map(|entry| (entry.page)(source.as_ref()));
             match page.transpose() {
-                Ok(page) => save(download, context, page.flatten()),
+                Ok(page) => save(download, sink, page.flatten()),
                 Err(_) => download.cancel(),
             }
         });
     }
 
-    pub(crate) fn register_view(
-        &self,
-        view: &webkit2gtk::WebView,
-        page: impl Fn(Option<&Url>) -> Result<Option<VisitId>> + 'static,
-    ) -> glib::SignalHandlerId {
+    fn add_source(&self, view: &gtk::Widget, page: DownloadPage) {
         let mut sources = self.sources.borrow_mut();
         sources.retain(|entry| entry.view.upgrade().is_some());
         sources.push(DownloadSource {
             view: view.downgrade(),
-            page: Box::new(page),
-        });
-        drop(sources);
-        let weak = Rc::downgrade(&self.favicons);
-        view.connect_favicon_notify(move |page| {
-            let Some(favicons) = weak.upgrade() else {
-                return;
-            };
-            if let (Some(uri), Some(surface)) = (page.uri(), page.favicon()) {
-                favicons.store(uri.to_string(), Some(&surface));
-            }
-        })
-    }
-
-    pub(super) fn refuse_downloads(&self, view: &webkit2gtk::WebView) {
-        let mut sources = self.sources.borrow_mut();
-        sources.retain(|entry| entry.view.upgrade().is_some());
-        sources.push(DownloadSource {
-            view: view.downgrade(),
-            page: Box::new(|_| anyhow::bail!("An errand cannot download.")),
+            page,
         });
     }
-
-    pub fn observe(&self, callback: impl Fn(PageEvent) + 'static) {
-        *self.observer.borrow_mut() = Some(Rc::new(callback));
-    }
-
-    pub(super) fn emit(&self, event: PageEvent) {
-        let observer = self.observer.borrow().clone();
-        if let Some(observer) = observer {
-            observer(event);
-        }
-    }
-
-    pub(super) fn record_downloads(
-        &self,
-        record: impl Fn(VisitId, &Path, u64, Option<&Url>) -> Result<()> + 'static,
-    ) {
-        *self.record.borrow_mut() = Some(Rc::new(record));
-    }
-
-    fn remember_download(&self, page: VisitId, path: &Path, source: Option<&Url>) -> Result<()> {
-        let size = std::fs::metadata(path)?.len();
-        let record = self
-            .record
-            .borrow()
-            .clone()
-            .context("Download writer is unavailable.")?;
-        record(page, path, size, source)
-    }
-}
-
-pub enum DownloadEvent {
-    /// Carries the file name the download asks for. The saved name can differ.
-    Started(String),
-    Saved(PathBuf),
-    Failed {
-        name: Option<String>,
-        reason: String,
-    },
 }
 
 /// One download's progress through WebKit's signals, which end with `finished` either way.
@@ -187,7 +154,7 @@ enum Transfer {
 
 /// Saves `download` in the user's download folder, notes it on the page it came from and
 /// reports it. WebKit's default would trust the server's file name.
-fn save(download: &webkit2gtk::Download, state: Rc<PageContext>, page: Option<VisitId>) {
+fn save(download: &webkit2gtk::Download, sink: Rc<dyn DownloadSink>, page: Option<VisitId>) {
     let transfer = Rc::new(RefCell::new(Transfer::Deciding));
     let source = download
         .request()
@@ -195,9 +162,10 @@ fn save(download: &webkit2gtk::Download, state: Rc<PageContext>, page: Option<Vi
         .and_then(|uri| web_url(&uri).ok());
     {
         let transfer = transfer.clone();
-        let state = state.clone();
+        let sink = sink.clone();
+        let source = source.clone();
         let emit = move |event| {
-            state.emit(PageEvent::Download(event));
+            sink.download(event, page, source.as_ref());
         };
         download.connect_decide_destination(move |download, suggested| {
             let name = crate::download::file_name(suggested);
@@ -251,15 +219,7 @@ fn save(download: &webkit2gtk::Download, state: Rc<PageContext>, page: Option<Vi
             Transfer::Failed { name, reason } => DownloadEvent::Failed { name, reason },
             Transfer::Deciding | Transfer::Over => return,
         };
-        if let (DownloadEvent::Saved(path), Some(page)) = (&event, page) {
-            match state.remember_download(page, path, source.as_ref()) {
-                Ok(()) => state.emit(PageEvent::Changed),
-                Err(error) => state.emit(PageEvent::Error(format!(
-                    "The file was saved, but could not be added to its page. {error}"
-                ))),
-            }
-        }
-        state.emit(PageEvent::Download(event));
+        sink.download(event, page, source.as_ref());
     });
 }
 
@@ -282,20 +242,11 @@ fn download_directory() -> PathBuf {
         .unwrap_or_else(|| glib::home_dir().join("Downloads"))
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct CookieApplyError;
-impl std::fmt::Display for CookieApplyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Could not add imported cookies.")
-    }
-}
-impl std::error::Error for CookieApplyError {}
-
-impl PageContext {
-    pub fn apply_cookie_batches(
+impl WebKitEngine {
+    fn apply_cookie_batches(
         &self,
         batches: Vec<crate::cookies::Batch>,
-        done: impl FnOnce(std::result::Result<usize, CookieApplyError>) + 'static,
+        done: Box<dyn FnOnce(std::result::Result<usize, CookieApplyError>)>,
     ) {
         use webkit2gtk::WebsiteDataManagerExt;
         let manager = self
@@ -311,7 +262,7 @@ impl PageContext {
             batches: batches.into(),
             current: None,
             count: 0,
-            done: Box::new(done),
+            done,
         }
         .advance();
     }
@@ -393,24 +344,15 @@ fn soup_cookie(
     Ok(native)
 }
 
-/// An HTTP answer kept outside WebKit's page cache. Redirects are returned unfollowed.
-pub struct Fetched {
-    pub status: u16,
-    pub location: Option<String>,
-    pub body: Vec<u8>,
-}
-
-impl Fetched {
-    fn from_message(message: &soup::Message, body: Vec<u8>) -> Self {
-        use glib::translate::IntoGlib;
-        Self {
-            status: message.status().into_glib() as u16,
-            location: message
-                .response_headers()
-                .and_then(|h| h.one("Location"))
-                .map(|s| s.to_string()),
-            body,
-        }
+fn fetched(message: &soup::Message, body: Vec<u8>) -> Fetched {
+    use glib::translate::IntoGlib;
+    Fetched {
+        status: message.status().into_glib() as u16,
+        location: message
+            .response_headers()
+            .and_then(|h| h.one("Location"))
+            .map(|s| s.to_string()),
+        body,
     }
 }
 
@@ -436,7 +378,7 @@ impl Fetch {
     }
 }
 
-impl PageContext {
+impl WebKitEngine {
     fn fetch_session(&self) -> &soup::Session {
         use soup::prelude::SessionExt;
         use webkit2gtk::SettingsExt;
@@ -448,6 +390,7 @@ impl PageContext {
                 .borrow()
                 .iter()
                 .filter_map(|s| s.view.upgrade())
+                .filter_map(|v| v.downcast::<webkit2gtk::WebView>().ok())
                 .find_map(|v| WebViewExt::settings(&v))
                 .unwrap_or_default();
             if let Some(agent) = settings.user_agent() {
@@ -457,7 +400,7 @@ impl PageContext {
         })
     }
 
-    pub(super) fn fetch_without_cookies(
+    fn fetch_without_cookies(
         &self,
         url: &Url,
         limit: usize,
@@ -482,7 +425,7 @@ impl PageContext {
                         .read_bytes_future((limit + 1 - body.len()).min(8192), priority)
                         .await?;
                     if chunk.is_empty() {
-                        return Ok(Fetched::from_message(&message, body));
+                        return Ok(fetched(&message, body));
                     }
                     anyhow::ensure!(
                         body.len() + chunk.len() <= limit,
@@ -497,11 +440,11 @@ impl PageContext {
 
     /// Reads live cookies for this URL, including HttpOnly cookies. The callback runs once,
     /// after this call returns, within 30 seconds including the cookie lookup.
-    pub fn fetch(
+    fn fetch(
         &self,
         url: &Url,
         cancel: Option<&gio::Cancellable>,
-        done: impl FnOnce(Result<Fetched>) + 'static,
+        done: Box<dyn FnOnce(Result<Fetched>)>,
     ) {
         use gio::prelude::CancellableExt;
         use soup::prelude::SessionExt;
@@ -509,7 +452,7 @@ impl PageContext {
 
         let session = self.fetch_session().clone();
         let fetch = Rc::new(Fetch {
-            done: RefCell::new(Some(Box::new(done))),
+            done: RefCell::new(Some(done)),
             timer: RefCell::new(None),
             cancel: cancel.cloned().unwrap_or_default(),
         });
@@ -566,12 +509,62 @@ impl PageContext {
                     Some(&cancel),
                     move |body| {
                         fetch.finish(
-                            body.map(|body| Fetched::from_message(&response, body.to_vec()))
+                            body.map(|body| fetched(&response, body.to_vec()))
                                 .map_err(Into::into),
                         );
                     },
                 );
             });
         });
+    }
+}
+
+impl Engine for WebKitEngine {
+    fn favicons(&self) -> Rc<Favicons> {
+        self.favicons.clone()
+    }
+
+    fn sandbox_enabled(&self) -> bool {
+        self.native.is_sandbox_enabled()
+    }
+
+    fn apply_cookie_batches(
+        &self,
+        batches: Vec<crate::cookies::Batch>,
+        done: Box<dyn FnOnce(std::result::Result<usize, CookieApplyError>)>,
+    ) {
+        WebKitEngine::apply_cookie_batches(self, batches, done);
+    }
+
+    fn fetch(
+        &self,
+        url: &Url,
+        cancel: Option<&gio::Cancellable>,
+        done: Box<dyn FnOnce(Result<Fetched>)>,
+    ) {
+        WebKitEngine::fetch(self, url, cancel, done);
+    }
+
+    fn fetch_without_cookies(&self, url: &Url, limit: usize) -> LocalFuture<Result<Fetched>> {
+        Box::pin(WebKitEngine::fetch_without_cookies(self, url, limit))
+    }
+
+    fn report_downloads(&self, sink: Weak<dyn DownloadSink>) {
+        *self.sink.borrow_mut() = Some(sink);
+    }
+
+    fn attribute_downloads(&self, view: &gtk::Widget, page: DownloadPage) {
+        self.add_source(view, page);
+    }
+
+    fn refuse_downloads(&self, view: &gtk::Widget) {
+        self.add_source(
+            view,
+            Box::new(|_| anyhow::bail!("An errand cannot download.")),
+        );
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }

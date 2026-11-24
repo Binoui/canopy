@@ -21,7 +21,7 @@ use crate::{
     browser::Document,
 };
 
-use super::{native::PageContext, PageEvent};
+use super::{context::PageContext, PageEvent};
 use lists::{Manifest, Record, Source};
 use webkit::{Filter, FilterStore};
 

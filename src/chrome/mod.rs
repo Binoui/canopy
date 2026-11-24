@@ -45,7 +45,7 @@ use wry::{
     Rect, WebView, WebViewBuilder,
 };
 
-pub use favicon::Favicons;
+pub use favicon::{FaviconSource, Favicons};
 use palette::{Group, PaletteItem};
 use sender_logos::SenderLogos;
 

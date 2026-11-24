@@ -1221,7 +1221,8 @@ fn page_views_have_no_paint_handlers() -> Result<()> {
     let source = concat!(
         include_str!("../src/pages/mod.rs"),
         include_str!("../src/pages/live.rs"),
-        include_str!("../src/pages/native.rs")
+        include_str!("../src/pages/context.rs"),
+        include_str!("../src/pages/engine/webkit/context.rs")
     );
     assert!(
         !source.contains("connect_draw")

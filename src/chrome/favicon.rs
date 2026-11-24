@@ -5,7 +5,6 @@ use std::{
 };
 
 use gtk::{cairo, gdk, gdk_pixbuf::Pixbuf};
-use webkit2gtk::FaviconDatabaseExt;
 
 const PAGE_LIMIT: usize = 512;
 const HOST_LIMIT: usize = 256;
@@ -13,11 +12,18 @@ const STORED: i32 = 32;
 
 type ChangeHandler = Box<dyn Fn(&str, u64)>;
 
-/// Page icons from WebKit's own favicon database, in a bounded cache keyed by page URL, as
+/// Where icons come from: the page engine's own favicon store.
+pub trait FaviconSource {
+    /// Looks up the icon stored for the page at `url` and calls `done` once, later, with it
+    /// or with `None`.
+    fn load(&self, url: &str, done: Box<dyn FnOnce(Option<cairo::Surface>)>);
+}
+
+/// Page icons from the engine's own favicon store, in a bounded cache keyed by page URL, as
 /// PNG bytes for the chrome view. A queued page is never fetched: it borrows an icon already
 /// seen on its host, or the view draws a monogram.
 pub struct Favicons {
-    database: webkit2gtk::FaviconDatabase,
+    source: Box<dyn FaviconSource>,
     pages: RefCell<Bounded<String, Option<Rc<[u8]>>>>,
     hosts: RefCell<Bounded<String, Rc<[u8]>>>,
     requested: RefCell<HashSet<String>>,
@@ -26,23 +32,21 @@ pub struct Favicons {
 }
 
 impl Favicons {
-    pub fn new(database: &webkit2gtk::FaviconDatabase) -> Rc<Self> {
-        let favicons = Rc::new(Self {
-            database: database.clone(),
+    pub fn new(source: Box<dyn FaviconSource>) -> Rc<Self> {
+        Rc::new(Self {
+            source,
             pages: RefCell::new(Bounded::new(PAGE_LIMIT)),
             hosts: RefCell::new(Bounded::new(HOST_LIMIT)),
             requested: RefCell::new(HashSet::new()),
             revision: Cell::new(0),
             on_change: RefCell::new(None),
-        });
-        let weak = Rc::downgrade(&favicons);
-        database.connect_favicon_changed(move |_, uri, _| {
-            if let Some(favicons) = weak.upgrade() {
-                favicons.requested.borrow_mut().remove(uri);
-                favicons.request(uri.to_owned());
-            }
-        });
-        favicons
+        })
+    }
+
+    /// The engine's stored icon for the page at `url` changed: read it again.
+    pub(crate) fn changed(self: &Rc<Self>, url: &str) {
+        self.requested.borrow_mut().remove(url);
+        self.request(url.to_owned());
     }
 
     /// Called with the new revision whenever a newly known icon could change what is drawn.
@@ -75,12 +79,14 @@ impl Favicons {
             return;
         }
         let weak = Rc::downgrade(self);
-        self.database
-            .favicon(&url.clone(), None::<&gio::Cancellable>, move |result| {
+        self.source.load(
+            &url.clone(),
+            Box::new(move |surface| {
                 if let Some(favicons) = weak.upgrade() {
-                    favicons.store(url, result.ok().as_ref());
+                    favicons.store(url, surface.as_ref());
                 }
-            });
+            }),
+        );
     }
 
     pub(crate) fn store(&self, url: String, surface: Option<&cairo::Surface>) {

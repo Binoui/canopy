@@ -247,7 +247,7 @@ impl LivePage {
     pub(super) fn empty(
         container: &gtk::Fixed,
         pages: Weak<Pages>,
-        context: &Rc<super::native::PageContext>,
+        context: &Rc<super::context::PageContext>,
     ) -> Result<Self> {
         Self::build(container, pages, context, InitialPage::Session)
     }
@@ -493,7 +493,7 @@ impl LivePage {
     pub fn new(
         container: &gtk::Fixed,
         pages: Weak<Pages>,
-        context: &Rc<super::native::PageContext>,
+        context: &Rc<super::context::PageContext>,
     ) -> Result<Self> {
         Self::build(container, pages, context, InitialPage::Home)
     }
@@ -501,7 +501,7 @@ impl LivePage {
     fn build(
         container: &gtk::Fixed,
         pages: Weak<Pages>,
-        context: &Rc<crate::pages::native::PageContext>,
+        context: &Rc<crate::pages::context::PageContext>,
         initial: InitialPage,
     ) -> Result<Self> {
         use webkit2gtk::{InputMethodContextExt, SettingsExt};
@@ -523,7 +523,7 @@ impl LivePage {
             &[],
         ));
         let native = webkit2gtk::WebView::builder()
-            .web_context(&context.native)
+            .web_context(context.temporary_webkit().temporary_web_context())
             .user_content_manager(&manager)
             .is_controlled_by_automation(false)
             .website_policies(
@@ -1160,30 +1160,42 @@ impl LivePage {
             ));
         }
         let weak = Rc::downgrade(&state);
-        let favicon = context.register_view(&native, move |source| {
-            Pages::enter_native(&weak)
-                .map(|state| {
-                    if state.is_background() {
-                        state.emit(PageEvent::Error(String::new()));
-                        return Err(anyhow::anyhow!("Never-seen page download refused"));
-                    }
-                    let page = state.download_page(source);
-                    if let Some(ticket) = state.download_handover.take() {
-                        let generation = state.load_generation.get();
-                        let weak = Rc::downgrade(&state);
-                        glib::idle_add_local_once(move || {
-                            if let Some(state) = Pages::enter_native(&weak) {
-                                if state.load_generation.get() == generation
-                                    && ticket.is_latest(&state.navigation.borrow())
-                                {
-                                    state.emit(PageEvent::Loading(false));
+        context.engine().attribute_downloads(
+            native.upcast_ref(),
+            Box::new(move |source| {
+                Pages::enter_native(&weak)
+                    .map(|state| {
+                        if state.is_background() {
+                            state.emit(PageEvent::Error(String::new()));
+                            return Err(anyhow::anyhow!("Never-seen page download refused"));
+                        }
+                        let page = state.download_page(source);
+                        if let Some(ticket) = state.download_handover.take() {
+                            let generation = state.load_generation.get();
+                            let weak = Rc::downgrade(&state);
+                            glib::idle_add_local_once(move || {
+                                if let Some(state) = Pages::enter_native(&weak) {
+                                    if state.load_generation.get() == generation
+                                        && ticket.is_latest(&state.navigation.borrow())
+                                    {
+                                        state.emit(PageEvent::Loading(false));
+                                    }
                                 }
-                            }
-                        });
-                    }
-                    Ok(page)
-                })
-                .unwrap_or_else(|| Err(anyhow::anyhow!("Page destroyed")))
+                            });
+                        }
+                        Ok(page)
+                    })
+                    .unwrap_or_else(|| Err(anyhow::anyhow!("Page destroyed")))
+            }),
+        );
+        let favicons = Rc::downgrade(&context.favicons());
+        let favicon = native.connect_favicon_notify(move |page| {
+            let Some(favicons) = favicons.upgrade() else {
+                return;
+            };
+            if let (Some(uri), Some(surface)) = (page.uri(), page.favicon()) {
+                favicons.store(uri.to_string(), Some(&surface));
+            }
         });
         signals.push((native.clone().upcast(), favicon));
         state.owner().register_view(&native);
@@ -1387,7 +1399,7 @@ impl LivePage {
     pub(super) fn revive(
         container: &gtk::Fixed,
         pages: Weak<Pages>,
-        context: &Rc<super::native::PageContext>,
+        context: &Rc<super::context::PageContext>,
         saved: &Checkpoint,
         visit: VisitId,
     ) -> Result<(Self, Revival)> {

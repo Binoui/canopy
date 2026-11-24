@@ -1,10 +1,11 @@
-pub use native::Fetched;
+pub use engine::Fetched;
 mod blocking;
+mod context;
+mod engine;
 mod errand;
 pub use blocking::BlockingView;
 pub use errand::{ErrandEnd, ErrandTicket};
 mod live;
-mod native;
 mod switcher;
 pub(crate) use switcher::SwitcherSource;
 pub(crate) mod stack;
@@ -21,6 +22,7 @@ use crate::{
     secret::Secret,
 };
 use anyhow::Result;
+pub use engine::{CookieApplyError, DownloadEvent};
 use gtk::prelude::*;
 pub use live::find::{
     FindAction, FindClose, FindId, FindMatches, FindReadout, FindTarget, FindUpdate,
@@ -28,7 +30,6 @@ pub use live::find::{
 pub use live::loading::{LoadProgress, LoadStatus, LoadingReadout, Progress};
 pub use live::page_scale::{PageScaleAction, PageScaleReadout};
 use live::LivePage;
-pub use native::{CookieApplyError, DownloadEvent};
 use std::{
     cell::{Cell, RefCell},
     path::Path,
@@ -318,7 +319,7 @@ impl Drop for MemoryDrop {
 pub struct Pages {
     me: Weak<Pages>,
     browser: RefCell<Browser>,
-    context: Rc<native::PageContext>,
+    context: Rc<context::PageContext>,
     errands: Rc<errand::Errands>,
     branches: Branches,
     container: gtk::Fixed,
@@ -357,7 +358,7 @@ pub struct Pages {
 
 impl Pages {
     pub fn mount(container: &gtk::Fixed, browser: Browser, data_dir: &Path) -> Result<Rc<Self>> {
-        let context = native::PageContext::new(data_dir)?;
+        let context = context::PageContext::new(data_dir)?;
         let budget = crate::budget::Budget::of_machine()?;
         let pages = Rc::new_cyclic(|me| Self {
             me: me.clone(),
@@ -482,7 +483,7 @@ impl Pages {
         cancel: Option<&gio::Cancellable>,
         done: impl FnOnce(Result<Fetched>) + 'static,
     ) {
-        self.context.fetch(url, cancel, done);
+        self.context.engine().fetch(url, cancel, Box::new(done));
     }
 
     pub(crate) async fn fetch_without_cookies(&self, url: &Url, limit: usize) -> Result<Fetched> {
@@ -516,12 +517,11 @@ impl Pages {
     }
 
     pub fn favicons(&self) -> Rc<Favicons> {
-        self.context.favicons.clone()
+        self.context.favicons()
     }
 
     pub fn sandbox_enabled(&self) -> bool {
-        use webkit2gtk::WebContextExt;
-        self.context.native.is_sandbox_enabled()
+        self.context.engine().sandbox_enabled()
     }
 
     pub fn observe(&self, callback: impl Fn(PageEvent) + 'static) {
@@ -2985,7 +2985,9 @@ impl Pages {
         batches: Vec<crate::cookies::Batch>,
         done: impl FnOnce(std::result::Result<usize, CookieApplyError>) + 'static,
     ) {
-        self.context.apply_cookie_batches(batches, done);
+        self.context
+            .engine()
+            .apply_cookie_batches(batches, Box::new(done));
     }
     // The per-branch PR calls the checkpoint lifecycle.
     #[cfg_attr(not(feature = "gui-smoke"), allow(dead_code))]
