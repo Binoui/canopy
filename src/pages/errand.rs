@@ -11,7 +11,7 @@ use webkit2gtk::{
     ResponsePolicyDecisionExt, SettingsExt, URIRequestExt, URIResponseExt, WebViewExt,
 };
 
-use super::native::PageContext;
+use super::context::PageContext;
 
 thread_local! {
     static BUSY: Cell<usize> = const { Cell::new(0) };
@@ -159,13 +159,13 @@ impl Errands {
         settings.set_enable_page_cache(false);
         settings.set_enable_developer_extras(false);
         let view = webkit2gtk::WebView::builder()
-            .web_context(&self.context.native)
+            .web_context(self.context.temporary_webkit().temporary_web_context())
             .user_content_manager(&webkit2gtk::UserContentManager::new())
             .settings(&settings)
             .is_controlled_by_automation(false)
             .build();
         view.set_is_muted(true);
-        self.context.refuse_downloads(&view);
+        self.context.engine().refuse_downloads(view.upcast_ref());
         let mut signals = vec![
             view.connect_create(|_, _| None),
             view.connect_close(|_| {}),
