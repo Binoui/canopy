@@ -42,7 +42,7 @@ pub(super) fn configure(config: &mut ViewConfig) {
 }
 
 /// Hears the helper's messages. Messages to other names are not the helper's.
-pub(super) fn message(weak: &Weak<NativeState>, name: &str, body: Option<String>) {
+pub(super) fn message(weak: &Weak<NativeState>, name: &str, body: Option<Zeroizing<String>>) {
     match name {
         CHANGED => {
             if let Some(state) = Pages::enter_native(weak) {
@@ -51,7 +51,7 @@ pub(super) fn message(weak: &Weak<NativeState>, name: &str, body: Option<String>
         }
         SENT => {
             if let (Some(state), Some(value)) = (Pages::enter_native(weak), body) {
-                state.login_sent(&Zeroizing::new(value));
+                state.login_sent(&value);
             }
         }
         _ => {}

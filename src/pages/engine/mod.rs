@@ -196,10 +196,11 @@ pub enum ViewEvent {
     /// The main frame's main resource sent a new request, after a redirect.
     MainRequestSent(Request),
     /// A script posted a message to a handler named in `ViewConfig::message_handlers`.
-    /// `body` is the message's value as text.
+    /// `body` is the message's value as text. It can hold a password, so it is wiped when
+    /// dropped, whoever drops it.
     ScriptMessage {
         name: String,
-        body: Option<String>,
+        body: Option<zeroize::Zeroizing<String>>,
     },
     /// The page opens an alert, confirm, prompt or leave-page question. `true` keeps the
     /// engine's own dialog away.
@@ -290,6 +291,8 @@ pub trait Decide {
 #[derive(Clone)]
 pub struct PolicyDecision {
     answer: Rc<dyn Decide>,
+    /// Shared by clones: only the first answer reaches the engine, as WebKit itself does.
+    answered: Rc<std::cell::Cell<bool>>,
     navigation_action: Option<NavigationAction>,
     response: Option<ResponseDetails>,
 }
@@ -302,21 +305,33 @@ impl PolicyDecision {
     ) -> Self {
         Self {
             answer,
+            answered: Rc::new(std::cell::Cell::new(false)),
             navigation_action,
             response,
         }
     }
 
+    /// Whether this is the first answer. Later answers are dropped.
+    fn first_answer(&self) -> bool {
+        !self.answered.replace(true)
+    }
+
     pub fn use_(&self) {
-        self.answer.use_();
+        if self.first_answer() {
+            self.answer.use_();
+        }
     }
 
     pub fn ignore(&self) {
-        self.answer.ignore();
+        if self.first_answer() {
+            self.answer.ignore();
+        }
     }
 
     pub fn download(&self) {
-        self.answer.download();
+        if self.first_answer() {
+            self.answer.download();
+        }
     }
 
     /// What a navigation or new-window decision asks for.
@@ -558,4 +573,35 @@ pub struct Fetched {
     pub status: u16,
     pub location: Option<String>,
     pub body: Vec<u8>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct Recorder(RefCell<Vec<&'static str>>);
+
+    impl Decide for Recorder {
+        fn use_(&self) {
+            self.0.borrow_mut().push("use");
+        }
+        fn ignore(&self) {
+            self.0.borrow_mut().push("ignore");
+        }
+        fn download(&self) {
+            self.0.borrow_mut().push("download");
+        }
+    }
+
+    #[test]
+    fn only_the_first_answer_of_a_decision_reaches_the_engine() {
+        let recorder = Rc::new(Recorder(RefCell::new(Vec::new())));
+        let decision = PolicyDecision::new(recorder.clone(), None, None);
+        let kept = decision.clone();
+        decision.ignore();
+        kept.use_();
+        kept.download();
+        assert_eq!(*recorder.0.borrow(), vec!["ignore"]);
+    }
 }

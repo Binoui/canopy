@@ -91,7 +91,9 @@ pub(super) fn connect(
     for &name in message_names {
         let cell = observer.clone();
         let id = manager.connect_script_message_received(Some(name), move |_, message| {
-            let body = message.js_value().map(|value| value.to_str().to_string());
+            let body = message
+                .js_value()
+                .map(|value| zeroize::Zeroizing::new(value.to_str().to_string()));
             emit(
                 &cell,
                 ViewEvent::ScriptMessage {

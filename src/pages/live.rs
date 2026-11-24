@@ -72,6 +72,9 @@ pub(super) enum Revival {
     Cold,
 }
 
+/// The page-size handler for load events, which joins the observer once the view is placed.
+type ScaleLoadHandler = Rc<dyn Fn(LoadEvent)>;
+
 enum InitialPage {
     Home,
     Session,
@@ -711,7 +714,7 @@ impl LivePage {
         };
         let on_scrolled = {
             let weak = Rc::downgrade(&state);
-            move |body: Option<String>| {
+            move |body: Option<zeroize::Zeroizing<String>>| {
                 if let (Some(state), Some(value)) = (Pages::enter_native(&weak), body) {
                     state.scrolled(&value);
                 }
@@ -1104,15 +1107,15 @@ impl LivePage {
                     favicons.store(uri.to_string(), Some(&surface));
                 }
             };
-        state.owner().register_view(widget);
-        let (scale_signals, on_scale_load_changed) = page_scale::setup(&state);
-        signals.extend(scale_signals);
+        // The page-size handler joins after the view is placed, as its WebKit signal did.
+        let scale_slot: Rc<RefCell<Option<ScaleLoadHandler>>> = Rc::default();
         // One observer hears every event of the view and runs the handlers above, as their
         // WebKit signals did. Handlers that shared a WebKit signal run in the order they were
         // connected, and stop once the page lets the view go, as disconnected handlers did.
         let observer: Observer = {
             let weak = Rc::downgrade(&state);
             let view = widget.downgrade();
+            let scale_slot = scale_slot.clone();
             Rc::new(move |event| {
                 let Some(view) = view.upgrade() else {
                     return false;
@@ -1120,8 +1123,9 @@ impl LivePage {
                 match event {
                     ViewEvent::Load(event) => {
                         on_load_changed(event);
-                        if attached(&weak) {
-                            on_scale_load_changed(event);
+                        let on_scale = scale_slot.borrow().clone();
+                        if let (true, Some(on_scale)) = (attached(&weak), on_scale) {
+                            on_scale(event);
                         }
                         false
                     }
@@ -1198,7 +1202,13 @@ impl LivePage {
                 }
             })
         };
+        // Installed before the view is placed: placing it can already report a load, which
+        // the page's own handlers heard when they were WebKit signals.
         view.set_observer(Some(observer));
+        state.owner().register_view(widget);
+        let (scale_signals, on_scale_load_changed) = page_scale::setup(&state);
+        signals.extend(scale_signals);
+        *scale_slot.borrow_mut() = Some(Rc::new(on_scale_load_changed));
         Ok(Self {
             last_shown: Cell::new(0),
             native: view.clone(),
