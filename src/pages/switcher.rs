@@ -1,7 +1,6 @@
 use std::rc::{Rc, Weak};
 
 use gtk::prelude::*;
-use webkit2gtk::{SnapshotOptions, SnapshotRegion, WebViewExt};
 
 use crate::browser::VisitId;
 
@@ -61,9 +60,9 @@ impl SwitcherSource {
 
     pub(crate) fn allocation(&self) -> Option<(u64, i32)> {
         let page = self.page()?;
-        let native = &page.native;
-        let scale = native.scale_factor();
-        let rect = native.allocation();
+        let widget = page.native.widget();
+        let scale = widget.scale_factor();
+        let rect = widget.allocation();
         let bytes = u64::try_from(rect.width()).ok()?
             * u64::try_from(rect.height()).ok()?
             * (scale as u64).pow(2)
@@ -82,12 +81,10 @@ impl SwitcherSource {
         };
         let source = self.clone();
         page.native.snapshot(
-            SnapshotRegion::Visible,
-            SnapshotOptions::NONE,
             Some(cancel),
-            move |result| {
+            Box::new(move |result| {
                 done(result.ok().filter(|_| source.retained()));
-            },
+            }),
         );
     }
 }

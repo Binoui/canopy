@@ -7,17 +7,17 @@ use anyhow::{anyhow, Result};
 use javascriptcore::ValueExt;
 use serde_json::Value;
 use url::Url;
-use webkit2gtk::{
-    UserContentInjectedFrames, UserContentManager, UserContentManagerExt, UserScript,
-    UserScriptInjectionTime,
-};
+use webkit2gtk::{UserContentManager, UserContentManagerExt};
 use zeroize::Zeroizing;
 
 use super::{LivePage, NativeState, WORLD};
 use crate::{
     address::WebOrigin,
     logins::Login,
-    pages::{LoginEvent, PageEvent, Pages},
+    pages::{
+        engine::{Frames, MessageHandler, ScriptTime, UserScript, ViewConfig},
+        LoginEvent, PageEvent, Pages,
+    },
     secret::Secret,
 };
 
@@ -29,20 +29,25 @@ const SENT: &str = "canopyLoginSent";
 
 /// Adds the helper to the page's isolated world. Only the top frame gets it: a login is
 /// never offered to, or filled into, an embedded frame.
+pub(super) fn configure(config: &mut ViewConfig) {
+    config.scripts.push(UserScript {
+        source: HELPER,
+        world: WORLD,
+        frames: Frames::Top,
+        time: ScriptTime::DocumentStart,
+    });
+    for name in [CHANGED, SENT] {
+        config
+            .message_handlers
+            .push(MessageHandler { name, world: WORLD });
+    }
+}
+
+/// Hears the helper's messages.
 pub(super) fn setup(
     manager: &UserContentManager,
     state: &Rc<NativeState>,
 ) -> [glib::SignalHandlerId; 2] {
-    manager.add_script(&UserScript::for_world(
-        HELPER,
-        UserContentInjectedFrames::TopFrame,
-        UserScriptInjectionTime::Start,
-        WORLD,
-        &[],
-        &[],
-    ));
-    manager.register_script_message_handler_in_world(CHANGED, WORLD);
-    manager.register_script_message_handler_in_world(SENT, WORLD);
     let weak = Rc::downgrade(state);
     let changed = manager.connect_script_message_received(Some(CHANGED), move |_, _| {
         if let Some(state) = Pages::enter_native(&weak) {
