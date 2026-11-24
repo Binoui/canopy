@@ -9,7 +9,8 @@ use crate::{
     browser::VisitId,
     chrome::{FaviconSource, Favicons},
     pages::engine::{
-        CookieApplyError, DownloadEvent, DownloadPage, DownloadSink, Engine, Fetched, LocalFuture,
+        CookieApplyError, DownloadEvent, DownloadPage, DownloadSink, Engine, EngineView, Fetched,
+        LocalFuture, ViewConfig,
     },
 };
 use anyhow::{Context, Result};
@@ -89,9 +90,8 @@ impl WebKitEngine {
         Ok(state)
     }
 
-    /// TEMPORARY: the WebKit context, for code that still builds WebKit views itself. Goes
-    /// away once views are made through the engine (engine layer PR 2 for pages, PR 4 for
-    /// errands).
+    /// TEMPORARY: the WebKit context, for errand views, which still build WebKit views
+    /// themselves. Goes away once errands are made through the engine (engine layer PR 4).
     pub(crate) fn temporary_web_context(&self) -> &webkit2gtk::WebContext {
         &self.native
     }
@@ -520,6 +520,10 @@ impl WebKitEngine {
 }
 
 impl Engine for WebKitEngine {
+    fn create_view(&self, config: ViewConfig) -> Result<Rc<dyn EngineView>> {
+        Ok(super::view::WebKitView::new(&self.native, config)?)
+    }
+
     fn favicons(&self) -> Rc<Favicons> {
         self.favicons.clone()
     }

@@ -7,11 +7,14 @@ use gtk::{
     gdk::{EventButton, EventMask, ModifierType},
     prelude::*,
 };
-use javascriptcore::ValueExt;
-use webkit2gtk::{SettingsExt, WebView, WebViewExt};
+use webkit2gtk::WebView;
 
+use crate::pages::engine::{EngineView, World};
+
+/// `webview` is `view`'s WebKit view, whose signals this connects until engine layer PR 3.
 pub(super) fn setup(
     webview: &WebView,
+    view: std::rc::Weak<dyn EngineView>,
     pages: std::rc::Weak<super::super::Pages>,
 ) -> Vec<glib::SignalHandlerId> {
     webview.add_events(EventMask::BUTTON1_MOTION_MASK | EventMask::BUTTON_PRESS_MASK);
@@ -19,30 +22,34 @@ pub(super) fn setup(
     let bf_state = BackForwardState(Rc::new(RefCell::new(0)));
 
     let bf_state_c = bf_state.clone();
-    let press = webview.connect_button_press_event(move |webview, event| {
+    let press_view = view.clone();
+    let press = webview.connect_button_press_event(move |_, event| {
         let mut inhibit = false;
+        let webview = press_view.upgrade();
         match event.button() {
             8 => {
                 inhibit = true;
                 bf_state_c.set(BACK);
-                webview.evaluate_javascript(
-                    &create_js_mouse_event(webview, event, true, &bf_state_c),
-                    None,
-                    None,
-                    None::<&gtk::gio::Cancellable>,
-                    |_| {},
-                );
+                if let Some(webview) = webview {
+                    webview.evaluate(
+                        &create_js_mouse_event(&*webview, event, true, &bf_state_c),
+                        World::Page,
+                        None,
+                        None,
+                    );
+                }
             }
             9 => {
                 inhibit = true;
                 bf_state_c.set(FORWARD);
-                webview.evaluate_javascript(
-                    &create_js_mouse_event(webview, event, true, &bf_state_c),
-                    None,
-                    None,
-                    None::<&gtk::gio::Cancellable>,
-                    |_| {},
-                );
+                if let Some(webview) = webview {
+                    webview.evaluate(
+                        &create_js_mouse_event(&*webview, event, true, &bf_state_c),
+                        World::Page,
+                        None,
+                        None,
+                    );
+                }
             }
             _ => {}
         }
@@ -55,20 +62,23 @@ pub(super) fn setup(
     });
 
     let bf_state_c = bf_state.clone();
-    let release = webview.connect_button_release_event(move |webview, event| {
+    let release = webview.connect_button_release_event(move |_, event| {
         let mut inhibit = false;
+        let webview = view.upgrade();
         match event.button() {
             8 => {
                 inhibit = true;
                 bf_state_c.remove(BACK);
                 let pages = pages.clone();
-                webview.evaluate_javascript(
-                    &create_js_mouse_event(webview, event, false, &bf_state_c),
+                let Some(webview) = webview else {
+                    return gtk::glib::Propagation::Stop;
+                };
+                webview.evaluate(
+                    &create_js_mouse_event(&*webview, event, false, &bf_state_c),
+                    World::Page,
                     None,
-                    None,
-                    None::<&gtk::gio::Cancellable>,
-                    move |result| {
-                        if result.is_ok_and(|value| value.to_str().as_str() == "true") {
+                    Some(Box::new(move |result| {
+                        if result.is_ok_and(|value| value.as_str() == "true") {
                             if let Some(pages) = pages.upgrade() {
                                 if let Err(error) = pages.go(super::super::Go::Parent) {
                                     pages
@@ -76,20 +86,22 @@ pub(super) fn setup(
                                 }
                             }
                         }
-                    },
+                    })),
                 );
             }
             9 => {
                 inhibit = true;
                 bf_state_c.remove(FORWARD);
                 let pages = pages.clone();
-                webview.evaluate_javascript(
-                    &create_js_mouse_event(webview, event, false, &bf_state_c),
+                let Some(webview) = webview else {
+                    return gtk::glib::Propagation::Stop;
+                };
+                webview.evaluate(
+                    &create_js_mouse_event(&*webview, event, false, &bf_state_c),
+                    World::Page,
                     None,
-                    None,
-                    None::<&gtk::gio::Cancellable>,
-                    move |result| {
-                        if result.is_ok_and(|value| value.to_str().as_str() == "true") {
+                    Some(Box::new(move |result| {
+                        if result.is_ok_and(|value| value.as_str() == "true") {
                             if let Some(pages) = pages.upgrade() {
                                 if let Err(error) = pages.go(super::super::Go::Forward) {
                                     pages
@@ -97,7 +109,7 @@ pub(super) fn setup(
                                 }
                             }
                         }
-                    },
+                    })),
                 );
             }
             _ => {}
@@ -112,7 +124,7 @@ pub(super) fn setup(
 }
 
 fn create_js_mouse_event(
-    webview: &WebView,
+    webview: &dyn EngineView,
     event: &EventButton,
     pressed: bool,
     state: &BackForwardState,
@@ -121,10 +133,10 @@ fn create_js_mouse_event(
     let button = if event.button() == 8 { 3 } else { 4 };
     // The page's own coordinates: CSS pixels. A page zoom scales CSS pixels
     // against the widget's, so a point read off the widget alone can stand
-    // past the page's edge, where `elementFromPoint` finds nothing.
-    let text_only = WebViewExt::settings(webview).is_some_and(|s| s.is_zoom_text_only());
-    let zoom = match webview.zoom_level() {
-        zoom if zoom > 0.0 && !text_only => zoom,
+    // past the page's edge, where `elementFromPoint` finds nothing. Canopy's zoom always
+    // scales the whole page, never the text alone.
+    let zoom = match webview.zoom() {
+        zoom if zoom > 0.0 => zoom,
         _ => 1.0,
     };
     let (x, y) = event.position();

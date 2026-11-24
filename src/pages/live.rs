@@ -17,8 +17,7 @@ use webkit2gtk::{
     BackForwardListExt, BackForwardListItem, BackForwardListItemExt, LoadEvent,
     NavigationPolicyDecision, NavigationPolicyDecisionExt, NavigationType, NetworkError,
     PolicyDecision, PolicyDecisionExt, PolicyDecisionType, PolicyError, ResponsePolicyDecision,
-    ResponsePolicyDecisionExt, URIRequestExt, URIResponseExt, UserContentInjectedFrames,
-    UserContentManagerExt, UserScript, UserScriptInjectionTime, WebViewExt,
+    ResponsePolicyDecisionExt, URIRequestExt, URIResponseExt, UserContentManagerExt, WebViewExt,
 };
 #[path = "find.rs"]
 pub(super) mod find;
@@ -35,9 +34,14 @@ use crate::{
         CaptureKind, CapturePayload, Document, LoadTicket, Navigation, NavigationTarget,
         SourceContext, Visibility, VisitId,
     },
+    pages::engine::{
+        webkit::{entry_id, entry_id_of_raw, temporary_webkit_view},
+        EngineView, EntryId, Frames, History, MessageHandler, ScriptTime, UserScript, ViewConfig,
+        World,
+    },
 };
 
-const WORLD: &str = "canopy-reading-memory";
+const WORLD: World = World::ReadingMemory;
 /// How long after a click or Enter a script route still counts as the person's step. Sites
 /// like YouTube fetch the next page's data before they change the address.
 const ROUTE_AFTER_PRESS: std::time::Duration = std::time::Duration::from_secs(4);
@@ -81,7 +85,7 @@ enum InitialPage {
 }
 
 struct HistoryEntry {
-    item: BackForwardListItem,
+    item: EntryId,
     visit: VisitId,
     document: u64,
     post: bool,
@@ -130,8 +134,11 @@ enum Lifecycle {
 }
 
 struct NativeState {
-    native: webkit2gtk::WebView,
+    native: Rc<dyn EngineView>,
     lifecycle: Cell<Lifecycle>,
+    /// The page was taken out of use (closed, deleted or replaced) and must not act on
+    /// input or policy any more. Its widget is also insensitive.
+    retired: Cell<bool>,
     pages: Weak<Pages>,
     navigation: RefCell<Navigation>,
     never_seen: Cell<Option<VisitId>>,
@@ -156,9 +163,9 @@ struct NativeState {
     history_document: Cell<u64>,
     back_forward_commit: Cell<bool>,
     next_history_document: Cell<u64>,
-    history_cursor: RefCell<Option<BackForwardListItem>>,
+    history_cursor: RefCell<Option<EntryId>>,
     /// The history entry this engine asked WebKit for, which the policy check lets through.
-    traversal: RefCell<Option<(LoadTicket, BackForwardListItem)>>,
+    traversal: RefCell<Option<(LoadTicket, EntryId)>>,
     /// Where to scroll once a visit reloaded from the network finishes loading.
     pending_scroll: Cell<Option<(VisitId, i64)>>,
     /// The address of the main frame's last response that has not become a page, and the
@@ -204,7 +211,7 @@ impl Pages {
 
 pub(super) struct LivePage {
     pub(super) last_shown: Cell<u64>,
-    pub(super) native: webkit2gtk::WebView,
+    pub(super) native: Rc<dyn EngineView>,
     state: Rc<NativeState>,
     signals: RefCell<Vec<(glib::Object, glib::SignalHandlerId)>>,
 }
@@ -226,18 +233,18 @@ impl LivePage {
     }
     pub(super) fn adopt(&self) {
         self.state.adopted.set(true);
-        self.native.set_is_muted(false);
+        self.native.set_muted(false);
     }
     /// Undoes [`Self::adopt`] when the page goes back to the background list unseen: muted again,
     /// counted in a load slot and subject to the background time limit.
     pub(super) fn unadopt(&self) {
         self.state.adopted.set(false);
-        self.native.set_is_muted(true);
+        self.native.set_muted(true);
     }
     pub(super) fn background(&self, visit: VisitId) -> Result<()> {
         self.state.never_seen.set(Some(visit));
-        self.native.set_is_muted(true);
-        self.native.set_child_visible(false);
+        self.native.set_muted(true);
+        self.native.widget().set_child_visible(false);
         self.restore(visit)
     }
     pub(super) fn pending_ticket(&self) -> Option<LoadTicket> {
@@ -258,8 +265,8 @@ impl LivePage {
         ticket.belongs_to(&self.state.navigation.borrow())
     }
     pub(super) fn discard_deleted(&self) {
-        self.native.set_is_muted(true);
-        self.native.set_sensitive(false);
+        self.native.set_muted(true);
+        self.mark_retired();
         self.cancel();
         self.detach();
     }
@@ -289,10 +296,7 @@ impl LivePage {
         self.state.navigation.borrow().pending_restore()
     }
     pub(super) fn contains(&self, visit: VisitId) -> bool {
-        let Some(list) = self.native.back_forward_list() else {
-            return false;
-        };
-        let entries = live_entries(&list);
+        let entries = self.native.history().live();
         self.state
             .history
             .borrow()
@@ -312,13 +316,10 @@ impl LivePage {
     }
 
     pub(super) fn form_return_cursor_restored(&self) -> bool {
-        let current = self
-            .native
-            .back_forward_list()
-            .and_then(|l| l.current_item());
+        let current = self.native.history().current_id();
         let restored = self.state.lifecycle.get() == Lifecycle::Released
             || self.state.history.borrow().iter().any(|e| {
-                Some(&e.item) == current.as_ref() && e.document == self.state.history_document.get()
+                Some(e.item) == current && e.document == self.state.history_document.get()
             });
         if restored {
             self.state.form_return_cancelled.set(false);
@@ -398,9 +399,18 @@ impl LivePage {
         }
         self.detach();
     }
+    /// Whether the page was taken out of use; see `NativeState::retired`.
+    pub(super) fn retired(&self) -> bool {
+        self.state.retired.get()
+    }
+    /// Takes the page out of use: no more input or policy. The widget goes insensitive too.
+    pub(super) fn mark_retired(&self) {
+        self.native.widget().set_sensitive(false);
+        self.state.retired.set(true);
+    }
     pub(super) fn retire(&self) {
-        self.native.set_sensitive(false);
-        self.native.set_is_muted(true);
+        self.mark_retired();
+        self.native.set_muted(true);
         self.cancel_foreground();
         self.state.lifecycle.set(Lifecycle::CapturingScroll);
     }
@@ -420,32 +430,34 @@ impl LivePage {
     }
     pub(super) fn show(&self) {
         if self.state.never_seen.take().is_some() {
-            self.native.set_is_muted(false);
+            self.native.set_muted(false);
         }
-        if let Some(window) = self.native.window() {
+        let widget = self.native.widget();
+        if let Some(window) = widget.window() {
             window.set_pass_through(false);
         }
-        self.native.set_sensitive(true);
-        self.native.set_child_visible(true);
-        self.native.show();
-        self.state.owner().place_view(&self.native);
+        widget.set_sensitive(true);
+        self.state.retired.set(false);
+        widget.set_child_visible(true);
+        widget.show();
+        self.state.owner().place_view(widget);
         self.state.restore_scroll();
     }
-    pub(super) fn native_back(&self) -> Option<BackForwardListItem> {
-        let list = self.native.back_forward_list()?;
-        let mut items = list.back_list();
+    pub(super) fn native_back(&self) -> Option<crate::pages::engine::HistoryItem> {
+        let list = self.native.history();
+        let mut items = list.back;
         // WebKit returns nearest first; frame and pushState entries share a document.
         items.sort_by_key(|item| {
-            (1..=list.length())
-                .find(|n| list.nth_item(-(*n as i32)).as_ref() == Some(item))
+            (1..=list.length)
+                .find(|n| self.native.history_nth(-(*n as i32)) == Some(item.id))
                 .unwrap_or(u32::MAX)
         });
-        let allowed = |item: &&BackForwardListItem| {
+        let allowed = |item: &&crate::pages::engine::HistoryItem| {
             self.state
                 .history
                 .borrow()
                 .iter()
-                .any(|e| e.item == **item && self.state.native_history_allowed(e.visit))
+                .any(|e| e.item == item.id && self.state.native_history_allowed(e.visit))
         };
         items
             .iter()
@@ -455,7 +467,7 @@ impl LivePage {
                     .history
                     .borrow()
                     .iter()
-                    .any(|e| e.item == **item && Some(e.visit) != self.current_visit())
+                    .any(|e| e.item == item.id && Some(e.visit) != self.current_visit())
             })
             .or_else(|| {
                 if self.back_visit().ok().flatten().is_some() {
@@ -464,7 +476,7 @@ impl LivePage {
                 items
                     .iter()
                     .filter(allowed)
-                    .find(|item| item.uri() != self.native.uri())
+                    .find(|item| item.uri != self.native.uri())
             })
             .cloned()
     }
@@ -477,7 +489,7 @@ impl LivePage {
                 .history
                 .borrow()
                 .iter()
-                .find(|e| e.item == item)
+                .find(|e| e.item == item.id)
                 .map(|e| e.visit),
             None => self.back_visit().ok().flatten(),
         }
@@ -504,70 +516,65 @@ impl LivePage {
         context: &Rc<crate::pages::context::PageContext>,
         initial: InitialPage,
     ) -> Result<Self> {
-        use webkit2gtk::{InputMethodContextExt, SettingsExt};
-        let manager = webkit2gtk::UserContentManager::new();
-        manager.add_script(&UserScript::for_world(
-            HELPER,
-            UserContentInjectedFrames::TopFrame,
-            UserScriptInjectionTime::Start,
-            WORLD,
-            &[],
-            &[],
-        ));
-        manager.add_script(&UserScript::for_world(
-            CONTEXT_MENU_OVERRIDE,
-            UserContentInjectedFrames::AllFrames,
-            UserScriptInjectionTime::Start,
-            WORLD,
-            &[],
-            &[],
-        ));
-        let native = webkit2gtk::WebView::builder()
-            .web_context(context.temporary_webkit().temporary_web_context())
-            .user_content_manager(&manager)
-            .is_controlled_by_automation(false)
-            .website_policies(
-                &webkit2gtk::WebsitePolicies::builder()
-                    .autoplay(webkit2gtk::AutoplayPolicy::Allow)
-                    .build(),
-            )
-            .build();
-        if let Some(input) = native.input_method_context() {
-            input.set_enable_preedit(false);
-        }
-        let settings = WebViewExt::settings(&native).context("Page settings are unavailable.")?;
-        settings.set_enable_webgl(true);
-        settings.set_enable_webaudio(true);
-        settings.set_enable_back_forward_navigation_gestures(false);
-        settings.set_enable_page_cache(true);
-        settings.set_user_agent(None);
-        settings.set_enable_developer_extras(cfg!(debug_assertions));
+        let mut config = ViewConfig {
+            scripts: vec![
+                UserScript {
+                    source: HELPER,
+                    world: WORLD,
+                    frames: Frames::Top,
+                    time: ScriptTime::DocumentStart,
+                },
+                UserScript {
+                    source: CONTEXT_MENU_OVERRIDE,
+                    world: WORLD,
+                    frames: Frames::All,
+                    time: ScriptTime::DocumentStart,
+                },
+            ],
+            message_handlers: vec![MessageHandler {
+                name: SCROLLED,
+                world: WORLD,
+            }],
+            media: true,
+            autoplay: true,
+            page_cache: true,
+            developer_extras: cfg!(debug_assertions),
+        };
+        login_fields::configure(&mut config);
+        let view = context.engine().create_view(config)?;
+        // The view's signals still come straight from WebKit until engine layer PR 3.
+        let native = temporary_webkit_view(&*view).clone();
+        let manager = native
+            .user_content_manager()
+            .context("Page scripts are unavailable.")?;
+        let widget = view.widget();
         let mut signals = Vec::new();
         signals.push((native.clone().upcast(), native.connect_close(|_| {})));
         signals.extend(
-            mouse::setup(&native, pages.clone())
+            mouse::setup(&native, Rc::downgrade(&view), pages.clone())
                 .into_iter()
                 .map(|id| (native.clone().upcast(), id)),
         );
-        container.put(&native, 0, 0);
-        native.set_child_visible(matches!(initial, InitialPage::Home));
-        native.show();
+        container.put(widget, 0, 0);
+        widget.set_child_visible(matches!(initial, InitialPage::Home));
+        widget.show();
         if container.is_realized() {
-            native.realize();
+            widget.realize();
         }
         if matches!(initial, InitialPage::Home) {
-            native.load_html(HOME, None);
+            view.load_html(HOME);
         }
         if matches!(initial, InitialPage::Home) {
-            native.show_all();
-            native.grab_focus();
+            widget.show_all();
+            widget.grab_focus();
         }
         if let Some(signal) = context.blocking.follow(&native, &manager) {
             signals.push((native.clone().upcast(), signal));
         }
         let state = Rc::new(NativeState {
-            native: native.clone(),
+            native: view.clone(),
             lifecycle: Cell::new(Lifecycle::Live),
+            retired: Cell::new(false),
             pages: pages.clone(),
             never_seen: Cell::new(None),
             adopted: Cell::new(false),
@@ -611,7 +618,7 @@ impl LivePage {
             signals.push((
                 native.clone().upcast(),
                 native.connect_script_dialog(move |view, dialog| {
-                    if !is_selected(&weak, view) {
+                    if !is_selected(&weak, view.upcast_ref()) {
                         if matches!(
                             dialog.dialog_type(),
                             webkit2gtk::ScriptDialogType::Confirm
@@ -629,7 +636,7 @@ impl LivePage {
             signals.push((
                 native.clone().upcast(),
                 native.connect_permission_request(move |view, request| {
-                    if !is_selected(&weak, view) {
+                    if !is_selected(&weak, view.upcast_ref()) {
                         use webkit2gtk::PermissionRequestExt;
                         request.deny();
                         true
@@ -642,7 +649,7 @@ impl LivePage {
             signals.push((
                 native.clone().upcast(),
                 native.connect_run_file_chooser(move |view, request| {
-                    if !is_selected(&weak, view) {
+                    if !is_selected(&weak, view.upcast_ref()) {
                         use webkit2gtk::FileChooserRequestExt;
                         request.cancel();
                         true
@@ -655,13 +662,13 @@ impl LivePage {
             signals.push((
                 native.clone().upcast(),
                 native.connect_enter_fullscreen(move |view| {
-                    if !is_selected(&weak, view) {
+                    if !is_selected(&weak, view.upcast_ref()) {
                         return true;
                     }
                     // WebKit only fullscreens the window; the page must also leave the chrome's
                     // band and the chrome must step aside, or the video stays under the strip.
                     if let Some(pages) = weak.upgrade() {
-                        pages.fullscreen_entered(view);
+                        pages.fullscreen_entered(view.upcast_ref());
                     }
                     false
                 }),
@@ -671,7 +678,7 @@ impl LivePage {
                 native.clone().upcast(),
                 native.connect_leave_fullscreen(move |view| {
                     if let Some(pages) = weak.upgrade() {
-                        pages.fullscreen_left(view);
+                        pages.fullscreen_left(view.upcast_ref());
                     }
                     false
                 }),
@@ -679,7 +686,7 @@ impl LivePage {
             let weak = state.pages.clone();
             signals.push((
                 native.clone().upcast(),
-                native.connect_print(move |view, _| !is_selected(&weak, view)),
+                native.connect_print(move |view, _| !is_selected(&weak, view.upcast_ref())),
             ));
         }
         {
@@ -729,7 +736,6 @@ impl LivePage {
                 }),
             ));
         }
-        manager.register_script_message_handler_in_world(SCROLLED, WORLD);
         {
             let weak = Rc::downgrade(&state);
             signals.push((
@@ -809,16 +815,13 @@ impl LivePage {
                             }
                         }
                         LoadEvent::Committed => {
-                            *state.history_cursor.borrow_mut() = native
-                                .back_forward_list()
-                                .and_then(|list| list.current_item());
+                            *state.history_cursor.borrow_mut() =
+                                state.native.history().current_id();
                             let existing = state
                                 .history
                                 .borrow()
                                 .iter()
-                                .find(|entry| {
-                                    Some(&entry.item) == state.history_cursor.borrow().as_ref()
-                                })
+                                .find(|entry| Some(entry.item) == *state.history_cursor.borrow())
                                 .map(|entry| entry.document);
                             let traversal = state.back_forward_commit.replace(false);
                             let existing = existing.filter(|_| traversal);
@@ -1030,20 +1033,20 @@ impl LivePage {
                     let state = Pages::enter_native(&weak)?;
                     let list: webkit2gtk::BackForwardList = values[0].get().unwrap();
                     let added: Option<BackForwardListItem> = values[1].get().unwrap();
-                    let current = list.current_item();
-                    *state.history_cursor.borrow_mut() = current.clone();
+                    let current = list.current_item().as_ref().map(entry_id);
+                    *state.history_cursor.borrow_mut() = current;
                     let removed: glib::Pointer = values[2].get().unwrap_or(std::ptr::null_mut());
                     // WebKit keeps removed objects readable while our bindings retain them.
                     unsafe {
-                        use glib::object::ObjectType;
                         let mut node = removed as *mut glib::ffi::GList;
                         while !node.is_null() {
-                            let item =
-                                (*node).data as *mut webkit2gtk::ffi::WebKitBackForwardListItem;
+                            let item = entry_id_of_raw(
+                                (*node).data as *mut webkit2gtk::ffi::WebKitBackForwardListItem,
+                            );
                             state
                                 .history
                                 .borrow_mut()
-                                .retain(|entry| entry.item.as_ptr() != item);
+                                .retain(|entry| entry.item != item);
                             node = (*node).next;
                         }
                     }
@@ -1118,7 +1121,7 @@ impl LivePage {
                 native.clone().upcast(),
                 native.connect_decide_policy(move |_, decision, kind| {
                     if weak.upgrade().is_some_and(|state| {
-                        state.lifecycle.get() != Lifecycle::Live || !state.native.is_sensitive()
+                        state.lifecycle.get() != Lifecycle::Live || state.retired.get()
                     }) {
                         decision.ignore();
                         return true;
@@ -1150,7 +1153,11 @@ impl LivePage {
                             return None;
                         };
                         if let Some(state) = Pages::enter_native(&weak) {
-                            if state.native.main_resource().as_ref() == Some(&resource) {
+                            if temporary_webkit_view(&*state.native)
+                                .main_resource()
+                                .as_ref()
+                                == Some(&resource)
+                            {
                                 state.note_main_frame_method(&request);
                             }
                         }
@@ -1161,7 +1168,7 @@ impl LivePage {
         }
         let weak = Rc::downgrade(&state);
         context.engine().attribute_downloads(
-            native.upcast_ref(),
+            widget,
             Box::new(move |source| {
                 Pages::enter_native(&weak)
                     .map(|state| {
@@ -1198,11 +1205,11 @@ impl LivePage {
             }
         });
         signals.push((native.clone().upcast(), favicon));
-        state.owner().register_view(&native);
+        state.owner().register_view(widget);
         signals.extend(page_scale::setup(&state));
         Ok(Self {
             last_shown: Cell::new(0),
-            native,
+            native: view.clone(),
             state,
             signals: RefCell::new(signals),
         })
@@ -1252,15 +1259,15 @@ impl LivePage {
         self.state.history_cursor.borrow_mut().take();
         self.state.traversal.borrow_mut().take();
         self.state.navigation.borrow_mut().clear();
-        if let Some(parent) = self
-            .native
+        let widget = self.native.widget();
+        if let Some(parent) = widget
             .parent()
             .and_then(|p| p.downcast::<gtk::Container>().ok())
         {
-            parent.remove(&self.native);
+            parent.remove(widget);
         }
         unsafe {
-            self.native.destroy();
+            widget.destroy();
         }
     }
 
@@ -1304,12 +1311,11 @@ impl LivePage {
             });
         let state = Rc::downgrade(&self.state);
         let owner = self.state.pages.clone();
-        self.native.evaluate_javascript(
+        self.native.evaluate(
             "JSON.stringify({url:location.href,y:scrollY,epoch:globalThis.__canopyDocumentEpoch})",
-            Some(WORLD),
-            None,
+            WORLD,
             Some(&cancel),
-            move |value| {
+            Some(Box::new(move |value| {
                 let Some(done) = completion.borrow_mut().take() else {
                     return;
                 };
@@ -1317,7 +1323,7 @@ impl LivePage {
                 if let (Some(state), Some(owner), Some(ticket), Ok(value)) =
                     (state.upgrade(), owner.upgrade(), ticket, value)
                 {
-                    if let Ok(value) = serde_json::from_str::<Value>(&value.to_str()) {
+                    if let Ok(value) = serde_json::from_str::<Value>(&value) {
                         if state.lifecycle.get() != Lifecycle::Released
                             && owner
                                 .read(|b| b.contains_visit(ticket.visit))
@@ -1345,7 +1351,7 @@ impl LivePage {
                     }
                 }
                 done();
-            },
+            })),
         );
     }
 
@@ -1354,11 +1360,8 @@ impl LivePage {
     pub(super) fn checkpoint(&self) -> Result<Checkpoint> {
         let state = &self.state;
         let owner = state.pages.upgrade().context("Page owner was closed.")?;
-        let list = self
-            .native
-            .back_forward_list()
-            .context("No native history.")?;
-        let (items, current) = ordered_entries(&list)?;
+        let list = self.native.history();
+        let (items, current) = ordered_entries(&*self.native, &list)?;
         let entries = {
             let history = state.history.borrow();
             anyhow::ensure!(
@@ -1375,17 +1378,17 @@ impl LivePage {
                         visit: entry.visit,
                         document: entry.document,
                         post: entry.post,
-                        uri: web_url(&item.uri().context("History entry has no URL.")?)?,
+                        uri: web_url(
+                            list.find(*item)
+                                .and_then(|item| item.uri.as_deref())
+                                .context("History entry has no URL.")?,
+                        )?,
                         stored_url: owner.browser.borrow().visit(entry.visit)?.url,
                     })
                 })
                 .collect::<Result<Vec<_>>>()?
         };
-        let bytes = self
-            .native
-            .session_state()
-            .and_then(|s| s.serialize())
-            .context("No session state.")?;
+        let bytes = self.native.session_state().context("No session state.")?;
         Ok(Checkpoint {
             last_shown: self.last_shown.get(),
             bytes,
@@ -1404,8 +1407,7 @@ impl LivePage {
         visit: VisitId,
     ) -> Result<(Self, Revival)> {
         let page = Self::build(container, pages.clone(), context, InitialPage::Session)?;
-        let session = webkit2gtk::WebViewSessionState::new(&saved.bytes);
-        page.native.restore_session_state(&session);
+        page.native.restore_session_state(&saved.bytes);
         let binding = (|| -> Result<Vec<HistoryEntry>> {
             let shows_target = |e: &&CheckpointEntry| e.visit == visit && e.uri == e.stored_url;
             let _target = saved
@@ -1415,11 +1417,15 @@ impl LivePage {
                 .or_else(|| saved.entries.iter().rev().find(shows_target))
                 .context("Visit has no traversable entry in checkpoint.")?;
 
-            let (items, current) =
-                ordered_entries(&page.native.back_forward_list().context("No history.")?)?;
+            let list = page.native.history();
+            let (items, current) = ordered_entries(&*page.native, &list)?;
             let urls = items
                 .iter()
-                .map(|i| i.uri().and_then(|u| web_url(&u).ok()))
+                .map(|i| {
+                    list.find(*i)
+                        .and_then(|i| i.uri.as_deref())
+                        .and_then(|u| web_url(u).ok())
+                })
                 .collect::<Option<Vec<_>>>()
                 .context("Invalid history URL.")?;
             let stored = saved
@@ -1453,10 +1459,7 @@ impl LivePage {
         match binding {
             Ok(history) => {
                 *page.state.history.borrow_mut() = history;
-                *page.state.history_cursor.borrow_mut() = page
-                    .native
-                    .back_forward_list()
-                    .and_then(|l| l.current_item());
+                *page.state.history_cursor.borrow_mut() = page.native.history().current_id();
                 page.state
                     .next_history_document
                     .set(saved.entries.iter().map(|e| e.document).max().unwrap_or(0));
@@ -1473,8 +1476,8 @@ impl LivePage {
     }
 
     pub fn focus(&self) {
-        self.native.grab_focus();
-        self.state.owner().place_view(&self.native);
+        self.native.widget().grab_focus();
+        self.state.owner().place_view(self.native.widget());
     }
 
     pub fn navigate(&self, url: Url, target: NavigationTarget) -> Result<()> {
@@ -1506,7 +1509,7 @@ impl LivePage {
         state.back_forward_commit.set(false);
         *state.issue.borrow_mut() = Issue::Idle;
         state.navigation.borrow_mut().clear();
-        self.native.load_html(HOME, None);
+        self.native.load_html(HOME);
     }
 
     pub fn restore(&self, id: VisitId) -> Result<()> {
@@ -1527,12 +1530,7 @@ impl LivePage {
         );
         let url = self.state.owner().browser.borrow().visit(id)?.url;
         let target = self.state.entry(id, &url);
-        let was_current = target.is_some()
-            && target
-                == self
-                    .native
-                    .back_forward_list()
-                    .and_then(|l| l.current_item());
+        let was_current = target.is_some() && target == self.native.history().current_id();
         self.restore(id)?;
         if !was_current {
             return Ok(());
@@ -1762,12 +1760,11 @@ impl NativeState {
         let document = self.navigation.borrow().current.clone();
         if let Some(document) = document {
             self.remember_entry(document.visit);
-            self.native.evaluate_javascript(
+            self.native.evaluate(
                 &format!("globalThis.__canopyDocumentEpoch = {}", document.epoch),
-                Some(WORLD),
+                WORLD,
                 None,
-                None::<&gio::Cancellable>,
-                |_| {},
+                None,
             );
         }
         self.reconcile_find();
@@ -1796,7 +1793,7 @@ impl NativeState {
             .live
             .borrow()
             .as_ref()
-            .is_some_and(|p| p.native == self.native);
+            .is_some_and(|p| p.native.widget() == self.native.widget());
         if selected {
             owner.cancel_candidate();
         }
@@ -1881,10 +1878,10 @@ impl NativeState {
                         .owner()
                         .context
                         .blocking
-                        .loading(&state.native, Some(&url));
+                        .loading(temporary_webkit_view(&*state.native), Some(&url));
                     if let Some(entry) = returning.and_then(|visit| state.entry(visit, &url)) {
-                        *state.traversal.borrow_mut() = Some((requested, entry.clone()));
-                        state.native.go_to_back_forward_list_item(&entry);
+                        *state.traversal.borrow_mut() = Some((requested, entry));
+                        state.native.go_to(entry);
                     } else {
                         if let Some(visit) = returning.filter(|_| !same_document) {
                             let saved = state.owner().browser.borrow().scroll(visit).ok().flatten();
@@ -1949,20 +1946,19 @@ impl NativeState {
         callback: impl FnOnce(Rc<Self>, Option<Value>) + 'static,
     ) {
         let weak = Rc::downgrade(self);
-        self.native.evaluate_javascript(
+        self.native.evaluate(
             script,
-            Some(WORLD),
+            WORLD,
             None,
-            None::<&gio::Cancellable>,
-            move |result| {
+            Some(Box::new(move |result| {
                 let Some(state) = Pages::enter_native(&weak) else {
                     return;
                 };
                 let value = result
                     .ok()
-                    .and_then(|value| serde_json::from_str(value.to_str().as_str()).ok());
+                    .and_then(|value| serde_json::from_str(value.as_str()).ok());
                 callback(state.state.clone(), value);
-            },
+            })),
         );
     }
 
@@ -1995,7 +1991,7 @@ impl NativeState {
                 self.owner()
                     .context
                     .blocking
-                    .loading(&self.native, target.as_ref());
+                    .loading(temporary_webkit_view(&*self.native), target.as_ref());
                 decision.use_();
             }
         } else {
@@ -2023,7 +2019,7 @@ impl NativeState {
                 .and_then(|n| n.navigation_action())
             {
                 // Preserve the form-return guard independently of switch intent.
-                if action.request().and_then(|r| r.uri()) == self.native.uri() {
+                if action.request().and_then(|r| r.uri()).map(String::from) == self.native.uri() {
                     self.answer_form_return(false);
                 }
                 // NavigationAction has no main-frame flag. A missing target name is
@@ -2070,15 +2066,21 @@ impl NativeState {
                     let main = action.frame_name().is_none()
                         && (action.navigation_type() != NavigationType::BackForward
                             || self.current_entry_document() != Some(self.history_document.get()));
-                    let restored = self.history.borrow().iter().any(|e| {
-                        e.needs_get && Some(&e.item) == self.history_cursor.borrow().as_ref()
-                    });
+                    let restored = self
+                        .history
+                        .borrow()
+                        .iter()
+                        .any(|e| e.needs_get && Some(e.item) == *self.history_cursor.borrow());
                     if main && !restored {
                         let owner = self.owner();
-                        owner.context.blocking.hold_navigation(&self.native);
+                        owner
+                            .context
+                            .blocking
+                            .hold_navigation(temporary_webkit_view(&*self.native));
                         let candidate = owner.branches.candidate.borrow().clone();
                         if let Some(page) = candidate.filter(|p| {
-                            p.native == self.native && owner.branches.candidate_live.get().is_some()
+                            p.native.widget() == self.native.widget()
+                                && owner.branches.candidate_live.get().is_some()
                         }) {
                             if let Err(error) = page.select() {
                                 owner.cancel_candidate();
@@ -2096,7 +2098,7 @@ impl NativeState {
                             .live
                             .borrow()
                             .as_ref()
-                            .is_some_and(|p| p.native == self.native);
+                            .is_some_and(|p| p.native.widget() == self.native.widget());
                         if selected && !self.is_background() {
                             self.foreground_requested();
                             static QUESTIONS: std::sync::atomic::AtomicU64 =
@@ -2207,9 +2209,14 @@ impl NativeState {
         if action.navigation_type() == NavigationType::BackForward
             && self.history.borrow().iter().any(|entry| {
                 entry.needs_get
-                    && Some(&entry.item) == self.history_cursor.borrow().as_ref()
+                    && Some(entry.item) == *self.history_cursor.borrow()
                     && entry.document != self.history_document.get()
-                    && entry.item.uri().as_deref() == Some(uri.as_str())
+                    && self
+                        .native
+                        .history()
+                        .find(entry.item)
+                        .and_then(|item| item.uri.as_deref())
+                        == Some(uri.as_str())
             })
         {
             #[cfg(feature = "gui-smoke")]
@@ -2242,7 +2249,7 @@ impl NativeState {
                 self.owner()
                     .context
                     .blocking
-                    .loading(&self.native, Some(&url));
+                    .loading(temporary_webkit_view(&*self.native), Some(&url));
                 self.native.load_uri(url.as_str());
             }
             return true;
@@ -2347,7 +2354,7 @@ impl NativeState {
                 .as_ref()
                 .is_some_and(|(ticket, item)| {
                     Some(*ticket) == self.active_ticket()
-                        && self.history_cursor.borrow().as_ref() == Some(item)
+                        && *self.history_cursor.borrow() == Some(*item)
                 })
             {
                 self.accept_issue();
@@ -2453,7 +2460,7 @@ impl NativeState {
     }
 
     fn current_entry_visit(&self) -> Option<VisitId> {
-        let current = self.history_cursor.borrow().clone()?;
+        let current = (*self.history_cursor.borrow())?;
         self.history
             .borrow()
             .iter()
@@ -2462,7 +2469,7 @@ impl NativeState {
     }
 
     fn current_entry_document(&self) -> Option<u64> {
-        let current = self.history_cursor.borrow().clone()?;
+        let current = (*self.history_cursor.borrow())?;
         self.history
             .borrow()
             .iter()
@@ -2514,7 +2521,7 @@ impl NativeState {
         self.owner().publish_loading();
         if let Some(document) = self.ticket() {
             self.bind_document();
-            if is_selected(&self.pages, &self.native) {
+            if is_selected(&self.pages, self.native.widget()) {
                 let result = self
                     .owner()
                     .browser
@@ -2542,13 +2549,10 @@ impl NativeState {
     }
 
     fn remember_entry(&self, visit: VisitId) {
-        let Some(list) = self.native.back_forward_list() else {
+        let Some(current) = *self.history_cursor.borrow() else {
             return;
         };
-        let Some(current) = self.history_cursor.borrow().clone() else {
-            return;
-        };
-        let live = live_entries(&list);
+        let live = self.native.history().live();
         let mut history = self.history.borrow_mut();
         let previous = history
             .iter()
@@ -2577,25 +2581,26 @@ impl NativeState {
     }
 
     /// A history entry other than the current one that still shows `visit` at `url`.
-    fn entry(&self, visit: VisitId, url: &Url) -> Option<BackForwardListItem> {
-        let list = self.native.back_forward_list()?;
-        let current = list.current_item();
-        let live = live_entries(&list);
+    fn entry(&self, visit: VisitId, url: &Url) -> Option<EntryId> {
+        let list = self.native.history();
+        let current = list.current_id();
+        let live = list.live();
         let history = self.history.borrow();
-        let preferred = history.iter().filter(|entry| {
-            self.history_document.get() == 0 && Some(&entry.item) == current.as_ref()
-        });
+        let preferred = history
+            .iter()
+            .filter(|entry| self.history_document.get() == 0 && Some(entry.item) == current);
         preferred
             .chain(history.iter().rev())
             .find(|entry| {
                 entry.visit == visit
                     && (!entry.needs_get || self.history_document.get() == 0)
                     && entry.document != self.history_document.get()
-                    && (self.history_document.get() == 0 || Some(&entry.item) != current.as_ref())
+                    && (self.history_document.get() == 0 || Some(entry.item) != current)
                     && live.contains(&entry.item)
-                    && entry.item.uri().as_deref() == Some(url.as_str())
+                    && list.find(entry.item).and_then(|item| item.uri.as_deref())
+                        == Some(url.as_str())
             })
-            .map(|entry| entry.item.clone())
+            .map(|entry| entry.item)
     }
 
     fn scrolled(&self, message: &str) {
@@ -2621,7 +2626,7 @@ impl NativeState {
     }
 
     fn restore_scroll(self: &Rc<Self>) {
-        if !self.native.is_mapped() {
+        if !self.native.widget().is_mapped() {
             return;
         }
         // A cancelled earlier load can finish first; keep the target for the visit it names.
@@ -2686,7 +2691,7 @@ impl NativeState {
     /// A script route changes the address before the site swaps in the new page. YouTube
     /// still shows the previous page's text or title a second later, so the text is read
     /// once the route has settled, and never while the old page's title is up.
-    fn capture_route_later(self: &Rc<Self>, old_title: Option<glib::GString>) {
+    fn capture_route_later(self: &Rc<Self>, old_title: Option<String>) {
         let Some(ticket) = self.ticket() else { return };
         let weak = Rc::downgrade(self);
         glib::timeout_add_local_once(ROUTE_SETTLED, move || {
@@ -2772,31 +2777,29 @@ impl NativeState {
     }
 }
 
-fn is_selected(weak: &Weak<Pages>, view: &webkit2gtk::WebView) -> bool {
+fn is_selected(weak: &Weak<Pages>, view: &gtk::Widget) -> bool {
     weak.upgrade().is_some_and(|pages| {
         pages
             .branches
             .live
             .borrow()
             .as_ref()
-            .is_some_and(|p| p.native == *view && view.is_sensitive())
+            .is_some_and(|p| p.native.widget() == view && !p.retired())
     })
 }
 
-fn ordered_entries(
-    list: &webkit2gtk::BackForwardList,
-) -> Result<(Vec<BackForwardListItem>, usize)> {
-    let back = list.back_list().len();
-    let forward = list.forward_list().len();
+fn ordered_entries(view: &dyn EngineView, list: &History) -> Result<(Vec<EntryId>, usize)> {
+    let back = list.back.len();
+    let forward = list.forward.len();
     let entries = (-(back as i32)..=forward as i32)
-        .map(|i| list.nth_item(i).context("Missing history position."))
+        .map(|i| view.history_nth(i).context("Missing history position."))
         .collect::<Result<Vec<_>>>()?;
     anyhow::ensure!(
-        entries.len() == list.length() as usize,
+        entries.len() == list.length as usize,
         "Native history length differs."
     );
     anyhow::ensure!(
-        entries.get(back) == list.current_item().as_ref(),
+        entries.get(back).copied() == list.current_id(),
         "Native history cursor differs."
     );
     Ok((entries, back))
@@ -2819,13 +2822,6 @@ fn valid_binding(saved: &Checkpoint, urls: &[Url], current: usize, stored: &[Url
 fn checkpoint_document_matches(value: &Value, document: &Document) -> bool {
     value["url"].as_str() == Some(document.page_url.as_str())
         && value["epoch"].as_u64() == Some(document.epoch)
-}
-
-fn live_entries(list: &webkit2gtk::BackForwardList) -> Vec<BackForwardListItem> {
-    let mut entries = list.back_list();
-    entries.extend(list.forward_list());
-    entries.extend(list.current_item());
-    entries
 }
 
 fn string(value: &Value, name: &str, limit: usize) -> String {

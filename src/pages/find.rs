@@ -15,7 +15,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use webkit2gtk::{FindControllerExt, FindOptions, WebViewExt};
+use webkit2gtk::{FindControllerExt, WebViewExt};
 
 use super::{LivePage, NativeState, WORLD};
 use crate::{
@@ -411,35 +411,25 @@ impl NativeState {
     }
 
     fn run_find(&self, effects: Vec<Effect>) {
-        let Some(controller) = self.native.find_controller() else {
-            return;
-        };
         let script = |source: &str| {
-            self.native.evaluate_javascript(
-                source,
-                Some(WORLD),
-                None,
-                None::<&gio::Cancellable>,
-                |_| {},
-            );
+            self.native.evaluate(source, WORLD, None, None);
         };
         // WebKit handles scripts and find requests in the order they are sent.
         for effect in effects {
             match effect {
                 Effect::Search(query) => {
                     script(FROM_THE_TOP);
-                    let options = FindOptions::CASE_INSENSITIVE | FindOptions::WRAP_AROUND;
-                    controller.search(&query, options.bits(), u32::MAX);
+                    self.native.find(&query);
                 }
                 Effect::Step(direction) => {
                     script(RESTORE);
                     match direction {
-                        Direction::Next => controller.search_next(),
-                        Direction::Previous => controller.search_previous(),
+                        Direction::Next => self.native.find_next(),
+                        Direction::Previous => self.native.find_previous(),
                     }
                 }
                 Effect::Remember => script(REMEMBER),
-                Effect::Finish => controller.search_finish(),
+                Effect::Finish => self.native.find_finish(),
                 Effect::Publish(update) => self.owner().publish_find(update),
             }
         }
@@ -449,7 +439,7 @@ impl NativeState {
 /// Connects WebKit's answers to the view's driver.
 pub(super) fn setup(state: &Rc<NativeState>) -> Vec<(glib::Object, glib::SignalHandlerId)> {
     use glib::Cast;
-    let Some(controller) = state.native.find_controller() else {
+    let Some(controller) = super::temporary_webkit_view(&*state.native).find_controller() else {
         return Vec::new();
     };
     let answer = |weak: &Weak<NativeState>, reply: Reply| {

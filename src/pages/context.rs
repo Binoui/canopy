@@ -44,9 +44,8 @@ impl PageContext {
         &self.engine
     }
 
-    /// TEMPORARY: the WebKit backend itself, for code that still creates WebKit views
-    /// directly. Goes away once views are made through the engine (engine layer PR 2 for
-    /// pages, PR 4 for errands).
+    /// TEMPORARY: the WebKit backend itself, for errand views, which still create WebKit
+    /// views directly. Goes away once errands are made through the engine (engine layer PR 4).
     pub(super) fn temporary_webkit(&self) -> &WebKitEngine {
         self.engine
             .as_any()
