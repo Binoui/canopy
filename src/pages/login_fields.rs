@@ -1,13 +1,11 @@
 //! Signing in on the live page: noticing its sign-in fields, filling the login the user
 //! picked, and hearing the login the user sends.
 
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use anyhow::{anyhow, Result};
-use javascriptcore::ValueExt;
 use serde_json::Value;
 use url::Url;
-use webkit2gtk::{UserContentManager, UserContentManagerExt};
 use zeroize::Zeroizing;
 
 use super::{LivePage, NativeState, WORLD};
@@ -43,24 +41,21 @@ pub(super) fn configure(config: &mut ViewConfig) {
     }
 }
 
-/// Hears the helper's messages.
-pub(super) fn setup(
-    manager: &UserContentManager,
-    state: &Rc<NativeState>,
-) -> [glib::SignalHandlerId; 2] {
-    let weak = Rc::downgrade(state);
-    let changed = manager.connect_script_message_received(Some(CHANGED), move |_, _| {
-        if let Some(state) = Pages::enter_native(&weak) {
-            state.look_for_login_fields();
+/// Hears the helper's messages. Messages to other names are not the helper's.
+pub(super) fn message(weak: &Weak<NativeState>, name: &str, body: Option<String>) {
+    match name {
+        CHANGED => {
+            if let Some(state) = Pages::enter_native(weak) {
+                state.look_for_login_fields();
+            }
         }
-    });
-    let weak = Rc::downgrade(state);
-    let sent = manager.connect_script_message_received(Some(SENT), move |_, message| {
-        if let (Some(state), Some(value)) = (Pages::enter_native(&weak), message.js_value()) {
-            state.login_sent(&Zeroizing::new(value.to_str().to_string()));
+        SENT => {
+            if let (Some(state), Some(value)) = (Pages::enter_native(weak), body) {
+                state.login_sent(&Zeroizing::new(value));
+            }
         }
-    });
-    [changed, sent]
+        _ => {}
+    }
 }
 
 impl NativeState {

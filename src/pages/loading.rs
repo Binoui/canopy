@@ -3,8 +3,7 @@ use crate::{
     browser::{LoadTicket, PendingTarget, VisitId},
     pages::{Command, PageEvent, Pages},
 };
-use std::rc::Rc;
-use webkit2gtk::WebViewExt;
+use std::rc::{Rc, Weak};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Progress(u8);
@@ -125,13 +124,11 @@ impl NativeState {
     }
 }
 
-pub(super) fn setup(state: &Rc<NativeState>) -> glib::SignalHandlerId {
-    let weak = Rc::downgrade(state);
-    super::temporary_webkit_view(&*state.native).connect_estimated_load_progress_notify(move |_| {
-        if let Some(state) = Pages::enter_native(&weak) {
-            state.schedule_loading();
-        }
-    })
+/// The view's load progress moved.
+pub(super) fn progress_changed(weak: &Weak<NativeState>) {
+    if let Some(state) = Pages::enter_native(weak) {
+        state.schedule_loading();
+    }
 }
 
 impl Pages {

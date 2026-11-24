@@ -11,11 +11,9 @@
 use std::{
     collections::VecDeque,
     num::NonZeroU32,
-    rc::{Rc, Weak},
+    rc::Weak,
     sync::atomic::{AtomicU64, Ordering},
 };
-
-use webkit2gtk::{FindControllerExt, WebViewExt};
 
 use super::{LivePage, NativeState, WORLD};
 use crate::{
@@ -436,29 +434,25 @@ impl NativeState {
     }
 }
 
-/// Connects WebKit's answers to the view's driver.
-pub(super) fn setup(state: &Rc<NativeState>) -> Vec<(glib::Object, glib::SignalHandlerId)> {
-    use glib::Cast;
-    let Some(controller) = super::temporary_webkit_view(&*state.native).find_controller() else {
-        return Vec::new();
-    };
-    let answer = |weak: &Weak<NativeState>, reply: Reply| {
-        if let Some(state) = Pages::enter_native(weak) {
-            let effects = state.find.borrow_mut().completed(reply);
-            state.run_find(effects);
-        }
-    };
-    let weak = Rc::downgrade(state);
-    let found = controller.connect_found_text(move |_, count| {
-        answer(
-            &weak,
-            NonZeroU32::new(count).map_or(Reply::Missing, Reply::Found),
-        );
-    });
-    let weak = Rc::downgrade(state);
-    let failed = controller.connect_failed_to_find_text(move |_| answer(&weak, Reply::Missing));
-    let object = controller.upcast::<glib::Object>();
-    vec![(object.clone(), found), (object, failed)]
+/// Hands the engine's answer to the view's driver.
+fn answer(weak: &Weak<NativeState>, reply: Reply) {
+    if let Some(state) = Pages::enter_native(weak) {
+        let effects = state.find.borrow_mut().completed(reply);
+        state.run_find(effects);
+    }
+}
+
+/// The engine found `count` matches.
+pub(super) fn found_text(weak: &Weak<NativeState>, count: u32) {
+    answer(
+        weak,
+        NonZeroU32::new(count).map_or(Reply::Missing, Reply::Found),
+    );
+}
+
+/// The engine found nothing.
+pub(super) fn failed_to_find_text(weak: &Weak<NativeState>) {
+    answer(weak, Reply::Missing);
 }
 
 #[cfg(test)]

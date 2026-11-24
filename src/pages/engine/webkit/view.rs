@@ -1,6 +1,10 @@
 //! One WebKitGTK view behind `EngineView`.
 
-use std::{any::Any, cell::Cell, rc::Rc};
+use std::{
+    any::Any,
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use anyhow::{Context, Result};
 use gtk::prelude::*;
@@ -12,13 +16,21 @@ use webkit2gtk::{
     WebViewSessionState,
 };
 
+use super::events::{self, ObserverCell};
 use crate::pages::engine::{
-    EngineView, EntryId, Frames, History, HistoryItem, ScriptDone, ScriptTime, ViewConfig, World,
+    EngineView, EntryId, Frames, History, HistoryItem, Observer, ScriptDone, ScriptTime,
+    ViewConfig, World,
 };
 
 pub(crate) struct WebKitView {
     native: webkit2gtk::WebView,
     widget: gtk::Widget,
+    manager: webkit2gtk::UserContentManager,
+    /// The script message handlers the view registered, whose messages become events.
+    message_names: Vec<&'static str>,
+    observer: ObserverCell,
+    /// WebKit signals feeding the observer, connected while there is one.
+    signals: RefCell<Vec<(glib::Object, glib::SignalHandlerId)>>,
 }
 
 impl WebKitView {
@@ -76,6 +88,10 @@ impl WebKitView {
         Ok(Rc::new(Self {
             widget: native.clone().upcast(),
             native,
+            manager,
+            message_names: config.message_handlers.iter().map(|h| h.name).collect(),
+            observer: Rc::default(),
+            signals: RefCell::default(),
         }))
     }
 
@@ -105,9 +121,8 @@ thread_local! {
 /// The id rides on WebKit's own item object. The back/forward list keeps that object while
 /// it lists the entry, so an entry keeps its id for as long as Canopy can reach it. The list's
 /// `changed` signal hands over removed items as those same objects, so translating them with
-/// this function gives the ids Canopy holds for them (engine layer PR 3 does that inside the
-/// backend; until then `live.rs` calls it from the signal handler).
-pub(crate) fn entry_id(item: &BackForwardListItem) -> EntryId {
+/// this function gives the ids Canopy holds for them.
+pub(super) fn entry_id(item: &BackForwardListItem) -> EntryId {
     // SAFETY: only this function reads or writes the key, always as a u64.
     if let Some(id) = unsafe { item.data::<u64>(ENTRY_KEY) } {
         return EntryId(unsafe { *id.as_ref() });
@@ -125,22 +140,22 @@ pub(crate) fn entry_id(item: &BackForwardListItem) -> EntryId {
 ///
 /// # Safety
 /// `item` must point to a live `WebKitBackForwardListItem`.
-pub(crate) unsafe fn entry_id_of_raw(
+pub(super) unsafe fn entry_id_of_raw(
     item: *mut webkit2gtk::ffi::WebKitBackForwardListItem,
 ) -> EntryId {
     let item: BackForwardListItem = unsafe { glib::translate::from_glib_none(item) };
     entry_id(&item)
 }
 
-fn history_item(item: &BackForwardListItem) -> HistoryItem {
+pub(super) fn history_item(item: &BackForwardListItem) -> HistoryItem {
     HistoryItem {
         id: entry_id(item),
         uri: item.uri().map(Into::into),
     }
 }
 
-/// TEMPORARY: the WebKit view behind `view`. Only for connecting its signals, until engine
-/// layer PR 3 brings them through `ViewEvent`, and for content blocking, until PR 4.
+/// TEMPORARY: the WebKit view behind `view`, for content blocking only, until engine layer
+/// PR 4 puts blocking behind the engine's rule store.
 pub(crate) fn temporary_webkit_view(view: &dyn EngineView) -> &webkit2gtk::WebView {
     webkit_view(view)
 }
@@ -322,6 +337,32 @@ impl EngineView for WebKitView {
     ) {
         self.native
             .snapshot(SnapshotRegion::Visible, SnapshotOptions::NONE, cancel, done);
+    }
+
+    fn set_observer(&self, observer: Option<Observer>) {
+        let connect = observer.is_some() && self.signals.borrow().is_empty();
+        // Dropped once the cell is free: dropping an observer may reach back into the view.
+        let old = std::mem::replace(&mut *self.observer.borrow_mut(), observer);
+        drop(old);
+        if connect {
+            *self.signals.borrow_mut() = events::connect(
+                &self.native,
+                &self.manager,
+                &self.message_names,
+                &self.observer,
+            );
+        } else if self.observer.borrow().is_none() {
+            for (object, id) in self.signals.take() {
+                // GTK can destroy the view before its owner lets the page go.
+                let connected = unsafe {
+                    glib::gobject_ffi::g_signal_handler_is_connected(object.as_ptr(), id.as_raw())
+                        != 0
+                };
+                if connected {
+                    object.disconnect(id);
+                }
+            }
+        }
     }
 
     fn as_any(&self) -> &dyn Any {

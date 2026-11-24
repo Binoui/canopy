@@ -7,13 +7,12 @@ use gtk::{
     gdk::{EventButton, EventMask, ModifierType},
     prelude::*,
 };
-use webkit2gtk::WebView;
 
 use crate::pages::engine::{EngineView, World};
 
-/// `webview` is `view`'s WebKit view, whose signals this connects until engine layer PR 3.
+/// `webview` is `view`'s widget, whose GTK button events this hears.
 pub(super) fn setup(
-    webview: &WebView,
+    webview: &gtk::Widget,
     view: std::rc::Weak<dyn EngineView>,
     pages: std::rc::Weak<super::super::Pages>,
 ) -> Vec<glib::SignalHandlerId> {
