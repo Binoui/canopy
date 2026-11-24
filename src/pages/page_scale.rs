@@ -132,10 +132,17 @@ impl Wheel {
     }
 }
 
-pub(super) fn setup(state: &Rc<NativeState>) -> Vec<(glib::Object, glib::SignalHandlerId)> {
+/// Hears Ctrl+wheel on the view's widget and the Ctrl release on its window. Returns those
+/// GTK handlers and the view's load-stage handler, which the page's observer runs.
+pub(super) fn setup(
+    state: &Rc<NativeState>,
+) -> (
+    Vec<(glib::Object, glib::SignalHandlerId)>,
+    impl Fn(LoadEvent) + 'static,
+) {
     state.owner().scale_views.register(state);
     // The zoom scales the whole page: the engine sets its views up that way.
-    let native = super::temporary_webkit_view(&*state.native);
+    let native = state.native.widget();
     native.add_events(
         gdk::EventMask::SCROLL_MASK
             | gdk::EventMask::SMOOTH_SCROLL_MASK
@@ -193,11 +200,11 @@ pub(super) fn setup(state: &Rc<NativeState>) -> Vec<(glib::Object, glib::SignalH
         glib::Propagation::Stop
     });
     let document_wheel = wheel.clone();
-    let document = native.connect_load_changed(move |_, event| {
-        if event == webkit2gtk::LoadEvent::Committed {
+    let document = move |event| {
+        if event == LoadEvent::Committed {
             document_wheel.borrow_mut().delta = 0.;
         }
-    });
+    };
     let keyboard = native.toplevel().unwrap_or_else(|| native.clone().upcast());
     let release = keyboard.connect_key_release_event(move |_, event| {
         use gdk::keys::constants as key;
@@ -206,11 +213,13 @@ pub(super) fn setup(state: &Rc<NativeState>) -> Vec<(glib::Object, glib::SignalH
         }
         glib::Propagation::Proceed
     });
-    vec![
-        (native.clone().upcast(), scroll),
-        (keyboard.upcast(), release),
-        (native.clone().upcast(), document),
-    ]
+    (
+        vec![
+            (native.clone().upcast(), scroll),
+            (keyboard.upcast(), release),
+        ],
+        document,
+    )
 }
 
 #[cfg(test)]

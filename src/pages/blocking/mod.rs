@@ -21,7 +21,11 @@ use crate::{
     browser::Document,
 };
 
-use super::{context::PageContext, PageEvent};
+use super::{
+    context::PageContext,
+    engine::{webkit::temporary_webkit_view, EngineView},
+    PageEvent,
+};
 use lists::{Manifest, Record, Source};
 use webkit::{Filter, FilterStore};
 
@@ -362,14 +366,15 @@ impl Blocking {
         }
     }
 
-    pub(super) fn follow(
-        self: &Rc<Self>,
-        view: &WebView,
-        manager: &UserContentManager,
-    ) -> Option<glib::SignalHandlerId> {
+    /// Fits blocking to `view`'s top site as it loads. The returned handler, connected on
+    /// the view's widget, keeps doing that until it is disconnected.
+    pub(super) fn follow(self: &Rc<Self>, view: &dyn EngineView) -> Option<glib::SignalHandlerId> {
         if self.sources.is_empty() {
             return None;
         }
+        // Still WebKit's own signal and filter list, until engine layer PR 4.
+        let view = temporary_webkit_view(view);
+        let manager = &view.user_content_manager()?;
         let mut page = Followed {
             manager: manager.downgrade(),
             top: TopSite::default(),
@@ -403,14 +408,14 @@ impl Blocking {
         }))
     }
 
-    pub(super) fn loading(&self, view: &WebView, url: Option<&Url>) {
+    pub(super) fn loading(&self, view: &dyn EngineView, url: Option<&Url>) {
         if !self.sources.is_empty() {
-            self.report_top(view, Top::Loading(Site::of(url)));
+            self.report_top(temporary_webkit_view(view), Top::Loading(Site::of(url)));
         }
     }
 
-    pub(super) fn hold_navigation(&self, view: &WebView) {
-        self.report_top(view, Top::Ended);
+    pub(super) fn hold_navigation(&self, view: &dyn EngineView) {
+        self.report_top(temporary_webkit_view(view), Top::Ended);
     }
 
     fn report_top(&self, view: &WebView, top: Top) {

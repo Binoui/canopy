@@ -1883,10 +1883,9 @@ impl Pages {
                         .uri
                         .as_deref()
                         .and_then(|uri| crate::address::web_url(uri).ok());
-                    self.context.blocking.loading(
-                        engine::webkit::temporary_webkit_view(&*page.native),
-                        target.as_ref(),
-                    );
+                    self.context
+                        .blocking
+                        .loading(&*page.native, target.as_ref());
                     page.native.go_to(item.id);
                     Ok(())
                 } else {
