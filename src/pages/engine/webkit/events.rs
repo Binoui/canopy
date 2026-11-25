@@ -6,7 +6,10 @@
 
 use std::{cell::RefCell, rc::Rc};
 
-use glib::{prelude::*, SignalHandlerId};
+use anyhow::Result;
+use gtk::prelude::*;
+
+use glib::SignalHandlerId;
 use javascriptcore::ValueExt;
 use webkit2gtk::{
     AuthenticationRequest, BackForwardListExt, BackForwardListItem, FileChooserRequest,
@@ -14,13 +17,14 @@ use webkit2gtk::{
     NavigationPolicyDecisionExt, NetworkError, PermissionRequest, PermissionRequestExt,
     PolicyDecisionExt, PolicyError, ResponsePolicyDecision, ResponsePolicyDecisionExt,
     URIRequestExt, URIResponseExt, UserContentManager, UserContentManagerExt, WebView, WebViewExt,
+    WindowPropertiesExt,
 };
 
-use super::view::{entry_id, entry_id_of_raw, history_item};
+use super::view::{entry_id, entry_id_of_raw, history_item, WebKitView};
 use crate::pages::engine::{
-    Decide, LoadEvent, LoadFailure, LoadFailureKind, NavigationAction, NavigationType, Observer,
-    PolicyDecision, PolicyDecisionType, Request, Responder, Response, ResponseDetails,
-    ScriptDialog, ScriptDialogType, ViewEvent,
+    Decide, EngineView, LoadEvent, LoadFailure, LoadFailureKind, NavigationAction, NavigationType,
+    NewWindow, Observer, PolicyDecision, PolicyDecisionType, Request, Responder, Response,
+    ResponseDetails, ScriptDialog, ScriptDialogType, ViewEvent,
 };
 
 pub(super) type ObserverCell = Rc<RefCell<Option<Observer>>>;
@@ -39,6 +43,7 @@ pub(super) fn connect(
     manager: &UserContentManager,
     message_names: &[&'static str],
     observer: &ObserverCell,
+    parent: Option<glib::WeakRef<gtk::Window>>,
 ) -> Vec<(glib::Object, SignalHandlerId)> {
     let view_object: glib::Object = native.clone().upcast();
     let mut signals = Vec::new();
@@ -49,9 +54,28 @@ pub(super) fn connect(
         emit(&cell, ViewEvent::Close);
     }));
     let cell = observer.clone();
-    on_view(native.connect_create(move |_, _| {
-        emit(&cell, ViewEvent::Create);
-        None
+    on_view(native.connect_create(move |opener, action| {
+        let request = Rc::new(WindowRequest {
+            opener: opener.clone(),
+            uri: action
+                .request()
+                .and_then(|request| request.uri())
+                .map(Into::into),
+            made: RefCell::new(None),
+        });
+        emit(&cell, ViewEvent::Create(Box::new(request.clone())));
+        let made = request.made.borrow_mut().take();
+        made.map(|view| view.native().clone().upcast())
+    }));
+    let cell = observer.clone();
+    on_view(native.connect_ready_to_show(move |view| {
+        let parent = parent.as_ref().and_then(|parent| parent.upgrade());
+        emit(
+            &cell,
+            ViewEvent::ReadyToShow {
+                size: requested_size(view, parent.as_ref()),
+            },
+        );
     }));
     let cell = observer.clone();
     on_view(native.connect_show_notification(move |_, _| emit(&cell, ViewEvent::ShowNotification)));
@@ -264,6 +288,36 @@ pub(super) fn connect(
     signals.extend(find);
     signals.extend(history);
     signals
+}
+
+/// The size the page asked for a window it opened. WebKit reports every window feature as
+/// given, and gives a `window.open` without a size the opener's window size.
+fn requested_size(view: &WebView, parent: Option<&gtk::Window>) -> Option<(i32, i32)> {
+    let geometry = view.window_properties()?.geometry();
+    let size = (geometry.width(), geometry.height());
+    (size.0 > 0 && size.1 > 0 && parent.is_none_or(|parent| parent.size() != size)).then_some(size)
+}
+
+struct WindowRequest {
+    opener: WebView,
+    uri: Option<String>,
+    /// The view `open` made, handed to WebKit once the observer returns.
+    made: RefCell<Option<Rc<WebKitView>>>,
+}
+
+impl NewWindow for Rc<WindowRequest> {
+    fn uri(&self) -> Option<String> {
+        self.uri.clone()
+    }
+
+    fn open(&self) -> Result<Rc<dyn EngineView>> {
+        if self.made.borrow().is_some() {
+            anyhow::bail!("This window already has a view.");
+        }
+        let view = WebKitView::related(&self.opener);
+        *self.made.borrow_mut() = Some(view.clone());
+        Ok(view)
+    }
 }
 
 fn request_of(request: &webkit2gtk::URIRequest) -> Request {

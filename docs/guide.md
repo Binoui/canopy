@@ -229,6 +229,12 @@ A helper is run once per question, with the question as its only argument. It re
 
 Any answer can instead be `{"locked": true}` or `{"error": "why"}`. `state` is the text the last `unlock` answered, or null. Canopy keeps it in memory only and sends it back with every request, so a helper can hold an unlocked session without writing it to disk. `get` has 30 seconds to answer, `store` 60 seconds, and `unlock` five minutes.
 
+## Sign in through a popup
+
+Buttons such as **Continue with Google** open a small window above Canopy. The site's address is shown at the top of the window, so check it before you type a password. The window closes by itself when the site is done, or press **Ctrl+W** to close it. Popup windows are not saved in your trees, and the vault does not fill logins in them yet.
+
+A site that opens a window without giving it a size gets a waiting page instead, after the current page, like a link opened with a middle click.
+
 ## Bring your Chrome history
 
 To bring your Chrome history, bookmarks, cookies, and saved passwords into Canopy, run:

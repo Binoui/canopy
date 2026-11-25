@@ -34,6 +34,8 @@ pub(crate) struct WebKitView {
     observer: ObserverCell,
     /// WebKit signals feeding the observer, connected while there is one.
     signals: RefCell<Vec<(glib::Object, glib::SignalHandlerId)>>,
+    /// For a view a page opened, the opener's window when it opened it.
+    parent: Option<glib::WeakRef<gtk::Window>>,
 }
 
 impl WebKitView {
@@ -96,7 +98,38 @@ impl WebKitView {
             message_names: config.message_handlers.iter().map(|h| h.name).collect(),
             observer: Rc::default(),
             signals: RefCell::default(),
+            parent: None,
         }))
+    }
+
+    /// A view related to `opener`, for a window its page asked for. It shares the opener's
+    /// process, session and settings, but not its content manager: Canopy's page scripts in
+    /// it would post their messages as the opener's.
+    pub(super) fn related(opener: &webkit2gtk::WebView) -> Rc<Self> {
+        let manager = webkit2gtk::UserContentManager::new();
+        let mut builder = webkit2gtk::WebView::builder()
+            .related_view(opener)
+            .user_content_manager(&manager);
+        if let Some(settings) = WebViewExt::settings(opener) {
+            builder = builder.settings(&settings);
+        }
+        let native = builder.build();
+        Rc::new(Self {
+            widget: native.clone().upcast(),
+            native,
+            manager,
+            message_names: Vec::new(),
+            observer: Rc::default(),
+            signals: RefCell::default(),
+            parent: opener
+                .toplevel()
+                .and_then(|widget| widget.downcast::<gtk::Window>().ok())
+                .map(|window| window.downgrade()),
+        })
+    }
+
+    pub(super) fn native(&self) -> &webkit2gtk::WebView {
+        &self.native
     }
 
     fn list(&self) -> Option<webkit2gtk::BackForwardList> {
@@ -356,6 +389,7 @@ impl EngineView for WebKitView {
                 &self.manager,
                 &self.message_names,
                 &self.observer,
+                self.parent.clone(),
             );
         } else if self.observer.borrow().is_none() {
             for (object, id) in self.signals.take() {

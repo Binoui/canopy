@@ -278,8 +278,14 @@ pub enum ViewEvent {
     Authenticate(Box<dyn Responder>),
     /// The page asks to close its window.
     Close,
-    /// The page asks for a new window. The engine opens none.
-    Create,
+    /// The page asks for a new window, as `window.open` does. The engine opens the view
+    /// `NewWindow::open` made while the event ran, or none; the answer is ignored.
+    Create(Box<dyn NewWindow>),
+    /// A view made through `NewWindow::open` is ready to be shown. `size` is the size the page
+    /// asked for its area, or `None` when it gave none.
+    ReadyToShow {
+        size: Option<(i32, i32)>,
+    },
     /// The page shows a notification. `true` keeps the engine from showing it.
     ShowNotification,
     /// Find found `count` matches.
@@ -315,6 +321,17 @@ pub enum LoadFailureKind {
 pub trait Responder {
     /// Refuses or cancels the request.
     fn refuse(&self);
+}
+
+/// A page's request for a new window.
+pub trait NewWindow {
+    /// The address the window is to load, when the engine knows it.
+    fn uri(&self) -> Option<String>;
+    /// Makes the window's view, related to the opener: it shares the opener's process and
+    /// session, so the page can reach it through `window.opener` and close it. The view runs
+    /// none of Canopy's page scripts. It reports `ViewEvent::ReadyToShow` once the page has
+    /// set it up; until then it is not placed anywhere. Only the first call makes a view.
+    fn open(&self) -> Result<Rc<dyn EngineView>>;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
