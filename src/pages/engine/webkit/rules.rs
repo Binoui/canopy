@@ -1,3 +1,6 @@
+//! WebKit's content filter store and filters behind `RuleStore` and `ViewRules`, through raw
+//! ffi: the bindings do not cover them.
+
 use std::{
     future::Future,
     marker::PhantomData,
@@ -10,6 +13,8 @@ use std::{
 use anyhow::{Context, Result};
 use glib::{thread_guard::ThreadGuard, translate::*};
 use webkit2gtk::{ffi, UserContentManager};
+
+use crate::pages::engine::{EngineView, LocalFuture, RuleSet, RuleStore, ViewRules};
 
 glib::wrapper! {
     struct FilterObject(Shared<ffi::WebKitUserContentFilter>);
@@ -29,10 +34,10 @@ glib::wrapper! {
     }
 }
 
-pub(super) struct Filter(FilterObject, PhantomData<Rc<()>>);
+struct Filter(FilterObject, PhantomData<Rc<()>>);
 
 impl Filter {
-    pub(super) fn attach(&self, manager: &UserContentManager) {
+    fn attach(&self, manager: &UserContentManager) {
         unsafe {
             ffi::webkit_user_content_manager_add_filter(
                 manager.to_glib_none().0,
@@ -42,7 +47,7 @@ impl Filter {
     }
 }
 
-pub(super) fn detach(manager: &UserContentManager, identifier: &str) {
+fn detach(manager: &UserContentManager, identifier: &str) {
     unsafe {
         ffi::webkit_user_content_manager_remove_filter_by_id(
             manager.to_glib_none().0,
@@ -52,7 +57,7 @@ pub(super) fn detach(manager: &UserContentManager, identifier: &str) {
 }
 
 #[derive(Clone)]
-pub(super) struct FilterStore(StoreObject, PhantomData<Rc<()>>);
+struct FilterStore(StoreObject, PhantomData<Rc<()>>);
 
 type StorePtr = *mut ffi::WebKitUserContentFilterStore;
 type AsyncResult = *mut gio::ffi::GAsyncResult;
@@ -61,7 +66,7 @@ type FinishFilter =
     unsafe extern "C" fn(StorePtr, AsyncResult, ErrorOut) -> *mut ffi::WebKitUserContentFilter;
 
 impl FilterStore {
-    pub(super) fn new(directory: &Path) -> Self {
+    fn new(directory: &Path) -> Self {
         assert!(gtk::is_initialized_main_thread());
         let store =
             unsafe { ffi::webkit_user_content_filter_store_new(directory.to_glib_none().0) };
@@ -72,7 +77,7 @@ impl FilterStore {
         Self(unsafe { from_glib_full(store) }, PhantomData)
     }
 
-    pub(super) fn load(&self, identifier: String) -> impl Future<Output = Result<Filter>> {
+    fn load(&self, identifier: String) -> impl Future<Output = Result<Filter>> {
         self.operation(
             move |store, cancel, callback, data| unsafe {
                 ffi::webkit_user_content_filter_store_load(
@@ -87,11 +92,11 @@ impl FilterStore {
         )
     }
 
-    pub(super) fn save(
+    fn save(
         &self,
         identifier: String,
         rules: glib::Bytes,
-        call_time: impl FnOnce(Duration) + 'static,
+        call_time: Box<dyn FnOnce(Duration)>,
     ) -> impl Future<Output = Result<Filter>> {
         self.operation(
             move |store, cancel, callback, data| {
@@ -113,7 +118,7 @@ impl FilterStore {
         )
     }
 
-    pub(super) fn identifiers(&self) -> impl Future<Output = Option<Vec<String>>> {
+    fn identifiers(&self) -> impl Future<Output = Option<Vec<String>>> {
         self.operation(
             |store, cancel, callback, data| unsafe {
                 ffi::webkit_user_content_filter_store_fetch_identifiers(
@@ -128,7 +133,7 @@ impl FilterStore {
         )
     }
 
-    pub(super) fn remove(&self, identifier: String) -> impl Future<Output = ()> {
+    fn remove(&self, identifier: String) -> impl Future<Output = ()> {
         self.operation(
             move |store, cancel, callback, data| unsafe {
                 ffi::webkit_user_content_filter_store_remove(
@@ -190,5 +195,60 @@ fn finish_filter(finish: FinishFilter) -> impl FnOnce(StorePtr, AsyncResult) -> 
         filter
             .map(|filter| Filter(filter, PhantomData))
             .context("WebKit did not return a content filter.")
+    }
+}
+
+pub(super) fn open_store(directory: &Path) -> Rc<dyn RuleStore> {
+    Rc::new(FilterStore::new(directory))
+}
+
+impl RuleStore for FilterStore {
+    fn load(&self, identifier: String) -> LocalFuture<Result<RuleSet>> {
+        let load = FilterStore::load(self, identifier);
+        Box::pin(async move { load.await.map(RuleSet::new) })
+    }
+
+    fn compile(
+        &self,
+        identifier: String,
+        rules: glib::Bytes,
+        call_time: Box<dyn FnOnce(Duration)>,
+    ) -> LocalFuture<Result<RuleSet>> {
+        let save = self.save(identifier, rules, call_time);
+        Box::pin(async move { save.await.map(RuleSet::new) })
+    }
+
+    fn identifiers(&self) -> LocalFuture<Option<Vec<String>>> {
+        Box::pin(FilterStore::identifiers(self))
+    }
+
+    fn remove(&self, identifier: String) -> LocalFuture<()> {
+        Box::pin(FilterStore::remove(self, identifier))
+    }
+}
+
+/// Applies filters through a view's user content manager while the manager lives.
+pub(super) struct ContentRules(pub(super) glib::WeakRef<UserContentManager>);
+
+impl ViewRules for ContentRules {
+    fn alive(&self) -> bool {
+        self.0.upgrade().is_some()
+    }
+
+    fn is_for(&self, view: &dyn EngineView) -> bool {
+        super::view::content_manager(view)
+            .is_some_and(|manager| self.0.upgrade().as_ref() == Some(&manager))
+    }
+
+    fn add(&self, rules: &RuleSet) {
+        if let (Some(manager), Some(filter)) = (self.0.upgrade(), rules.native::<Filter>()) {
+            filter.attach(&manager);
+        }
+    }
+
+    fn remove(&self, identifier: &str) {
+        if let Some(manager) = self.0.upgrade() {
+            detach(&manager, identifier);
+        }
     }
 }

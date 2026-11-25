@@ -3,8 +3,7 @@ use crate::{
     browser::{LoadTicket, PendingTarget, VisitId},
     pages::{Command, PageEvent, Pages},
 };
-use std::rc::Rc;
-use webkit2gtk::WebViewExt;
+use std::rc::{Rc, Weak};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Progress(u8);
@@ -120,26 +119,23 @@ impl NativeState {
             Issue::Loading(ticket) => Some(ticket),
             _ => None,
         };
-        let progress = self.native.estimated_load_progress();
+        let progress = self.native.estimated_progress();
         self.loading.borrow().status(running, progress)
     }
 }
 
-pub(super) fn setup(state: &Rc<NativeState>) -> glib::SignalHandlerId {
-    let weak = Rc::downgrade(state);
-    state
-        .native
-        .connect_estimated_load_progress_notify(move |_| {
-            if let Some(state) = Pages::enter_native(&weak) {
-                state.schedule_loading();
-            }
-        })
+/// The view's load progress moved.
+pub(super) fn progress_changed(weak: &Weak<NativeState>) {
+    if let Some(state) = Pages::enter_native(weak) {
+        state.schedule_loading();
+    }
 }
 
 impl Pages {
     #[cfg(feature = "gui-smoke")]
-    pub fn foreground_loading_view(&self) -> Option<webkit2gtk::WebView> {
-        self.foreground_load().map(|page| page.native.clone())
+    pub fn foreground_loading_view(&self) -> Option<crate::pages::engine::webkit::NativeView> {
+        self.foreground_load()
+            .map(|page| crate::pages::engine::webkit::webkit_view_for_tests(&*page.native).clone())
     }
 
     fn foreground_load(&self) -> Option<Rc<LivePage>> {

@@ -91,14 +91,9 @@ impl Ui {
         shortcut_clicks.set_propagation_phase(gtk::PropagationPhase::Capture);
         let chrome =
             HtmlChrome::mount_with_mail(&fixed, &pages, mail_origin.clone(), data_dir, &shortcuts)?;
-        pages.set_chrome(&chrome.native());
+        pages.set_chrome(chrome.native().upcast_ref());
         {
-            use webkit2gtk::{WebContextExt, WebViewExt};
-            let confined = pages.sandbox_enabled()
-                && chrome
-                    .native()
-                    .context()
-                    .is_some_and(|c| c.is_sandbox_enabled());
+            let confined = pages.sandbox_enabled() && chrome.sandbox_enabled();
             if !confined {
                 eprintln!(
                     "Canopy: WebKit's sandbox is off. Pages run with your full user permissions."

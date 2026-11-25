@@ -73,10 +73,9 @@ impl Pages {
             .as_ref()
             .and_then(|page| {
                 let visit = page.state.navigation.borrow().current.as_ref()?.visit;
-                let level = PageScale::from_stored_percent(
-                    (page.native.zoom_level() * 100.).round() as i64,
-                )
-                .unwrap_or_default();
+                let level =
+                    PageScale::from_stored_percent((page.native.zoom() * 100.).round() as i64)
+                        .unwrap_or_default();
                 Some(PageScaleReadout::Page { visit, level })
             })
             .unwrap_or(PageScaleReadout::NoPage);
@@ -107,8 +106,8 @@ impl NativeState {
         };
         let factor = f64::from(applied.percent()) / 100.;
         // A failed policy read must not carry the previous site's scale into this document.
-        if (self.native.zoom_level() - factor).abs() > f64::EPSILON {
-            self.native.set_zoom_level(factor);
+        if (self.native.zoom() - factor).abs() > f64::EPSILON {
+            self.native.set_zoom(factor);
         }
         level.map(|_| ())
     }
@@ -133,13 +132,18 @@ impl Wheel {
     }
 }
 
-pub(super) fn setup(state: &Rc<NativeState>) -> Vec<(glib::Object, glib::SignalHandlerId)> {
-    use webkit2gtk::SettingsExt;
+/// Hears Ctrl+wheel on the view's widget and the Ctrl release on its window. Returns those
+/// GTK handlers and the view's load-stage handler, which the page's observer runs.
+pub(super) fn setup(
+    state: &Rc<NativeState>,
+) -> (
+    Vec<(glib::Object, glib::SignalHandlerId)>,
+    impl Fn(LoadEvent) + 'static,
+) {
     state.owner().scale_views.register(state);
-    if let Some(settings) = WebViewExt::settings(&state.native) {
-        settings.set_zoom_text_only(false);
-    }
-    state.native.add_events(
+    // The zoom scales the whole page: the engine sets its views up that way.
+    let native = state.native.widget();
+    native.add_events(
         gdk::EventMask::SCROLL_MASK
             | gdk::EventMask::SMOOTH_SCROLL_MASK
             | gdk::EventMask::KEY_RELEASE_MASK,
@@ -147,7 +151,7 @@ pub(super) fn setup(state: &Rc<NativeState>) -> Vec<(glib::Object, glib::SignalH
     let wheel = Rc::new(RefCell::new(Wheel::default()));
     let weak = Rc::downgrade(state);
     let accumulation = wheel.clone();
-    let scroll = state.native.connect_scroll_event(move |native, event| {
+    let scroll = native.connect_scroll_event(move |native, event| {
         let Some(state) = Pages::enter_native(&weak) else {
             return glib::Propagation::Proceed;
         };
@@ -157,9 +161,9 @@ pub(super) fn setup(state: &Rc<NativeState>) -> Vec<(glib::Object, glib::SignalH
             .live
             .borrow()
             .as_ref()
-            .is_some_and(|page| page.native == *native);
+            .is_some_and(|page| page.native.widget() == native.upcast_ref::<gtk::Widget>());
         let modifiers = event.state() & gtk::accelerator_get_default_mod_mask();
-        if !selected || !native.is_sensitive() || modifiers != gdk::ModifierType::CONTROL_MASK {
+        if !selected || state.retired.get() || modifiers != gdk::ModifierType::CONTROL_MASK {
             accumulation.borrow_mut().delta = 0.;
             return glib::Propagation::Proceed;
         }
@@ -196,15 +200,12 @@ pub(super) fn setup(state: &Rc<NativeState>) -> Vec<(glib::Object, glib::SignalH
         glib::Propagation::Stop
     });
     let document_wheel = wheel.clone();
-    let document = state.native.connect_load_changed(move |_, event| {
-        if event == webkit2gtk::LoadEvent::Committed {
+    let document = move |event| {
+        if event == LoadEvent::Committed {
             document_wheel.borrow_mut().delta = 0.;
         }
-    });
-    let keyboard = state
-        .native
-        .toplevel()
-        .unwrap_or_else(|| state.native.clone().upcast());
+    };
+    let keyboard = native.toplevel().unwrap_or_else(|| native.clone().upcast());
     let release = keyboard.connect_key_release_event(move |_, event| {
         use gdk::keys::constants as key;
         if matches!(event.keyval(), key::Control_L | key::Control_R) {
@@ -212,11 +213,13 @@ pub(super) fn setup(state: &Rc<NativeState>) -> Vec<(glib::Object, glib::SignalH
         }
         glib::Propagation::Proceed
     });
-    vec![
-        (state.native.clone().upcast(), scroll),
-        (keyboard.upcast(), release),
-        (state.native.clone().upcast(), document),
-    ]
+    (
+        vec![
+            (native.clone().upcast(), scroll),
+            (keyboard.upcast(), release),
+        ],
+        document,
+    )
 }
 
 #[cfg(test)]

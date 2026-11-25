@@ -103,7 +103,7 @@ WebKitGTK builds the page view inside a GTK container. wry still builds the chro
 
 Pages in src/pages/mod.rs owns the window's Browser, PageContext and the branch registry. Ui owns the window, HTML chrome and cookie inbox. It translates navigation intents into Go commands and reads the forest through Pages::read, which exposes only a shared Browser reference. Pages owns settling and startup selection, including blanking the live page when the last tree is settled.
 
-PageContext in src/pages/native.rs owns the content WebContext, its persistent data and cookie manager, favicon database and download handler. LivePage in src/pages/live.rs builds each page in that context and keeps navigation and native history. Its callbacks enter Pages through a weak state reference. A callback guard retains the owner for the entire callback, including reentrant observer calls, and reaches the sole Browser writer. Ui applies cookie batches through Pages with its existing startup gate and serialized drain. The chrome keeps its separate wry context.
+PageContext in src/pages/context.rs holds the page engine as an `Rc<dyn Engine>` (src/pages/engine/mod.rs), with content blocking and the window's page events. The engine is WebKitGTK, in src/pages/engine/webkit/: it owns the content WebContext, its persistent data and cookie manager, favicon database, side fetches, download handler and content rule store. It makes every page view, errand views included. Only that folder, the chrome and src/lib.rs name WebKit's crates; `tests/engine_boundary.rs` checks it. LivePage in src/pages/live.rs asks the engine for each page's view and keeps navigation and native history. Every engine signal on a page view reaches it as a `ViewEvent`, through one observer per view, synchronously and in WebKit's order; GTK input events stay on the view's widget. Its callbacks enter Pages through a weak state reference. A callback guard retains the owner for the entire callback, including reentrant observer calls, and reaches the sole Browser writer. Ui applies cookie batches through Pages with its existing startup gate and serialized drain. The chrome keeps its separate wry context.
 
 Pages keeps branch-palette and path continuations by LoadTicket. A continuation waits for its matching commit, then for that attempt to finish loading. A same-document commit is ready immediately. Once ready, it runs exactly once on a GTK idle after the native document has been bound, even if the page starts another navigation first. The path's second address attaches to the visit committed by its first attempt, including when that page refreshes itself. A native replacement before readiness, a failure of the waiting attempt, an explicit cancellation, blanking, or settling discards it. A Pages command cancels when it starts a new attempt; Back and reload also clear a path continuation when they do nothing. A no-op Back or reload preserves a pending branch palette. Pages issues the path's second address itself, or reports OpenBranchPalette to Ui through its one PageEvent observer.
 
@@ -116,15 +116,17 @@ Back uses an entry still present in WebKit's history only when its visit belongs
 ## Blocking follows the top page
 
 Each content profile has one blocking controller in `PageContext`. It follows
-the top-frame load signals of live views, including background views. Canopy sets
-the destination before it issues a native load. The controller attaches shared
-WebKit filters to each eligible view's content manager. Errand views keep their
-own managers outside this path. A site exception uses the same origin definition
+the top-frame load stages of live views, including background views. The live
+page's observer hands each stage to blocking before its own handlers. Canopy sets
+the destination before it issues a native load. The controller applies the
+engine's shared compiled rule sets to each eligible view. Errand views are never
+filtered. A site exception uses the same origin definition
 as page size. While a form-return confirmation is open, the shown page keeps
 its filters. Continue applies the form result's site policy before navigation.
 
-The controller fetches lists through the cookie-free Soup session and converts
-them on a worker. WebKit compiles one list at a time. Each new compiled list has
+The controller fetches lists through the engine's cookie-free fetch and converts
+them on a worker into WebKit's content rule format. The engine's rule store
+compiles one list at a time. Each new compiled list has
 a fresh identifier. An atomic manifest update publishes successful replacements
 together and keeps the previous version of any failed list. Preferences live in
 `content-blocking` beside the database. The source files, compiled lists, and

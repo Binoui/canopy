@@ -1,23 +1,21 @@
 //! Signing in on the live page: noticing its sign-in fields, filling the login the user
 //! picked, and hearing the login the user sends.
 
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use anyhow::{anyhow, Result};
-use javascriptcore::ValueExt;
 use serde_json::Value;
 use url::Url;
-use webkit2gtk::{
-    UserContentInjectedFrames, UserContentManager, UserContentManagerExt, UserScript,
-    UserScriptInjectionTime,
-};
 use zeroize::Zeroizing;
 
 use super::{LivePage, NativeState, WORLD};
 use crate::{
     address::WebOrigin,
     logins::Login,
-    pages::{LoginEvent, PageEvent, Pages},
+    pages::{
+        engine::{Frames, MessageHandler, ScriptTime, UserScript, ViewConfig},
+        LoginEvent, PageEvent, Pages,
+    },
     secret::Secret,
 };
 
@@ -29,33 +27,35 @@ const SENT: &str = "canopyLoginSent";
 
 /// Adds the helper to the page's isolated world. Only the top frame gets it: a login is
 /// never offered to, or filled into, an embedded frame.
-pub(super) fn setup(
-    manager: &UserContentManager,
-    state: &Rc<NativeState>,
-) -> [glib::SignalHandlerId; 2] {
-    manager.add_script(&UserScript::for_world(
-        HELPER,
-        UserContentInjectedFrames::TopFrame,
-        UserScriptInjectionTime::Start,
-        WORLD,
-        &[],
-        &[],
-    ));
-    manager.register_script_message_handler_in_world(CHANGED, WORLD);
-    manager.register_script_message_handler_in_world(SENT, WORLD);
-    let weak = Rc::downgrade(state);
-    let changed = manager.connect_script_message_received(Some(CHANGED), move |_, _| {
-        if let Some(state) = Pages::enter_native(&weak) {
-            state.look_for_login_fields();
-        }
+pub(super) fn configure(config: &mut ViewConfig) {
+    config.scripts.push(UserScript {
+        source: HELPER,
+        world: WORLD,
+        frames: Frames::Top,
+        time: ScriptTime::DocumentStart,
     });
-    let weak = Rc::downgrade(state);
-    let sent = manager.connect_script_message_received(Some(SENT), move |_, message| {
-        if let (Some(state), Some(value)) = (Pages::enter_native(&weak), message.js_value()) {
-            state.login_sent(&Zeroizing::new(value.to_str().to_string()));
+    for name in [CHANGED, SENT] {
+        config
+            .message_handlers
+            .push(MessageHandler { name, world: WORLD });
+    }
+}
+
+/// Hears the helper's messages. Messages to other names are not the helper's.
+pub(super) fn message(weak: &Weak<NativeState>, name: &str, body: Option<Zeroizing<String>>) {
+    match name {
+        CHANGED => {
+            if let Some(state) = Pages::enter_native(weak) {
+                state.look_for_login_fields();
+            }
         }
-    });
-    [changed, sent]
+        SENT => {
+            if let (Some(state), Some(value)) = (Pages::enter_native(weak), body) {
+                state.login_sent(&value);
+            }
+        }
+        _ => {}
+    }
 }
 
 impl NativeState {

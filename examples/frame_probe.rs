@@ -50,7 +50,15 @@ fn main() -> Result<()> {
     window.show_all();
     let context = webkit2gtk::WebContext::default().unwrap();
     use webkit2gtk::WebContextExt;
-    let icons = Favicons::new(&context.favicon_database().unwrap());
+    struct Database(webkit2gtk::FaviconDatabase);
+    impl canopy::chrome::FaviconSource for Database {
+        fn load(&self, url: &str, done: Box<dyn FnOnce(Option<gtk::cairo::Surface>)>) {
+            use webkit2gtk::FaviconDatabaseExt;
+            self.0
+                .favicon(url, None::<&gio::Cancellable>, move |r| done(r.ok()));
+        }
+    }
+    let icons = Favicons::new(Box::new(Database(context.favicon_database().unwrap())));
     let chrome = HtmlChrome::mount(&fixed, icons)?;
     chrome.resize(1240., 900.);
     let deadline = Instant::now() + Duration::from_secs(30);

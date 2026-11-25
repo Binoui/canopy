@@ -1,10 +1,11 @@
-pub use native::Fetched;
+pub use engine::Fetched;
 mod blocking;
+mod context;
+mod engine;
 mod errand;
 pub use blocking::BlockingView;
 pub use errand::{ErrandEnd, ErrandTicket};
 mod live;
-mod native;
 mod switcher;
 pub(crate) use switcher::SwitcherSource;
 pub(crate) mod stack;
@@ -21,6 +22,8 @@ use crate::{
     secret::Secret,
 };
 use anyhow::Result;
+pub use engine::{CookieApplyError, DownloadEvent};
+use engine::{EngineView, World};
 use gtk::prelude::*;
 pub use live::find::{
     FindAction, FindClose, FindId, FindMatches, FindReadout, FindTarget, FindUpdate,
@@ -28,14 +31,12 @@ pub use live::find::{
 pub use live::loading::{LoadProgress, LoadStatus, LoadingReadout, Progress};
 pub use live::page_scale::{PageScaleAction, PageScaleReadout};
 use live::LivePage;
-pub use native::{CookieApplyError, DownloadEvent};
 use std::{
     cell::{Cell, RefCell},
     path::Path,
     rc::{Rc, Weak},
 };
 use url::Url;
-use webkit2gtk::{BackForwardListItemExt, WebViewExt};
 
 pub enum Go {
     Visit(VisitId),
@@ -197,7 +198,7 @@ enum StartPage {
 
 type Observer = Rc<dyn Fn(PageEvent)>;
 #[cfg(feature = "gui-smoke")]
-type PlacementObserver = Rc<dyn Fn(&webkit2gtk::WebView)>;
+type PlacementObserver = Rc<dyn Fn(&engine::webkit::NativeView)>;
 
 pub(crate) type DismissCompletion = Box<dyn FnOnce(Result<ForestProjection>)>;
 
@@ -318,15 +319,15 @@ impl Drop for MemoryDrop {
 pub struct Pages {
     me: Weak<Pages>,
     browser: RefCell<Browser>,
-    context: Rc<native::PageContext>,
+    context: Rc<context::PageContext>,
     errands: Rc<errand::Errands>,
     branches: Branches,
     container: gtk::Fixed,
     viewport: Cell<(i32, i32)>,
-    views: RefCell<Vec<glib::WeakRef<webkit2gtk::WebView>>>,
+    views: RefCell<Vec<glib::WeakRef<gtk::Widget>>>,
     scale_views: live::page_scale::Views,
     hold: RefCell<Option<Hold>>,
-    chrome: RefCell<Option<glib::WeakRef<webkit2gtk::WebView>>>,
+    chrome: RefCell<Option<glib::WeakRef<gtk::Widget>>>,
     commands: RefCell<std::collections::VecDeque<Command>>,
     retiring: RefCell<Vec<Rc<LivePage>>>,
     #[cfg(feature = "gui-smoke")]
@@ -351,13 +352,13 @@ pub struct Pages {
     start: Cell<Option<StartPage>>,
     settle_undo: RefCell<Option<SettleUndo>>,
     /// The page shown fullscreen: it covers the whole window, chrome included.
-    fullscreen: RefCell<Option<glib::WeakRef<webkit2gtk::WebView>>>,
+    fullscreen: RefCell<Option<Weak<dyn EngineView>>>,
     deleted: RefCell<Option<crate::browser::Deleted>>,
 }
 
 impl Pages {
     pub fn mount(container: &gtk::Fixed, browser: Browser, data_dir: &Path) -> Result<Rc<Self>> {
-        let context = native::PageContext::new(data_dir)?;
+        let context = context::PageContext::new(data_dir)?;
         let budget = crate::budget::Budget::of_machine()?;
         let pages = Rc::new_cyclic(|me| Self {
             me: me.clone(),
@@ -482,7 +483,7 @@ impl Pages {
         cancel: Option<&gio::Cancellable>,
         done: impl FnOnce(Result<Fetched>) + 'static,
     ) {
-        self.context.fetch(url, cancel, done);
+        self.context.engine().fetch(url, cancel, Box::new(done));
     }
 
     pub(crate) async fn fetch_without_cookies(&self, url: &Url, limit: usize) -> Result<Fetched> {
@@ -516,12 +517,11 @@ impl Pages {
     }
 
     pub fn favicons(&self) -> Rc<Favicons> {
-        self.context.favicons.clone()
+        self.context.favicons()
     }
 
     pub fn sandbox_enabled(&self) -> bool {
-        use webkit2gtk::WebContextExt;
-        self.context.native.is_sandbox_enabled()
+        self.context.engine().sandbox_enabled()
     }
 
     pub fn observe(&self, callback: impl Fn(PageEvent) + 'static) {
@@ -580,17 +580,19 @@ impl Pages {
                 .borrow()
                 .as_ref()
                 .map(|p| p.native.clone());
-            if view.is_none() || selected != view {
+            let shown = |v: &Rc<dyn EngineView>| {
+                selected.as_ref().is_some_and(|s| s.widget() == v.widget())
+            };
+            if view.as_ref().is_none_or(|v| !shown(v)) {
                 *self.fullscreen.borrow_mut() = None;
                 self.fullscreen_changed(false);
             }
-            if let Some(view) = view.filter(|v| selected.as_ref() != Some(v)) {
-                view.evaluate_javascript(
+            if let Some(view) = view.filter(|v| !shown(v)) {
+                view.evaluate(
                     "document.exitFullscreen?.().catch(() => {})",
+                    World::Page,
                     None,
                     None,
-                    None::<&gio::Cancellable>,
-                    |_| {},
                 );
                 if let Some(window) = self.container.toplevel().and_downcast::<gtk::Window>() {
                     window.unfullscreen();
@@ -737,7 +739,7 @@ impl Pages {
                 self.arm_background_timeout(view);
             } else if let Some(last_shown) = self.branches.candidate_live.take() {
                 page.cancel_foreground();
-                page.native.set_child_visible(false);
+                page.native.widget().set_child_visible(false);
                 let mut hidden = self.branches.hidden.borrow_mut();
                 let index = hidden
                     .iter()
@@ -793,7 +795,7 @@ impl Pages {
             _ => LivePage::empty(&self.container, self.me.clone(), &self.context)?,
         };
         *self.branches.candidate_saved.borrow_mut() = saved;
-        page.native.set_child_visible(false);
+        page.native.widget().set_child_visible(false);
 
         let page = Rc::new(page);
         *self.branches.candidate.borrow_mut() = Some(page.clone());
@@ -811,7 +813,7 @@ impl Pages {
             self.me.clone(),
             &self.context,
         )?);
-        page.native.set_child_visible(false);
+        page.native.widget().set_child_visible(false);
 
         *self.branches.candidate.borrow_mut() = Some(page.clone());
         page.restore(visit)
@@ -828,7 +830,7 @@ impl Pages {
             .live
             .borrow()
             .clone()
-            .filter(|page| !page.native.is_sensitive());
+            .filter(|page| page.retired());
         let target_retired = if let Some(page) = retired.filter(|page| page.contains(visit)) {
             let forest =
                 self.read(|b| ForestProjection::from_snapshot(b.snapshot()?, b.tree_states()?))?;
@@ -886,7 +888,7 @@ impl Pages {
             .live
             .borrow()
             .clone()
-            .filter(|page| page.native.is_sensitive());
+            .filter(|page| !page.retired());
         if let Some(page) = selected {
             if page.current_visit() == Some(visit) || page.pending_visit() == Some(visit) {
                 return Ok(());
@@ -958,12 +960,12 @@ impl Pages {
         self.branches.clock.set(last_shown + 1);
         incoming.last_shown.set(last_shown + 1);
         let old = self.branches.live.borrow_mut().replace(incoming.clone());
-        let focus = old.as_ref().is_some_and(|p| p.native.is_focus());
+        let focus = old.as_ref().is_some_and(|p| p.native.widget().is_focus());
         incoming.show();
         if let Some(old) = old {
             old.close_find();
-            old.native.set_child_visible(false);
-            if !old.native.is_sensitive() {
+            old.native.widget().set_child_visible(false);
+            if old.retired() {
                 self.release_outgoing(old);
             } else {
                 // A later checkpoint of this page must sort where the hidden page did.
@@ -999,7 +1001,9 @@ impl Pages {
         self.branches.clock.set(last_shown + 1);
         candidate.last_shown.set(last_shown + 1);
         let old = self.branches.live.borrow_mut().replace(candidate.clone());
-        let focus = old.as_ref().is_some_and(|page| page.native.is_focus());
+        let focus = old
+            .as_ref()
+            .is_some_and(|page| page.native.widget().is_focus());
         if let Some(old) = old {
             old.close_find();
             self.hold_page(old, &candidate, last_shown);
@@ -1026,10 +1030,10 @@ impl Pages {
             cancel: cancel.clone(),
             cap: None,
         });
-        if let Some(window) = old.native.window() {
+        if let Some(window) = old.native.widget().window() {
             window.set_pass_through(true);
         }
-        self.place_view(incoming); // also raises the chrome
+        self.place_view(incoming.widget()); // also raises the chrome
         #[cfg(feature = "gui-smoke")]
         self.release_event(&old, ReleasePhase::Holding);
         let weak = self.me.clone();
@@ -1043,30 +1047,30 @@ impl Pages {
         });
         self.hold.borrow_mut().as_mut().unwrap().cap = Some(cap);
         let weak = self.me.clone();
-        let target = incoming.downgrade();
-        incoming.call_async_javascript_function(
+        let target = Rc::downgrade(incoming);
+        incoming.call_async(
             "while (!document.body) await new Promise(r => requestAnimationFrame(r)); await new Promise(r => requestAnimationFrame(r)); await new Promise(r => requestAnimationFrame(r)); return true;",
-            None, Some("canopy-hold"), None, Some(&cancel.clone()),
-            move |result| {
+            World::Hold, Some(&cancel.clone()),
+            Box::new(move |result| {
                 if cancel.is_cancelled() || result.is_err() { return; }
                 let Some(view) = target.upgrade() else { return; };
                 let next_cancel = cancel.clone();
-                view.snapshot(webkit2gtk::SnapshotRegion::Visible, webkit2gtk::SnapshotOptions::NONE, Some(&cancel),
-                    move |result| {
+                view.snapshot(Some(&cancel),
+                    Box::new(move |result| {
                         if next_cancel.is_cancelled() || result.is_err() { return; }
                         drop(result); // rendering signal only; never paint the image
                         let Some(view) = target.upgrade() else { return; };
                         let done_cancel = next_cancel.clone();
-                        view.call_async_javascript_function(
+                        view.call_async(
                             "await new Promise(r => requestAnimationFrame(r)); return true;",
-                            None, Some("canopy-hold"), None, Some(&next_cancel),
-                            move |result| {
+                            World::Hold, Some(&next_cancel),
+                            Box::new(move |result| {
                                 if !done_cancel.is_cancelled() && result.is_ok() {
                                     if let Some(pages) = weak.upgrade() { pages.end_hold(); }
                                 }
-                            });
-                    });
-            });
+                            }));
+                    }));
+            }));
     }
 
     fn end_hold(&self) {
@@ -1076,10 +1080,10 @@ impl Pages {
             if let Some(cap) = hold.cap {
                 cap.remove();
             }
-            hold.outgoing.native.set_child_visible(false);
+            hold.outgoing.native.widget().set_child_visible(false);
             #[cfg(feature = "gui-smoke")]
             self.release_event(&hold.outgoing, ReleasePhase::Hidden);
-            if !hold.outgoing.native.is_sensitive() {
+            if hold.outgoing.retired() {
                 self.release_outgoing(hold.outgoing);
                 return;
             }
@@ -1147,13 +1151,13 @@ impl Pages {
     }
 
     #[cfg(feature = "gui-smoke")]
-    pub fn background_view(&self, visit: VisitId) -> Option<webkit2gtk::WebView> {
+    pub fn background_view(&self, visit: VisitId) -> Option<engine::webkit::NativeView> {
         self.branches
             .background
             .borrow()
             .iter()
             .find(|h| h.page.background_visit() == Some(visit))
-            .map(|h| h.page.native.clone())
+            .map(|h| engine::webkit::webkit_view_for_tests(&*h.page.native).clone())
     }
 
     /// The shown page is loading.
@@ -1168,7 +1172,6 @@ impl Pages {
     /// The shown page's visible text, cut at `limit` characters. A page that has not
     /// answered in 3 s gives an error, so a stuck page cannot hold the asker.
     pub fn selected_text(&self, limit: usize, done: impl FnOnce(Result<String>) + 'static) {
-        use javascriptcore::ValueExt;
         let Some(native) = self
             .branches
             .live
@@ -1192,22 +1195,17 @@ impl Pages {
             }
         });
         // An isolated world, so the page's own scripts cannot change what is read.
-        native.evaluate_javascript(
+        native.evaluate(
             &format!("String(document.body ? document.body.innerText : '').slice(0, {limit})"),
-            Some("canopy-session"),
-            None,
+            World::Session,
             Some(&cancel),
-            move |value| {
+            Some(Box::new(move |value| {
                 let Some(done) = done.borrow_mut().take() else {
                     return;
                 };
                 timeout.remove();
-                done(
-                    value
-                        .map(|value| value.to_str().to_string())
-                        .map_err(|error| anyhow::anyhow!("Could not read the page. {error}")),
-                );
-            },
+                done(value.map_err(|error| anyhow::anyhow!("Could not read the page. {error}")));
+            })),
         );
     }
 
@@ -1571,10 +1569,10 @@ impl Pages {
         #[cfg(feature = "gui-smoke")]
         let event = ReleaseEvent {
             view: old.view(),
-            widget: old.native.as_ptr() as usize,
+            widget: old.native.widget().as_ptr() as usize,
             phase: ReleasePhase::Released,
         };
-        old.native.set_child_visible(false);
+        old.native.widget().set_child_visible(false);
         let weak = self.me.clone();
         let pending = old.clone();
         old.capture_checkpoint_scroll(move || {
@@ -1659,7 +1657,7 @@ impl Pages {
                 .live
                 .borrow()
                 .as_ref()
-                .is_some_and(|p| p.native.is_sensitive());
+                .is_some_and(|p| !p.retired());
             if sensitive {
                 self.receive(event);
             }
@@ -1717,7 +1715,7 @@ impl Pages {
             .live
             .borrow()
             .as_ref()
-            .is_some_and(|p| !p.native.is_sensitive())
+            .is_some_and(|p| p.retired())
     }
 
     pub fn answer_form_return_for(&self, question: u64, proceed: bool) {
@@ -1882,10 +1880,13 @@ impl Pages {
                 if let Some(item) = page.native_back() {
                     self.cancel_candidate();
                     let target = item
-                        .uri()
-                        .and_then(|uri| crate::address::web_url(&uri).ok());
-                    self.context.blocking.loading(&page.native, target.as_ref());
-                    page.native.go_to_back_forward_list_item(&item);
+                        .uri
+                        .as_deref()
+                        .and_then(|uri| crate::address::web_url(uri).ok());
+                    self.context
+                        .blocking
+                        .loading(&*page.native, target.as_ref());
+                    page.native.go_to(item.id);
                     Ok(())
                 } else {
                     match page.back_visit()? {
@@ -2445,7 +2446,7 @@ impl Pages {
         for page in removed {
             let weak = self.me.clone();
             let view = page.view();
-            page.native.set_sensitive(false);
+            page.mark_retired();
             let pending = page.clone();
             page.capture_checkpoint_scroll(move || {
                 let Some(pages) = weak.upgrade() else { return };
@@ -2732,7 +2733,7 @@ impl Pages {
             .live
             .borrow()
             .as_ref()
-            .is_some_and(|page| page.native.has_focus())
+            .is_some_and(|page| page.native.widget().has_focus())
     }
 
     pub(crate) fn paste_plain_text(&self) {
@@ -2741,7 +2742,7 @@ impl Pages {
             .live
             .borrow()
             .as_ref()
-            .map(|p| p.native.downgrade())
+            .map(|p| Rc::downgrade(&p.native))
         else {
             return;
         };
@@ -2749,14 +2750,19 @@ impl Pages {
             let (Some(view), Some(text)) = (view.upgrade(), text) else {
                 return;
             };
-            if view.has_focus() && !text.is_empty() {
-                view.execute_editing_command_with_argument("InsertText", text);
+            if view.widget().has_focus() && !text.is_empty() {
+                view.insert_text(text);
             }
         });
     }
 
-    fn fullscreen_view(&self) -> Option<webkit2gtk::WebView> {
+    fn fullscreen_view(&self) -> Option<Rc<dyn EngineView>> {
         self.fullscreen.borrow().as_ref().and_then(|w| w.upgrade())
+    }
+
+    /// Whether `view` is the page shown fullscreen.
+    fn is_fullscreen_view(&self, view: &gtk::Widget) -> bool {
+        self.fullscreen_view().is_some_and(|v| v.widget() == view)
     }
 
     /// Whether a page covers the window, chrome included.
@@ -2765,14 +2771,21 @@ impl Pages {
     }
 
     /// The selected `view` entered fullscreen: it takes the whole window.
-    fn fullscreen_entered(&self, view: &webkit2gtk::WebView) {
-        *self.fullscreen.borrow_mut() = Some(view.downgrade());
+    fn fullscreen_entered(&self, view: &gtk::Widget) {
+        let selected = self
+            .branches
+            .live
+            .borrow()
+            .as_ref()
+            .filter(|page| page.native.widget() == view)
+            .map(|page| Rc::downgrade(&page.native));
+        *self.fullscreen.borrow_mut() = selected;
         self.fullscreen_changed(true);
     }
 
     /// `view` left fullscreen, or must: it goes back below the chrome.
-    fn fullscreen_left(&self, view: &webkit2gtk::WebView) {
-        if self.fullscreen_view().as_ref() != Some(view) {
+    fn fullscreen_left(&self, view: &gtk::Widget) {
+        if !self.is_fullscreen_view(view) {
             return;
         }
         *self.fullscreen.borrow_mut() = None;
@@ -2789,9 +2802,9 @@ impl Pages {
     }
 
     /// Every view uses the current content rectangle; page churn cannot size the chrome.
-    fn place_view(&self, view: &webkit2gtk::WebView) {
+    fn place_view(&self, view: &gtk::Widget) {
         let (width, height) = self.viewport.get();
-        let top = if self.fullscreen_view().as_ref() == Some(view) {
+        let top = if self.is_fullscreen_view(view) {
             0
         } else {
             CHROME_HEIGHT as i32
@@ -2816,13 +2829,15 @@ impl Pages {
             .map(|h| h.outgoing.native.clone());
         stack::Stack::order(
             &self.container,
-            chrome.as_ref().map(|w| w.upcast_ref()),
-            held.as_ref().map(|w| w.upcast_ref()),
+            chrome.as_ref(),
+            held.as_ref().map(|w| w.widget()),
         );
         #[cfg(feature = "gui-smoke")]
         if view.is_mapped() {
             let observer = self.placement_observer.borrow().clone();
-            if let Some(observer) = observer {
+            if let (Some(observer), Some(view)) =
+                (observer, view.downcast_ref::<engine::webkit::NativeView>())
+            {
                 observer(view);
             }
         }
@@ -2881,7 +2896,7 @@ impl Pages {
     fn release_event(&self, page: &LivePage, phase: ReleasePhase) {
         self.emit_release(ReleaseEvent {
             view: page.view(),
-            widget: page.native.as_ptr() as usize,
+            widget: page.native.widget().as_ptr() as usize,
             phase,
         });
     }
@@ -2895,11 +2910,11 @@ impl Pages {
     }
 
     #[cfg(feature = "gui-smoke")]
-    pub fn observe_page_placement(&self, observer: impl Fn(&webkit2gtk::WebView) + 'static) {
+    pub fn observe_page_placement(&self, observer: impl Fn(&engine::webkit::NativeView) + 'static) {
         *self.placement_observer.borrow_mut() = Some(Rc::new(observer));
     }
 
-    fn register_view(&self, view: &webkit2gtk::WebView) {
+    fn register_view(&self, view: &gtk::Widget) {
         self.views.borrow_mut().push(view.downgrade());
         let weak = self.me.clone();
         view.connect_unmap(move |view| {
@@ -2909,7 +2924,7 @@ impl Pages {
                     .live
                     .borrow()
                     .as_ref()
-                    .is_some_and(|page| page.native == *view);
+                    .is_some_and(|page| page.native.widget() == view);
                 if selected {
                     pages.end_hold();
                 }
@@ -2937,7 +2952,7 @@ impl Pages {
                     .live
                     .borrow()
                     .as_ref()
-                    .is_some_and(|page| page.native == *view)
+                    .is_some_and(|page| page.native.widget() == view)
             });
             if input && !selected {
                 glib::Propagation::Stop
@@ -2948,7 +2963,7 @@ impl Pages {
 
         for map in [false, true] {
             let weak = self.me.clone();
-            let place = move |view: &webkit2gtk::WebView| {
+            let place = move |view: &gtk::Widget| {
                 if let Some(pages) = weak.upgrade() {
                     pages.place_view(view);
                 }
@@ -2962,7 +2977,7 @@ impl Pages {
         self.place_view(view);
     }
 
-    pub(crate) fn set_chrome(&self, chrome: &webkit2gtk::WebView) {
+    pub(crate) fn set_chrome(&self, chrome: &gtk::Widget) {
         *self.chrome.borrow_mut() = Some(chrome.downgrade());
     }
 
@@ -2985,7 +3000,9 @@ impl Pages {
         batches: Vec<crate::cookies::Batch>,
         done: impl FnOnce(std::result::Result<usize, CookieApplyError>) + 'static,
     ) {
-        self.context.apply_cookie_batches(batches, done);
+        self.context
+            .engine()
+            .apply_cookie_batches(batches, Box::new(done));
     }
     // The per-branch PR calls the checkpoint lifecycle.
     #[cfg_attr(not(feature = "gui-smoke"), allow(dead_code))]
@@ -3134,7 +3151,7 @@ impl Pages {
     pub fn selected_page(&self) -> SelectedPage<'_> {
         SelectedPage {
             pages: self,
-            native: self.page().native.clone(),
+            native: engine::webkit::webkit_view_for_tests(&*self.page().native).clone(),
         }
     }
 }
@@ -3142,7 +3159,7 @@ impl Pages {
 #[cfg(feature = "gui-smoke")]
 pub struct SelectedPage<'a> {
     pages: &'a Pages,
-    pub native: webkit2gtk::WebView,
+    pub native: engine::webkit::NativeView,
 }
 #[cfg(feature = "gui-smoke")]
 impl SelectedPage<'_> {
