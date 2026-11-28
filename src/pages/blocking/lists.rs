@@ -5,7 +5,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use adblock::lists::{FilterSet, ParseOptions};
+use adblock::{
+    content_blocking::{CbRule, CbType},
+    lists::{FilterSet, ParseOptions},
+};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -18,6 +21,9 @@ pub(super) const VARIABLE: &str = "CANOPY_BLOCKLISTS";
 const MANIFEST_FILE: &str = "lists.json";
 const MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const MAX_REDIRECTS: usize = 3;
+/// Bumped when `convert` changes what it makes, so lists compiled before are rebuilt.
+/// 2: exception lines no longer become hide-everywhere rules.
+const CONVERTER: u64 = 2;
 
 #[derive(Clone, Debug)]
 pub(super) struct Source {
@@ -90,6 +96,7 @@ fn parse_sources(value: Option<&str>) -> Result<Vec<Source>> {
 pub(super) struct Record {
     pub identifier: String,
     compiled_at: u64,
+    converter: u64,
 }
 
 impl Record {
@@ -97,6 +104,7 @@ impl Record {
         Self {
             identifier,
             compiled_at: now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
+            converter: CONVERTER,
         }
     }
 }
@@ -130,6 +138,7 @@ impl Manifest {
                                 Record {
                                     identifier: identifier.to_owned(),
                                     compiled_at: row["compiled_at"].as_u64()?,
+                                    converter: row["converter"].as_u64().unwrap_or(1),
                                 },
                             ))
                         })
@@ -146,7 +155,11 @@ impl Manifest {
             .map(|(source, row)| {
                 (
                     source,
-                    json!({"identifier": row.identifier, "compiled_at": row.compiled_at}),
+                    json!({
+                        "identifier": row.identifier,
+                        "compiled_at": row.compiled_at,
+                        "converter": row.converter,
+                    }),
                 )
             })
             .collect();
@@ -157,6 +170,9 @@ impl Manifest {
 
 pub(super) fn due(record: Option<&Record>, now: SystemTime) -> bool {
     record.is_none_or(|record| {
+        if record.converter != CONVERTER {
+            return true;
+        }
         let since_epoch = now.duration_since(UNIX_EPOCH).unwrap_or_default();
         since_epoch.saturating_sub(Duration::from_secs(record.compiled_at)) > MAX_AGE
     })
@@ -176,16 +192,50 @@ pub(super) fn convert(body: Vec<u8>) -> Result<Converted> {
             .is_some_and(|line| line.starts_with("[Adblock") && line.trim_end().ends_with(']')),
         "The response has no Adblock list header."
     );
-    let mut filters = FilterSet::new(true);
-    filters.add_filter_list(text, ParseOptions::default());
-    let (rules, _) = filters
-        .into_content_blocking()
-        .map_err(|()| anyhow::anyhow!("Could not convert the list to WebKit rules."))?;
+    // The crate turns an exception such as `gemini.yahoo.com#@#.ads` into "hide `.ads`
+    // everywhere except there", even when the list never hides `.ads` everywhere. That hid
+    // every Gmail message (`div.adn.ads`). Exceptions are kept out of its conversion and
+    // only add their sites to a hide-everywhere rule for the same selector.
+    let (exceptions, rest): (Vec<&str>, Vec<&str>) =
+        text.lines().partition(|line| line.contains("#@#"));
+    let mut rules = content_blocking(rest)?;
+    let mut spared: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for rule in content_blocking(exceptions)? {
+        if let (CbType::CssDisplayNone, Some(selector), None, Some(sites)) = (
+            &rule.action.typ,
+            rule.action.selector,
+            &rule.trigger.if_domain,
+            rule.trigger.unless_domain,
+        ) {
+            spared.entry(selector).or_default().extend(sites);
+        }
+    }
+    for rule in &mut rules {
+        let everywhere = rule.action.typ == CbType::CssDisplayNone
+            && rule.trigger.if_domain.is_none()
+            && rule.trigger.url_filter == ".*";
+        let sites = rule.action.selector.as_ref().and_then(|s| spared.get(s));
+        if let (true, Some(sites)) = (everywhere, sites) {
+            let unless = rule.trigger.unless_domain.get_or_insert_with(Vec::new);
+            unless.extend(sites.iter().cloned());
+            unless.sort();
+            unless.dedup();
+        }
+    }
     anyhow::ensure!(!rules.is_empty(), "The list has no usable rules.");
     Ok(Converted {
         json: serde_json::to_vec(&rules)?,
         rules: rules.len(),
     })
+}
+
+fn content_blocking(lines: Vec<&str>) -> Result<Vec<CbRule>> {
+    let mut filters = FilterSet::new(true);
+    filters.add_filter_list(lines.join("\n"), ParseOptions::default());
+    let (rules, _) = filters
+        .into_content_blocking()
+        .map_err(|()| anyhow::anyhow!("Could not convert the list to WebKit rules."))?;
+    Ok(rules)
 }
 
 pub(super) fn next_hop(
@@ -290,6 +340,33 @@ mod tests {
         assert!(rules.as_array().unwrap().iter().any(|rule| {
             rule["action"]["type"] == "css-display-none" && rule["action"]["selector"] == ".adbox"
         }));
+    }
+
+    #[test]
+    fn exceptions_only_spare_sites_from_hiding_everywhere() {
+        let converted = convert(
+            b"[Adblock Plus 2.0]\n##.adbox\nexample.org#@#.adbox\ngemini.yahoo.com#@#.ads\n"
+                .to_vec(),
+        )
+        .unwrap();
+        let rules: Value = serde_json::from_slice(&converted.json).unwrap();
+        let hides: Vec<_> = rules
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|rule| rule["action"]["type"] == "css-display-none")
+            .collect();
+        assert_eq!(hides.len(), 1, "{hides:?}");
+        assert_eq!(hides[0]["action"]["selector"], ".adbox");
+        assert_eq!(hides[0]["trigger"]["unless-domain"], json!(["example.org"]));
+    }
+
+    #[test]
+    fn records_from_an_older_converter_are_due() {
+        let mut item = Record::new("list".into(), UNIX_EPOCH);
+        assert!(!due(Some(&item), UNIX_EPOCH));
+        item.converter = CONVERTER - 1;
+        assert!(due(Some(&item), UNIX_EPOCH));
     }
 
     #[test]
